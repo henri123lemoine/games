@@ -1,0 +1,18 @@
+[package]
+name = "twentyone"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+thiserror = "1"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[lib]
+name = "twentyone"
+path = "src/lib.rs"
+
+[[bench]]
+name = "sim_bench"
+harness = false
