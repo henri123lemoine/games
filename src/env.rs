@@ -52,7 +52,7 @@ struct PlayerRound {
     face_up: u8,
     face_down: u8,
     total: u8,
-    stood: bool,
+    last_action_stand: bool,
     bust: bool,
     draws: u8,
     up_cards: [u8; 8],
@@ -65,7 +65,7 @@ impl PlayerRound {
             face_up: 0,
             face_down: 0,
             total: 0,
-            stood: false,
+            last_action_stand: false,
             bust: false,
             draws: 0,
             up_cards: [0; 8],
@@ -80,6 +80,7 @@ struct RoundState {
     deck_order: Option<[u8; NUM_CARDS]>,
     draw_index: u8, // index into deck_order when present
     players: [PlayerRound; 2],
+    prev_stand: bool,
 }
 
 impl RoundState {
@@ -89,6 +90,7 @@ impl RoundState {
             deck_order: order,
             draw_index: 0,
             players: [PlayerRound::new(), PlayerRound::new()],
+            prev_stand: false,
         }
     }
 
@@ -119,6 +121,7 @@ pub struct Env {
     round: u8,
     current_player: u8,
     round_state: Option<RoundState>,
+    last_reveal_down: Option<[u8; 2]>,
     preset_decks: Vec<[u8; NUM_CARDS]>,
     preset_round_index: usize,
     rng: XorShift64,
@@ -133,6 +136,7 @@ impl Env {
             round: 1,
             current_player: 0,
             round_state: None,
+            last_reveal_down: None,
             preset_decks: Vec::new(),
             preset_round_index: 0,
             rng: XorShift64::seed(seed),
@@ -159,6 +163,7 @@ impl Env {
             round: 1,
             current_player: 0,
             round_state: None,
+            last_reveal_down: None,
             preset_decks,
             preset_round_index: 0,
             rng: XorShift64::seed(0xDEADBEEFCAFEBABE),
@@ -215,7 +220,7 @@ impl Env {
         rs.players[1].total = p1_up.saturating_add(p1_dn);
         rs.players[0].up_cards[0] = p0_up; rs.players[0].up_len = 1;
         rs.players[1].up_cards[0] = p1_up; rs.players[1].up_len = 1;
-        self.round_state = Some(rs);
+                self.round_state = Some(rs);
         self.current_player = 0;
         Ok(())
     }
@@ -231,9 +236,9 @@ impl Env {
                     me.total,
                     me.face_up,
                     me.face_down,
-                    me.stood,
+                    me.last_action_stand,
                     opp.face_up,
-                    opp.stood,
+                    opp.last_action_stand,
                     rs.deck_count(),
                 )
             } else {
@@ -257,16 +262,15 @@ impl Env {
     /// Take an action for the current player.
     /// Returns whether the round or game ended and the round outcome.
     pub fn step(&mut self, action: Action) -> Result<StepResult, EnvError> {
-        if self.game_over {
+                if self.game_over {
             return Err(EnvError::GameOver);
         }
         let mut rs = self.round_state.take().ok_or(EnvError::NoActiveRound)?;
         let p = self.current_player as usize;
+        let mut will_end_by_consec = false;
         match action {
             Action::Draw => {
-                if rs.players[p].stood {
-                    return Err(EnvError::InvalidAction("cannot draw after standing"));
-                }
+                if rs.players[p].bust { return Err(EnvError::InvalidAction("cannot draw after bust")); }
                 if rs.deck_count() == 0 {
                     return Err(EnvError::InvalidAction("no cards remaining"));
                 }
@@ -275,30 +279,34 @@ impl Env {
                     let me = &mut rs.players[p];
                     me.total = me.total.saturating_add(c);
                     me.draws = me.draws.saturating_add(1);
+                    me.last_action_stand = false;
                     if (me.up_len as usize) < me.up_cards.len() {
                         me.up_cards[me.up_len as usize] = c;
                         me.up_len = me.up_len.saturating_add(1);
                     }
                     if me.total > TARGET {
                         me.bust = true;
-                        me.stood = true;
                     }
                 }
+                rs.prev_stand = false;
             }
             Action::Stand => {
-                rs.players[p].stood = true;
-            }
+                rs.players[p].last_action_stand = true;
+                will_end_by_consec = rs.prev_stand;
+                rs.prev_stand = true;
+                // increment via prev_stand flag below
+                            }
         }
 
         // Determine if round ends
-        let both_stood = rs.players[0].stood && rs.players[1].stood;
         let deck_empty = rs.deck_count() == 0;
         let mut round_over = false;
         let mut outcome = None;
-        if both_stood || deck_empty {
-            round_over = true;
+        if will_end_by_consec || deck_empty {
+                        round_over = true;
             let (winner, damage) = self.evaluate_winner(&rs);
             outcome = Some(RoundOutcome { winner, damage });
+            self.last_reveal_down = Some([rs.players[0].face_down, rs.players[1].face_down]);
             if let Some(w) = winner {
                 let loser = 1 - w;
                 let dmg = damage;
@@ -320,7 +328,7 @@ impl Env {
 
         // Continue the round; switch player
         self.current_player ^= 1;
-        self.round_state = Some(rs);
+                self.round_state = Some(rs);
         Ok(StepResult {
             round_over,
             game_over: false,
@@ -400,6 +408,9 @@ impl Env {
         let pr = &rs.players[player];
         Some((pr.up_cards, pr.up_len))
     }
+
+    /// The last round's down cards revealed at round end, if any.
+    pub fn last_reveal(&self) -> Option<[u8; 2]> { self.last_reveal_down }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

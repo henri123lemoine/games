@@ -104,13 +104,21 @@ fn handle(env: &mut Option<Env>, cmd: Command) -> Response<serde_json::Value> {
                     Act::Stand => Action::Stand,
                 };
                 match e.step(act) {
-                    Ok(sr) => ok(json!({
-                        "step": {
-                            "round_over": sr.round_over,
-                            "game_over": sr.game_over,
-                            "outcome": sr.outcome,
+                    Ok(sr) => {
+                        let mut obj = serde_json::json!({
+                            "step": {
+                                "round_over": sr.round_over,
+                                "game_over": sr.game_over,
+                                "outcome": sr.outcome,
+                            }
+                        });
+                        if sr.round_over {
+                            if let Some([d0, d1]) = e.last_reveal() {
+                                obj["reveal"] = serde_json::json!({"p0_down": d0, "p1_down": d1});
+                            }
                         }
-                    })),
+                        ok(obj)
+                    }
                     Err(err) => err_resp(err.to_string()),
                 }
             }

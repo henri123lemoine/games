@@ -28,6 +28,8 @@ fn initial_deal_and_tie_causes_no_damage() {
     let r = env.step(Action::Stand).unwrap();
     assert!(!r.round_over);
     let r = env.step(Action::Stand).unwrap();
+    assert!(!r.round_over);
+    let r = env.step(Action::Stand).unwrap();
     assert!(r.round_over);
     assert!(!r.game_over);
     assert!(r.outcome.unwrap().winner.is_none());
@@ -44,7 +46,12 @@ fn bust_then_opponent_stands_results_in_loss() {
     // P0 draws and busts to 22
     let r = env.step(Action::Draw).unwrap();
     assert!(!r.round_over);
-    // P1 stands; round ends with P0 losing 1 heart
+    // P1 stands; round does not end until two consecutive stands
+    let r = env.step(Action::Stand).unwrap();
+    assert!(!r.round_over);
+    // P0 (busted) stands; now round ends
+    let r = env.step(Action::Stand).unwrap();
+    assert!(!r.round_over);
     let r = env.step(Action::Stand).unwrap();
     assert!(r.round_over);
     let outcome = r.outcome.unwrap();
@@ -61,8 +68,11 @@ fn both_over_21_closest_wins() {
     env.start_new_round().unwrap();
     // P0 draws to 22
     let _ = env.step(Action::Draw).unwrap();
-    // P1 draws to 23; both players busted and auto-stood -> round ends
+    // P1 draws to 23; need two consecutive stands to end
     let r = env.step(Action::Draw).unwrap();
+    assert!(!r.round_over);
+    let _ = env.step(Action::Stand).unwrap();
+    let r = env.step(Action::Stand).unwrap();
     assert!(r.round_over);
     let outcome = r.outcome.unwrap();
     assert_eq!(outcome.winner, Some(0));
@@ -80,6 +90,8 @@ fn damage_increases_with_round_number() {
     // P0 draws bust, P1 stands
     let _ = env.step(Action::Draw).unwrap();
     let r = env.step(Action::Stand).unwrap();
+    assert!(!r.round_over);
+    let r = env.step(Action::Stand).unwrap();
     assert!(r.round_over);
     assert_eq!(env.hearts(0), 5);
     assert_eq!(env.hearts(1), 6);
@@ -87,6 +99,8 @@ fn damage_increases_with_round_number() {
     env.start_new_round().unwrap();
     // P0 draws bust, P1 stands again
     let _ = env.step(Action::Draw).unwrap();
+    let r = env.step(Action::Stand).unwrap();
+    assert!(!r.round_over);
     let r = env.step(Action::Stand).unwrap();
     assert!(r.round_over);
     assert_eq!(env.hearts(0), 3); // lost 1, then 2
