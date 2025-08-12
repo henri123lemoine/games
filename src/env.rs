@@ -55,6 +55,8 @@ struct PlayerRound {
     stood: bool,
     bust: bool,
     draws: u8,
+    up_cards: [u8; 8],
+    up_len: u8,
 }
 
 impl PlayerRound {
@@ -66,6 +68,8 @@ impl PlayerRound {
             stood: false,
             bust: false,
             draws: 0,
+            up_cards: [0; 8],
+            up_len: 0,
         }
     }
 }
@@ -209,6 +213,8 @@ impl Env {
         rs.players[1].face_down = p1_dn;
         rs.players[0].total = p0_up.saturating_add(p0_dn);
         rs.players[1].total = p1_up.saturating_add(p1_dn);
+        rs.players[0].up_cards[0] = p0_up; rs.players[0].up_len = 1;
+        rs.players[1].up_cards[0] = p1_up; rs.players[1].up_len = 1;
         self.round_state = Some(rs);
         self.current_player = 0;
         Ok(())
@@ -269,6 +275,10 @@ impl Env {
                     let me = &mut rs.players[p];
                     me.total = me.total.saturating_add(c);
                     me.draws = me.draws.saturating_add(1);
+                    if (me.up_len as usize) < me.up_cards.len() {
+                        me.up_cards[me.up_len as usize] = c;
+                        me.up_len = me.up_len.saturating_add(1);
+                    }
                     if me.total > TARGET {
                         me.bust = true;
                         me.stood = true;
@@ -381,6 +391,14 @@ impl Env {
             }
             Err(EnvError::InvalidAction("failed to draw card"))
         }
+    }
+
+    /// Public up cards for a player in the current round.
+    /// Returns a fixed-size array and its used length, or None if no round.
+    pub fn public_up_cards(&self, player: usize) -> Option<([u8; 8], u8)> {
+        let rs = self.round_state.as_ref()?;
+        let pr = &rs.players[player];
+        Some((pr.up_cards, pr.up_len))
     }
 }
 

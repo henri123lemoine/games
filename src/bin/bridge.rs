@@ -10,6 +10,7 @@ enum Command {
     StartRound,
     Observation { player: usize },
     Step { action: Act },
+    PublicInfo,
     Hearts,
     Round,
     CurrentPlayer,
@@ -112,6 +113,18 @@ fn handle(env: &mut Option<Env>, cmd: Command) -> Response<serde_json::Value> {
                     })),
                     Err(err) => err_resp(err.to_string()),
                 }
+            }
+            None => err_resp("env_not_initialized".into()),
+        },
+        Command::PublicInfo => match env {
+            Some(e) => {
+                let p0 = e.public_up_cards(0);
+                let p1 = e.public_up_cards(1);
+                let (p0_up, p1_up) = match (p0, p1) {
+                    (Some((a, la)), Some((b, lb))) => (a[..la as usize].to_vec(), b[..lb as usize].to_vec()),
+                    _ => (Vec::new(), Vec::new()),
+                };
+                ok(json!({"p0_up": p0_up, "p1_up": p1_up}))
             }
             None => err_resp("env_not_initialized".into()),
         },

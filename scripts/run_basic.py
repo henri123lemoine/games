@@ -1,10 +1,27 @@
 import json
+import os
 import subprocess
 import sys
+from pathlib import Path
+
+
+def _find_or_build_bridge() -> str:
+    override = os.environ.get("TWENTYONE_BRIDGE_BIN")
+    if override:
+        return override
+    root = Path(__file__).resolve().parents[1]
+    bin_path = root / "target" / "debug" / "twentyone_bridge"
+    if not bin_path.exists():
+        subprocess.run(
+            ["cargo", "build", "--bin", "twentyone_bridge"], cwd=root, check=True
+        )
+    return str(bin_path)
 
 
 class Bridge:
-    def __init__(self, path="target/debug/twentyone_bridge"):
+    def __init__(self, path: str | None = None):
+        if path is None:
+            path = _find_or_build_bridge()
         self.p = subprocess.Popen(
             [path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1
         )

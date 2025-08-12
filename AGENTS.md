@@ -13,7 +13,7 @@ Gameplay:
 
 1. Both players receive 2 cards: one face-up (visible to opponent), one face-down (hidden)
 2. Players take turns choosing to:
-   - **Draw** a card from the remaining deck
+   - **Draw** a card from the remaining deck. This card is face-up.
    - **Stand** (keep current total)
 3. Round ends when both players stand or no cards remain
 

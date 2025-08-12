@@ -1,6 +1,7 @@
 import json
 import random
 from collections import defaultdict
+from pathlib import Path
 
 CARDS = list(range(1, 12))
 TARGET = 21
@@ -163,7 +164,9 @@ class MCCFR:
 def save_policy(policy, path):
     # convert tuple keys to strings for JSON
     sp = {str(k): v for k, v in policy.items()}
-    with open(path, "w") as f:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w") as f:
         json.dump(sp, f)
 
 
