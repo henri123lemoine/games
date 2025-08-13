@@ -1,6 +1,7 @@
 import ast
 import json
 import sys
+from secrets import randbits
 from typing import Literal
 
 from common import Bridge
@@ -43,9 +44,11 @@ def main() -> int:
         print("Usage: play_vs_agent.py policy_mccfr.json [seed]")
         return 2
     policy = load_policy(sys.argv[1])
-    seed = int(sys.argv[2], 0) if len(sys.argv) > 2 else 42
+    # Default to OS-random seed when not provided for non-repro runs.
+    seed = int(sys.argv[2], 0) if len(sys.argv) > 2 else randbits(64)
     with Bridge() as bridge:
         bridge.send({"cmd": "new", "seed": seed})
+        print(f"Seed: {seed}")
         p_user = 0  # user plays as player 0
 
         # Intro: New Game + hearts

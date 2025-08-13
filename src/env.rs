@@ -275,9 +275,6 @@ impl Env {
         let mut will_end_by_consec = false;
         match action {
             Action::Draw => {
-                if rs.players[p].bust {
-                    return Err(EnvError::InvalidAction("cannot draw after bust"));
-                }
                 if rs.deck_count() == 0 {
                     return Err(EnvError::InvalidAction("no cards remaining"));
                 }

@@ -31,11 +31,9 @@ class RoundState:
         self.idx += 1
         return c
 
-    def deck_mask(self):
-        mask = 0
-        for c in self.deck[self.idx :]:
-            mask |= 1 << (c - 1)
-        return mask
+    def deck_count(self):
+        # Number of cards remaining in the deck (0..11)
+        return len(self.deck) - self.idx
 
     def terminal(self):
         return (self.stood[0] and self.stood[1]) or (self.idx >= len(self.deck))
@@ -54,13 +52,15 @@ class RoundState:
         return None
 
     def obs_tuple(self, p):
+        # Match the runtime agent’s infoset shape: use deck_count instead of full mask.
+        # Tuple: (player, self_total, opp_face_up, self_stood, opp_stood, deck_count)
         return (
             p,
             self.total[p],
             self.up[1 - p],
             self.stood[p],
             self.stood[1 - p],
-            self.deck_mask(),
+            self.deck_count(),
         )
 
     def apply(self, action):
@@ -169,8 +169,8 @@ def save_policy(policy, path):
 
 
 def main():
-    m = MCCFR(seed=123)
-    m.train(iterations=100000)
+    m = MCCFR(seed=42)
+    m.train(iterations=5000000)
     pol = m.average_policy()
     save_policy(pol, "data/policy_mccfr.json")
     print(f"Saved policy with {len(pol)} infosets to data/policy_mccfr.json")
