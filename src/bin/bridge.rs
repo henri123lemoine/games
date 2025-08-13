@@ -116,6 +116,11 @@ fn handle(env: &mut Option<Env>, cmd: Command) -> Response<serde_json::Value> {
                             if let Some([d0, d1]) = e.last_reveal() {
                                 obj["reveal"] = serde_json::json!({"p0_down": d0, "p1_down": d1});
                             }
+                            if let Some((p0_up, p0_len, p1_up, p1_len)) = e.last_public_up() {
+                                let p0: Vec<u8> = p0_up[..(p0_len as usize)].to_vec();
+                                let p1: Vec<u8> = p1_up[..(p1_len as usize)].to_vec();
+                                obj["final_up"] = serde_json::json!({"p0": p0, "p1": p1});
+                            }
                         }
                         ok(obj)
                     }
@@ -129,7 +134,9 @@ fn handle(env: &mut Option<Env>, cmd: Command) -> Response<serde_json::Value> {
                 let p0 = e.public_up_cards(0);
                 let p1 = e.public_up_cards(1);
                 let (p0_up, p1_up) = match (p0, p1) {
-                    (Some((a, la)), Some((b, lb))) => (a[..la as usize].to_vec(), b[..lb as usize].to_vec()),
+                    (Some((a, la)), Some((b, lb))) => {
+                        (a[..la as usize].to_vec(), b[..lb as usize].to_vec())
+                    }
                     _ => (Vec::new(), Vec::new()),
                 };
                 ok(json!({"p0_up": p0_up, "p1_up": p1_up}))

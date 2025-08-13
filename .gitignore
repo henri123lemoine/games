@@ -1,2 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+
+# Rust
 /target
+
+# Misc
 data/

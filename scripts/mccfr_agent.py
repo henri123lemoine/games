@@ -119,9 +119,7 @@ class MCCFR:
         for a in (0, 1):
             next_state = self._clone_state(state)
             next_state.apply(a)
-            utils[a] = self.cfr(
-                next_state, traverser, reach_my * strategy[a], reach_opp
-            )
+            utils[a] = self.cfr(next_state, traverser, reach_my * strategy[a], reach_opp)
             node_util += strategy[a] * utils[a]
         # regret update
         cf_reach = reach_opp
@@ -172,7 +170,7 @@ def save_policy(policy, path):
 
 def main():
     m = MCCFR(seed=123)
-    m.train(iterations=50000)
+    m.train(iterations=100000)
     pol = m.average_policy()
     save_policy(pol, "data/policy_mccfr.json")
     print(f"Saved policy with {len(pol)} infosets to data/policy_mccfr.json")

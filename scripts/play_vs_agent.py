@@ -1,53 +1,12 @@
 import ast
 import json
-import os
-import subprocess
 import sys
-from pathlib import Path
+from typing import Literal
+
+from common import Bridge
 
 
-def _find_or_build_bridge() -> str:
-    override = os.environ.get("TWENTYONE_BRIDGE_BIN")
-    if override:
-        return override
-    root = Path(__file__).resolve().parents[1]
-    bin_path = root / "target" / "debug" / "twentyone_bridge"
-    if not bin_path.exists():
-        subprocess.run(
-            ["cargo", "build", "--bin", "twentyone_bridge"], cwd=root, check=True
-        )
-    return str(bin_path)
-
-
-class Bridge:
-    def __init__(self, path: str | None = None):
-        if path is None:
-            path = _find_or_build_bridge()
-        self.p = subprocess.Popen(
-            [path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1
-        )
-
-    def send(self, obj):
-        line = json.dumps(obj)
-        self.p.stdin.write(line + "\n")
-        self.p.stdin.flush()
-        out = self.p.stdout.readline()
-        if not out:
-            raise RuntimeError("bridge closed")
-        resp = json.loads(out)
-        if resp.get("status") == "err":
-            raise RuntimeError(resp.get("error"))
-        return resp["data"]
-
-    def close(self):
-        try:
-            self.send({"cmd": "quit"})
-        except Exception:
-            pass
-        self.p.terminate()
-
-
-def load_policy(path):
+def load_policy(path: str):
     with open(path) as f:
         raw = json.load(f)
     # keys are stringified tuples; parse back with ast.literal_eval
@@ -70,7 +29,7 @@ def infoset_from_obs(obs, player, deck_mask_est=0):
     )
 
 
-def choose_action(policy, obs, player):
+def choose_action(policy, obs: dict, player: int) -> Literal["draw", "stand"]:
     info = infoset_from_obs(obs, player)
     strat = policy.get(info)
     if strat is None:
@@ -79,51 +38,108 @@ def choose_action(policy, obs, player):
     return "draw" if strat[0] >= strat[1] else "stand"
 
 
-def main():
+def main() -> int:
     if len(sys.argv) < 2:
         print("Usage: play_vs_agent.py policy_mccfr.json [seed]")
         return 2
     policy = load_policy(sys.argv[1])
     seed = int(sys.argv[2], 0) if len(sys.argv) > 2 else 42
-    bridge = Bridge()
-    try:
+    with Bridge() as bridge:
         bridge.send({"cmd": "new", "seed": seed})
         p_user = 0  # user plays as player 0
+
+        # Intro: New Game + hearts
+        hearts = bridge.send({"cmd": "hearts"})
+        print("New Game.")
+        print(f"Hearts: You={hearts['p0']} Agent={hearts['p1']}")
+
         while True:
             bridge.send({"cmd": "start_round"})
-            print("New round!")
+            rnd = bridge.send({"cmd": "round"})["round"]
+            print("")
+            print(f"Round {rnd}!")
+            print("")
             while True:
                 cur = bridge.send({"cmd": "current_player"})["current_player"]
                 obs = bridge.send({"cmd": "observation", "player": cur})["observation"]
                 pub = bridge.send({"cmd": "public_info"})
                 p0_up = pub.get("p0_up", [])
                 p1_up = pub.get("p1_up", [])
+
                 if cur == p_user:
                     my_up = p0_up if p_user == 0 else p1_up
                     opp_up = p1_up if p_user == 0 else p0_up
-                    my_cards_str = ",".join(map(str, my_up + [obs["self_face_down"]]))
-                    opp_cards_str = ",".join(map(str, opp_up))
-                    print(
-                        f"Your turn. You: total={obs['self_total']} cards=[{my_cards_str}] stood={obs['self_stood']}. Opp up=[{opp_cards_str}] stood={obs['opp_stood']}. Deck={obs['deck_count']}"
+                    print("Your turn.")
+                    print(f"You: hidden=[{obs['self_face_down']}], shown={my_up}")
+                    print(f"Opp: shown={opp_up}")
+                    print(f"Cards remaining in the deck: {obs['deck_count']}")
+                    act: Literal["draw", "stand"] = (
+                        "draw"
+                        if input("Type d=draw, s=stand: ").strip().lower().startswith("d")
+                        else "stand"
                     )
-                    act = input("Type d=draw, s=stand: ").strip().lower()
-                    act = "draw" if act.startswith("d") else "stand"
                 else:
+                    # Agent's pov: opp_face_up is YOUR face-up card
+                    your_up = p0_up if p_user == 0 else p1_up
+                    agent_up = p1_up if p_user == 0 else p0_up
+                    prev_len = len(agent_up)
+                    print("Agent's turn.")
+                    print(f"Agent sees your shown={your_up}, its shown={agent_up}")
+                    print(f"Cards remaining in the deck: {obs['deck_count']}")
                     act = choose_action(policy, obs, cur)
-                    print(
-                        f"Agent sees opp up={[obs['opp_face_up']]} and chooses: {act}"
-                    )
-                step = bridge.send({"cmd": "step", "action": act})["step"]
+                    print(f"Agent chooses: {act}")
+
+                resp = bridge.send({"cmd": "step", "action": act})
+                step = resp["step"]
+                if cur != p_user and not step["round_over"]:
+                    # After agent acts, show the effect immediately for clarity
+                    pub2 = bridge.send({"cmd": "public_info"})
+                    p0_up2 = pub2.get("p0_up", [])
+                    p1_up2 = pub2.get("p1_up", [])
+                    agent_up2 = p1_up2 if p_user == 0 else p0_up2
+                    if act == "draw" and len(agent_up2) > prev_len:
+                        print(f"Agent drew {agent_up2[-1]}")
+                    elif act == "stand":
+                        print("Agent stood")
                 if step["round_over"]:
-                    print(f"Round over. Outcome: {step['outcome']}")
+                    # Reveal down cards and show final hands
+                    reveal = resp.get("reveal", {})
+                    final_up = resp.get("final_up", {})
+                    p0_up = final_up.get("p0", [])
+                    p1_up = final_up.get("p1", [])
+                    p0_dn = reveal.get("p0_down")
+                    p1_dn = reveal.get("p1_down")
+                    you_up = p0_up if p_user == 0 else p1_up
+                    opp_up = p1_up if p_user == 0 else p0_up
+                    you_dn = p0_dn if p_user == 0 else p1_dn
+                    opp_dn = p1_dn if p_user == 0 else p0_dn
+                    you_final = [*you_up, you_dn] if you_dn is not None else you_up
+                    opp_final = [*opp_up, opp_dn] if opp_dn is not None else opp_up
+                    you_total = sum(you_final)
+                    opp_total = sum(opp_final)
+
+                    print("")
+                    print("Round over. Final cards:")
+                    print(f"You: {you_final}, total={you_total}")
+                    print(f"Opp: {opp_final}, total={opp_total}")
+                    out = step["outcome"] or {"winner": None, "damage": 0}
+                    if out["winner"] is None:
+                        print("Outcome: Tie.")
+                    else:
+                        winner = "You" if out["winner"] == p_user else "Opp"
+                        print(f"Outcome: {winner} wins.")
+
                     hearts = bridge.send({"cmd": "hearts"})
-                    print(f"Hearts: You={hearts['p0']} Agent={hearts['p1']}")
+                    print("")
+                    print("Hearts:")
+                    print(f"You: {hearts['p0' if p_user == 0 else 'p1']}")
+                    print(f"Opp: {hearts['p1' if p_user == 0 else 'p0']}")
+
                     if hearts["p0"] == 0 or hearts["p1"] == 0:
+                        print("")
                         print("Game over.")
                         return 0
                     break
-    finally:
-        bridge.close()
 
 
 if __name__ == "__main__":

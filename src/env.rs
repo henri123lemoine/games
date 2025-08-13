@@ -122,6 +122,7 @@ pub struct Env {
     current_player: u8,
     round_state: Option<RoundState>,
     last_reveal_down: Option<[u8; 2]>,
+    last_public_up: Option<([u8; 8], u8, [u8; 8], u8)>,
     preset_decks: Vec<[u8; NUM_CARDS]>,
     preset_round_index: usize,
     rng: XorShift64,
@@ -137,6 +138,7 @@ impl Env {
             current_player: 0,
             round_state: None,
             last_reveal_down: None,
+            last_public_up: None,
             preset_decks: Vec::new(),
             preset_round_index: 0,
             rng: XorShift64::seed(seed),
@@ -164,6 +166,7 @@ impl Env {
             current_player: 0,
             round_state: None,
             last_reveal_down: None,
+            last_public_up: None,
             preset_decks,
             preset_round_index: 0,
             rng: XorShift64::seed(0xDEADBEEFCAFEBABE),
@@ -218,9 +221,11 @@ impl Env {
         rs.players[1].face_down = p1_dn;
         rs.players[0].total = p0_up.saturating_add(p0_dn);
         rs.players[1].total = p1_up.saturating_add(p1_dn);
-        rs.players[0].up_cards[0] = p0_up; rs.players[0].up_len = 1;
-        rs.players[1].up_cards[0] = p1_up; rs.players[1].up_len = 1;
-                self.round_state = Some(rs);
+        rs.players[0].up_cards[0] = p0_up;
+        rs.players[0].up_len = 1;
+        rs.players[1].up_cards[0] = p1_up;
+        rs.players[1].up_len = 1;
+        self.round_state = Some(rs);
         self.current_player = 0;
         Ok(())
     }
@@ -262,7 +267,7 @@ impl Env {
     /// Take an action for the current player.
     /// Returns whether the round or game ended and the round outcome.
     pub fn step(&mut self, action: Action) -> Result<StepResult, EnvError> {
-                if self.game_over {
+        if self.game_over {
             return Err(EnvError::GameOver);
         }
         let mut rs = self.round_state.take().ok_or(EnvError::NoActiveRound)?;
@@ -270,7 +275,9 @@ impl Env {
         let mut will_end_by_consec = false;
         match action {
             Action::Draw => {
-                if rs.players[p].bust { return Err(EnvError::InvalidAction("cannot draw after bust")); }
+                if rs.players[p].bust {
+                    return Err(EnvError::InvalidAction("cannot draw after bust"));
+                }
                 if rs.deck_count() == 0 {
                     return Err(EnvError::InvalidAction("no cards remaining"));
                 }
@@ -291,11 +298,12 @@ impl Env {
                 rs.prev_stand = false;
             }
             Action::Stand => {
+                // eprintln!("prev_stand before={}", rs.prev_stand);
                 rs.players[p].last_action_stand = true;
                 will_end_by_consec = rs.prev_stand;
                 rs.prev_stand = true;
                 // increment via prev_stand flag below
-                            }
+            }
         }
 
         // Determine if round ends
@@ -303,10 +311,16 @@ impl Env {
         let mut round_over = false;
         let mut outcome = None;
         if will_end_by_consec || deck_empty {
-                        round_over = true;
+            round_over = true;
             let (winner, damage) = self.evaluate_winner(&rs);
             outcome = Some(RoundOutcome { winner, damage });
             self.last_reveal_down = Some([rs.players[0].face_down, rs.players[1].face_down]);
+            self.last_public_up = Some((
+                rs.players[0].up_cards,
+                rs.players[0].up_len,
+                rs.players[1].up_cards,
+                rs.players[1].up_len,
+            ));
             if let Some(w) = winner {
                 let loser = 1 - w;
                 let dmg = damage;
@@ -328,7 +342,7 @@ impl Env {
 
         // Continue the round; switch player
         self.current_player ^= 1;
-                self.round_state = Some(rs);
+        self.round_state = Some(rs);
         Ok(StepResult {
             round_over,
             game_over: false,
@@ -410,7 +424,14 @@ impl Env {
     }
 
     /// The last round's down cards revealed at round end, if any.
-    pub fn last_reveal(&self) -> Option<[u8; 2]> { self.last_reveal_down }
+    pub fn last_reveal(&self) -> Option<[u8; 2]> {
+        self.last_reveal_down
+    }
+
+    /// The last round's public up cards (for both players) captured at round end.
+    pub fn last_public_up(&self) -> Option<([u8; 8], u8, [u8; 8], u8)> {
+        self.last_public_up
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

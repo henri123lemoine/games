@@ -24,9 +24,7 @@ fn initial_deal_and_tie_causes_no_damage() {
     assert_eq!(o0.self_total, 12);
     assert_eq!(o1.self_total, 12);
 
-    // Both stand
-    let r = env.step(Action::Stand).unwrap();
-    assert!(!r.round_over);
+    // Both stand consecutively -> round ends
     let r = env.step(Action::Stand).unwrap();
     assert!(!r.round_over);
     let r = env.step(Action::Stand).unwrap();
@@ -50,8 +48,6 @@ fn bust_then_opponent_stands_results_in_loss() {
     let r = env.step(Action::Stand).unwrap();
     assert!(!r.round_over);
     // P0 (busted) stands; now round ends
-    let r = env.step(Action::Stand).unwrap();
-    assert!(!r.round_over);
     let r = env.step(Action::Stand).unwrap();
     assert!(r.round_over);
     let outcome = r.outcome.unwrap();
@@ -118,11 +114,15 @@ fn game_ends_when_hearts_zero() {
     env.start_new_round().unwrap();
     let _ = env.step(Action::Draw).unwrap();
     let r = env.step(Action::Stand).unwrap();
+    assert!(!r.round_over);
+    let r = env.step(Action::Stand).unwrap();
     assert!(r.round_over);
     assert!(!r.game_over);
 
     env.start_new_round().unwrap();
     let _ = env.step(Action::Draw).unwrap();
+    let r = env.step(Action::Stand).unwrap();
+    assert!(!r.round_over);
     let r = env.step(Action::Stand).unwrap();
     assert!(r.round_over);
     assert!(r.game_over);
