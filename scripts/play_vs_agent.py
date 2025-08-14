@@ -4,7 +4,17 @@ import sys
 from secrets import randbits
 from typing import Literal
 
-from common import Bridge
+from common import (
+    Bridge,
+    get_public_info,
+    is_game_over,
+    show_action_choice,
+    show_custom_turn_info,
+    show_game_start,
+    show_hearts_status,
+    show_round_result,
+    show_round_start,
+)
 
 
 def load_policy(path: str):
@@ -48,34 +58,31 @@ def main() -> int:
     seed = int(sys.argv[2], 0) if len(sys.argv) > 2 else randbits(64)
     with Bridge() as bridge:
         bridge.send({"cmd": "new", "seed": seed})
-        print(f"Seed: {seed}")
         p_user = 0  # user plays as player 0
-
-        # Intro: New Game + hearts
-        hearts = bridge.send({"cmd": "hearts"})
-        print("New Game.")
-        print(f"Hearts: You={hearts['p0']} Agent={hearts['p1']}")
+        player_names = ("You", "Agent")
+        show_game_start(bridge, seed, player_names)
 
         while True:
             bridge.send({"cmd": "start_round"})
             rnd = bridge.send({"cmd": "round"})["round"]
-            print("")
-            print(f"Round {rnd}!")
-            print("")
+            show_round_start(rnd)
             while True:
                 cur = bridge.send({"cmd": "current_player"})["current_player"]
                 obs = bridge.send({"cmd": "observation", "player": cur})["observation"]
-                pub = bridge.send({"cmd": "public_info"})
-                p0_up = pub.get("p0_up", [])
-                p1_up = pub.get("p1_up", [])
+                p0_up, p1_up = get_public_info(bridge)
 
                 if cur == p_user:
                     my_up = p0_up if p_user == 0 else p1_up
                     opp_up = p1_up if p_user == 0 else p0_up
-                    print("Your turn.")
-                    print(f"You: hidden=[{obs['self_face_down']}], shown={my_up}")
-                    print(f"Opp: shown={opp_up}")
-                    print(f"Cards remaining in the deck: {obs['deck_count']}")
+                    show_custom_turn_info(
+                        cur,
+                        obs,
+                        p0_up,
+                        p1_up,
+                        "Your turn.",
+                        f"You: hidden=[{obs['self_face_down']}], shown={my_up}",
+                        f"Opp: shown={opp_up}",
+                    )
                     act: Literal["draw", "stand"] = (
                         "draw"
                         if input("Type d=draw, s=stand: ").strip().lower().startswith("d")
@@ -86,61 +93,33 @@ def main() -> int:
                     your_up = p0_up if p_user == 0 else p1_up
                     agent_up = p1_up if p_user == 0 else p0_up
                     prev_len = len(agent_up)
-                    print("Agent's turn.")
-                    print(f"Agent sees your shown={your_up}, its shown={agent_up}")
-                    print(f"Cards remaining in the deck: {obs['deck_count']}")
+                    show_custom_turn_info(
+                        cur,
+                        obs,
+                        p0_up,
+                        p1_up,
+                        "Agent's turn.",
+                        f"Agent sees your shown={your_up}, its shown={agent_up}",
+                        "",
+                    )
                     act = choose_action(policy, obs, cur)
-                    print(f"Agent chooses: {act}")
+                    show_action_choice("Agent", act)
 
                 resp = bridge.send({"cmd": "step", "action": act})
                 step = resp["step"]
                 if cur != p_user and not step["round_over"]:
                     # After agent acts, show the effect immediately for clarity
-                    pub2 = bridge.send({"cmd": "public_info"})
-                    p0_up2 = pub2.get("p0_up", [])
-                    p1_up2 = pub2.get("p1_up", [])
+                    p0_up2, p1_up2 = get_public_info(bridge)
                     agent_up2 = p1_up2 if p_user == 0 else p0_up2
                     if act == "draw" and len(agent_up2) > prev_len:
                         print(f"Agent drew {agent_up2[-1]}")
                     elif act == "stand":
                         print("Agent stood")
                 if step["round_over"]:
-                    # Reveal down cards and show final hands
-                    reveal = resp.get("reveal", {})
-                    final_up = resp.get("final_up", {})
-                    p0_up = final_up.get("p0", [])
-                    p1_up = final_up.get("p1", [])
-                    p0_dn = reveal.get("p0_down")
-                    p1_dn = reveal.get("p1_down")
-                    you_up = p0_up if p_user == 0 else p1_up
-                    opp_up = p1_up if p_user == 0 else p0_up
-                    you_dn = p0_dn if p_user == 0 else p1_dn
-                    opp_dn = p1_dn if p_user == 0 else p0_dn
-                    you_final = [*you_up, you_dn] if you_dn is not None else you_up
-                    opp_final = [*opp_up, opp_dn] if opp_dn is not None else opp_up
-                    you_total = sum(you_final)
-                    opp_total = sum(opp_final)
+                    show_round_result(resp, player_names)
+                    hearts = show_hearts_status(bridge, player_names)
 
-                    print("")
-                    print("Round over. Final cards:")
-                    print(f"You: {you_final}, total={you_total}")
-                    print(f"Opp: {opp_final}, total={opp_total}")
-                    out = step["outcome"] or {"winner": None, "damage": 0}
-                    if out["winner"] is None:
-                        print("Outcome: Tie.")
-                    else:
-                        winner = "You" if out["winner"] == p_user else "Opp"
-                        print(f"Outcome: {winner} wins.")
-
-                    hearts = bridge.send({"cmd": "hearts"})
-                    print("")
-                    print("Hearts:")
-                    print(f"You: {hearts['p0' if p_user == 0 else 'p1']}")
-                    print(f"Opp: {hearts['p1' if p_user == 0 else 'p0']}")
-
-                    if hearts["p0"] == 0 or hearts["p1"] == 0:
-                        print("")
-                        print("Game over.")
+                    if is_game_over(hearts):
                         return 0
                     break
 
