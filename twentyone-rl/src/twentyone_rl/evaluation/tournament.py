@@ -140,7 +140,9 @@ class TabularCFRAgent(AgentInterface):
             if model_path and model_path.exists():
                 logger.info(f"Loading Tabular CFR model from {model_path}")
                 self.agent.load_model(model_path)
-                logger.info(f"Successfully loaded model with {len(self.agent.regret_sum)} information sets")
+                logger.info(
+                    f"Successfully loaded model with {len(self.agent.regret_sum)} information sets"
+                )
             elif model_path:
                 logger.warning(f"Model path {model_path} does not exist, using untrained agent")
         except Exception as e:
@@ -231,7 +233,6 @@ class Tournament:
         self, agent1: AgentInterface, agent2: AgentInterface, num_games: int = 1000
     ) -> dict[str, Any]:
         """Run a match between two agents."""
-        logger.info(f"Running {num_games} games: {agent1.name()} vs {agent2.name()}")
 
         results = {
             "agent1_name": agent1.name(),
@@ -244,9 +245,6 @@ class Tournament:
         }
 
         for i in range(num_games):
-            if i % 100 == 0:
-                logger.info(f"Game {i+1}/{num_games}")
-
             winner, game_stats = self.play_game(agent1, agent2)
 
             if winner == 0:
@@ -267,13 +265,6 @@ class Tournament:
         results["agent1_ci"] = self._confidence_interval(results["agent1_wins"], num_games)
         results["agent2_ci"] = self._confidence_interval(results["agent2_wins"], num_games)
 
-        logger.info(
-            f"Results: {agent1.name()}: {results['agent1_winrate']:.3f} "
-            f"({results['agent1_ci'][0]:.3f}-{results['agent1_ci'][1]:.3f}), "
-            f"{agent2.name()}: {results['agent2_winrate']:.3f} "
-            f"({results['agent2_ci'][0]:.3f}-{results['agent2_ci'][1]:.3f})"
-        )
-
         return results
 
     def _confidence_interval(
@@ -291,7 +282,6 @@ class Tournament:
 
     def run_tournament(self, agents: list[AgentInterface], num_games: int = 1000) -> dict[str, Any]:
         """Run round-robin tournament between multiple agents."""
-        logger.info(f"Running tournament with {len(agents)} agents")
 
         results = {
             "agents": [agent.name() for agent in agents],

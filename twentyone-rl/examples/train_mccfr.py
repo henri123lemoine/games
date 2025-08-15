@@ -1,11 +1,4 @@
-import sys
 from pathlib import Path
-
-# Add the twentyone package to the path
-sys.path.insert(0, str(Path(__file__).parent / "../../twentyone-py/python"))
-
-# Add the RL package to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from loguru import logger
 
@@ -22,8 +15,8 @@ def main() -> None:
     logger.info("MCCFR agent created")
 
     # Training parameters
-    total_iterations = 10000  # Good baseline training
-    log_interval = 2000
+    total_iterations = 200000
+    log_interval = 20000
 
     logger.info(f"Training for {total_iterations:,} iterations...")
     logger.info("")
@@ -45,15 +38,6 @@ def main() -> None:
     policy_path = Path("data/policy_mccfr.json")
     policy_path.parent.mkdir(exist_ok=True)
     save_policy(policy, policy_path)
-
-    logger.info("Training completed!")
-    logger.info(f"Policy saved to {policy_path}")
-    logger.info("")
-    logger.info("You can now evaluate against this baseline with:")
-    logger.info("  uv run examples/evaluate_agents.py")
-    logger.info("")
-    logger.info("Or play against it with:")
-    logger.info(f"  uv run examples/play_vs_agent.py {policy_path}")
 
 
 if __name__ == "__main__":

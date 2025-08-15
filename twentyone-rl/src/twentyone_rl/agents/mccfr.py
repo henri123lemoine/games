@@ -254,11 +254,6 @@ class MCCFR:
             utility = self.mccfr_iteration(update_player)
             training_stats["utilities"].append(utility)
 
-            if i % 100 == 0:
-                print(
-                    f"MCCFR iteration {i}, utility: {utility:.4f}, infosets: {len(self.regret_sum)}"
-                )
-
         self.iterations += iterations
         training_stats["infosets_learned"] = len(self.regret_sum)
         training_stats["total_iterations"] = self.iterations

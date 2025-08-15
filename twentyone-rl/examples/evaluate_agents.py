@@ -1,12 +1,6 @@
 import sys
 from pathlib import Path
 
-# Add the twentyone package to the path
-sys.path.insert(0, str(Path(__file__).parent / "../../twentyone-py/python"))
-
-# Add the RL package to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
 from loguru import logger
 
 from twentyone_rl.evaluation.tournament import (
@@ -145,8 +139,6 @@ def evaluate_deep_mccfr() -> None:
 
 def run_full_tournament() -> None:
     """Run a full round-robin tournament."""
-    logger.info("Full Agent Tournament - Round Robin")
-    logger.info("=" * 40)
 
     tournament = Tournament(seed=42)
 
@@ -168,32 +160,26 @@ def run_full_tournament() -> None:
     mccfr_policy_path = Path("data/policy_mccfr.json")
     if mccfr_policy_path.exists():
         agents.append(PolicyAgent(mccfr_policy_path, "MCCFR"))
-        logger.info("✓ Added traditional MCCFR agent")
-    else:
-        logger.warning("✗ Traditional MCCFR agent not found")
 
     # Add Tabular CFR
     tabular_model_path = Path("data/tabular_cfr_model_final.json")
     if tabular_model_path.exists():
         agents.append(TabularCFRAgent(tabular_model_path, "TabularCFR"))
-        logger.info("✓ Added Tabular CFR agent (final model)")
     else:
         # Look for latest checkpoint
         tabular_checkpoints = list(Path("data").glob("tabular_cfr_model_*.json"))
         if tabular_checkpoints:
             tabular_model_path = max(tabular_checkpoints, key=lambda p: p.stat().st_mtime)
             agents.append(
-                TabularCFRAgent(tabular_model_path, f"TabularCFR_{tabular_model_path.stem.split('_')[-1]}")
+                TabularCFRAgent(
+                    tabular_model_path, f"TabularCFR_{tabular_model_path.stem.split('_')[-1]}"
+                )
             )
-            logger.info(f"✓ Added Tabular CFR agent ({tabular_model_path.name})")
-        else:
-            logger.warning("✗ No Tabular CFR models found")
 
     # Add Deep MCCFR
     deep_model_path = Path("data/deep_mccfr_model_final.pth")
     if deep_model_path.exists():
         agents.append(DeepMCCFRAgent(deep_model_path, "DeepMCCFR"))
-        logger.info("✓ Added Deep MCCFR agent (final model)")
     else:
         # Look for latest checkpoint
         checkpoints = list(Path("data").glob("deep_mccfr_model_*.pth"))
@@ -202,25 +188,13 @@ def run_full_tournament() -> None:
             agents.append(
                 DeepMCCFRAgent(deep_model_path, f"DeepMCCFR_{deep_model_path.stem.split('_')[-1]}")
             )
-            logger.info(f"✓ Added Deep MCCFR agent ({deep_model_path.name})")
-        else:
-            logger.warning("✗ No Deep MCCFR models found")
 
     if len(agents) < 2:
         logger.error("Need at least 2 agents for tournament!")
         return
 
-    logger.info("")
-    logger.info(f"Tournament Participants ({len(agents)} agents):")
-    for i, agent in enumerate(agents, 1):
-        logger.info(f"  {i}. {agent.name()}")
-    logger.info("")
-
     # Run tournament
-    num_games = 500  # Games per match (reduced for faster testing)
-    logger.info(f"Running round-robin tournament: {num_games} games per match")
-    logger.info(f"Total matches: {len(agents) * (len(agents) - 1) // 2}")
-    logger.info("")
+    num_games = 500
 
     results = tournament.run_tournament(agents, num_games)
 
@@ -260,17 +234,13 @@ def run_full_tournament() -> None:
         total_games = stats["total_games"]
         opponents_beaten = stats["opponents_beaten"]
 
-        logger.info(f"{i}. {agent_name}")
-        logger.info(f"   Win Rate: {overall_winrate:.3f} ({wins}/{total_games})")
-        logger.info(f"   Opponents Beaten: {opponents_beaten}/{len(agents)-1}")
-        logger.info("")
+        logger.info(
+            f"{i}. {agent_name}: {overall_winrate:.3f} ({wins}/{total_games}) [Beat {opponents_beaten} opponents]"
+        )
 
     # Save results
     results_path = Path("data/tournament_results.json")
     tournament.save_results(results, results_path)
-
-    logger.info(f"Detailed results saved to: {results_path}")
-    logger.info("Tournament complete!")
 
 
 def main() -> None:

@@ -1,11 +1,4 @@
-import sys
 from pathlib import Path
-
-# Add the twentyone package to the path
-sys.path.insert(0, str(Path(__file__).parent / "../../twentyone-py/python"))
-
-# Add the RL package to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from loguru import logger
 
