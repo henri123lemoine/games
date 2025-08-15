@@ -1,8 +1,6 @@
 # Claude.md
 
-## Guidelines
-
-The Python part of this project is all in the `scripts/` directory.
+## Python Guidelines
 
 - Runtime: target Python **3.13+** using `uv`.
 - Style: autoformat, autosort and lint with **Ruff**; don't fight the formatter. Commands: `uvx ruff format .` for formatting, `uvx ruff check --select I,F401 --fix .` for linting.
@@ -17,8 +15,41 @@ The Python part of this project is all in the `scripts/` directory.
 - CI gate: code must be Ruff/mypy/pytest clean before merge.
 - For now, all code should be in `scripts/`. If it grows too large, it should be refactored and moved as deemed appropriate.
 
-## Files
+## RL
 
-- Quick bot game: `uv run run_basic.py`
-- Train MCCFR agent: `uv run mccfr_agent.py`
-- Play vs agent: `uv run play_vs_agent.py data/policy_mccfr.json`
+### Action Space
+
+- Draw a card
+- Stand
+
+### Observation Space
+
+*This section is subject to change and *not* final.*
+
+**Own State (15 dimensions):**
+
+- Own visible card value (1-11) - 1 dimension
+- Own hidden card value (1-11) - 1 dimension
+- Own additional drawn cards (up to 9 cards, padded with 0s) - 9 dimensions
+- Own current total - 1 dimension
+- Own hearts remaining - 1 dimension
+- Own has stood this round (binary) - 1 dimension
+- Round number - 1 dimension
+
+**Opponent State (13 dimensions):**
+
+- Opponent visible card value (1-11) - 1 dimension
+- Opponent additional drawn cards (up to 9 cards, sequence matters) - 9 dimensions
+- Opponent minimum possible total (visible + drawn) - 1 dimension
+- Opponent hearts remaining - 1 dimension
+- Opponent has stood this round (binary) - 1 dimension
+
+**Deck State (11 dimensions):**
+
+- Cards 1-11: Binary availability flags - 11 dimensions
+
+**Total: 39 dimensions**
+
+### Reward Function
+
+The only goal is to win the game.

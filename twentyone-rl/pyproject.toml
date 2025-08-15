@@ -1,0 +1,44 @@
+[project]
+name = "twentyone-rl"
+version = "0.1.0"
+description = "Reinforcement learning experiments for the Twenty-One card game"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "twentyone @ file:///Users/henrilemoine/Documents/Programming/PersonalProjects/games/twentyone/twentyone-py",
+    "loguru>=0.7",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "mypy>=1.0",
+    "ruff>=0.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+fix = true
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = false
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.hatch.metadata]
+allow-direct-references = true

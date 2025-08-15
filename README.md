@@ -1,54 +1,42 @@
-# Twenty-One RL Environment (Rust) + Python Bridge
+# Twenty-One
 
-This repo contains a fast Rust implementation of the two-player Twenty-One game (Rules in `AGENTS.md`), with:
+A high-performance implementation of the Twenty-One card game designed for reinforcement learning research.
 
-- A compact, allocation-conscious environment suitable for RL.
-- Deterministic test hooks and a Criterion benchmark.
-- A JSON stdin/stdout bridge binary for Python interop.
-- Python scripts for simple bot play, MCCFR training, and playing against a trained agent.
+## Project Structure
 
-## Build & Test
+**twentyone-core/**: Pure Rust game engine library  
+**twentyone-py/**: Python bindings using PyO3  
+**twentyone-rl/**: RL agents, training algorithms, and experiments
 
-- Build: `cargo build`
-- Lint: `cargo clippy -- -D warnings`
-- Tests: `cargo test`
-- Bench: `cargo bench`
+## Quick Start
 
-## Running the Bridge + Scripts
+```bash
+# Build Python bindings
+cd twentyone-py && maturin develop
 
-All scripts automatically locate the Rust bridge binary, building it if needed. You can override the binary path with `TWENTYONE_BRIDGE_BIN=/absolute/path/to/twentyone_bridge`.
+# Install RL package
+cd ../twentyone-rl && uv pip install -e .
 
-From `scripts/`:
+# Run examples
+uv run examples/basic_play.py
+uv run examples/train_agent.py
+```
 
-1. Quick bot-vs-bot verification
+## Game Rules
 
-   - `uv run run_basic.py`
-     - This will build the bridge if missing, run a full game between two simple bots, and print the outcome.
+Twenty-One is a 2-player card game with a hearts system:
 
-2. Train a simple MCCFR policy (single-round game abstraction)
+- Each player starts with 6 hearts
+- Each round uses cards 1-11 (one of each)
+- Players get 2 cards: one face-up (visible), one face-down (hidden)
+- Goal: Get closest to 21 without going over
+- Round winner deals damage equal to round number
+- Game ends when a player reaches 0 hearts
 
-   - `uv run mccfr_agent.py`
-     - Saves a JSON policy at `scripts/data/policy_mccfr.json` (directory created on demand).
+## Architecture
 
-3. Play against the agent
+**Performance**: Direct memory access between Python and Rust with zero serialization overhead. Efficient bitmask-based deck representation.
 
-   - `uv run play_vs_agent.py scripts/data/policy_mccfr.json 42`
-     - You’ll be prompted to draw or stand each turn.
-     - The agent uses the trained policy and falls back to a simple heuristic if a state isn’t in the policy.
+**Modularity**: Clean separation between game logic, bindings, and RL code. Each component can be used independently.
 
-## Notes
-
-- The Rust env models full game hearts and rounds. The MCCFR trainer provided here learns a decent draw/stand policy on a single-round abstraction for demonstration; stronger performance can be achieved with a deeper, state-aware trainer (e.g., multi-round modeling or snapshot/restore of the Rust env).
-- The bridge JSON protocol is documented in `src/bin/bridge.rs` and summarized below:
-  - `{"cmd":"new","seed":<u64>}`
-  - `{"cmd":"start_round"}`
-  - `{"cmd":"current_player"}` → `{current_player}`
-  - `{"cmd":"observation","player":0|1}` → full observation for that POV
-  - `{"cmd":"step","action":"draw"|"stand"}` → step result, round/game status, outcome
-  - `{"cmd":"hearts"}`, `{"cmd":"round"}`
-  - `{"cmd":"quit"}`
-
-## Troubleshooting
-
-- If a script reports `FileNotFoundError: target/debug/twentyone_bridge`, it is likely being run from a subdir; the updated scripts auto-build and locate the binary. Alternatively, run `cargo build --bin twentyone_bridge` once from repo root.
-- To use a custom build dir, set `TWENTYONE_BRIDGE_BIN` to the built binary path.
+**Developer Experience**: Full type safety with Python type hints and Rust's type system. Deterministic testing with preset deck orders.

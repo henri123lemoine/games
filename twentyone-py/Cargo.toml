@@ -1,0 +1,17 @@
+[package]
+name = "twentyone"
+version = "0.1.0"
+edition = "2024"
+description = "Python bindings for the Twenty-One card game environment"
+
+[lib]
+name = "twentyone"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.25.1", features = ["extension-module", "serde"] }
+twentyone-core = { path = "../twentyone-core" }
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+pyo3-build-config = "0.25.1"

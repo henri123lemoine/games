@@ -1,0 +1,14 @@
+[package]
+name = "twentyone-core"
+version = "0.1.0"
+edition = "2024"
+description = "Pure Rust implementation of the Twenty-One card game environment"
+repository = "https://github.com/henri123lemoine/twentyone"
+
+[dependencies]
+thiserror = "2.0.14"
+serde = { version = "1", features = ["derive"] }
+
+[lib]
+name = "twentyone_core"
+path = "src/lib.rs"

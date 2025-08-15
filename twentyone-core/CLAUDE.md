@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-## Guidelines
+## Rust Guidelines
 
 - Toolchain: use **stable** with **Edition 2024**.
 - Formatting: run **rustfmt** (set `style_edition = "2024"`); no manual formatting.
@@ -16,13 +16,3 @@
 - Logging: use a logging/tracing facade in libraries; avoid `println!` in library code, though here it's acceptable.
 - Unsafe: isolate and document safety invariants; prefer safe abstractions first.
 - CI gate: `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test` must be clean before merge.
-
-## Files
-
-- `src/lib.rs`: the main library
-- `src/main.rs`: the main binary
-- `src/bin/`: optional binaries
-- `tests/`: unit tests
-- `benches/`: benchmarks
-- `examples/`: examples
-- `Cargo.toml`: the Cargo manifest
