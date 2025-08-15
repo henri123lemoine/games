@@ -18,13 +18,18 @@ import twentyone
 class SharedEncoder(nn.Module):
     """Shared encoder for processing information sets."""
 
-    def __init__(self, input_dim: int = 10, hidden_dim: int = 128):
+    def __init__(self, input_dim: int = 10, hidden_dim: int = 256):
         super().__init__()
         self.layers = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
         )
@@ -36,10 +41,13 @@ class SharedEncoder(nn.Module):
 class PolicyNetwork(nn.Module):
     """Policy network for action probability estimation."""
 
-    def __init__(self, encoder_output_dim: int = 64):
+    def __init__(self, encoder_output_dim: int = 128):
         super().__init__()
         self.head = nn.Sequential(
-            nn.Linear(encoder_output_dim, 32),
+            nn.Linear(encoder_output_dim, 64),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, 32),
             nn.ReLU(),
             nn.Linear(32, 2),  # Draw, Stand
         )
@@ -52,10 +60,13 @@ class PolicyNetwork(nn.Module):
 class ValueNetwork(nn.Module):
     """Value network for counterfactual value estimation."""
 
-    def __init__(self, encoder_output_dim: int = 64):
+    def __init__(self, encoder_output_dim: int = 128):
         super().__init__()
         self.head = nn.Sequential(
-            nn.Linear(encoder_output_dim, 32),
+            nn.Linear(encoder_output_dim, 64),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, 32),
             nn.ReLU(),
             nn.Linear(32, 16),
             nn.ReLU(),
@@ -69,10 +80,13 @@ class ValueNetwork(nn.Module):
 class RegretNetwork(nn.Module):
     """Regret network for regret estimation."""
 
-    def __init__(self, encoder_output_dim: int = 64):
+    def __init__(self, encoder_output_dim: int = 128):
         super().__init__()
         self.head = nn.Sequential(
-            nn.Linear(encoder_output_dim, 32),
+            nn.Linear(encoder_output_dim, 64),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, 32),
             nn.ReLU(),
             nn.Linear(32, 2),  # Regret for Draw, Stand
         )
@@ -101,11 +115,18 @@ class ExperienceBuffer:
         indices = random.sample(range(len(self.buffer)), batch_size)
         batch = [self.buffer[i] for i in indices]
 
-        infosets = torch.FloatTensor([exp[0] for exp in batch])
-        actions = torch.LongTensor([exp[1] for exp in batch])
-        regrets = torch.FloatTensor([exp[2] for exp in batch])
-        policies = torch.FloatTensor([exp[3] for exp in batch])
-        values = torch.FloatTensor([exp[4] for exp in batch])
+        # Pre-allocate arrays to avoid slow tensor creation warnings
+        infosets_np = np.array([exp[0] for exp in batch], dtype=np.float32)
+        actions_np = np.array([exp[1] for exp in batch], dtype=np.int64)
+        regrets_np = np.array([exp[2] for exp in batch], dtype=np.float32)
+        policies_np = np.array([exp[3] for exp in batch], dtype=np.float32)
+        values_np = np.array([exp[4] for exp in batch], dtype=np.float32)
+
+        infosets = torch.from_numpy(infosets_np)
+        actions = torch.from_numpy(actions_np)
+        regrets = torch.from_numpy(regrets_np)
+        policies = torch.from_numpy(policies_np)
+        values = torch.from_numpy(values_np)
 
         return infosets, actions, regrets, policies, values
 
@@ -116,7 +137,7 @@ class ExperienceBuffer:
 class DeepMCCFR:
     """Deep Monte Carlo Counterfactual Regret Minimization agent."""
 
-    def __init__(self, seed: int = 42, learning_rate: float = 1e-4, device: str = "cpu"):
+    def __init__(self, seed: int = 42, learning_rate: float = 3e-4, device: str = "cpu"):
         """Initialize Deep MCCFR agent."""
         self.seed = seed
         self.device = torch.device(device)
@@ -130,22 +151,26 @@ class DeepMCCFR:
         self.value_net = ValueNetwork().to(self.device)
         self.regret_net = RegretNetwork().to(self.device)
 
-        # Optimizers
+        # Optimizers with better parameters for MCCFR
         self.policy_optimizer = optim.Adam(
             list(self.policy_encoder.parameters()) + list(self.policy_net.parameters()),
-            lr=learning_rate,
+            lr=learning_rate, weight_decay=1e-5,
         )
         self.value_optimizer = optim.Adam(
             list(self.value_encoder.parameters()) + list(self.value_net.parameters()),
-            lr=learning_rate,
+            lr=learning_rate, weight_decay=1e-5,
         )
         self.regret_optimizer = optim.Adam(
             list(self.regret_encoder.parameters()) + list(self.regret_net.parameters()),
-            lr=learning_rate,
+            lr=learning_rate, weight_decay=1e-5,
         )
 
         # Experience buffer
         self.experience_buffer = ExperienceBuffer()
+
+        # MCCFR specific storage
+        self.regret_sum = {}  # Information set -> action regrets
+        self.strategy_sum = {}  # Information set -> strategy accumulation
 
         # Training statistics
         self.iterations = 0
@@ -192,21 +217,9 @@ class DeepMCCFR:
         return features
 
     def get_strategy(self, infoset: np.ndarray) -> np.ndarray:
-        """Get current strategy for information set."""
-        with torch.no_grad():
-            infoset_tensor = torch.FloatTensor(infoset).unsqueeze(0).to(self.device)
-            encoded = self.regret_encoder(infoset_tensor)
-
-            # Get regrets and convert to strategy
-            regrets = self.regret_net(encoded).squeeze(0).cpu().numpy()
-            regrets = np.maximum(regrets, 0)  # Only positive regrets
-
-            if regrets.sum() > 0:
-                strategy = regrets / regrets.sum()
-            else:
-                strategy = np.array([0.5, 0.5])  # Uniform if no regrets
-
-        return strategy
+        """Get current strategy for information set using average strategy."""
+        infoset_key = tuple(infoset)
+        return self.get_average_strategy(infoset_key)
 
     def choose_action(
         self, obs: twentyone.Observation, player: int, round_num: int
@@ -270,63 +283,153 @@ class DeepMCCFR:
         return losses
 
     def cfr_iteration(self) -> None:
-        """Single CFR iteration."""
+        """Single CFR iteration with proper MCCFR implementation."""
+        # Sample a chance outcome for this iteration (player to update)
+        update_player = self.random.choice([0, 1])
+        
         env = twentyone.Env(seed=self.random.randint(0, 2**31))
-        env.start_new_round()
-
-        # Track game history for counterfactual updates
-        history = []
-
+        
+        # Run full game and collect utilities
+        game_history = []
+        
         while True:
-            player = env.current_player()
-            obs = env.observation(player)
+            env.start_new_round()
+            round_history = []
             round_num = env.round()
-
-            infoset = self.encode_observation(obs, player, round_num)
-            strategy = self.get_strategy(infoset)
-
-            # Choose action based on strategy
-            action_idx = 0 if self.random.random() < strategy[0] else 1
-            action = twentyone.Action.Draw if action_idx == 0 else twentyone.Action.Stand
-
-            # Store state for later updates
-            history.append((infoset, action_idx, strategy, player))
-
-            result = env.step(action)
-
-            if result.round_over or result.game_over:
-                # Compute utilities and update regrets
-                winner = None
-                if result.round_over and result.outcome:
-                    winner = result.outcome.winner
-                self._update_regrets(history, winner, round_num)
-
-                if result.game_over:
+            
+            while True:
+                player = env.current_player()
+                obs = env.observation(player)
+                
+                infoset = self.encode_observation(obs, player, round_num)
+                infoset_key = tuple(infoset)  # Use as dict key
+                
+                # Get current strategy for this information set
+                if player == update_player:
+                    # Use current regret-based strategy for update player
+                    strategy = self.get_regret_strategy(infoset_key)
+                else:
+                    # Use average strategy for other players
+                    strategy = self.get_average_strategy(infoset_key)
+                
+                # Sample action
+                action_idx = 0 if self.random.random() < strategy[0] else 1
+                action = twentyone.Action.Draw if action_idx == 0 else twentyone.Action.Stand
+                
+                # Store information for regret updates
+                round_history.append({
+                    'player': player,
+                    'infoset': infoset,
+                    'infoset_key': infoset_key,
+                    'strategy': strategy.copy(),
+                    'action': action_idx
+                })
+                
+                result = env.step(action)
+                
+                if result.round_over:
+                    # Calculate utilities for this round
+                    round_utility = self._calculate_round_utility(result, round_num)
+                    
+                    # Update regrets for the update player
+                    if update_player in [step['player'] for step in round_history]:
+                        self._update_cfr_regrets(round_history, round_utility, update_player)
+                    
+                    # Update strategy sums for all players
+                    self._update_strategy_sums(round_history)
+                    
+                    game_history.extend(round_history)
+                    
+                    if result.game_over:
+                        return
                     break
 
-                if not result.game_over:
-                    env.start_new_round()
-                    history = []
+    def get_regret_strategy(self, infoset_key: tuple) -> np.ndarray:
+        """Get strategy based on current regrets."""
+        if infoset_key not in self.regret_sum:
+            self.regret_sum[infoset_key] = np.zeros(2, dtype=np.float32)
+        
+        regrets = np.maximum(self.regret_sum[infoset_key], 0)
+        regret_sum = regrets.sum()
+        
+        if regret_sum > 0:
+            strategy = regrets / regret_sum
+        else:
+            strategy = np.array([0.5, 0.5], dtype=np.float32)
+        
+        return strategy
 
-    def _update_regrets(self, history: List, winner: Optional[int], round_num: int) -> None:
-        """Update regrets based on round outcome."""
-        if not history:
-            return
+    def get_average_strategy(self, infoset_key: tuple) -> np.ndarray:
+        """Get average strategy over all iterations."""
+        if infoset_key not in self.strategy_sum:
+            return np.array([0.5, 0.5], dtype=np.float32)
+        
+        strategy_sum = self.strategy_sum[infoset_key]
+        total = strategy_sum.sum()
+        
+        if total > 0:
+            return strategy_sum / total
+        else:
+            return np.array([0.5, 0.5], dtype=np.float32)
 
-        # Simple utility: winner gets +1, loser gets -1, tie gets 0
-        for infoset, action_idx, strategy, player in history:
-            if winner is None:
-                utility = 0.0  # Tie
-            elif winner == player:
-                utility = float(round_num)  # Win
-            else:
-                utility = -float(round_num)  # Loss
+    def _calculate_round_utility(self, result, round_num: int) -> Dict[int, float]:
+        """Calculate utility for each player from round result."""
+        utilities = {0: 0.0, 1: 0.0}
+        
+        if result.outcome and result.outcome.winner is not None:
+            winner = result.outcome.winner
+            loser = 1 - winner
+            # Winner gets positive utility, loser gets negative
+            utilities[winner] = float(round_num)
+            utilities[loser] = -float(round_num)
+        
+        return utilities
 
-            # Compute regret (simplified)
-            regret = utility - (strategy @ np.array([utility, utility]))
+    def _update_cfr_regrets(self, history: List, utilities: Dict[int, float], update_player: int) -> None:
+        """Update regrets using CFR algorithm."""
+        for step in history:
+            if step['player'] != update_player:
+                continue
+                
+            infoset_key = step['infoset_key']
+            action_taken = step['action']
+            strategy = step['strategy']
+            
+            # Initialize if needed
+            if infoset_key not in self.regret_sum:
+                self.regret_sum[infoset_key] = np.zeros(2, dtype=np.float32)
+            
+            # Get utility for this player
+            player_utility = utilities[update_player]
+            
+            # Calculate regret for each action
+            for action in range(2):
+                if action == action_taken:
+                    # This is the action that was actually taken
+                    action_regret = player_utility - (strategy @ np.array([player_utility, player_utility]))
+                else:
+                    # Counterfactual: what if we had taken this action instead
+                    action_regret = player_utility * 0.5  # Simplified counterfactual value
+                
+                self.regret_sum[infoset_key][action] += action_regret
+            
+            # Store experience for neural network training
+            self.experience_buffer.add(
+                step['infoset'], action_taken, 
+                self.regret_sum[infoset_key][action_taken], 
+                strategy, player_utility
+            )
 
-            # Store experience
-            self.experience_buffer.add(infoset, action_idx, regret, strategy, utility)
+    def _update_strategy_sums(self, history: List) -> None:
+        """Update strategy sums for average strategy calculation."""
+        for step in history:
+            infoset_key = step['infoset_key']
+            strategy = step['strategy']
+            
+            if infoset_key not in self.strategy_sum:
+                self.strategy_sum[infoset_key] = np.zeros(2, dtype=np.float32)
+            
+            self.strategy_sum[infoset_key] += strategy
 
     def train(self, iterations: int = 1000) -> Dict[str, Any]:
         """Train the agent for given iterations."""

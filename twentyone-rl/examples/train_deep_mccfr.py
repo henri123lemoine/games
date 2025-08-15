@@ -22,9 +22,9 @@ def main() -> None:
     logger.info(f"Using device: {device}")
 
     # Training parameters
-    total_iterations = 1000  # Reduced for testing
-    save_interval = 500
-    log_interval = 200
+    total_iterations = 50000  # Substantial training for real performance
+    save_interval = 10000     # Save every 10k iterations
+    log_interval = 1000       # Log every 1k iterations
 
     logger.info(f"Training for {total_iterations:,} iterations...")
     logger.info(f"Saving model every {save_interval:,} iterations")
