@@ -4,8 +4,8 @@ A high-performance implementation of the Twenty-One card game designed for reinf
 
 ## Project Structure
 
-**twentyone-core/**: Pure Rust game engine library  
-**twentyone-py/**: Python bindings using PyO3  
+**twentyone-core/**: Pure Rust game engine library
+**twentyone-py/**: Python bindings using PyO3
 **twentyone-rl/**: RL agents, training algorithms, and experiments
 
 ## Quick Start
@@ -15,7 +15,7 @@ A high-performance implementation of the Twenty-One card game designed for reinf
 cd twentyone-py && maturin develop
 
 # Install RL package
-cd ../twentyone-rl && uv pip install -e .
+cd ../twentyone-rl
 
 # Run examples
 uv run examples/basic_play.py

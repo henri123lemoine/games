@@ -8,15 +8,15 @@ sys.path.insert(0, str(Path(__file__).parent / "../../twentyone-py/python"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import twentyone
+
 from twentyone_rl.display import (
+    check_game_over,
+    show_action_choice,
     show_game_start,
+    show_hearts_status,
+    show_round_result,
     show_round_start,
     show_turn_info,
-    show_action_choice,
-    show_round_result,
-    show_hearts_status,
-    check_game_over,
-    get_public_cards,
 )
 
 

@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any
 
 # Add the twentyone package to the path
 sys.path.insert(0, str(Path(__file__).parent / "../../twentyone-py/python"))
@@ -8,23 +8,26 @@ sys.path.insert(0, str(Path(__file__).parent / "../../twentyone-py/python"))
 # Add the RL package to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from pathlib import Path
+
 import twentyone
+
+from twentyone_rl.agents.deep_mccfr import DeepMCCFR
 from twentyone_rl.display import (
+    check_game_over,
+    show_action_choice,
     show_game_start,
+    show_hearts_status,
+    show_round_result,
     show_round_start,
     show_turn_info,
-    show_action_choice,
-    show_round_result,
-    show_hearts_status,
-    check_game_over,
-    get_public_cards,
 )
 
 
-def load_policy(path: Path) -> Dict[str, Any]:
+def load_policy(path: Path) -> dict[str, Any]:
     """Load a policy from a JSON file."""
-    import json
     import ast
+    import json
 
     with open(path) as f:
         raw = json.load(f)
@@ -59,7 +62,7 @@ def infoset_from_obs(obs: twentyone.Observation, player: int, deck_mask_est: int
 
 
 def choose_action(
-    policy: Dict[str, Any], obs: twentyone.Observation, player: int, round_num: int
+    policy: dict[str, Any], obs: twentyone.Observation, player: int, round_num: int
 ) -> twentyone.Action:
     """Choose action based on policy."""
     # Handle simple strategy format
@@ -70,9 +73,6 @@ def choose_action(
     # Handle Deep MCCFR format
     if "agent_type" in policy and policy["agent_type"] == "deep_mccfr":
         # Load and use the actual Deep MCCFR agent
-        from twentyone_rl.agents.deep_mccfr import DeepMCCFR
-        from pathlib import Path
-
         if hasattr(choose_action, "_deep_agent"):
             agent = choose_action._deep_agent
         else:

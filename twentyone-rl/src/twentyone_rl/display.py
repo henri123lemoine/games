@@ -1,6 +1,3 @@
-"""Display utilities for clean game output."""
-
-from typing import Optional, List
 import twentyone
 
 
@@ -18,7 +15,7 @@ def show_round_start(round_num: int) -> None:
     print("")
 
 
-def get_public_cards(env: twentyone.Env) -> tuple[List[int], List[int]]:
+def get_public_cards(env: twentyone.Env) -> tuple[list[int], list[int]]:
     """Get public card information as lists."""
     p0_up_raw = env.public_up_cards(0)
     p1_up_raw = env.public_up_cards(1)
@@ -32,7 +29,7 @@ def show_turn_info(
     current_player: int,
     obs: twentyone.Observation,
     player_names: tuple[str, str],
-) -> tuple[List[int], List[int]]:
+) -> tuple[list[int], list[int]]:
     """Display turn information and return public card info."""
     p0_up, p1_up = get_public_cards(env)
 
@@ -57,8 +54,8 @@ def show_action_choice(player_name: str, action: twentyone.Action) -> None:
 def show_round_result(
     env: twentyone.Env,
     result: twentyone.StepResult,
-    p0_up: List[int],
-    p1_up: List[int],
+    p0_up: list[int],
+    p1_up: list[int],
     player_names: tuple[str, str],
 ) -> None:
     """Display round end results including final hands and outcome."""

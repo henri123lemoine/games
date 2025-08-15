@@ -4,14 +4,13 @@ import json
 import random
 from collections import deque
 from pathlib import Path
-from typing import Dict, Any, Tuple, List, Optional
+from typing import Any
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
-
+import torch.optim as optim
 import twentyone
 
 
@@ -107,7 +106,7 @@ class ExperienceBuffer:
         """Add experience to buffer."""
         self.buffer.append((infoset, action, regret, policy, value))
 
-    def sample(self, batch_size: int) -> Tuple[torch.Tensor, ...]:
+    def sample(self, batch_size: int) -> tuple[torch.Tensor, ...]:
         """Sample batch from buffer."""
         if len(self.buffer) < batch_size:
             batch_size = len(self.buffer)
@@ -154,15 +153,18 @@ class DeepMCCFR:
         # Optimizers with better parameters for MCCFR
         self.policy_optimizer = optim.Adam(
             list(self.policy_encoder.parameters()) + list(self.policy_net.parameters()),
-            lr=learning_rate, weight_decay=1e-5,
+            lr=learning_rate,
+            weight_decay=1e-5,
         )
         self.value_optimizer = optim.Adam(
             list(self.value_encoder.parameters()) + list(self.value_net.parameters()),
-            lr=learning_rate, weight_decay=1e-5,
+            lr=learning_rate,
+            weight_decay=1e-5,
         )
         self.regret_optimizer = optim.Adam(
             list(self.regret_encoder.parameters()) + list(self.regret_net.parameters()),
-            lr=learning_rate, weight_decay=1e-5,
+            lr=learning_rate,
+            weight_decay=1e-5,
         )
 
         # Experience buffer
@@ -234,7 +236,7 @@ class DeepMCCFR:
         else:
             return twentyone.Action.Stand
 
-    def train_networks(self, batch_size: int = 64) -> Dict[str, float]:
+    def train_networks(self, batch_size: int = 64) -> dict[str, float]:
         """Train neural networks on experience buffer."""
         if len(self.experience_buffer) < batch_size:
             return {}
@@ -286,24 +288,24 @@ class DeepMCCFR:
         """Single CFR iteration with proper MCCFR implementation."""
         # Sample a chance outcome for this iteration (player to update)
         update_player = self.random.choice([0, 1])
-        
+
         env = twentyone.Env(seed=self.random.randint(0, 2**31))
-        
+
         # Run full game and collect utilities
         game_history = []
-        
+
         while True:
             env.start_new_round()
             round_history = []
             round_num = env.round()
-            
+
             while True:
                 player = env.current_player()
                 obs = env.observation(player)
-                
+
                 infoset = self.encode_observation(obs, player, round_num)
                 infoset_key = tuple(infoset)  # Use as dict key
-                
+
                 # Get current strategy for this information set
                 if player == update_player:
                     # Use current regret-based strategy for update player
@@ -311,35 +313,37 @@ class DeepMCCFR:
                 else:
                     # Use average strategy for other players
                     strategy = self.get_average_strategy(infoset_key)
-                
+
                 # Sample action
                 action_idx = 0 if self.random.random() < strategy[0] else 1
                 action = twentyone.Action.Draw if action_idx == 0 else twentyone.Action.Stand
-                
+
                 # Store information for regret updates
-                round_history.append({
-                    'player': player,
-                    'infoset': infoset,
-                    'infoset_key': infoset_key,
-                    'strategy': strategy.copy(),
-                    'action': action_idx
-                })
-                
+                round_history.append(
+                    {
+                        "player": player,
+                        "infoset": infoset,
+                        "infoset_key": infoset_key,
+                        "strategy": strategy.copy(),
+                        "action": action_idx,
+                    }
+                )
+
                 result = env.step(action)
-                
+
                 if result.round_over:
                     # Calculate utilities for this round
                     round_utility = self._calculate_round_utility(result, round_num)
-                    
+
                     # Update regrets for the update player
-                    if update_player in [step['player'] for step in round_history]:
+                    if update_player in [step["player"] for step in round_history]:
                         self._update_cfr_regrets(round_history, round_utility, update_player)
-                    
+
                     # Update strategy sums for all players
                     self._update_strategy_sums(round_history)
-                    
+
                     game_history.extend(round_history)
-                    
+
                     if result.game_over:
                         return
                     break
@@ -348,90 +352,96 @@ class DeepMCCFR:
         """Get strategy based on current regrets."""
         if infoset_key not in self.regret_sum:
             self.regret_sum[infoset_key] = np.zeros(2, dtype=np.float32)
-        
+
         regrets = np.maximum(self.regret_sum[infoset_key], 0)
         regret_sum = regrets.sum()
-        
+
         if regret_sum > 0:
             strategy = regrets / regret_sum
         else:
             strategy = np.array([0.5, 0.5], dtype=np.float32)
-        
+
         return strategy
 
     def get_average_strategy(self, infoset_key: tuple) -> np.ndarray:
         """Get average strategy over all iterations."""
         if infoset_key not in self.strategy_sum:
             return np.array([0.5, 0.5], dtype=np.float32)
-        
+
         strategy_sum = self.strategy_sum[infoset_key]
         total = strategy_sum.sum()
-        
+
         if total > 0:
             return strategy_sum / total
         else:
             return np.array([0.5, 0.5], dtype=np.float32)
 
-    def _calculate_round_utility(self, result, round_num: int) -> Dict[int, float]:
+    def _calculate_round_utility(self, result, round_num: int) -> dict[int, float]:
         """Calculate utility for each player from round result."""
         utilities = {0: 0.0, 1: 0.0}
-        
+
         if result.outcome and result.outcome.winner is not None:
             winner = result.outcome.winner
             loser = 1 - winner
             # Winner gets positive utility, loser gets negative
             utilities[winner] = float(round_num)
             utilities[loser] = -float(round_num)
-        
+
         return utilities
 
-    def _update_cfr_regrets(self, history: List, utilities: Dict[int, float], update_player: int) -> None:
+    def _update_cfr_regrets(
+        self, history: list, utilities: dict[int, float], update_player: int
+    ) -> None:
         """Update regrets using CFR algorithm."""
         for step in history:
-            if step['player'] != update_player:
+            if step["player"] != update_player:
                 continue
-                
-            infoset_key = step['infoset_key']
-            action_taken = step['action']
-            strategy = step['strategy']
-            
+
+            infoset_key = step["infoset_key"]
+            action_taken = step["action"]
+            strategy = step["strategy"]
+
             # Initialize if needed
             if infoset_key not in self.regret_sum:
                 self.regret_sum[infoset_key] = np.zeros(2, dtype=np.float32)
-            
+
             # Get utility for this player
             player_utility = utilities[update_player]
-            
+
             # Calculate regret for each action
             for action in range(2):
                 if action == action_taken:
                     # This is the action that was actually taken
-                    action_regret = player_utility - (strategy @ np.array([player_utility, player_utility]))
+                    action_regret = player_utility - (
+                        strategy @ np.array([player_utility, player_utility])
+                    )
                 else:
                     # Counterfactual: what if we had taken this action instead
                     action_regret = player_utility * 0.5  # Simplified counterfactual value
-                
+
                 self.regret_sum[infoset_key][action] += action_regret
-            
+
             # Store experience for neural network training
             self.experience_buffer.add(
-                step['infoset'], action_taken, 
-                self.regret_sum[infoset_key][action_taken], 
-                strategy, player_utility
+                step["infoset"],
+                action_taken,
+                self.regret_sum[infoset_key][action_taken],
+                strategy,
+                player_utility,
             )
 
-    def _update_strategy_sums(self, history: List) -> None:
+    def _update_strategy_sums(self, history: list) -> None:
         """Update strategy sums for average strategy calculation."""
         for step in history:
-            infoset_key = step['infoset_key']
-            strategy = step['strategy']
-            
+            infoset_key = step["infoset_key"]
+            strategy = step["strategy"]
+
             if infoset_key not in self.strategy_sum:
                 self.strategy_sum[infoset_key] = np.zeros(2, dtype=np.float32)
-            
+
             self.strategy_sum[infoset_key] += strategy
 
-    def train(self, iterations: int = 1000) -> Dict[str, Any]:
+    def train(self, iterations: int = 1000) -> dict[str, Any]:
         """Train the agent for given iterations."""
         training_stats = {"losses": []}
 
@@ -482,7 +492,7 @@ class DeepMCCFR:
         self.iterations = checkpoint.get("iterations", 0)
         self.total_games = checkpoint.get("total_games", 0)
 
-    def average_policy(self) -> Dict[str, Any]:
+    def average_policy(self) -> dict[str, Any]:
         """Return current policy for evaluation."""
         return {
             "agent_type": "deep_mccfr",
@@ -492,7 +502,7 @@ class DeepMCCFR:
         }
 
 
-def save_policy(policy: Dict[str, Any], path: Path) -> None:
+def save_policy(policy: dict[str, Any], path: Path) -> None:
     """Save policy to JSON file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:

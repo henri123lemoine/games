@@ -7,8 +7,9 @@ sys.path.insert(0, str(Path(__file__).parent / "../../twentyone-py/python"))
 # Add the RL package to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from twentyone_rl.agents.mccfr import MCCFR, save_policy
 from loguru import logger
+
+from twentyone_rl.agents.mccfr import MCCFR, save_policy
 
 
 def main() -> None:

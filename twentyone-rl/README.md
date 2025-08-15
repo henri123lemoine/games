@@ -14,12 +14,6 @@ cd ../twentyone-py
 maturin develop
 ```
 
-Then install this RL package:
-
-```bash
-uv pip install -e .
-```
-
 ## Usage
 
 ### Basic Gameplay

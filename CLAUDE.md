@@ -17,7 +17,7 @@ This project explores reinforcement learning in Twenty-One, a simple hidden-info
 cd twentyone-py && maturin develop
 
 # Install RL package
-cd ../twentyone-rl && uv pip install -e .
+cd ../twentyone-rl
 
 # Run examples
 uv run examples/basic_play.py

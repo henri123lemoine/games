@@ -1,15 +1,14 @@
 """Tournament evaluation for comparing agents."""
 
+import ast
 import json
 import random
 from pathlib import Path
-from typing import Dict, Any, List, Tuple, Optional, Callable
-import ast
+from typing import Any
 
 import numpy as np
-from loguru import logger
-
 import twentyone
+from loguru import logger
 
 
 class AgentInterface:
@@ -34,7 +33,7 @@ class PolicyAgent(AgentInterface):
         self.agent_name = agent_name
         self.policy = self._load_policy(policy_path)
 
-    def _load_policy(self, path: Path) -> Dict[str, Any]:
+    def _load_policy(self, path: Path) -> dict[str, Any]:
         """Load policy from JSON file."""
         with open(path) as f:
             raw = json.load(f)
@@ -96,7 +95,7 @@ class PolicyAgent(AgentInterface):
 class DeepMCCFRAgent(AgentInterface):
     """Agent wrapper for DeepMCCFR."""
 
-    def __init__(self, model_path: Optional[Path] = None, agent_name: str = "DeepMCCFR"):
+    def __init__(self, model_path: Path | None = None, agent_name: str = "DeepMCCFR"):
         from twentyone_rl.agents.deep_mccfr import DeepMCCFR
 
         self.agent = DeepMCCFR()
@@ -138,8 +137,8 @@ class Tournament:
         self.random = random.Random(seed)
 
     def play_game(
-        self, agent1: AgentInterface, agent2: AgentInterface, game_seed: Optional[int] = None
-    ) -> Tuple[int, Dict[str, Any]]:
+        self, agent1: AgentInterface, agent2: AgentInterface, game_seed: int | None = None
+    ) -> tuple[int, dict[str, Any]]:
         """Play a single game between two agents."""
         if game_seed is None:
             game_seed = self.random.randint(0, 2**31)
@@ -182,7 +181,7 @@ class Tournament:
 
     def run_match(
         self, agent1: AgentInterface, agent2: AgentInterface, num_games: int = 1000
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Run a match between two agents."""
         logger.info(f"Running {num_games} games: {agent1.name()} vs {agent2.name()}")
 
@@ -231,7 +230,7 @@ class Tournament:
 
     def _confidence_interval(
         self, wins: int, total: int, confidence: float = 0.95
-    ) -> Tuple[float, float]:
+    ) -> tuple[float, float]:
         """Calculate confidence interval for win rate."""
         if total == 0:
             return (0.0, 0.0)
@@ -242,7 +241,7 @@ class Tournament:
 
         return (max(0, p - margin), min(1, p + margin))
 
-    def run_tournament(self, agents: List[AgentInterface], num_games: int = 1000) -> Dict[str, Any]:
+    def run_tournament(self, agents: list[AgentInterface], num_games: int = 1000) -> dict[str, Any]:
         """Run round-robin tournament between multiple agents."""
         logger.info(f"Running tournament with {len(agents)} agents")
 
@@ -310,7 +309,7 @@ class Tournament:
 
         return results
 
-    def save_results(self, results: Dict[str, Any], path: Path) -> None:
+    def save_results(self, results: dict[str, Any], path: Path) -> None:
         """Save tournament results to JSON file."""
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
@@ -318,7 +317,7 @@ class Tournament:
         logger.info(f"Results saved to {path}")
 
 
-def load_agent_from_config(config: Dict[str, Any]) -> AgentInterface:
+def load_agent_from_config(config: dict[str, Any]) -> AgentInterface:
     """Load agent from configuration."""
     agent_type = config["type"]
 

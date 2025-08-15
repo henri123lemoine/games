@@ -7,8 +7,9 @@ sys.path.insert(0, str(Path(__file__).parent / "../../twentyone-py/python"))
 # Add the RL package to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from twentyone_rl.agents.deep_mccfr import DeepMCCFR, save_policy
 from loguru import logger
+
+from twentyone_rl.agents.deep_mccfr import DeepMCCFR, save_policy
 
 
 def main() -> None:
@@ -23,8 +24,8 @@ def main() -> None:
 
     # Training parameters
     total_iterations = 50000  # Substantial training for real performance
-    save_interval = 10000     # Save every 10k iterations
-    log_interval = 1000       # Log every 1k iterations
+    save_interval = 10000  # Save every 10k iterations
+    log_interval = 1000  # Log every 1k iterations
 
     logger.info(f"Training for {total_iterations:,} iterations...")
     logger.info(f"Saving model every {save_interval:,} iterations")
