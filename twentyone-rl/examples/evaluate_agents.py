@@ -143,20 +143,22 @@ def evaluate_deep_mccfr() -> None:
 
 def run_full_tournament() -> None:
     """Run a full round-robin tournament."""
-    logger.info("Full Agent Tournament")
-    logger.info("=" * 25)
+    logger.info("Full Agent Tournament - Round Robin")
+    logger.info("=" * 40)
 
     tournament = Tournament(seed=42)
 
     # Collect all agents
     agents = []
 
-    # Add baseline agents (fewer for tournament)
+    # Add all heuristic agents
     agents.extend(
         [
-            HeuristicAgent(16, "Heuristic_16"),
+            HeuristicAgent(15, "Heuristic_15"),
+            HeuristicAgent(16, "Heuristic_16"), 
             HeuristicAgent(17, "Heuristic_17"),
             HeuristicAgent(18, "Heuristic_18"),
+            HeuristicAgent(19, "Heuristic_19"),
         ]
     )
 
@@ -164,45 +166,98 @@ def run_full_tournament() -> None:
     mccfr_policy_path = Path("data/policy_mccfr.json")
     if mccfr_policy_path.exists():
         agents.append(PolicyAgent(mccfr_policy_path, "MCCFR"))
+        logger.info("✓ Added traditional MCCFR agent")
+    else:
+        logger.warning("✗ Traditional MCCFR agent not found")
 
     # Add Deep MCCFR
     deep_model_path = Path("data/deep_mccfr_model_final.pth")
     if deep_model_path.exists():
         agents.append(DeepMCCFRAgent(deep_model_path, "DeepMCCFR"))
+        logger.info("✓ Added Deep MCCFR agent (final model)")
     else:
         # Look for latest checkpoint
         checkpoints = list(Path("data").glob("deep_mccfr_model_*.pth"))
         if checkpoints:
             deep_model_path = max(checkpoints, key=lambda p: p.stat().st_mtime)
-            agents.append(DeepMCCFRAgent(deep_model_path, "DeepMCCFR"))
+            agents.append(DeepMCCFRAgent(deep_model_path, f"DeepMCCFR_{deep_model_path.stem.split('_')[-1]}"))
+            logger.info(f"✓ Added Deep MCCFR agent ({deep_model_path.name})")
+        else:
+            logger.warning("✗ No Deep MCCFR models found")
 
     if len(agents) < 2:
         logger.error("Need at least 2 agents for tournament!")
         return
 
-    logger.info(f"Tournament with {len(agents)} agents:")
-    for agent in agents:
-        logger.info(f"  - {agent.name()}")
+    logger.info("")
+    logger.info(f"Tournament Participants ({len(agents)} agents):")
+    for i, agent in enumerate(agents, 1):
+        logger.info(f"  {i}. {agent.name()}")
     logger.info("")
 
     # Run tournament
-    num_games = 1000  # Games per match
+    num_games = 500  # Games per match (reduced for faster testing)
+    logger.info(f"Running round-robin tournament: {num_games} games per match")
+    logger.info(f"Total matches: {len(agents) * (len(agents) - 1) // 2}")
+    logger.info("")
+    
     results = tournament.run_tournament(agents, num_games)
+
+    # Display detailed results
+    logger.info("=" * 50)
+    logger.info("TOURNAMENT RESULTS")
+    logger.info("=" * 50)
+    
+    # Show head-to-head matrix
+    logger.info("")
+    logger.info("Head-to-Head Win Rates:")
+    logger.info("-" * 30)
+    
+    agent_names = [agent.name() for agent in agents]
+    matches = results.get("matches", {})
+    
+    # Create and display win rate matrix
+    for i, agent1 in enumerate(agent_names):
+        for j, agent2 in enumerate(agent_names):
+            if i < j:  # Only show upper triangle
+                match_key = f"{agent1}_vs_{agent2}"
+                if match_key in matches:
+                    match_result = matches[match_key]
+                    winrate1 = match_result["agent1_winrate"]
+                    winrate2 = match_result["agent2_winrate"] 
+                    logger.info(f"{agent1} vs {agent2}: {winrate1:.3f} - {winrate2:.3f}")
+
+    # Display final leaderboard  
+    logger.info("")
+    logger.info("FINAL LEADERBOARD:")
+    logger.info("=" * 20)
+    
+    leaderboard = results.get("leaderboard", [])
+    for i, (agent_name, stats) in enumerate(leaderboard, 1):
+        overall_winrate = stats["winrate"]
+        wins = stats["total_wins"] 
+        total_games = stats["total_games"]
+        opponents_beaten = stats["opponents_beaten"]
+        
+        logger.info(f"{i}. {agent_name}")
+        logger.info(f"   Win Rate: {overall_winrate:.3f} ({wins}/{total_games})")
+        logger.info(f"   Opponents Beaten: {opponents_beaten}/{len(agents)-1}")
+        logger.info("")
 
     # Save results
     results_path = Path("data/tournament_results.json")
     tournament.save_results(results, results_path)
 
-    logger.info("")
-    logger.info("Tournament complete! Check results in data/tournament_results.json")
+    logger.info(f"Detailed results saved to: {results_path}")
+    logger.info("Tournament complete!")
 
 
 def main() -> None:
     """Main evaluation script."""
-    if len(sys.argv) > 1 and sys.argv[1] == "tournament":
-        run_full_tournament()
-    else:
+    if len(sys.argv) > 1 and sys.argv[1] == "deep_only":
         evaluate_deep_mccfr()
+    else:
+        run_full_tournament()
 
 
 if __name__ == "__main__":
