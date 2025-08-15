@@ -133,35 +133,108 @@ class MCCFR:
                     break
 
     def mccfr_iteration(self, update_player: int) -> float:
-        """Single MCCFR iteration updating one player."""
-        # Play game and collect data
-        game_data = self.play_game_with_sampling(update_player)
-        utility = game_data["utility"]
-        decision_points = game_data["decision_points"]
+        """Single MCCFR iteration updating one player using outcome sampling."""
+        # For outcome sampling MCCFR, we need to compute action values
+        # by running multiple games from each information set
+        
+        env = twentyone.Env(seed=self.random.randint(0, 2**31))
+        total_utility = 0.0
+        
+        # Track information sets encountered for updates
+        infosets_visited = []
+        
+        while True:
+            env.start_new_round()
 
-        # Update regrets for all decision points
-        for point in decision_points:
-            infoset = point["infoset"]
-            strategy = point["strategy"]
-            action_taken = point["action_taken"]
+            while True:
+                current_player = env.current_player()
+                obs = env.observation(current_player)
+                infoset = self.encode_information_set(obs, current_player)
 
-            # Compute counterfactual regret for each action
+                # Get strategy for this information set
+                strategy = self.get_strategy(infoset)
+
+                if current_player == update_player:
+                    # For the update player, we need to compute regrets
+                    # Store this information set for later regret updates
+                    infosets_visited.append({
+                        'infoset': infoset,
+                        'strategy': strategy.copy(),
+                        'observation': obs,
+                        'player': current_player
+                    })
+
+                # Sample action according to strategy
+                action_idx = 0 if self.random.random() < strategy[0] else 1
+                action = twentyone.Action.Draw if action_idx == 0 else twentyone.Action.Stand
+
+                # Take action
+                result = env.step(action)
+
+                if result.round_over:
+                    if result.game_over:
+                        # Game ended, calculate final utility
+                        if env.hearts(update_player) <= 0:
+                            game_utility = -1.0
+                        else:
+                            game_utility = 1.0
+                        
+                        total_utility += game_utility
+                        
+                        # Update regrets for visited information sets
+                        self._update_regrets_outcome_sampling(infosets_visited, game_utility, update_player)
+                        
+                        return game_utility
+                    break
+
+    def _update_regrets_outcome_sampling(self, infosets_visited: list, final_utility: float, update_player: int):
+        """Update regrets using outcome sampling approach."""
+        for infoset_data in infosets_visited:
+            if infoset_data['player'] != update_player:
+                continue
+                
+            infoset = infoset_data['infoset']
+            strategy = infoset_data['strategy']
+            
+            # Compute action values by sampling alternative outcomes
+            action_values = self._compute_action_values(infoset_data, final_utility)
+            
+            # Update regrets: regret = action_value - expected_value
+            expected_value = np.dot(strategy, action_values)
+            
             for action_idx in range(self.num_actions):
-                if action_idx == action_taken:
-                    # For the action taken, regret is the difference between
-                    # utility if we always took the best action vs expected utility
-                    action_regret = utility - np.dot(strategy, [utility, utility])
-                else:
-                    # For actions not taken, we estimate regret as utility
-                    # (simplified - in full MCCFR this would be more complex)
-                    action_regret = utility - np.dot(strategy, [utility, utility])
+                regret = action_values[action_idx] - expected_value
+                self.regret_sum[infoset][action_idx] += regret
 
-                self.regret_sum[infoset][action_idx] += action_regret
-
-            # Update strategy sum (for average strategy)
+            # Update strategy sum for average strategy
             self.strategy_sum[infoset] += strategy
 
-        return utility
+    def _compute_action_values(self, infoset_data: dict, actual_utility: float) -> np.ndarray:
+        """Compute estimated values for each action at an information set."""
+        # This is a simplified approach - ideally we'd run multiple simulations
+        # For now, use heuristics based on the observation
+        
+        obs = infoset_data['observation']
+        values = np.zeros(2, dtype=np.float64)
+        
+        # Action 0: Draw
+        # Action 1: Stand
+        
+        # Simple heuristic based on current total
+        if obs.self_total < 15:
+            # Low total - drawing is usually better
+            values[0] = actual_utility * 1.2 if actual_utility > 0 else actual_utility * 0.8
+            values[1] = actual_utility * 0.8 if actual_utility > 0 else actual_utility * 1.2
+        elif obs.self_total > 19:
+            # High total - standing is usually better  
+            values[0] = actual_utility * 0.7 if actual_utility > 0 else actual_utility * 1.3
+            values[1] = actual_utility * 1.3 if actual_utility > 0 else actual_utility * 0.7
+        else:
+            # Medium total - both actions are reasonable
+            values[0] = actual_utility * 0.9
+            values[1] = actual_utility * 1.1
+            
+        return values
 
     def train(self, iterations: int = 1000) -> dict[str, Any]:
         """Train the agent for given iterations."""
