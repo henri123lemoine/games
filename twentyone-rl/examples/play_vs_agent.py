@@ -33,9 +33,16 @@ def load_policy(path: Path) -> Dict[str, Any]:
     if isinstance(raw, dict) and "simple_strategy" in raw:
         return raw  # Simple strategy format
 
-    # keys are stringified tuples; parse back with ast.literal_eval
-    pol = {ast.literal_eval(k): v for k, v in raw.items()}
-    return pol
+    if isinstance(raw, dict) and "agent_type" in raw:
+        return raw  # Deep MCCFR or other agent type format
+
+    # Traditional MCCFR format - keys are stringified tuples; parse back with ast.literal_eval
+    try:
+        pol = {ast.literal_eval(k): v for k, v in raw.items()}
+        return pol
+    except (ValueError, SyntaxError):
+        # If parsing fails, return raw dict
+        return raw
 
 
 def infoset_from_obs(obs: twentyone.Observation, player: int, deck_mask_est: int = 0) -> tuple:
@@ -51,14 +58,33 @@ def infoset_from_obs(obs: twentyone.Observation, player: int, deck_mask_est: int
     )
 
 
-def choose_action(policy: Dict[str, Any], obs: twentyone.Observation, player: int) -> twentyone.Action:
+def choose_action(
+    policy: Dict[str, Any], obs: twentyone.Observation, player: int, round_num: int
+) -> twentyone.Action:
     """Choose action based on policy."""
     # Handle simple strategy format
     if "simple_strategy" in policy:
         threshold = policy["simple_strategy"].get("draw_threshold", 17)
         return twentyone.Action.Draw if obs.self_total < threshold else twentyone.Action.Stand
 
-    # Handle MCCFR policy format
+    # Handle Deep MCCFR format
+    if "agent_type" in policy and policy["agent_type"] == "deep_mccfr":
+        # Load and use the actual Deep MCCFR agent
+        from twentyone_rl.agents.deep_mccfr import DeepMCCFR
+        from pathlib import Path
+
+        if hasattr(choose_action, "_deep_agent"):
+            agent = choose_action._deep_agent
+        else:
+            agent = DeepMCCFR()
+            model_path = Path(policy.get("model_path", "data/deep_mccfr_model_final.pth"))
+            if model_path.exists():
+                agent.load_model(model_path)
+            choose_action._deep_agent = agent
+
+        return agent.choose_action(obs, player, round_num)
+
+    # Handle traditional MCCFR policy format
     info = infoset_from_obs(obs, player)
     strat = policy.get(info)
     if strat is None:
@@ -107,10 +133,10 @@ def main() -> None:
 
                 while True:
                     choice = input("Type d=draw, s=stand: ").strip().lower()
-                    if choice.startswith('d'):
+                    if choice.startswith("d"):
                         action = twentyone.Action.Draw
                         break
-                    elif choice.startswith('s'):
+                    elif choice.startswith("s"):
                         action = twentyone.Action.Stand
                         break
                     else:
@@ -120,7 +146,7 @@ def main() -> None:
             else:
                 # Agent turn
                 p0_up, p1_up = show_turn_info(env, player, obs, player_names)
-                action = choose_action(policy, obs, player)
+                action = choose_action(policy, obs, player, round_num)
                 show_action_choice(player_names[player], action)
 
             # Take step

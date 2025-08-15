@@ -28,10 +28,10 @@ def get_public_cards(env: twentyone.Env) -> tuple[List[int], List[int]]:
 
 
 def show_turn_info(
-    env: twentyone.Env, 
-    current_player: int, 
-    obs: twentyone.Observation, 
-    player_names: tuple[str, str]
+    env: twentyone.Env,
+    current_player: int,
+    obs: twentyone.Observation,
+    player_names: tuple[str, str],
 ) -> tuple[List[int], List[int]]:
     """Display turn information and return public card info."""
     p0_up, p1_up = get_public_cards(env)
@@ -59,12 +59,12 @@ def show_round_result(
     result: twentyone.StepResult,
     p0_up: List[int],
     p1_up: List[int],
-    player_names: tuple[str, str]
+    player_names: tuple[str, str],
 ) -> None:
     """Display round end results including final hands and outcome."""
     reveal = env.last_reveal()
     reveal_list = list(reveal) if reveal else [None, None]
-    
+
     p0_final = p0_up + ([reveal_list[0]] if reveal_list[0] is not None else [])
     p1_final = p1_up + ([reveal_list[1]] if reveal_list[1] is not None else [])
     p0_total = sum(p0_final)
