@@ -19,13 +19,13 @@ def main() -> None:
 
     # Create agent
     device = "cpu"  # Change to "cuda" if GPU available
-    agent = DeepMCCFR(seed=42, learning_rate=1e-4, device=device)
+    agent = DeepMCCFR(seed=42, learning_rate=3e-4, device=device)
     logger.info(f"Using device: {device}")
 
     # Training parameters
-    total_iterations = 50000  # Substantial training for real performance
-    save_interval = 10000  # Save every 10k iterations
-    log_interval = 1000  # Log every 1k iterations
+    total_iterations = 50000
+    save_interval = 10000      # Save every 10k iterations
+    log_interval = 5000        # Log every 5k iterations
 
     logger.info(f"Training for {total_iterations:,} iterations...")
     logger.info(f"Saving model every {save_interval:,} iterations")
