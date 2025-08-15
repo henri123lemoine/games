@@ -10,16 +10,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from loguru import logger
 
 from twentyone_rl.evaluation.tournament import (
+    AgentInterface,
     DeepMCCFRAgent,
     HeuristicAgent,
     PolicyAgent,
+    TabularCFRAgent,
     Tournament,
 )
 
 
-def create_baseline_agents() -> list:
+def create_baseline_agents() -> list[AgentInterface]:
     """Create baseline agents for comparison."""
-    agents = []
+    agents: list[AgentInterface] = []
 
     # Heuristic agents with different thresholds
     for threshold in [15, 16, 17, 18, 19]:
@@ -96,7 +98,7 @@ def evaluate_deep_mccfr() -> None:
 
     wins = 0
     total_matches = len(results)
-    overall_winrate = 0
+    overall_winrate = 0.0
 
     for opponent, result in results.items():
         deep_winrate = result["agent1_winrate"]
@@ -149,13 +151,13 @@ def run_full_tournament() -> None:
     tournament = Tournament(seed=42)
 
     # Collect all agents
-    agents = []
+    agents: list[AgentInterface] = []
 
     # Add all heuristic agents
     agents.extend(
         [
             HeuristicAgent(15, "Heuristic_15"),
-            HeuristicAgent(16, "Heuristic_16"), 
+            HeuristicAgent(16, "Heuristic_16"),
             HeuristicAgent(17, "Heuristic_17"),
             HeuristicAgent(18, "Heuristic_18"),
             HeuristicAgent(19, "Heuristic_19"),
@@ -170,6 +172,23 @@ def run_full_tournament() -> None:
     else:
         logger.warning("✗ Traditional MCCFR agent not found")
 
+    # Add Tabular CFR
+    tabular_model_path = Path("data/tabular_cfr_model_final.json")
+    if tabular_model_path.exists():
+        agents.append(TabularCFRAgent(tabular_model_path, "TabularCFR"))
+        logger.info("✓ Added Tabular CFR agent (final model)")
+    else:
+        # Look for latest checkpoint
+        tabular_checkpoints = list(Path("data").glob("tabular_cfr_model_*.json"))
+        if tabular_checkpoints:
+            tabular_model_path = max(tabular_checkpoints, key=lambda p: p.stat().st_mtime)
+            agents.append(
+                TabularCFRAgent(tabular_model_path, f"TabularCFR_{tabular_model_path.stem.split('_')[-1]}")
+            )
+            logger.info(f"✓ Added Tabular CFR agent ({tabular_model_path.name})")
+        else:
+            logger.warning("✗ No Tabular CFR models found")
+
     # Add Deep MCCFR
     deep_model_path = Path("data/deep_mccfr_model_final.pth")
     if deep_model_path.exists():
@@ -180,7 +199,9 @@ def run_full_tournament() -> None:
         checkpoints = list(Path("data").glob("deep_mccfr_model_*.pth"))
         if checkpoints:
             deep_model_path = max(checkpoints, key=lambda p: p.stat().st_mtime)
-            agents.append(DeepMCCFRAgent(deep_model_path, f"DeepMCCFR_{deep_model_path.stem.split('_')[-1]}"))
+            agents.append(
+                DeepMCCFRAgent(deep_model_path, f"DeepMCCFR_{deep_model_path.stem.split('_')[-1]}")
+            )
             logger.info(f"✓ Added Deep MCCFR agent ({deep_model_path.name})")
         else:
             logger.warning("✗ No Deep MCCFR models found")
@@ -200,22 +221,22 @@ def run_full_tournament() -> None:
     logger.info(f"Running round-robin tournament: {num_games} games per match")
     logger.info(f"Total matches: {len(agents) * (len(agents) - 1) // 2}")
     logger.info("")
-    
+
     results = tournament.run_tournament(agents, num_games)
 
     # Display detailed results
     logger.info("=" * 50)
     logger.info("TOURNAMENT RESULTS")
     logger.info("=" * 50)
-    
+
     # Show head-to-head matrix
     logger.info("")
     logger.info("Head-to-Head Win Rates:")
     logger.info("-" * 30)
-    
+
     agent_names = [agent.name() for agent in agents]
     matches = results.get("matches", {})
-    
+
     # Create and display win rate matrix
     for i, agent1 in enumerate(agent_names):
         for j, agent2 in enumerate(agent_names):
@@ -224,21 +245,21 @@ def run_full_tournament() -> None:
                 if match_key in matches:
                     match_result = matches[match_key]
                     winrate1 = match_result["agent1_winrate"]
-                    winrate2 = match_result["agent2_winrate"] 
+                    winrate2 = match_result["agent2_winrate"]
                     logger.info(f"{agent1} vs {agent2}: {winrate1:.3f} - {winrate2:.3f}")
 
-    # Display final leaderboard  
+    # Display final leaderboard
     logger.info("")
     logger.info("FINAL LEADERBOARD:")
     logger.info("=" * 20)
-    
+
     leaderboard = results.get("leaderboard", [])
     for i, (agent_name, stats) in enumerate(leaderboard, 1):
         overall_winrate = stats["winrate"]
-        wins = stats["total_wins"] 
+        wins = stats["total_wins"]
         total_games = stats["total_games"]
         opponents_beaten = stats["opponents_beaten"]
-        
+
         logger.info(f"{i}. {agent_name}")
         logger.info(f"   Win Rate: {overall_winrate:.3f} ({wins}/{total_games})")
         logger.info(f"   Opponents Beaten: {opponents_beaten}/{len(agents)-1}")

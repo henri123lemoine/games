@@ -136,13 +136,13 @@ class MCCFR:
         """Single MCCFR iteration updating one player using outcome sampling."""
         # For outcome sampling MCCFR, we need to compute action values
         # by running multiple games from each information set
-        
+
         env = twentyone.Env(seed=self.random.randint(0, 2**31))
         total_utility = 0.0
-        
+
         # Track information sets encountered for updates
         infosets_visited = []
-        
+
         while True:
             env.start_new_round()
 
@@ -157,12 +157,14 @@ class MCCFR:
                 if current_player == update_player:
                     # For the update player, we need to compute regrets
                     # Store this information set for later regret updates
-                    infosets_visited.append({
-                        'infoset': infoset,
-                        'strategy': strategy.copy(),
-                        'observation': obs,
-                        'player': current_player
-                    })
+                    infosets_visited.append(
+                        {
+                            "infoset": infoset,
+                            "strategy": strategy.copy(),
+                            "observation": obs,
+                            "player": current_player,
+                        }
+                    )
 
                 # Sample action according to strategy
                 action_idx = 0 if self.random.random() < strategy[0] else 1
@@ -178,30 +180,34 @@ class MCCFR:
                             game_utility = -1.0
                         else:
                             game_utility = 1.0
-                        
+
                         total_utility += game_utility
-                        
+
                         # Update regrets for visited information sets
-                        self._update_regrets_outcome_sampling(infosets_visited, game_utility, update_player)
-                        
+                        self._update_regrets_outcome_sampling(
+                            infosets_visited, game_utility, update_player
+                        )
+
                         return game_utility
                     break
 
-    def _update_regrets_outcome_sampling(self, infosets_visited: list, final_utility: float, update_player: int):
+    def _update_regrets_outcome_sampling(
+        self, infosets_visited: list, final_utility: float, update_player: int
+    ):
         """Update regrets using outcome sampling approach."""
         for infoset_data in infosets_visited:
-            if infoset_data['player'] != update_player:
+            if infoset_data["player"] != update_player:
                 continue
-                
-            infoset = infoset_data['infoset']
-            strategy = infoset_data['strategy']
-            
+
+            infoset = infoset_data["infoset"]
+            strategy = infoset_data["strategy"]
+
             # Compute action values by sampling alternative outcomes
             action_values = self._compute_action_values(infoset_data, final_utility)
-            
+
             # Update regrets: regret = action_value - expected_value
             expected_value = np.dot(strategy, action_values)
-            
+
             for action_idx in range(self.num_actions):
                 regret = action_values[action_idx] - expected_value
                 self.regret_sum[infoset][action_idx] += regret
@@ -213,27 +219,27 @@ class MCCFR:
         """Compute estimated values for each action at an information set."""
         # This is a simplified approach - ideally we'd run multiple simulations
         # For now, use heuristics based on the observation
-        
-        obs = infoset_data['observation']
+
+        obs = infoset_data["observation"]
         values = np.zeros(2, dtype=np.float64)
-        
+
         # Action 0: Draw
         # Action 1: Stand
-        
+
         # Simple heuristic based on current total
         if obs.self_total < 15:
             # Low total - drawing is usually better
             values[0] = actual_utility * 1.2 if actual_utility > 0 else actual_utility * 0.8
             values[1] = actual_utility * 0.8 if actual_utility > 0 else actual_utility * 1.2
         elif obs.self_total > 19:
-            # High total - standing is usually better  
+            # High total - standing is usually better
             values[0] = actual_utility * 0.7 if actual_utility > 0 else actual_utility * 1.3
             values[1] = actual_utility * 1.3 if actual_utility > 0 else actual_utility * 0.7
         else:
             # Medium total - both actions are reasonable
             values[0] = actual_utility * 0.9
             values[1] = actual_utility * 1.1
-            
+
         return values
 
     def train(self, iterations: int = 1000) -> dict[str, Any]:

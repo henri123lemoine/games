@@ -98,16 +98,64 @@ class DeepMCCFRAgent(AgentInterface):
     def __init__(self, model_path: Path | None = None, agent_name: str = "DeepMCCFR"):
         from twentyone_rl.agents.deep_mccfr import DeepMCCFR
 
-        self.agent = DeepMCCFR()
-        self.agent_name = agent_name
+        try:
+            self.agent = DeepMCCFR()
+            self.agent_name = agent_name
 
-        if model_path and model_path.exists():
-            self.agent.load_model(model_path)
+            if model_path and model_path.exists():
+                logger.info(f"Loading Deep MCCFR model from {model_path}")
+                self.agent.load_model(model_path)
+                logger.info(f"Successfully loaded model with input_dim={self.agent.input_dim}")
+            elif model_path:
+                logger.warning(f"Model path {model_path} does not exist, using untrained agent")
+        except Exception as e:
+            logger.error(f"Failed to initialize DeepMCCFR agent: {e}")
+            logger.error("This often indicates model compatibility issues or missing dependencies")
+            raise RuntimeError(f"DeepMCCFR initialization failed: {e}") from e
 
     def choose_action(
         self, obs: twentyone.Observation, player: int, round_num: int
     ) -> twentyone.Action:
-        return self.agent.choose_action(obs, player, round_num)
+        try:
+            return self.agent.choose_action(obs, player, round_num)
+        except Exception as e:
+            logger.warning(f"DeepMCCFR agent error: {e}, falling back to heuristic")
+            # Fallback to simple heuristic if neural network fails
+            return twentyone.Action.Draw if obs.self_total < 17 else twentyone.Action.Stand
+
+    def name(self) -> str:
+        return self.agent_name
+
+
+class TabularCFRAgent(AgentInterface):
+    """Agent wrapper for Tabular CFR."""
+
+    def __init__(self, model_path: Path | None = None, agent_name: str = "TabularCFR"):
+        from twentyone_rl.agents.tabular_cfr import TabularCFR
+
+        try:
+            self.agent = TabularCFR()
+            self.agent_name = agent_name
+
+            if model_path and model_path.exists():
+                logger.info(f"Loading Tabular CFR model from {model_path}")
+                self.agent.load_model(model_path)
+                logger.info(f"Successfully loaded model with {len(self.agent.regret_sum)} information sets")
+            elif model_path:
+                logger.warning(f"Model path {model_path} does not exist, using untrained agent")
+        except Exception as e:
+            logger.error(f"Failed to initialize Tabular CFR agent: {e}")
+            raise RuntimeError(f"Tabular CFR initialization failed: {e}") from e
+
+    def choose_action(
+        self, obs: twentyone.Observation, player: int, round_num: int
+    ) -> twentyone.Action:
+        try:
+            return self.agent.select_action(obs, player, round_num)
+        except Exception as e:
+            logger.warning(f"Tabular CFR agent error: {e}, falling back to heuristic")
+            # Fallback to simple heuristic if agent fails
+            return twentyone.Action.Draw if obs.self_total < 17 else twentyone.Action.Stand
 
     def name(self) -> str:
         return self.agent_name

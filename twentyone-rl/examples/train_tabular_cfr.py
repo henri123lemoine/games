@@ -9,23 +9,22 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from loguru import logger
 
-from twentyone_rl.agents.deep_mccfr import DeepMCCFR, save_policy
+from twentyone_rl.agents.tabular_cfr import TabularCFR, save_policy
 
 
 def main() -> None:
-    """Train a Deep MCCFR agent and save the model."""
-    logger.info("Training Deep MCCFR Agent")
+    """Train a Tabular CFR agent and save the model."""
+    logger.info("Training Tabular CFR Agent")
     logger.info("=" * 30)
 
     # Create agent
-    device = "cpu"  # Change to "cuda" if GPU available
-    agent = DeepMCCFR(seed=42, learning_rate=3e-4, device=device)
-    logger.info(f"Using device: {device}")
+    agent = TabularCFR(seed=42)
+    logger.info("Initialized Tabular CFR agent")
 
-    # Training parameters
-    total_iterations = 50000
-    save_interval = 10000  # Save every 10k iterations
-    log_interval = 5000  # Log every 5k iterations
+    # Training parameters - tabular CFR converges much faster than neural approaches
+    total_iterations = 20000  # Should be sufficient for convergence
+    save_interval = 5000  # Save every 5k iterations
+    log_interval = 1000  # Log every 1k iterations
 
     logger.info(f"Training for {total_iterations:,} iterations...")
     logger.info(f"Saving model every {save_interval:,} iterations")
@@ -50,42 +49,53 @@ def main() -> None:
                 f"Progress: {progress:.1f}% ({current_iter + chunk_size:,}/{total_iterations:,})"
             )
 
-            if stats.get("losses"):
-                latest_losses = stats["losses"][-1] if stats["losses"] else {}
-                if latest_losses:
-                    logger.info(f"Latest losses: {latest_losses}")
+            logger.info(f"Information sets discovered: {stats['infosets_discovered']:,}")
+            logger.info(f"New information sets: {stats['new_infosets']:,}")
 
-            logger.info(f"Buffer size: {stats.get('buffer_size', 0):,}")
+            # Get detailed stats
+            detailed_stats = agent.get_stats()
+            logger.info(
+                f"Average regret per infoset: {detailed_stats['average_regret_per_infoset']:.4f}"
+            )
+            logger.info(f"Convergence metric: {detailed_stats['convergence_metric']:.6f}")
             logger.info("")
 
         # Save intermediate model
-        model_path = Path(f"data/deep_mccfr_model_{i+batch_size}.pth")
+        model_path = Path(f"data/tabular_cfr_model_{i+batch_size}.json")
         model_path.parent.mkdir(exist_ok=True)
         agent.save_model(model_path)
         logger.info(f"Saved intermediate model to {model_path}")
 
         # Save policy metadata
         policy = agent.average_policy()
-        policy_path = Path(f"data/policy_deep_mccfr_{i+batch_size}.json")
+        policy_path = Path(f"data/policy_tabular_cfr_{i+batch_size}.json")
         save_policy(policy, policy_path)
         logger.info(f"Saved policy metadata to {policy_path}")
         logger.info("")
 
     # Save final model
-    final_model_path = Path("data/deep_mccfr_model_final.pth")
+    final_model_path = Path("data/tabular_cfr_model_final.json")
     agent.save_model(final_model_path)
 
     final_policy = agent.average_policy()
-    final_policy_path = Path("data/policy_deep_mccfr_final.json")
+    final_policy_path = Path("data/policy_tabular_cfr_final.json")
     save_policy(final_policy, final_policy_path)
 
     logger.info("Training completed!")
     logger.info(f"Final model saved to {final_model_path}")
     logger.info(f"Final policy saved to {final_policy_path}")
 
+    # Report final statistics
+    final_stats = agent.get_stats()
+    logger.info("")
+    logger.info("Final Statistics:")
+    logger.info(f"  Total information sets learned: {final_stats['total_information_sets']:,}")
+    logger.info(f"  Average regret per infoset: {final_stats['average_regret_per_infoset']:.6f}")
+    logger.info(f"  Convergence metric: {final_stats['convergence_metric']:.8f}")
+
     if final_model_path.exists():
-        model_size_mb = final_model_path.stat().st_size / (1024 * 1024)
-        logger.info(f"Model file size: {model_size_mb:.2f} MB")
+        model_size_kb = final_model_path.stat().st_size / 1024
+        logger.info(f"  Model file size: {model_size_kb:.2f} KB")
 
     logger.info("")
     logger.info("You can now evaluate the agent with:")
