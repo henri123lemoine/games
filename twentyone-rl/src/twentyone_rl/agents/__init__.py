@@ -1,5 +1,6 @@
 """Agents package."""
 
-from .mccfr import MCCFR
+from .mccfr import MCCFR, DeepMCCFR
+from .tabular_cfr import TabularCFR
 
-__all__ = ["MCCFR"]
+__all__ = ["MCCFR", "DeepMCCFR", "TabularCFR"]

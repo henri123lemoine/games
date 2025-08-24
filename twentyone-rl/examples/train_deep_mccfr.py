@@ -2,7 +2,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from twentyone_rl.agents.deep_mccfr import DeepMCCFR, save_policy
+from twentyone_rl.agents.mccfr import DeepMCCFR
+from twentyone_rl.agents.mccfr.utils import save_policy
 
 
 def main() -> None:

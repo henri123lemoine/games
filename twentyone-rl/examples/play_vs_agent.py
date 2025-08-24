@@ -4,7 +4,7 @@ from typing import Any
 
 import twentyone
 
-from twentyone_rl.agents.deep_mccfr import DeepMCCFR
+from twentyone_rl.agents.mccfr import DeepMCCFR
 from twentyone_rl.display import (
     check_game_over,
     show_action_choice,

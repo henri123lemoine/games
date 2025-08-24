@@ -96,7 +96,7 @@ class DeepMCCFRAgent(AgentInterface):
     """Agent wrapper for DeepMCCFR."""
 
     def __init__(self, model_path: Path | None = None, agent_name: str = "DeepMCCFR"):
-        from twentyone_rl.agents.deep_mccfr import DeepMCCFR
+        from twentyone_rl.agents.mccfr import DeepMCCFR
 
         try:
             self.agent = DeepMCCFR()
@@ -153,7 +153,7 @@ class TabularCFRAgent(AgentInterface):
         self, obs: twentyone.Observation, player: int, round_num: int
     ) -> twentyone.Action:
         try:
-            return self.agent.select_action(obs, player, round_num)
+            return self.agent.choose_action(obs, player, round_num)
         except Exception as e:
             logger.warning(f"Tabular CFR agent error: {e}, falling back to heuristic")
             # Fallback to simple heuristic if agent fails

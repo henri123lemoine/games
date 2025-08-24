@@ -92,7 +92,7 @@ class TabularCFR:
         """Get current strategy for information set (uses average strategy for evaluation)."""
         return self.get_average_strategy(infoset)
 
-    def select_action(
+    def choose_action(
         self, obs: twentyone.Observation, player: int, round_num: int
     ) -> twentyone.Action:
         """Select action for given observation using current strategy."""

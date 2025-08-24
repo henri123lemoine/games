@@ -9,8 +9,11 @@ from typing import Any
 import numpy as np
 import twentyone
 
+from .base import MCCFRAgent
+from .utils import compute_action_values_heuristic
 
-class MCCFR:
+
+class MCCFR(MCCFRAgent):
     """Monte Carlo Counterfactual Regret Minimization agent.
 
     Implements a simplified MCCFR algorithm for the Twenty-One game.
@@ -86,7 +89,9 @@ class MCCFR:
         else:
             return twentyone.Action.Stand
 
-    def play_game_with_sampling(self, update_player: int) -> dict[str, float]:
+    def play_game_with_sampling(
+        self, update_player: int
+    ) -> dict[str, float | list[dict[str, Any]]]:
         """Play a single game and collect information for MCCFR updates."""
         env = twentyone.Env(seed=self.random.randint(0, 2**31))
 
@@ -217,30 +222,8 @@ class MCCFR:
 
     def _compute_action_values(self, infoset_data: dict, actual_utility: float) -> np.ndarray:
         """Compute estimated values for each action at an information set."""
-        # This is a simplified approach - ideally we'd run multiple simulations
-        # For now, use heuristics based on the observation
-
         obs = infoset_data["observation"]
-        values = np.zeros(2, dtype=np.float64)
-
-        # Action 0: Draw
-        # Action 1: Stand
-
-        # Simple heuristic based on current total
-        if obs.self_total < 15:
-            # Low total - drawing is usually better
-            values[0] = actual_utility * 1.2 if actual_utility > 0 else actual_utility * 0.8
-            values[1] = actual_utility * 0.8 if actual_utility > 0 else actual_utility * 1.2
-        elif obs.self_total > 19:
-            # High total - standing is usually better
-            values[0] = actual_utility * 0.7 if actual_utility > 0 else actual_utility * 1.3
-            values[1] = actual_utility * 1.3 if actual_utility > 0 else actual_utility * 0.7
-        else:
-            # Medium total - both actions are reasonable
-            values[0] = actual_utility * 0.9
-            values[1] = actual_utility * 1.1
-
-        return values
+        return compute_action_values_heuristic(obs, actual_utility).astype(np.float64)
 
     def train(self, iterations: int = 1000) -> dict[str, Any]:
         """Train the agent for given iterations."""
@@ -269,9 +252,39 @@ class MCCFR:
             "strategy_type": "average",
         }
 
+    def save_model(self, path: Path) -> None:
+        """Save model to JSON file."""
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-def save_policy(policy: dict[str, Any], path: Path) -> None:
-    """Save policy to JSON file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(policy, f, indent=2)
+        # Convert defaultdicts to regular dicts for JSON serialization
+        regret_data = {k: v.tolist() for k, v in self.regret_sum.items()}
+        strategy_data = {k: v.tolist() for k, v in self.strategy_sum.items()}
+
+        model_data = {
+            "regret_sum": regret_data,
+            "strategy_sum": strategy_data,
+            "iterations": self.iterations,
+            "seed": self.seed,
+            "agent_type": "mccfr",
+            "version": "1.0",
+        }
+
+        with open(path, "w") as f:
+            json.dump(model_data, f, indent=2)
+
+    def load_model(self, path: Path) -> None:
+        """Load model from JSON file."""
+        with open(path) as f:
+            model_data = json.load(f)
+
+        # Restore regret and strategy sums
+        self.regret_sum = defaultdict(lambda: np.zeros(2, dtype=np.float64))
+        for k, v in model_data["regret_sum"].items():
+            self.regret_sum[k] = np.array(v, dtype=np.float64)
+
+        self.strategy_sum = defaultdict(lambda: np.zeros(2, dtype=np.float64))
+        for k, v in model_data["strategy_sum"].items():
+            self.strategy_sum[k] = np.array(v, dtype=np.float64)
+
+        self.iterations = model_data["iterations"]
+        self.seed = model_data.get("seed", 42)

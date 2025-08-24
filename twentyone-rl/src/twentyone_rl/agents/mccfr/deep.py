@@ -1,6 +1,5 @@
 """Deep MCCFR agent implementation using neural networks."""
 
-import json
 import random
 from collections import deque
 from pathlib import Path
@@ -12,6 +11,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import twentyone
+
+from .base import MCCFRAgent
+from .utils import compute_action_values_heuristic
 
 
 class SharedEncoder(nn.Module):
@@ -141,7 +143,7 @@ class ExperienceBuffer:
         return len(self.buffer)
 
 
-class DeepMCCFR:
+class DeepMCCFR(MCCFRAgent):
     """Deep Monte Carlo Counterfactual Regret Minimization agent."""
 
     def __init__(
@@ -419,27 +421,8 @@ class DeepMCCFR:
 
     def _compute_action_values(self, infoset_data: dict, actual_utility: float) -> np.ndarray:
         """Compute estimated values for each action at an information set."""
-        # Use the observation from the information set data
         obs = infoset_data["observation"]
-        values = np.zeros(2, dtype=np.float32)
-
-        # Action 0: Draw, Action 1: Stand
-
-        # Simple heuristic based on current total (similar to working MCCFR)
-        if obs.self_total < 15:
-            # Low total - drawing is usually better
-            values[0] = actual_utility * 1.2 if actual_utility > 0 else actual_utility * 0.8
-            values[1] = actual_utility * 0.8 if actual_utility > 0 else actual_utility * 1.2
-        elif obs.self_total > 19:
-            # High total - standing is usually better
-            values[0] = actual_utility * 0.7 if actual_utility > 0 else actual_utility * 1.3
-            values[1] = actual_utility * 1.3 if actual_utility > 0 else actual_utility * 0.7
-        else:
-            # Medium total - both actions are reasonable
-            values[0] = actual_utility * 0.9
-            values[1] = actual_utility * 1.1
-
-        return values
+        return compute_action_values_heuristic(obs, actual_utility)
 
     def train(self, iterations: int = 1000) -> dict[str, Any]:
         """Train the agent for given iterations."""
@@ -583,10 +566,3 @@ class DeepMCCFR:
             "total_games": self.total_games,
             "model_path": "deep_mccfr_model.pth",
         }
-
-
-def save_policy(policy: dict[str, Any], path: Path) -> None:
-    """Save policy to JSON file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(policy, f, indent=2)
