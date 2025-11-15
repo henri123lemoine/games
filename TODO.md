@@ -1,56 +1,68 @@
-# TODO: Deep MCCFR Implementation Issues
+# TODO: Project Status and Remaining Tasks
 
-## 1. Analyze Current Deep MCCFR Code
+## ✅ COMPLETED: Core Algorithm Fixes (Latest Update)
 
-**Current Issue**: Deep MCCFR achieves only 9-18% win rates due to fundamental algorithmic flaws
-**Problems to Document**:
+### 1. Fixed MCCFR Regret Computation ✅
+**What was broken**: Both vanilla MCCFR and Deep MCCFR had fundamentally broken regret updates
+- **Issue**: Regret computation used `utility - strategy @ [utility, utility]` which always equals 0
+- **Impact**: Regrets never accumulated, strategies never improved
+- **Fix**: Implemented proper outcome sampling MCCFR:
+  - For action taken: use observed utility
+  - For actions not taken: use 0 as baseline (conservative)
+  - Regret = value_estimate[action] - expected_value_under_strategy
+- **Files Changed**:
+  - `twentyone-rl/src/twentyone_rl/agents/mccfr.py` (lines 142-164)
+  - `twentyone-rl/src/twentyone_rl/agents/deep_mccfr.py` (lines 392-433)
 
-- Incorrect regret computation in counterfactual value updates
-- Regret updates don't follow proper MCCFR principles
-- Need to identify specific lines where the algorithm deviates from MCCFR theory
-  **Steps**:
-- Examine current Deep MCCFR implementation
-- Document specific algorithmic errors
-- Create detailed analysis of where MCCFR theory is violated
+### 2. Added Vanilla MCCFR to Evaluation Suite ✅
+**What was missing**: Tournament system only had HeuristicAgent, no proper MCCFR baseline
+- **Fix**: Added MCCFRAgent wrapper class for evaluation
+- **Benefit**: Can now properly compare Deep MCCFR vs Vanilla MCCFR vs Heuristics
+- **Files Changed**: `twentyone-rl/src/twentyone_rl/evaluation/tournament.py` (added MCCFRAgent class)
 
-## 2. Fix MCCFR Implementation with Correct Algorithm
+### 3. Improved Observation Encoding ✅
+**What was limited**: 10-dimensional encoding lacked strategic information
+- **Old**: Basic state features only (10 dims)
+- **New**: Added 6 derived strategic features (16 dims total):
+  - Distance to 21
+  - Hearts differential (winning/losing)
+  - Round pressure
+  - Relative position vs opponent
+  - Safe draw indicator (total <= 10)
+  - Danger zone indicator (17-21)
+- **Files Changed**: `twentyone-rl/src/twentyone_rl/agents/deep_mccfr.py` (lines 185-239)
 
-**Current Issue**: Core MCCFR logic is fundamentally broken, leading to poor learning
-**Problems to Address**:
+### 4. Fixed Build System ✅
+**What was broken**: Hardcoded absolute path in pyproject.toml
+- **Issue**: `twentyone @ file:///Users/henrilemoine/...`
+- **Fix**: Changed to relative path `twentyone @ file://../twentyone-py`
+- **Files Changed**: `twentyone-rl/pyproject.toml` (line 8)
 
-- Counterfactual value computation is incorrect
-- Regret updates don't match MCCFR specification
-- Training signals are corrupted by algorithmic errors
-  **Steps**:
-- Implement proper counterfactual value computation
-- Fix regret update mechanism to match MCCFR theory
-- Ensure proper sampling and weighting in the algorithm
-- Validate against known MCCFR implementations
+---
 
-## 3. Implement Proper MCCFR Baseline for Valid Comparison
+## 🔄 NEXT STEPS: Validation and Testing
 
-**Current Issue**: "Regular MCCFR" baseline is actually just a threshold heuristic (draw <17, stand >17), not real MCCFR
-**Problems with Current Baseline**:
+### 1. Train and Evaluate Fixed Agents
+**Priority**: HIGH
+- Train vanilla MCCFR with fixed algorithm (suggest 10,000 iterations)
+- Train Deep MCCFR with fixed algorithm (suggest 50,000 iterations)
+- Run tournament comparing all agents:
+  - Heuristic(threshold=17)
+  - Vanilla MCCFR (fixed)
+  - Deep MCCFR (fixed)
+- Document win rates and compare to previous broken results
 
-- Misleading performance comparisons
-- No actual MCCFR algorithm for reference
-- Makes it impossible to assess if Deep MCCFR improvements are real
-  **Steps**:
-- Implement vanilla MCCFR algorithm without neural networks
-- Use proper information sets and regret matching
-- Create fair comparison between threshold heuristic, vanilla MCCFR, and Deep MCCFR
-- Establish proper performance benchmarks
+### 2. Hyperparameter Tuning for Deep MCCFR
+**Priority**: MEDIUM
+- Current learning rate: 3e-4 (may need adjustment)
+- Current architecture: 256→256→256→128 encoder (may be overkill)
+- Batch size: 64 (may need tuning)
+- Experience buffer size: 100,000 (seems reasonable)
+- Consider: Add learning rate scheduling, adjust dropout rates
 
-## 4. Improve Observation Encoding to Preserve Strategic Information
-
-**Current Issue**: 10-dimensional observation encoding loses critical strategic information needed for good play
-**Problems with Current Encoding**:
-
-- Information loss makes optimal strategy learning impossible
-- Feature engineering doesn't capture game state adequately
-- Neural network can't learn what the encoding doesn't represent
-  **Steps**:
-- Analyze what strategic information is currently lost
-- Design richer observation space that preserves key game state
-- Consider opponent modeling and game history representation
-- Test that new encoding enables better strategic learning
+### 3. Extended Features (Optional)
+**Priority**: LOW
+- Save/load regret tables for vanilla MCCFR (currently not implemented)
+- Add more sophisticated value baselines (e.g., running average)
+- Implement CFR+ or Linear CFR variants for faster convergence
+- Add tensorboard logging for training visualization

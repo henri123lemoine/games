@@ -113,6 +113,27 @@ class DeepMCCFRAgent(AgentInterface):
         return self.agent_name
 
 
+class MCCFRAgent(AgentInterface):
+    """Agent wrapper for vanilla MCCFR."""
+
+    def __init__(self, model_path: Path | None = None, agent_name: str = "MCCFR"):
+        from twentyone_rl.agents.mccfr import MCCFR
+
+        self.agent = MCCFR()
+        self.agent_name = agent_name
+
+        # Note: MCCFR doesn't have a model file format yet
+        # Could be extended to save/load regret tables
+
+    def choose_action(
+        self, obs: twentyone.Observation, player: int, round_num: int
+    ) -> twentyone.Action:
+        return self.agent.choose_action(obs, player, round_num)
+
+    def name(self) -> str:
+        return self.agent_name
+
+
 class HeuristicAgent(AgentInterface):
     """Simple heuristic agent for baseline comparison."""
 
@@ -323,6 +344,9 @@ def load_agent_from_config(config: dict[str, Any]) -> AgentInterface:
 
     if agent_type == "policy":
         return PolicyAgent(Path(config["policy_path"]), config.get("name", "PolicyAgent"))
+    elif agent_type == "mccfr":
+        model_path = Path(config["model_path"]) if "model_path" in config else None
+        return MCCFRAgent(model_path, config.get("name", "MCCFR"))
     elif agent_type == "deep_mccfr":
         model_path = Path(config["model_path"]) if "model_path" in config else None
         return DeepMCCFRAgent(model_path, config.get("name", "DeepMCCFR"))

@@ -5,7 +5,7 @@ description = "Reinforcement learning experiments for the Twenty-One card game"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "twentyone @ file:///Users/henrilemoine/Documents/Programming/PersonalProjects/games/twentyone/twentyone-py",
+    "twentyone @ file://../twentyone-py",
     "loguru>=0.7",
     "numpy>=1.24",
     "torch>=2.0.0",

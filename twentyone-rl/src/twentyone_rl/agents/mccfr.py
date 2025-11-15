@@ -145,17 +145,19 @@ class MCCFR:
             strategy = point["strategy"]
             action_taken = point["action_taken"]
 
-            # Compute counterfactual regret for each action
-            for action_idx in range(self.num_actions):
-                if action_idx == action_taken:
-                    # For the action taken, regret is the difference between
-                    # utility if we always took the best action vs expected utility
-                    action_regret = utility - np.dot(strategy, [utility, utility])
-                else:
-                    # For actions not taken, we estimate regret as utility
-                    # (simplified - in full MCCFR this would be more complex)
-                    action_regret = utility - np.dot(strategy, [utility, utility])
+            # Outcome sampling MCCFR: estimate value of each action
+            # For the action taken, we observed the utility
+            # For actions not taken, we use 0 as baseline (conservative)
+            value_estimates = np.zeros(self.num_actions, dtype=np.float64)
+            value_estimates[action_taken] = utility
 
+            # Expected value under current strategy
+            expected_value = np.dot(strategy, value_estimates)
+
+            # Compute regret for each action
+            # regret[a] = value_if_took_a - expected_value_under_strategy
+            for action_idx in range(self.num_actions):
+                action_regret = value_estimates[action_idx] - expected_value
                 self.regret_sum[infoset][action_idx] += action_regret
 
             # Update strategy sum (for average strategy)

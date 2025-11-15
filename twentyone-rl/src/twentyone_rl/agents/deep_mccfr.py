@@ -17,7 +17,7 @@ import twentyone
 class SharedEncoder(nn.Module):
     """Shared encoder for processing information sets."""
 
-    def __init__(self, input_dim: int = 10, hidden_dim: int = 256):
+    def __init__(self, input_dim: int = 16, hidden_dim: int = 256):
         super().__init__()
         self.layers = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
@@ -185,12 +185,11 @@ class DeepMCCFR:
     def encode_observation(
         self, obs: twentyone.Observation, player: int, round_num: int
     ) -> np.ndarray:
-        """Encode observation into simplified feature vector based on available attributes."""
-        # Use a smaller feature vector based on what's actually available
-        features = np.zeros(10, dtype=np.float32)
+        """Encode observation into enriched feature vector with strategic information."""
+        features = np.zeros(16, dtype=np.float32)
         idx = 0
 
-        # Own State
+        # Basic Own State
         features[idx] = obs.self_face_up / 11.0  # Normalize to [0,1]
         idx += 1
         features[idx] = obs.self_face_down / 11.0
@@ -202,7 +201,7 @@ class DeepMCCFR:
         features[idx] = float(obs.self_stood)  # Binary
         idx += 1
 
-        # Opponent State
+        # Basic Opponent State
         features[idx] = obs.opp_face_up / 11.0
         idx += 1
         features[idx] = obs.opp_hearts / 6.0  # Opponent hearts
@@ -210,10 +209,31 @@ class DeepMCCFR:
         features[idx] = float(obs.opp_stood)  # Binary
         idx += 1
 
-        # Game State
+        # Basic Game State
         features[idx] = round_num / 6.0  # Normalize round number
         idx += 1
         features[idx] = obs.deck_count / 11.0  # Remaining cards
+        idx += 1
+
+        # Strategic Derived Features
+        # Distance to 21 (positive = room to draw, negative = busted)
+        features[idx] = (21 - obs.self_total) / 21.0
+        idx += 1
+        # Hearts differential (positive = we're ahead, negative = behind)
+        features[idx] = (obs.self_hearts - obs.opp_hearts) / 6.0
+        idx += 1
+        # Round pressure: how much damage this round can deal
+        features[idx] = round_num / 6.0
+        idx += 1
+        # Relative position vs opponent's visible card
+        # (our total vs their visible card - gives sense of who's ahead)
+        features[idx] = (obs.self_total - obs.opp_face_up) / 25.0
+        idx += 1
+        # Whether we can safely draw (total <= 10 means any card is safe)
+        features[idx] = float(obs.self_total <= 10)
+        idx += 1
+        # Whether we're in danger zone (17-21)
+        features[idx] = float(17 <= obs.self_total <= 21)
         idx += 1
 
         return features
@@ -408,17 +428,19 @@ class DeepMCCFR:
             # Get utility for this player
             player_utility = utilities[update_player]
 
-            # Calculate regret for each action
-            for action in range(2):
-                if action == action_taken:
-                    # This is the action that was actually taken
-                    action_regret = player_utility - (
-                        strategy @ np.array([player_utility, player_utility])
-                    )
-                else:
-                    # Counterfactual: what if we had taken this action instead
-                    action_regret = player_utility * 0.5  # Simplified counterfactual value
+            # Outcome sampling MCCFR: estimate value of each action
+            # For the action taken, we observed the utility
+            # For actions not taken, we use 0 as baseline (conservative)
+            value_estimates = np.zeros(2, dtype=np.float32)
+            value_estimates[action_taken] = player_utility
 
+            # Expected value under current strategy
+            expected_value = np.dot(strategy, value_estimates)
+
+            # Calculate regret for each action
+            # regret[a] = value_if_took_a - expected_value_under_strategy
+            for action in range(2):
+                action_regret = value_estimates[action] - expected_value
                 self.regret_sum[infoset_key][action] += action_regret
 
             # Store experience for neural network training
