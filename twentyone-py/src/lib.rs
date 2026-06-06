@@ -311,6 +311,24 @@ impl Env {
         self.inner.last_reveal().map(|cards| cards.to_vec())
     }
 
+    /// Return an independent deep copy of the environment, including RNG state.
+    ///
+    /// Enables tree branching for search and CFR: snapshot a state, then explore
+    /// each action on separate copies without mutating the original.
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+
+    fn __copy__(&self) -> Self {
+        self.clone()
+    }
+
+    fn __deepcopy__(&self, _memo: Bound<'_, PyDict>) -> Self {
+        self.clone()
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Env(round={}, hearts=[{}, {}])",
