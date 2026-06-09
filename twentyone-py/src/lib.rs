@@ -415,6 +415,12 @@ impl Solver {
         self.inner.search_best_action(&env.inner, player)
     }
 
+    /// One-ply lookahead on the exact cards using the blueprint as the rollout
+    /// policy (no strategy fusion). Returns True to draw.
+    fn lookahead_draw(&self, env: &Env, player: usize) -> bool {
+        self.inner.lookahead_best_action(&env.inner, player)
+    }
+
     fn iterations(&self) -> u64 {
         self.inner.iterations()
     }

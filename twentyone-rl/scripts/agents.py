@@ -71,7 +71,7 @@ class SolverAgent:
     ) -> None:
         self.solver = solver
         self.mode = mode if mode is not None else ("greedy" if greedy else "mixed")
-        if self.mode not in ("greedy", "mixed", "search"):
+        if self.mode not in ("greedy", "mixed", "search", "lookahead"):
             raise ValueError(f"unknown SolverAgent mode: {self.mode!r}")
         self.name = name if name is not None else f"Solver({self.mode})"
         self._rng = random.Random(seed)
@@ -90,6 +90,8 @@ class SolverAgent:
     def act(self, env: twentyone.Env, player: int) -> twentyone.Action:
         if self.mode == "search":
             draw = self.solver.search_draw(env, player)
+        elif self.mode == "lookahead":
+            draw = self.solver.lookahead_draw(env, player)
         else:
             p_draw = self.solver.draw_probability(env, player)
             draw = p_draw >= 0.5 if self.mode == "greedy" else self._rng.random() < p_draw

@@ -236,6 +236,92 @@ impl Solver {
         self.average_draw_prob(self.info_key(env, player))
     }
 
+    /// One-ply lookahead: pick the immediate action whose *value under blueprint
+    /// continuation* is higher, evaluated on the exact cards. For each action we
+    /// roll the blueprint average strategy forward (both players, draws and the
+    /// hidden card integrated exactly via the value table at round ends) and
+    /// compare. Unlike the determinized search this never lets a future move
+    /// depend on a guessed hidden card — both players keep playing the fixed,
+    /// information-set-consistent blueprint — so it avoids strategy fusion. It can
+    /// beat the greedy table where the table's *probability* and its *value*
+    /// disagree (typically undertrained, near-50/50 spots). Returns true to draw.
+    pub fn lookahead_best_action(&self, env: &Env, player: usize) -> bool {
+        let mask = env.deck_mask();
+        if mask == 0 {
+            return false;
+        }
+        if self.value.is_empty() {
+            return self.average_draw_prob(self.info_key(env, player)) >= 0.5;
+        }
+        let unseen = env.unseen_mask(player);
+        let mut sum_stand = 0.0;
+        let mut sum_draw = 0.0;
+        let mut m = unseen;
+        while m != 0 {
+            let f = (m.trailing_zeros() + 1) as u8;
+            m &= m - 1;
+            let hypo = env.with_opp_facedown(player, f);
+            let mut memo: FastMap<u64, f64> = fast_map();
+            let mut stood = hypo.clone();
+            stood.stand().unwrap();
+            sum_stand += self.blueprint_value(&stood, player, &mut memo);
+            sum_draw += self.blueprint_draw_expectation(&hypo, player, hypo.deck_mask(), &mut memo);
+        }
+        sum_draw > sum_stand
+    }
+
+    /// Value to `me` of a determinized round when *both* players follow the
+    /// blueprint average strategy (a pure expectation, no maximisation), memoized
+    /// by the god's-eye search key.
+    fn blueprint_value(&self, env: &Env, me: usize, memo: &mut FastMap<u64, f64>) -> f64 {
+        if !env.round_active() {
+            if env.is_game_over() {
+                return env.utility(me);
+            }
+            let v0 = self.continuation_for_p0(env.hearts(0), env.hearts(1), env.round());
+            return if me == 0 { v0 } else { -v0 };
+        }
+        let wkey = env.search_key();
+        if let Some(v) = memo.get(&wkey) {
+            return *v;
+        }
+        let player = env.current_player();
+        let mask = env.deck_mask();
+        let can_draw = mask != 0;
+        let sigma = self.average_strategy(self.info_key(env, player), can_draw);
+        let mut v = 0.0;
+        if sigma[STAND] > 0.0 {
+            let mut stood = env.clone();
+            stood.stand().unwrap();
+            v += sigma[STAND] * self.blueprint_value(&stood, me, memo);
+        }
+        if sigma[DRAW] > 0.0 && can_draw {
+            v += sigma[DRAW] * self.blueprint_draw_expectation(env, me, mask, memo);
+        }
+        memo.insert(wkey, v);
+        v
+    }
+
+    fn blueprint_draw_expectation(
+        &self,
+        env: &Env,
+        me: usize,
+        mask: u16,
+        memo: &mut FastMap<u64, f64>,
+    ) -> f64 {
+        let n = deck_count(mask);
+        let mut acc = 0.0;
+        let mut m = mask;
+        while m != 0 {
+            let c = (m.trailing_zeros() + 1) as u8;
+            m &= m - 1;
+            let mut drawn = env.clone();
+            drawn.draw_specific(c).unwrap();
+            acc += self.blueprint_value(&drawn, me, memo);
+        }
+        acc / n as f64
+    }
+
     /// Inference-time search: choose `player`'s action by looking ahead through
     /// the rest of the round instead of reading the averaged strategy table.
     /// Returns `true` to draw, `false` to stand.

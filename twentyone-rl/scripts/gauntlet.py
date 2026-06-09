@@ -77,7 +77,9 @@ def main() -> None:
     parser.add_argument("--solvers", type=Path, nargs="*", default=[], help="model .bin files")
     parser.add_argument("--games", type=int, default=2000, help="games per pairing")
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--mode", default="greedy", choices=("greedy", "mixed", "search"))
+    parser.add_argument(
+        "--mode", default="greedy", choices=("greedy", "mixed", "search", "lookahead")
+    )
     parser.add_argument("--workers", type=int, default=0, help="processes (0 = auto)")
     args = parser.parse_args()
 
