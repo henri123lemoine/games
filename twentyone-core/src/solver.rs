@@ -633,6 +633,146 @@ impl Solver {
             .unwrap_or(0.0)
     }
 
+    // ----- full-game CFR (no subgame decomposition) -------------------------
+
+    /// Train by external-sampling MCCFR+ on the *whole* multi-round game instead
+    /// of decomposing it into rounds linked by Monte-Carlo-estimated continuation
+    /// values. When a round ends without ending the game, the next round is dealt
+    /// and the traversal continues, so cross-round values are exact rather than
+    /// approximated — removing the decomposition's residual-exploitability floor.
+    /// Iterations concentrate where real play does (the opening rounds), so the
+    /// most-visited information sets are trained hardest.
+    pub fn solve_full(&mut self, iters: u64) {
+        let base = self.iterations;
+        // Batched parallel CFR+: run a batch of independent full-game traversals
+        // across cores, each reading the shared regrets (immutable for the batch)
+        // and accumulating its own regret/strategy *deltas*, then merge the deltas
+        // single-threaded (CFR+ clip on the summed regret). Batches are kept small
+        // so the within-batch strategy staleness stays negligible; merge order is
+        // fixed so the result is deterministic and thread-count-independent.
+        let batch = (rayon::current_num_threads() as u64).clamp(1, 64);
+        let mut done = 0u64;
+        while done < iters {
+            let n = batch.min(iters - done);
+            let seeds: Vec<(u64, f64)> = (0..n)
+                .map(|_| (self.rng.next(), (base + done + 1) as f64))
+                .collect();
+            let deltas: Vec<(InfoTable, InfoTable)> = seeds
+                .par_iter()
+                .map(|&(seed, weight)| {
+                    let mut rng = Rng::new(seed);
+                    let mut dr: InfoTable = fast_map();
+                    let mut ds: InfoTable = fast_map();
+                    for traverser in 0..2 {
+                        let mut env = Env::from_state([self.start_hearts, self.start_hearts], 1);
+                        let cards = deal_from(&mut rng);
+                        env.deal_specific(cards).unwrap();
+                        self.traverse_full(&env, traverser, weight, &mut dr, &mut ds, &mut rng);
+                    }
+                    (dr, ds)
+                })
+                .collect();
+            for (dr, ds) in deltas {
+                for (k, v) in dr {
+                    let e = self.regret.entry(k).or_insert([0.0; 2]);
+                    e[STAND] = (e[STAND] + v[STAND]).max(0.0);
+                    e[DRAW] = (e[DRAW] + v[DRAW]).max(0.0);
+                }
+                for (k, v) in ds {
+                    let e = self.strategy_sum.entry(k).or_insert([0.0; 2]);
+                    e[STAND] += v[STAND];
+                    e[DRAW] += v[DRAW];
+                }
+            }
+            done += n;
+        }
+        self.iterations += iters;
+    }
+
+    fn regret_matching_global(&self, key: u64, can_draw: bool, dr: &InfoTable) -> [f64; 2] {
+        if !can_draw {
+            return [0.0, 1.0];
+        }
+        // Current regret = shared (immutable) base plus this traversal's own
+        // pending delta, so repeated visits within one traversal stay consistent.
+        let base = self.regret.get(&key).copied().unwrap_or([0.0; 2]);
+        let d = dr.get(&key).copied().unwrap_or([0.0; 2]);
+        let s0 = (base[DRAW] + d[DRAW]).max(0.0);
+        let s1 = (base[STAND] + d[STAND]).max(0.0);
+        let sum = s0 + s1;
+        if sum > 0.0 {
+            [s0 / sum, s1 / sum]
+        } else {
+            [0.5, 0.5]
+        }
+    }
+
+    fn traverse_full(
+        &self,
+        env: &Env,
+        traverser: usize,
+        weight: f64,
+        dr: &mut InfoTable,
+        ds: &mut InfoTable,
+        rng: &mut Rng,
+    ) -> f64 {
+        if !env.round_active() {
+            if env.is_game_over() {
+                return env.utility(traverser);
+            }
+            let round = env.round();
+            if round > MAX_ROUND {
+                return 0.0;
+            }
+            let mut next = Env::from_state([env.hearts(0), env.hearts(1)], round);
+            let cards = deal_from(rng);
+            next.deal_specific(cards).unwrap();
+            return self.traverse_full(&next, traverser, weight, dr, ds, rng);
+        }
+
+        let player = env.current_player();
+        let mask = env.deck_mask();
+        let can_draw = mask != 0;
+        let key = self.info_key(env, player);
+        let sigma = self.regret_matching_global(key, can_draw, dr);
+
+        if player == traverser {
+            let mut stood = env.clone();
+            stood.stand().unwrap();
+            let v_stand = self.traverse_full(&stood, traverser, weight, dr, ds, rng);
+            let mut v_draw = 0.0;
+            if can_draw {
+                let card = nth_deck_card(mask, rng.below(deck_count(mask)));
+                let mut drawn = env.clone();
+                drawn.draw_specific(card).unwrap();
+                v_draw = self.traverse_full(&drawn, traverser, weight, dr, ds, rng);
+            }
+            let node_v = sigma[STAND] * v_stand + sigma[DRAW] * v_draw;
+            let e = dr.entry(key).or_insert([0.0; 2]);
+            e[STAND] += v_stand - node_v;
+            if can_draw {
+                e[DRAW] += v_draw - node_v;
+            }
+            node_v
+        } else {
+            let e = ds.entry(key).or_insert([0.0; 2]);
+            e[STAND] += weight * sigma[STAND];
+            if can_draw {
+                e[DRAW] += weight * sigma[DRAW];
+            }
+            if can_draw && rng.unit() < sigma[DRAW] {
+                let card = nth_deck_card(mask, rng.below(deck_count(mask)));
+                let mut drawn = env.clone();
+                drawn.draw_specific(card).unwrap();
+                self.traverse_full(&drawn, traverser, weight, dr, ds, rng)
+            } else {
+                let mut stood = env.clone();
+                stood.stand().unwrap();
+                self.traverse_full(&stood, traverser, weight, dr, ds, rng)
+            }
+        }
+    }
+
     // ----- exact best response / exploitability -----------------------------
 
     /// Returns (best_response_value_player0, best_response_value_player1,

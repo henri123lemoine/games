@@ -46,21 +46,30 @@ def main() -> None:
         action="store_true",
         help="key information sets by the unseen-set abstraction (for the full game)",
     )
+    parser.add_argument(
+        "--budget-seconds",
+        type=float,
+        default=0.0,
+        help="train to a wall-clock budget instead of a fixed iteration count (fair comparison)",
+    )
+    parser.add_argument(
+        "--chunk-iters",
+        type=int,
+        default=10_000,
+        help="iters/subgame per training step in budget mode",
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="train on the whole multi-round game (solve_full) instead of decomposing",
+    )
     args = parser.parse_args()
 
     solver = build_solver(args.hearts, args.seed, args.abstract)
-    chunk = max(1, args.iters // args.chunks)
-    logger.info(
-        f"Training {args.hearts}-heart solver: {args.chunks} x {chunk} iters/subgame "
-        f"(eval_deals={args.eval_deals}, eval_every={args.eval_every})"
-    )
+    step_fn = solver.solve_full if args.full else solver.solve
 
-    def measure(step: int) -> None:
+    def measure(final: bool) -> None:
         if args.eval_deals < 0:
-            return
-        is_final = step == args.chunks
-        due = args.eval_every > 0 and step % args.eval_every == 0
-        if not (is_final or due):
             return
         t1 = time.perf_counter()
         br0, br1, nashconv = solver.exploitability(args.eval_deals, args.seed)
@@ -71,17 +80,39 @@ def main() -> None:
         )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    for step in range(1, args.chunks + 1):
-        t0 = time.perf_counter()
-        solver.solve(chunk)
-        train_s = time.perf_counter() - t0
-        logger.info(
-            f"[{step:>2}/{args.chunks}] iters={solver.iterations():>9} "
-            f"infosets={solver.num_infosets():>9} train={train_s:.1f}s"
-        )
-        measure(step)
-        solver.save(str(args.out))
 
+    if args.budget_seconds > 0:
+        logger.info(
+            f"Training {args.hearts}-heart solver to a {args.budget_seconds:.0f}s budget "
+            f"({args.chunk_iters} iters/subgame per step, abstract={args.abstract})"
+        )
+        start = time.perf_counter()
+        step = 0
+        while time.perf_counter() - start < args.budget_seconds:
+            step += 1
+            t0 = time.perf_counter()
+            step_fn(args.chunk_iters)
+            elapsed = time.perf_counter() - start
+            logger.info(
+                f"[{elapsed:6.1f}s] step={step} iters={solver.iterations():>9} "
+                f"infosets={solver.num_infosets():>9} (+{time.perf_counter() - t0:.1f}s)"
+            )
+            solver.save(str(args.out))
+    else:
+        chunk = max(1, args.iters // args.chunks)
+        logger.info(f"Training {args.hearts}-heart solver: {args.chunks} x {chunk} iters/subgame")
+        for step in range(1, args.chunks + 1):
+            t0 = time.perf_counter()
+            step_fn(chunk)
+            logger.info(
+                f"[{step:>2}/{args.chunks}] iters={solver.iterations():>9} "
+                f"infosets={solver.num_infosets():>9} train={time.perf_counter() - t0:.1f}s"
+            )
+            if args.eval_every > 0 and (step % args.eval_every == 0 or step == args.chunks):
+                measure(step == args.chunks)
+            solver.save(str(args.out))
+
+    measure(True)
     logger.info(f"Saved solver to {args.out} ({solver.num_infosets()} infosets)")
 
 

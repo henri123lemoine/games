@@ -389,6 +389,12 @@ impl Solver {
         self.inner.solve(iters_per_subgame);
     }
 
+    /// Train on the whole multi-round game (no subgame decomposition); `iters`
+    /// full-game traversals per call. Exact cross-round values, but sequential.
+    fn solve_full(&mut self, iters: u64) {
+        self.inner.solve_full(iters);
+    }
+
     /// Exact/sampled exploitability: returns (br0, br1, nashconv). With
     /// `deal_samples == 0` the opening deal of each round is enumerated exactly;
     /// otherwise it is Monte-Carlo sampled with the given `seed`.
