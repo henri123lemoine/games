@@ -1,0 +1,9 @@
+[package]
+name = "cfr-core"
+version = "0.1.0"
+edition = "2024"
+description = "Generic CFR algorithms (MCCFR+, exact best-response exploitability) over a Game trait"
+
+[lib]
+name = "cfr_core"
+path = "src/lib.rs"

@@ -1,0 +1,12 @@
+[package]
+name = "liars-dice"
+version = "0.1.0"
+edition = "2024"
+description = "Liar's Dice (imperfect-information variant) as a cfr-core Game"
+
+[lib]
+name = "liars_dice"
+path = "src/lib.rs"
+
+[dependencies]
+cfr-core = { workspace = true }
