@@ -1,12 +1,32 @@
-# Twenty-One
+# CFR / imperfect-information games lab
 
-A high-performance implementation of the Twenty-One card game designed for reinforcement learning research.
+This repo started as a Twenty-One solver and grew into a small framework for
+applying counterfactual-regret and search algorithms to imperfect-information
+games. Two parts:
 
-## Project Structure
+```
+cfr-core/            the algorithms — a Game trait, CFR+/MCCFR, exact
+                     exploitability, a game-agnostic arena (see cfr-core/README)
+games/
+  liars-dice/        N-player × D-dice × F-face Liar's Dice + strong belief and
+                     Monte-Carlo-rollout agents (see games/liars-dice/README)
+  twentyone/         Twenty-One expressed against the same Game trait
 
-**twentyone-core/**: Pure Rust game engine library
-**twentyone-py/**: Python bindings using PyO3
-**twentyone-rl/**: RL agents, training algorithms, and experiments
+twentyone-core/      the original, specialized Twenty-One engine + fast solver
+twentyone-py/        PyO3 bindings for it
+twentyone-rl/        the Twenty-One RL experiments / harness
+```
+
+`cargo test` / `cargo run -p liars-dice --example play 5 5 6` work at the root;
+the `twentyone-*` crates are a self-contained sub-project (excluded from the Cargo
+workspace) with their own `uv` flow, documented below.
+
+---
+
+# Twenty-One (the original sub-project)
+
+A high-performance implementation of the Twenty-One card game designed for
+reinforcement learning research.
 
 ## Quick Start
 
