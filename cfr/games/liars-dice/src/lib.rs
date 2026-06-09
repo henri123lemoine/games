@@ -322,6 +322,22 @@ mod tests {
     }
 
     #[test]
+    fn solved_strategy_beats_random_via_arena() {
+        use cfr_core::{Solver, win_rate};
+        let mut solver = Solver::new(LiarsDice::new(1, 3), 1);
+        solver.solve(500);
+        let game = LiarsDice::new(1, 3);
+        let mut hero =
+            |_g: &LiarsDice, s: &LdState, p: usize, r: f64| solver.sample_action(s, p, r);
+        let mut rando = |g: &LiarsDice, s: &LdState, _p: usize, r: f64| {
+            let n = g.legal_actions(s).len();
+            ((r * n as f64) as usize).min(n - 1)
+        };
+        let wr = win_rate(&game, &mut hero, &mut rando, 2000, 7);
+        assert!(wr > 0.55, "solved strategy should beat random, got {wr}");
+    }
+
+    #[test]
     fn hand_distribution_sums_to_one() {
         for &(dice, faces) in &[(1u8, 4u8), (2, 4), (2, 6), (3, 4)] {
             let dist = hand_distribution(dice, faces);

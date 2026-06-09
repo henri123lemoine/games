@@ -1,0 +1,13 @@
+[package]
+name = "twentyone-game"
+version = "0.1.0"
+edition = "2024"
+description = "Twenty-One expressed as a cfr-core Game (wraps twentyone-core's engine)"
+
+[lib]
+name = "twentyone_game"
+path = "src/lib.rs"
+
+[dependencies]
+cfr-core = { workspace = true }
+twentyone-core = { path = "../../../twentyone-core" }

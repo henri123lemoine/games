@@ -12,8 +12,10 @@
 //! nodes, legal actions, an information-set key per acting player, and terminal
 //! returns; the algorithms are written once against that interface.
 
+mod arena;
 mod solver;
 
+pub use arena::{Agent, play, win_rate};
 pub use solver::Solver;
 
 /// Whose turn it is at a node.

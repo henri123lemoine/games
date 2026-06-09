@@ -13,11 +13,19 @@ equilibrium-quality measurement. Same idea as OpenSpiel, scoped down.
   - `Solver::exploitability` — **exact** best-response exploitability (NashConv)
     over *information sets* (the best responder commits to one action per infoset,
     so no perfect-information "strategy fusion").
+  - `arena` — game-agnostic head-to-head (`play`, `win_rate`): any two agents in
+    any `Game`, so the same evaluation tooling works for every game.
   - `core/tests/kuhn.rs` — Kuhn poker, the canonical CFR correctness test.
 - `games/liars-dice/` (`liars-dice`) — the Liar's Dice variant from the companion
   project, implemented as a `Game` (private dice are chance-rolled each round, so
   it's modelled as the real imperfect-information game, not the env's
   roll-at-call simplification).
+- `games/twentyone/` (`twentyone-game`) — Twenty-One as a `Game`, wrapping the
+  engine in `twentyone-core` (the deal and each draw surface as chance nodes).
+  The full game is far too large for the generic full-tree solver, so this hosts
+  Twenty-One in the framework and validates the wrapper; the strong solver for the
+  real game stays the specialized decomposed one in `twentyone-core`. The same
+  `arena` runs on it unchanged.
 
 ## The `Game` trait
 
