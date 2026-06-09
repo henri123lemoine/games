@@ -1,10 +1,13 @@
 //! Exact game-theoretic solver for Twenty-One.
 //!
 //! Training uses External-Sampling Monte Carlo Counterfactual Regret
-//! Minimization (ES-MCCFR), which converges to a Nash equilibrium of this
-//! two-player zero-sum game. Regret and average-strategy tables are keyed on
-//! [`Env::sufficient_key`] — a *lossless* sufficient statistic that collapses
-//! the ~15M raw decision histories into strategically distinct information sets.
+//! Minimization with the CFR+ refinements (regrets clipped to non-negative,
+//! average strategy weighted linearly by iteration), which converges to a Nash
+//! equilibrium of this two-player zero-sum game. Regret and average-strategy
+//! tables are keyed on [`Env::sufficient_key`] — a *lossless* sufficient
+//! statistic that collapses raw decision histories into strategically distinct
+//! information sets. The game is solved subgame-by-subgame via backward
+//! induction over the (hearts0, hearts1, round) carry-over lattice.
 //!
 //! Quality is measured by exact best response: [`Solver::exploitability`] walks
 //! the full game tree (enumerating every chance event) to compute, for each
@@ -111,18 +114,6 @@ fn deal_from(rng: &mut Rng) -> [u8; 4] {
     [cards[0], cards[1], cards[2], cards[3]]
 }
 
-/// Sample a full deck order: the four opening cards followed by the order in
-/// which the remaining cards are drawn. Chance-sampling a whole permutation lets
-/// CFR+ enumerate only player actions per iteration.
-fn sample_perm(rng: &mut Rng) -> [u8; 11] {
-    let mut cards: [u8; 11] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-    for k in 0..10 {
-        let j = k + rng.below(11 - k);
-        cards.swap(k, j);
-    }
-    cards
-}
-
 impl Solver {
     pub fn new(seed: u64) -> Self {
         Self::with_hearts(seed, STARTING_HEARTS)
@@ -191,8 +182,15 @@ impl Solver {
     /// (h0, h1, round) is a shallow imperfect-information game; rounds are linked
     /// only by the public hearts/round carry-over (the deck is reshuffled with no
     /// hidden information surviving a round), so deeper rounds can be solved first
-    /// and supplied as exact continuation values. Each subgame is solved with
-    /// `iters_per_subgame` iterations of external-sampling MCCFR.
+    /// and supplied as exact continuation values.
+    ///
+    /// Each subgame is solved with `iters_per_subgame` iterations of
+    /// external-sampling MCCFR+: every iteration samples the opening deal, then
+    /// for each traverser walks the round tree enumerating only that player's two
+    /// actions while sampling the opponent's action and the drawn card (chance).
+    /// Per-iteration cost is therefore polynomial in the round depth, and
+    /// regret/strategy use CFR+ (clipped regrets, linear averaging) for fast
+    /// convergence.
     pub fn solve(&mut self, iters_per_subgame: u64) {
         for round in (1..=MAX_ROUND).rev() {
             for h0 in 1..=self.start_hearts {
@@ -205,15 +203,77 @@ impl Solver {
     }
 
     fn solve_round(&mut self, h0: u8, h1: u8, round: u8, iters: u64) {
+        let base = Env::from_state([h0, h1], round);
         for t in 1..=iters {
-            let perm = sample_perm(&mut self.rng);
-            let mut env = Env::from_state([h0, h1], round);
-            env.deal_specific([perm[0], perm[1], perm[2], perm[3]])
-                .unwrap();
-            self.cfr_plus(&env, &perm, 4, 1.0, 1.0, t as f64);
+            let weight = (self.iterations + t) as f64;
+            for traverser in 0..2 {
+                let cards = deal_from(&mut self.rng);
+                let mut env = base.clone();
+                env.deal_specific(cards).unwrap();
+                self.traverse(&env, traverser, weight);
+            }
         }
         let v0 = self.estimate_round_value(h0, h1, round, VALUE_SAMPLES);
         self.value.insert(round_state_key(h0, h1, round), v0);
+    }
+
+    /// One external-sampling MCCFR+ traversal of a single round, returning the
+    /// counterfactual value to `traverser`. At the traverser's nodes both actions
+    /// are evaluated and regrets updated (CFR+, clipped); the drawn card after a
+    /// Draw is sampled. At the opponent's nodes the action is sampled from the
+    /// current strategy and the average strategy is accumulated (weighted by
+    /// `weight` for linear CFR+ averaging). The cross-round continuation value is
+    /// substituted when a non-terminal round ends.
+    fn traverse(&mut self, env: &Env, traverser: usize, weight: f64) -> f64 {
+        if !env.round_active() {
+            if env.is_game_over() {
+                return env.utility(traverser);
+            }
+            let v0 = self.continuation_for_p0(env.hearts(0), env.hearts(1), env.round());
+            return if traverser == 0 { v0 } else { -v0 };
+        }
+
+        let player = env.current_player();
+        let mask = env.deck_mask();
+        let can_draw = mask != 0;
+        let key = env.sufficient_key(player);
+        let sigma = self.regret_matching(key, can_draw);
+
+        if player == traverser {
+            let mut stood = env.clone();
+            stood.stand().unwrap();
+            let v_stand = self.traverse(&stood, traverser, weight);
+            let mut v_draw = 0.0;
+            if can_draw {
+                let card = nth_deck_card(mask, self.rng.below(deck_count(mask)));
+                let mut drawn = env.clone();
+                drawn.draw_specific(card).unwrap();
+                v_draw = self.traverse(&drawn, traverser, weight);
+            }
+            let node_v = sigma[STAND] * v_stand + sigma[DRAW] * v_draw;
+            let entry = self.regret.entry(key).or_insert([0.0; 2]);
+            entry[STAND] = (entry[STAND] + v_stand - node_v).max(0.0);
+            if can_draw {
+                entry[DRAW] = (entry[DRAW] + v_draw - node_v).max(0.0);
+            }
+            node_v
+        } else {
+            let s = self.strategy_sum.entry(key).or_insert([0.0; 2]);
+            s[STAND] += weight * sigma[STAND];
+            if can_draw {
+                s[DRAW] += weight * sigma[DRAW];
+            }
+            if can_draw && self.rng.unit() < sigma[DRAW] {
+                let card = nth_deck_card(mask, self.rng.below(deck_count(mask)));
+                let mut drawn = env.clone();
+                drawn.draw_specific(card).unwrap();
+                self.traverse(&drawn, traverser, weight)
+            } else {
+                let mut stood = env.clone();
+                stood.stand().unwrap();
+                self.traverse(&stood, traverser, weight)
+            }
+        }
     }
 
     /// Monte-Carlo estimate (to player 0) of a round subgame under the current
@@ -265,75 +325,6 @@ impl Solver {
             .get(&round_state_key(h0, h1, round))
             .copied()
             .unwrap_or(0.0)
-    }
-
-    /// One CFR+ traversal of a single round over a chance-sampled deck order
-    /// `perm` (deck consumed in order; `draw_idx` is the next card to be drawn).
-    /// Both players' actions are enumerated; regrets use CFR+ (non-negative,
-    /// clipped) and the average strategy is weighted linearly by iteration. Round
-    /// end substitutes the already-solved continuation value. Returns the node
-    /// value to player 0.
-    fn cfr_plus(
-        &mut self,
-        env: &Env,
-        perm: &[u8; 11],
-        draw_idx: usize,
-        reach0: f64,
-        reach1: f64,
-        weight: f64,
-    ) -> f64 {
-        if !env.round_active() {
-            if env.is_game_over() {
-                return env.utility(0);
-            }
-            return self.continuation_for_p0(env.hearts(0), env.hearts(1), env.round());
-        }
-
-        let player = env.current_player();
-        let can_draw = env.deck_mask() != 0;
-        let key = env.sufficient_key(player);
-        let sigma = self.regret_matching(key, can_draw);
-
-        let (sr0, sr1) = if player == 0 {
-            (reach0 * sigma[STAND], reach1)
-        } else {
-            (reach0, reach1 * sigma[STAND])
-        };
-        let mut stood = env.clone();
-        stood.stand().unwrap();
-        let v_stand = self.cfr_plus(&stood, perm, draw_idx, sr0, sr1, weight);
-
-        let mut v_draw = 0.0;
-        if can_draw {
-            let (dr0, dr1) = if player == 0 {
-                (reach0 * sigma[DRAW], reach1)
-            } else {
-                (reach0, reach1 * sigma[DRAW])
-            };
-            let mut drawn = env.clone();
-            drawn.draw_specific(perm[draw_idx]).unwrap();
-            v_draw = self.cfr_plus(&drawn, perm, draw_idx + 1, dr0, dr1, weight);
-        }
-
-        let node_v0 = sigma[STAND] * v_stand + sigma[DRAW] * v_draw;
-
-        // Counterfactual regret update for `player`, in their own sign.
-        let sign = if player == 0 { 1.0 } else { -1.0 };
-        let node_vp = sign * node_v0;
-        let cf_reach = if player == 0 { reach1 } else { reach0 };
-        let reach_p = if player == 0 { reach0 } else { reach1 };
-        let entry = self.regret.entry(key).or_insert([0.0; 2]);
-        entry[STAND] = (entry[STAND] + cf_reach * (sign * v_stand - node_vp)).max(0.0);
-        if can_draw {
-            entry[DRAW] = (entry[DRAW] + cf_reach * (sign * v_draw - node_vp)).max(0.0);
-        }
-        let s = self.strategy_sum.entry(key).or_insert([0.0; 2]);
-        s[STAND] += weight * reach_p * sigma[STAND];
-        if can_draw {
-            s[DRAW] += weight * reach_p * sigma[DRAW];
-        }
-
-        node_v0
     }
 
     // ----- exact best response / exploitability -----------------------------
@@ -553,10 +544,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cfr_plus_reduces_exploitability() {
-        // CFR+ must drive exact exploitability down substantially with more
-        // iterations (validating the solver converges toward Nash). The full game
-        // is too large to reach ~0 in a unit test, so we assert a clear drop.
+    fn solver_reduces_exploitability() {
+        // External-sampling MCCFR+ must drive exact exploitability down
+        // substantially with more iterations (validating convergence toward Nash).
+        // The game is too large to reach ~0 in a unit test, so we assert a clear
+        // drop rather than near-zero.
         let mut weak = Solver::with_hearts(1, 1);
         weak.solve(300);
         let (_, _, nc_weak) = weak.exploitability(0, 0);
