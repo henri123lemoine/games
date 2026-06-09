@@ -7,7 +7,7 @@
 use std::io::{self, Write};
 
 use cfr_core::{Agent, Game, Turn};
-use liars_dice::{Action, LiarsDice, ProbabilisticAgent};
+use liars_dice::{Action, LiarsDice, ProbConfig, RolloutAgent};
 
 struct Rng(u64);
 impl Rng {
@@ -34,11 +34,13 @@ fn main() {
     let faces: u8 = arg(3, 6);
     let seed: u64 = arg(4, 0xD1CED1CE);
 
+    let rollouts: u32 = arg(5, 400);
     let game = LiarsDice::new(players, dice, faces);
-    let bot = ProbabilisticAgent::default_agent();
+    let bot = RolloutAgent::new(rollouts, ProbConfig::default(), seed ^ 0xBADC0DE);
     let mut rng = Rng(seed | 1);
 
     println!("Liar's Dice — {players} players, {dice} dice each, faces 1..={faces}.");
+    println!("(bots use Monte-Carlo lookahead, {rollouts} rollouts/decision)");
     println!(
         "You are Player 0; Players 1..{} are the bot.\n",
         players - 1
