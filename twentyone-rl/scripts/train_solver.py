@@ -65,6 +65,7 @@ def main() -> None:
             f"(br0={br0:+.4f} br1={br1:+.4f}) eval={eval_s:.1f}s"
         )
 
+    args.out.parent.mkdir(parents=True, exist_ok=True)
     for step in range(1, args.chunks + 1):
         t0 = time.perf_counter()
         solver.solve(chunk)
@@ -74,9 +75,8 @@ def main() -> None:
             f"infosets={solver.num_infosets():>9} train={train_s:.1f}s"
         )
         measure(step)
+        solver.save(str(args.out))
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    solver.save(str(args.out))
     logger.info(f"Saved solver to {args.out} ({solver.num_infosets()} infosets)")
 
 

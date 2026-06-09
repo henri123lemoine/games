@@ -38,11 +38,12 @@ def main() -> None:
         f"{solver.num_infosets()} infosets"
     )
 
-    br0, br1, nashconv = solver.exploitability(args.eval_deals, args.seed)
-    logger.info(
-        f"Exploitability={nashconv / 2:.4f} (nashconv={nashconv:.4f}, "
-        f"br0={br0:+.4f} br1={br1:+.4f}); utilities in [-1, 1]"
-    )
+    if args.eval_deals >= 0:
+        br0, br1, nashconv = solver.exploitability(args.eval_deals, args.seed)
+        logger.info(
+            f"Exploitability={nashconv / 2:.4f} (nashconv={nashconv:.4f}, "
+            f"br0={br0:+.4f} br1={br1:+.4f}); utilities in [-1, 1]"
+        )
 
     print(f"\n{'Opponent':<16}{'Solver win%':>14}{'95% CI':>20}{'record (W-L-D)':>18}")
     print("-" * 68)

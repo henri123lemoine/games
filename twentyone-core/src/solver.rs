@@ -84,6 +84,27 @@ fn round_state_key(h0: u8, h1: u8, round: u8) -> u32 {
     (h0 as u32) | ((h1 as u32) << 4) | ((round as u32) << 8)
 }
 
+/// All (h0, h1, round) subgames reachable from the (start, start, 1) opening,
+/// following the three round outcomes (p0 wins → h1 -= round, p1 wins →
+/// h0 -= round, tie → unchanged), each advancing the round by one up to
+/// [`MAX_ROUND`]. Only states with both players alive are returned.
+fn reachable_subgames(start: u8) -> Vec<(u8, u8, u8)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![(start, start, 1u8)];
+    while let Some(s @ (h0, h1, round)) = stack.pop() {
+        if h0 == 0 || h1 == 0 || round > MAX_ROUND || !seen.insert(s) {
+            continue;
+        }
+        let next = round + 1;
+        if next <= MAX_ROUND {
+            stack.push((h0, h1.saturating_sub(round), next));
+            stack.push((h0.saturating_sub(round), h1, next));
+            stack.push((h0, h1, next));
+        }
+    }
+    seen.into_iter().collect()
+}
+
 #[inline]
 fn deck_count(mask: u16) -> usize {
     mask.count_ones() as usize
@@ -192,12 +213,15 @@ impl Solver {
     /// regret/strategy use CFR+ (clipped regrets, linear averaging) for fast
     /// convergence.
     pub fn solve(&mut self, iters_per_subgame: u64) {
-        for round in (1..=MAX_ROUND).rev() {
-            for h0 in 1..=self.start_hearts {
-                for h1 in 1..=self.start_hearts {
-                    self.solve_round(h0, h1, round, iters_per_subgame);
-                }
-            }
+        // Solve only subgames reachable from the start, in descending round order
+        // so each subgame's cross-round continuations are already solved (a tie
+        // keeps hearts and advances the round; a decided round reduces a heart
+        // count). Unreachable (hearts, round) carry-overs never occur in play or
+        // as continuations, so skipping them is exact.
+        let mut subgames = reachable_subgames(self.start_hearts);
+        subgames.sort_unstable_by(|a, b| b.2.cmp(&a.2));
+        for (h0, h1, round) in subgames {
+            self.solve_round(h0, h1, round, iters_per_subgame);
         }
         self.iterations += iters_per_subgame;
     }
