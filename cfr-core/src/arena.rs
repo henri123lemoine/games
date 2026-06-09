@@ -35,7 +35,17 @@ impl Rng {
 /// Play one game; `agents[p]` controls player `p`. Returns the winning player
 /// (greatest terminal return; ties broken by lowest index).
 pub fn play_n<G: Game>(game: &G, agents: &[&dyn Agent<G>], rng: &mut Rng) -> usize {
-    let mut s = game.initial_state();
+    playout_from(game, game.initial_state(), agents, rng)
+}
+
+/// Like [`play_n`] but starting from an arbitrary (e.g. mid-game) state — used
+/// for Monte-Carlo rollouts.
+pub fn playout_from<G: Game>(
+    game: &G,
+    mut s: G::State,
+    agents: &[&dyn Agent<G>],
+    rng: &mut Rng,
+) -> usize {
     while !game.is_terminal(&s) {
         match game.turn(&s) {
             Turn::Chance => {

@@ -16,7 +16,7 @@ mod arena;
 mod mccfr;
 mod solver;
 
-pub use arena::{Agent, Rng, play, play_n, win_rate, winrate_vs_field};
+pub use arena::{Agent, Rng, play, play_n, playout_from, win_rate, winrate_vs_field};
 pub use mccfr::Mccfr;
 pub use solver::Solver;
 

@@ -3,7 +3,9 @@
 //! distribution (each unknown die shows a given face with probability `1/faces`,
 //! since 1s are not wild), which scales to any number of players and dice.
 
-use cfr_core::{Agent, Game};
+use std::cell::Cell;
+
+use cfr_core::{Agent, Game, Rng, playout_from};
 
 use crate::{Action, LdState, LiarsDice};
 
@@ -223,6 +225,71 @@ impl Agent<LiarsDice> for ProbabilisticAgent {
         let desired = self.choose(game, state, player, r);
         let actions = game.legal_actions(state);
         actions.iter().position(|&a| a == desired).unwrap_or(0)
+    }
+}
+
+/// Monte-Carlo lookahead: at each decision, *determinize* (resample opponents'
+/// hidden dice consistent with my own hand), play each candidate action forward
+/// to the end with the probabilistic policy on every seat, and choose the action
+/// with the highest estimated win probability. Strictly stronger than its
+/// rollout policy when given enough rollouts, and scales to any size.
+pub struct RolloutAgent {
+    pub rollouts: u32,
+    pub policy: ProbConfig,
+    /// Skip the search (defer to the policy) at nodes with more than this many
+    /// actions — i.e. the wide opening node — to stay fast.
+    pub cand_cap: usize,
+    rng: Cell<u64>,
+}
+
+impl RolloutAgent {
+    pub fn new(rollouts: u32, policy: ProbConfig, seed: u64) -> Self {
+        Self {
+            rollouts,
+            policy,
+            cand_cap: 8,
+            rng: Cell::new(seed | 1),
+        }
+    }
+}
+
+impl Agent<LiarsDice> for RolloutAgent {
+    fn act(&self, game: &LiarsDice, state: &LdState, player: usize, r: f64) -> usize {
+        let actions = game.legal_actions(state);
+        let base = ProbabilisticAgent::new(self.policy);
+        if actions.len() > self.cand_cap {
+            return base.act(game, state, player, r);
+        }
+        let mut rng = Rng::new(self.rng.get() ^ r.to_bits());
+        self.rng.set(
+            self.rng
+                .get()
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1),
+        );
+        let n = game.num_players();
+        let seats: Vec<&dyn Agent<LiarsDice>> =
+            (0..n).map(|_| &base as &dyn Agent<LiarsDice>).collect();
+
+        let mut best_i = 0;
+        let mut best_wr = -1.0;
+        for (i, &a) in actions.iter().enumerate() {
+            let mut wins = 0u32;
+            for _ in 0..self.rollouts {
+                let mut sim = state.clone();
+                game.resample_hidden(&mut sim, player, &mut rng);
+                game.apply(&mut sim, a);
+                if playout_from(game, sim, &seats, &mut rng) == player {
+                    wins += 1;
+                }
+            }
+            let wr = wins as f64 / self.rollouts as f64;
+            if wr > best_wr {
+                best_wr = wr;
+                best_i = i;
+            }
+        }
+        best_i
     }
 }
 

@@ -18,7 +18,7 @@ use std::hash::{Hash, Hasher};
 use cfr_core::{Game, Turn};
 
 mod agents;
-pub use agents::{ProbConfig, ProbabilisticAgent, RandomAgent};
+pub use agents::{ProbConfig, ProbabilisticAgent, RandomAgent, RolloutAgent};
 
 pub const MAX_FACES: usize = 6;
 pub const MAX_PLAYERS: usize = 8;
@@ -140,6 +140,24 @@ impl LiarsDice {
         s.hist = [0; HIST_K];
         s.rolled = 0;
         s.hands = [[0; MAX_FACES]; MAX_PLAYERS];
+    }
+
+    /// Replace every player's hand *except* `observer`'s with a fresh uniform
+    /// roll of their remaining dice — a determinization consistent with what
+    /// `observer` knows (their own hand and the public dice counts), for
+    /// Monte-Carlo rollouts.
+    pub fn resample_hidden(&self, s: &mut LdState, observer: usize, rng: &mut cfr_core::Rng) {
+        for p in 0..self.players as usize {
+            if p == observer {
+                continue;
+            }
+            let mut counts = [0u8; MAX_FACES];
+            for _ in 0..s.dice_left[p] {
+                let face = ((rng.unit() * self.faces as f64) as usize).min(self.faces as usize - 1);
+                counts[face] += 1;
+            }
+            s.hands[p] = counts;
+        }
     }
 
     pub fn action_label(&self, a: Action) -> String {
