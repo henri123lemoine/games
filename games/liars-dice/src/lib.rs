@@ -48,6 +48,7 @@ pub struct LdState {
     last_bidder: u8, // who owns the current bid (for call resolution)
     first_round: bool,
     hist: [u8; HIST_K],
+    endorsed: [u8; MAX_PLAYERS], // face each player last bid this round (0 = none)
     rounds: u8,
     done: bool,
     winner: u8,
@@ -138,6 +139,7 @@ impl LiarsDice {
         s.face = 0;
         s.first_round = false;
         s.hist = [0; HIST_K];
+        s.endorsed = [0; MAX_PLAYERS];
         s.rolled = 0;
         s.hands = [[0; MAX_FACES]; MAX_PLAYERS];
     }
@@ -145,10 +147,19 @@ impl LiarsDice {
     /// Replace every player's hand *except* `observer`'s with a fresh roll of
     /// their remaining dice — a determinization consistent with what `observer`
     /// knows (their own hand and the public dice counts), for Monte-Carlo
-    /// rollouts. The current bid's owner is biased toward credibly holding the
-    /// bid face (bidders usually have some), which makes the sampled worlds more
-    /// realistic than a uniform roll.
-    pub fn resample_hidden(&self, s: &mut LdState, observer: usize, rng: &mut cfr_core::Rng) {
+    /// rollouts. Players who bid this round are biased toward credibly holding
+    /// the face they last bid: with probability `bidder_bias` (current bidder)
+    /// or `endorser_bias` (earlier bidders), one die is converted to that face
+    /// if they hold none. The forced 1×1 opener has no endorsement, so nobody is
+    /// credited with a face they never chose.
+    pub fn resample_hidden(
+        &self,
+        s: &mut LdState,
+        observer: usize,
+        rng: &mut cfr_core::Rng,
+        bidder_bias: f64,
+        endorser_bias: f64,
+    ) {
         for p in 0..self.players as usize {
             if p == observer {
                 continue;
@@ -158,11 +169,16 @@ impl LiarsDice {
                 let face = ((rng.unit() * self.faces as f64) as usize).min(self.faces as usize - 1);
                 counts[face] += 1;
             }
-            // Credit the current bidder with holding their face, sometimes.
-            if p == s.last_bidder as usize && s.face > 0 && s.dice_left[p] > 0 {
-                let f = (s.face - 1) as usize;
-                if counts[f] == 0 && rng.unit() < 0.6 {
-                    // Convert one random die into the bid face.
+            let endorsed = s.endorsed[p];
+            if endorsed > 0 && s.dice_left[p] > 0 {
+                let f = (endorsed - 1) as usize;
+                let strength = if p == s.last_bidder as usize {
+                    bidder_bias
+                } else {
+                    endorser_bias
+                };
+                if counts[f] == 0 && rng.unit() < strength {
+                    // Convert one random die into the endorsed face.
                     for c in counts.iter_mut() {
                         if *c > 0 {
                             *c -= 1;
@@ -288,6 +304,7 @@ impl Game for LiarsDice {
             last_bidder: self.players - 1, // phantom owner of the forced 1x1
             first_round: true,
             hist: [0; HIST_K],
+            endorsed: [0; MAX_PLAYERS],
             rounds: 1,
             done: false,
             winner: 0,
@@ -358,12 +375,14 @@ impl Game for LiarsDice {
                 s.qty = q;
                 s.face = f;
                 self.push_hist(s, encode(a, self.faces));
+                s.endorsed[s.turn as usize] = s.face;
                 s.last_bidder = s.turn;
                 s.turn = self.next_alive(s, s.turn);
             }
             Action::RaiseQuantity => {
                 s.qty += 1;
                 self.push_hist(s, encode(a, self.faces));
+                s.endorsed[s.turn as usize] = s.face;
                 s.last_bidder = s.turn;
                 s.turn = self.next_alive(s, s.turn);
             }
@@ -375,6 +394,7 @@ impl Game for LiarsDice {
                     s.qty += 1;
                 }
                 self.push_hist(s, encode(a, self.faces));
+                s.endorsed[s.turn as usize] = s.face;
                 s.last_bidder = s.turn;
                 s.turn = self.next_alive(s, s.turn);
             }
@@ -422,6 +442,7 @@ impl Game for LiarsDice {
         s.last_bidder.hash(&mut h);
         s.first_round.hash(&mut h);
         s.hist.hash(&mut h);
+        s.endorsed[..self.players as usize].hash(&mut h);
         s.done.hash(&mut h);
         Some(h.finish())
     }

@@ -34,7 +34,7 @@ fn main() {
     let faces: u8 = arg(3, 6);
     let seed: u64 = arg(4, 0xD1CED1CE);
 
-    let rollouts: u32 = arg(5, 400);
+    let rollouts: u32 = arg(5, 1000);
     let game = LiarsDice::new(players, dice, faces);
     let bot = RolloutAgent::new(rollouts, ProbConfig::default(), seed ^ 0xBADC0DE);
     let mut rng = Rng(seed | 1);
