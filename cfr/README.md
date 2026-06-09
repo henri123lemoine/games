@@ -65,6 +65,12 @@ best response):
 $ cargo run --release -p liars-dice --example exploitability 1 3
 ```
 
+**Play it.** Beat (or lose to) the freshly-solved strategy in the terminal:
+
+```
+$ cargo run --release -p liars-dice --example play 1 3
+```
+
 ## Status and scope
 
 Training is **vanilla CFR+** — exact and simple, but it walks the whole game tree
@@ -74,3 +80,7 @@ get an honest exploitability curve. Scaling to the full 2×4 config (or large
 Liar's Dice) needs Monte-Carlo sampling (MCCFR) in `Solver::solve` — the natural
 next optimization; the `Game` interface and the exact-exploitability yardstick
 stay the same.
+
+Serving here is the terminal `play` example. A browser UI is intentionally not
+re-built: the companion Liar's Dice repo already ships one against a Python
+inference server, which could call a solver exported from this crate.

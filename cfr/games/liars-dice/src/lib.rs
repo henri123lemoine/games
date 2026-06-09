@@ -48,6 +48,29 @@ pub struct LdState {
     draw: bool, // reached the round cap with both players alive
 }
 
+impl LdState {
+    /// `player`'s own dice as face values (their private information).
+    pub fn hand(&self, player: usize) -> Vec<u8> {
+        let mut dice = Vec::new();
+        for (i, &c) in self.hands[player].iter().enumerate() {
+            for _ in 0..c {
+                dice.push(i as u8 + 1);
+            }
+        }
+        dice
+    }
+
+    /// The current bid `(quantity, face)`; `(0, 0)` means the opening state.
+    pub fn current_bid(&self) -> (u8, u8) {
+        (self.qty, self.face)
+    }
+
+    /// Dice remaining for each player (public).
+    pub fn dice_left(&self) -> [u8; 2] {
+        self.dice_left
+    }
+}
+
 /// Liar's Dice configuration (2 players assumed).
 pub struct LiarsDice {
     pub dice: u8,
@@ -80,6 +103,18 @@ impl LiarsDice {
     pub fn with_max_rounds(mut self, max_rounds: u8) -> Self {
         self.max_rounds = max_rounds;
         self
+    }
+
+    /// Human-readable label for an action (for play UIs).
+    pub fn action_label(&self, a: Action) -> String {
+        match a {
+            Action::RaiseQuantity => "raise quantity".into(),
+            Action::RaiseFace => "raise face".into(),
+            Action::CallLiar => "call LIAR".into(),
+            Action::CallExact => "call EXACT".into(),
+            Action::Open(q, f) => format!("open {q}x{f}"),
+            Action::Roll(_) => "roll".into(),
+        }
     }
 
     fn count_face(&self, s: &LdState, face: u8) -> u8 {
