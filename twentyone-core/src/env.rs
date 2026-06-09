@@ -174,6 +174,24 @@ impl Env {
         }
     }
 
+    /// Construct an environment paused between rounds at a given hearts/round
+    /// state (no active round, RNG seeded deterministically). Used by the solver
+    /// to evaluate round subgames independently.
+    pub fn from_state(hearts: [u8; 2], round: u8) -> Self {
+        Self {
+            hearts,
+            round,
+            current_player: 0,
+            round_state: None,
+            last_reveal_down: None,
+            last_public_up: None,
+            preset_decks: Vec::new(),
+            preset_round_index: 0,
+            rng: XorShift64::seed(0x1234_5678_9ABC_DEF0),
+            game_over: hearts[0] == 0 || hearts[1] == 0,
+        }
+    }
+
     /// Current round number (starts at 1).
     pub fn round(&self) -> u8 {
         self.round
@@ -263,54 +281,63 @@ impl Env {
         }
     }
 
-    /// Take an action for the current player.
-    /// Take an action for the current player.
-    /// Returns whether the round or game ended and the round outcome.
+    /// Take an action for the current player, drawing from the internal RNG.
+    ///
+    /// This is the self-play / interactive entry point. For solver search where
+    /// chance must be controlled, use [`Env::draw_specific`] and [`Env::stand`].
     pub fn step(&mut self, action: Action) -> Result<StepResult, EnvError> {
         if self.game_over {
             return Err(EnvError::GameOver);
         }
         let mut rs = self.round_state.take().ok_or(EnvError::NoActiveRound)?;
         let p = self.current_player as usize;
-        let mut will_end_by_consec = false;
         match action {
             Action::Draw => {
                 if rs.deck_count() == 0 {
                     return Err(EnvError::InvalidAction("no cards remaining"));
                 }
                 let c = self.draw_card(&mut rs)?;
-                {
-                    let me = &mut rs.players[p];
-                    me.total = me.total.saturating_add(c);
-                    me.draws = me.draws.saturating_add(1);
-                    me.last_action_stand = false;
-                    if (me.up_len as usize) < me.up_cards.len() {
-                        me.up_cards[me.up_len as usize] = c;
-                        me.up_len = me.up_len.saturating_add(1);
-                    }
-                    if me.total > TARGET {
-                        me.bust = true;
-                    }
-                }
-                rs.prev_stand = false;
+                Self::apply_draw_to(&mut rs, p, c);
+                Ok(self.resolve_step(rs, false))
             }
             Action::Stand => {
-                // eprintln!("prev_stand before={}", rs.prev_stand);
-                rs.players[p].last_action_stand = true;
-                will_end_by_consec = rs.prev_stand;
-                rs.prev_stand = true;
-                // increment via prev_stand flag below
+                let will_end = Self::apply_stand_to(&mut rs, p);
+                Ok(self.resolve_step(rs, will_end))
             }
         }
+    }
 
-        // Determine if round ends
+    /// Record a drawn card `c` for player `p` within the round state.
+    fn apply_draw_to(rs: &mut RoundState, p: usize, c: u8) {
+        let me = &mut rs.players[p];
+        me.total = me.total.saturating_add(c);
+        me.draws = me.draws.saturating_add(1);
+        me.last_action_stand = false;
+        if (me.up_len as usize) < me.up_cards.len() {
+            me.up_cards[me.up_len as usize] = c;
+            me.up_len = me.up_len.saturating_add(1);
+        }
+        if me.total > TARGET {
+            me.bust = true;
+        }
+        rs.prev_stand = false;
+    }
+
+    /// Record a stand for player `p`. Returns whether this ends the round
+    /// (two consecutive stands).
+    fn apply_stand_to(rs: &mut RoundState, p: usize) -> bool {
+        rs.players[p].last_action_stand = true;
+        let will_end = rs.prev_stand;
+        rs.prev_stand = true;
+        will_end
+    }
+
+    /// Resolve a round after an action: either end the round (and possibly the
+    /// game) or hand the turn to the other player.
+    fn resolve_step(&mut self, rs: RoundState, will_end_by_consec: bool) -> StepResult {
         let deck_empty = rs.deck_count() == 0;
-        let mut round_over = false;
-        let mut outcome = None;
         if will_end_by_consec || deck_empty {
-            round_over = true;
             let (winner, damage) = self.evaluate_winner(&rs);
-            outcome = Some(RoundOutcome { winner, damage });
             self.last_reveal_down = Some([rs.players[0].face_down, rs.players[1].face_down]);
             self.last_public_up = Some((
                 rs.players[0].up_cards,
@@ -320,31 +347,201 @@ impl Env {
             ));
             if let Some(w) = winner {
                 let loser = 1 - w;
-                let dmg = damage;
-                self.hearts[loser] = self.hearts[loser].saturating_sub(dmg);
+                self.hearts[loser] = self.hearts[loser].saturating_sub(damage);
                 if self.hearts[loser] == 0 {
                     self.game_over = true;
                 }
             }
-            // Prepare for next round
             self.round = self.round.saturating_add(1);
             self.current_player = 0;
             self.round_state = None;
-            return Ok(StepResult {
-                round_over,
+            return StepResult {
+                round_over: true,
                 game_over: self.game_over,
-                outcome,
-            });
+                outcome: Some(RoundOutcome { winner, damage }),
+            };
         }
-
-        // Continue the round; switch player
         self.current_player ^= 1;
         self.round_state = Some(rs);
-        Ok(StepResult {
-            round_over,
+        StepResult {
+            round_over: false,
             game_over: false,
-            outcome,
-        })
+            outcome: None,
+        }
+    }
+
+    /// Whether the game has ended (a player reached 0 hearts).
+    pub fn is_game_over(&self) -> bool {
+        self.game_over
+    }
+
+    /// Whether a round is currently in progress (cards dealt, awaiting actions).
+    pub fn round_active(&self) -> bool {
+        self.round_state.is_some()
+    }
+
+    /// Terminal utility for `player`: +1 if they are the surviving winner, else -1.
+    pub fn utility(&self, player: usize) -> f64 {
+        if self.hearts[player] > 0 { 1.0 } else { -1.0 }
+    }
+
+    /// The 11-bit deck mask for the active round (bit `i` set => card `i+1`
+    /// remains). Zero if no round is active. Allocation-free hot path for solvers.
+    pub fn deck_mask(&self) -> u16 {
+        self.round_state
+            .as_ref()
+            .map(|rs| rs.deck_mask)
+            .unwrap_or(0)
+    }
+
+    /// The cards still in the deck for the active round (true, god's-eye view).
+    /// Empty if no round is active.
+    pub fn remaining_deck(&self) -> Vec<u8> {
+        match &self.round_state {
+            Some(rs) => (0..NUM_CARDS as u16)
+                .filter(|i| rs.deck_mask & (1 << i) != 0)
+                .map(|i| (i + 1) as u8)
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Begin a round by dealing four specific cards in dealing order
+    /// (p0 face-up, p1 face-up, p0 face-down, p1 face-down), bypassing the RNG.
+    ///
+    /// This is the controllable-chance counterpart of [`Env::start_new_round`],
+    /// used to enumerate the deal during exact best-response search. Always draws
+    /// from the full 1..=11 deck (preset decks are ignored).
+    pub fn deal_specific(&mut self, cards: [u8; 4]) -> Result<(), EnvError> {
+        if self.game_over {
+            return Err(EnvError::GameOver);
+        }
+        if self.round_state.is_some() {
+            return Err(EnvError::InvalidAction("round already in progress"));
+        }
+        let mut rs = RoundState::new_with_mask_and_order(0x7FF, None);
+        for &c in &cards {
+            let bit = Self::card_bit(c)?;
+            if rs.deck_mask & bit == 0 {
+                return Err(EnvError::InvalidAction("card not available to deal"));
+            }
+            rs.deck_mask &= !bit;
+        }
+        rs.players[0].face_up = cards[0];
+        rs.players[1].face_up = cards[1];
+        rs.players[0].face_down = cards[2];
+        rs.players[1].face_down = cards[3];
+        rs.players[0].total = cards[0].saturating_add(cards[2]);
+        rs.players[1].total = cards[1].saturating_add(cards[3]);
+        rs.players[0].up_cards[0] = cards[0];
+        rs.players[0].up_len = 1;
+        rs.players[1].up_cards[0] = cards[1];
+        rs.players[1].up_len = 1;
+        self.round_state = Some(rs);
+        self.current_player = 0;
+        Ok(())
+    }
+
+    /// Draw a specific card for the current player, bypassing the RNG.
+    /// The controllable-chance counterpart of `step(Action::Draw)`.
+    pub fn draw_specific(&mut self, card: u8) -> Result<StepResult, EnvError> {
+        if self.game_over {
+            return Err(EnvError::GameOver);
+        }
+        let mut rs = self.round_state.take().ok_or(EnvError::NoActiveRound)?;
+        let bit = Self::card_bit(card)?;
+        if rs.deck_mask & bit == 0 {
+            return Err(EnvError::InvalidAction("card not available to draw"));
+        }
+        rs.deck_mask &= !bit;
+        let p = self.current_player as usize;
+        Self::apply_draw_to(&mut rs, p, card);
+        Ok(self.resolve_step(rs, false))
+    }
+
+    /// Stand for the current player (chance-free; the controllable counterpart
+    /// of `step(Action::Stand)`).
+    pub fn stand(&mut self) -> Result<StepResult, EnvError> {
+        if self.game_over {
+            return Err(EnvError::GameOver);
+        }
+        let mut rs = self.round_state.take().ok_or(EnvError::NoActiveRound)?;
+        let p = self.current_player as usize;
+        let will_end = Self::apply_stand_to(&mut rs, p);
+        Ok(self.resolve_step(rs, will_end))
+    }
+
+    fn card_bit(card: u8) -> Result<u16, EnvError> {
+        if card < 1 || card as usize > NUM_CARDS {
+            return Err(EnvError::InvalidAction("card out of range"));
+        }
+        Ok(1u16 << (card as u16 - 1))
+    }
+
+    /// A packed, lossless sufficient-statistic key for `player`'s current
+    /// information set, used to share regret/strategy across strategically
+    /// equivalent histories.
+    ///
+    /// Two histories share a key iff `player` faces an identical decision: same
+    /// round, hearts, own total, stood flags, and the same *set of cards they
+    /// have not seen*. The opponent's visible total is implied (it equals
+    /// `66 - own_total - sum(unseen)`), and draw order is irrelevant because the
+    /// next drawn card is uniform over the unseen set. Returns 0 when no round
+    /// is active.
+    pub fn sufficient_key(&self, player: usize) -> u64 {
+        let rs = match &self.round_state {
+            Some(rs) => rs,
+            None => return 0,
+        };
+        let opp = 1 - player;
+        let me = &rs.players[player];
+        let op = &rs.players[opp];
+        let mut seen: u16 = 0;
+        for i in 0..me.up_len as usize {
+            seen |= 1 << (me.up_cards[i] as u16 - 1);
+        }
+        seen |= 1 << (me.face_down as u16 - 1);
+        for i in 0..op.up_len as usize {
+            seen |= 1 << (op.up_cards[i] as u16 - 1);
+        }
+        let unseen = (!seen) & 0x7FF;
+        let round = (self.round as u64).min(63);
+        (round & 0x3F)
+            | ((self.hearts[player] as u64 & 0x7) << 6)
+            | ((self.hearts[opp] as u64 & 0x7) << 9)
+            | ((me.total as u64 & 0x7F) << 12)
+            | ((unseen as u64) << 19)
+            | ((me.last_action_stand as u64) << 30)
+            | ((op.last_action_stand as u64) << 31)
+    }
+
+    /// A packed god's-eye key sufficient to determine the value of the current
+    /// in-round position under any fixed strategy keyed on [`Env::sufficient_key`].
+    ///
+    /// The value depends only on: the remaining deck, both players' totals and
+    /// stood flags, both face-down cards (which fix each player's unseen set as
+    /// `deck ∪ {opponent_face_down}`), whose turn it is, the consecutive-stand
+    /// flag, and the hearts/round context. Card *order* and face-up identities
+    /// beyond these are irrelevant. Only meaningful while a round is active.
+    pub fn search_key(&self) -> u64 {
+        let rs = match &self.round_state {
+            Some(rs) => rs,
+            None => return 0,
+        };
+        let p0 = &rs.players[0];
+        let p1 = &rs.players[1];
+        (rs.deck_mask as u64 & 0x7FF)
+            | ((self.current_player as u64 & 0x1) << 11)
+            | ((rs.prev_stand as u64) << 12)
+            | ((p0.total as u64 & 0x7F) << 13)
+            | ((p1.total as u64 & 0x7F) << 20)
+            | ((p0.last_action_stand as u64) << 27)
+            | ((p1.last_action_stand as u64) << 28)
+            | ((p0.face_down as u64 & 0xF) << 29)
+            | ((p1.face_down as u64 & 0xF) << 33)
+            | (((self.round as u64).min(63) & 0x3F) << 37)
+            | ((self.hearts[0] as u64 & 0x7) << 43)
+            | ((self.hearts[1] as u64 & 0x7) << 46)
     }
 
     fn evaluate_winner(&self, rs: &RoundState) -> (Option<usize>, u8) {
@@ -352,24 +549,12 @@ impl Env {
         let b = &rs.players[1];
         let a_over = a.total > TARGET;
         let b_over = b.total > TARGET;
-        let damage = self.round; // damage equals round number
+        let damage = self.round;
         let winner = if a_over ^ b_over {
-            if a_over {
-                Some(1)
-            } else {
-                Some(0)
-            }
+            if a_over { Some(1) } else { Some(0) }
         } else {
-            let a_dist = if a.total > TARGET {
-                a.total - TARGET
-            } else {
-                TARGET - a.total
-            };
-            let b_dist = if b.total > TARGET {
-                b.total - TARGET
-            } else {
-                TARGET - b.total
-            };
+            let a_dist = a.total.abs_diff(TARGET);
+            let b_dist = b.total.abs_diff(TARGET);
             match a_dist.cmp(&b_dist) {
                 core::cmp::Ordering::Less => Some(0),
                 core::cmp::Ordering::Greater => Some(1),
@@ -453,5 +638,126 @@ impl XorShift64 {
         x ^= x << 17;
         self.state = x;
         x
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A deterministic policy used by both engines so trajectories must match.
+    fn policy(obs: &Observation) -> Action {
+        if obs.deck_count == 0 {
+            return Action::Stand;
+        }
+        let h = (obs.self_total as u32 * 7
+            + obs.opp_face_up as u32 * 5
+            + obs.round as u32 * 3
+            + obs.deck_count as u32)
+            % 10;
+        if obs.self_total < 17 || h < 3 {
+            Action::Draw
+        } else {
+            Action::Stand
+        }
+    }
+
+    fn random_perm(rng: &mut XorShift64) -> [u8; NUM_CARDS] {
+        let mut order = [0u8; NUM_CARDS];
+        for (i, slot) in order.iter_mut().enumerate() {
+            *slot = (i + 1) as u8;
+        }
+        for i in (1..NUM_CARDS).rev() {
+            let j = (rng.next_u64() % (i as u64 + 1)) as usize;
+            order.swap(i, j);
+        }
+        order
+    }
+
+    /// Play a full game via the preset-deck `step` path.
+    fn play_preset(orders: &[[u8; NUM_CARDS]]) -> Vec<(u8, u8, u8, Option<usize>)> {
+        let mut env = Env::new_with_preset_decks(orders.to_vec());
+        let mut trace = Vec::new();
+        while !env.is_game_over() {
+            env.start_new_round().unwrap();
+            loop {
+                let p = env.current_player();
+                let obs = env.observation(p);
+                let res = env.step(policy(&obs)).unwrap();
+                if res.round_over {
+                    trace.push((
+                        env.hearts(0),
+                        env.hearts(1),
+                        env.round(),
+                        res.outcome.and_then(|o| o.winner),
+                    ));
+                    break;
+                }
+            }
+        }
+        trace
+    }
+
+    /// Play the same game via the controllable-chance API, consuming each round's
+    /// deck order in sequence (4 deals, then draws).
+    fn play_controlled(orders: &[[u8; NUM_CARDS]]) -> Vec<(u8, u8, u8, Option<usize>)> {
+        let mut env = Env::new(0);
+        let mut trace = Vec::new();
+        let mut round_idx = 0;
+        while !env.is_game_over() {
+            let order = orders[round_idx];
+            round_idx += 1;
+            env.deal_specific([order[0], order[1], order[2], order[3]])
+                .unwrap();
+            let mut next = 4usize;
+            loop {
+                let p = env.current_player();
+                let obs = env.observation(p);
+                let res = match policy(&obs) {
+                    Action::Draw => {
+                        let c = order[next];
+                        next += 1;
+                        env.draw_specific(c).unwrap()
+                    }
+                    Action::Stand => env.stand().unwrap(),
+                };
+                if res.round_over {
+                    trace.push((
+                        env.hearts(0),
+                        env.hearts(1),
+                        env.round(),
+                        res.outcome.and_then(|o| o.winner),
+                    ));
+                    break;
+                }
+            }
+        }
+        trace
+    }
+
+    #[test]
+    fn controlled_matches_preset_engine() {
+        let mut rng = XorShift64::seed(0xC0FFEE);
+        for _ in 0..5000 {
+            let orders: Vec<[u8; NUM_CARDS]> = (0..16).map(|_| random_perm(&mut rng)).collect();
+            assert_eq!(play_preset(&orders), play_controlled(&orders));
+        }
+    }
+
+    #[test]
+    fn sufficient_key_ignores_seen_card_order() {
+        // Two deals with the same per-player card *sets* but different deal/draw
+        // identities that yield the same own-total and unseen-set must collapse
+        // to the same key for the player to move.
+        let mut a = Env::new(0);
+        a.deal_specific([5, 9, 6, 2]).unwrap(); // p0 sees {5,6}, total 11; opp up {9}
+        let mut b = Env::new(0);
+        b.deal_specific([6, 9, 5, 2]).unwrap(); // p0 sees {6,5}, total 11; opp up {9}
+        assert_eq!(a.sufficient_key(0), b.sufficient_key(0));
+
+        // A different own total must give a different key.
+        let mut c = Env::new(0);
+        c.deal_specific([5, 9, 7, 2]).unwrap(); // p0 total 12
+        assert_ne!(a.sufficient_key(0), c.sufficient_key(0));
     }
 }
