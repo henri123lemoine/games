@@ -402,6 +402,13 @@ impl Solver {
         self.inner.play_draw_prob(&env.inner, player)
     }
 
+    /// Choose `player`'s action by inference-time within-round search (returns
+    /// True to draw, False to stand). Reasons on the exact cards, so it can
+    /// outplay the averaged table — especially the abstracted full-game model.
+    fn search_draw(&self, env: &Env, player: usize) -> bool {
+        self.inner.search_best_action(&env.inner, player)
+    }
+
     fn iterations(&self) -> u64 {
         self.inner.iterations()
     }

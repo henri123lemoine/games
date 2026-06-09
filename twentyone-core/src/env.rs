@@ -394,6 +394,38 @@ impl Env {
             .unwrap_or(0)
     }
 
+    /// The 11-bit mask of cards `player` has not seen: the undrawn deck plus the
+    /// opponent's hidden face-down card. From `player`'s information set the
+    /// opponent's face-down is uniformly one of these. Zero if no round is active.
+    pub fn unseen_mask(&self, player: usize) -> u16 {
+        match &self.round_state {
+            Some(rs) => {
+                let opp = 1 - player;
+                rs.deck_mask | (1u16 << (rs.players[opp].face_down as u16 - 1))
+            }
+            None => 0,
+        }
+    }
+
+    /// A hypothetical clone in which `player`'s opponent holds face-down card `f`
+    /// instead of its actual one, with the deck adjusted so the real card returns
+    /// and `f` is removed. Used to enumerate determinizations of the one hidden
+    /// card for inference-time search. `f` must lie in [`Env::unseen_mask`].
+    pub fn with_opp_facedown(&self, player: usize, f: u8) -> Self {
+        let mut env = self.clone();
+        if let Some(rs) = env.round_state.as_mut() {
+            let opp = 1 - player;
+            let old = rs.players[opp].face_down;
+            if old != f {
+                rs.players[opp].total = rs.players[opp].total - old + f;
+                rs.players[opp].face_down = f;
+                rs.deck_mask |= 1u16 << (old as u16 - 1);
+                rs.deck_mask &= !(1u16 << (f as u16 - 1));
+            }
+        }
+        env
+    }
+
     /// The cards still in the deck for the active round (true, god's-eye view).
     /// Empty if no round is active.
     pub fn remaining_deck(&self) -> Vec<u8> {

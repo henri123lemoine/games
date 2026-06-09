@@ -236,6 +236,111 @@ impl Solver {
         self.average_draw_prob(self.info_key(env, player))
     }
 
+    /// Inference-time search: choose `player`'s action by looking ahead through
+    /// the rest of the round instead of reading the averaged strategy table.
+    /// Returns `true` to draw, `false` to stand.
+    ///
+    /// This is perfect-information Monte-Carlo over the single hidden card: the
+    /// opponent's face-down is enumerated over `player`'s unseen set, each
+    /// resulting fully-determined position is solved exactly (we maximise, the
+    /// opponent plays this solver's average strategy, draws are enumerated, and
+    /// round boundaries use the trained continuation values), and the two
+    /// candidate actions are scored by their average value over those
+    /// determinizations. Because it reasons on the exact cards it can outplay the
+    /// raw table — especially the abstracted full-game model — at the cost of a
+    /// little search per move. Falls back to the table strategy if continuation
+    /// values are unavailable (e.g. an old model without them).
+    pub fn search_best_action(&self, env: &Env, player: usize) -> bool {
+        let mask = env.deck_mask();
+        if mask == 0 {
+            return false;
+        }
+        if self.value.is_empty() {
+            return self.average_draw_prob(self.info_key(env, player)) >= 0.5;
+        }
+        let unseen = env.unseen_mask(player);
+        let mut sum_stand = 0.0;
+        let mut sum_draw = 0.0;
+        let mut m = unseen;
+        while m != 0 {
+            let f = (m.trailing_zeros() + 1) as u8;
+            m &= m - 1;
+            let hypo = env.with_opp_facedown(player, f);
+            let mut memo: FastMap<u64, f64> = fast_map();
+            let mut stood = hypo.clone();
+            stood.stand().unwrap();
+            sum_stand += self.search_value(&stood, player, &mut memo);
+            sum_draw += self.draw_expectation(&hypo, player, hypo.deck_mask(), &mut memo);
+        }
+        sum_draw > sum_stand
+    }
+
+    /// Value to `me` of an in-progress (or just-ended) determinized round when
+    /// `me` plays the within-round best response and the opponent plays this
+    /// solver's average strategy. Memoized by the god's-eye search key.
+    fn search_value(&self, env: &Env, me: usize, memo: &mut FastMap<u64, f64>) -> f64 {
+        if !env.round_active() {
+            if env.is_game_over() {
+                return env.utility(me);
+            }
+            let v0 = self.continuation_for_p0(env.hearts(0), env.hearts(1), env.round());
+            return if me == 0 { v0 } else { -v0 };
+        }
+        let wkey = env.search_key();
+        if let Some(v) = memo.get(&wkey) {
+            return *v;
+        }
+        let player = env.current_player();
+        let mask = env.deck_mask();
+        let can_draw = mask != 0;
+        let value = if player == me {
+            let mut stood = env.clone();
+            stood.stand().unwrap();
+            let mut best = self.search_value(&stood, me, memo);
+            if can_draw {
+                best = best.max(self.draw_expectation(env, me, mask, memo));
+            }
+            best
+        } else {
+            let key = self.info_key(env, player);
+            let sigma = self.average_strategy(key, can_draw);
+            let mut v = 0.0;
+            if sigma[STAND] > 0.0 {
+                let mut stood = env.clone();
+                stood.stand().unwrap();
+                v += sigma[STAND] * self.search_value(&stood, me, memo);
+            }
+            if sigma[DRAW] > 0.0 && can_draw {
+                v += sigma[DRAW] * self.draw_expectation(env, me, mask, memo);
+            }
+            v
+        };
+        memo.insert(wkey, value);
+        value
+    }
+
+    /// Expected value to `me` of drawing now, averaged over every card remaining
+    /// in `mask`.
+    fn draw_expectation(
+        &self,
+        env: &Env,
+        me: usize,
+        mask: u16,
+        memo: &mut FastMap<u64, f64>,
+    ) -> f64 {
+        let n = deck_count(mask);
+        let mut acc = 0.0;
+        let mut m = mask;
+        while m != 0 {
+            let c = (m.trailing_zeros() + 1) as u8;
+            m &= m - 1;
+            let mut drawn = env.clone();
+            drawn.draw_specific(c).unwrap();
+            acc += self.search_value(&drawn, me, memo);
+        }
+        acc / n as f64
+    }
+
     pub fn iterations(&self) -> u64 {
         self.iterations
     }
@@ -686,6 +791,11 @@ impl Solver {
         buf.push(self.abstract_keys as u8);
         write_table(&mut buf, &self.regret);
         write_table(&mut buf, &self.strategy_sum);
+        buf.extend_from_slice(&(self.value.len() as u64).to_le_bytes());
+        for (k, v) in &self.value {
+            buf.extend_from_slice(&k.to_le_bytes());
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
         let mut f = std::fs::File::create(path)?;
         f.write_all(&buf)
     }
@@ -711,6 +821,7 @@ impl Solver {
         let abstract_keys = r.u8()? != 0;
         let regret = r.table()?;
         let strategy_sum = r.table()?;
+        let value = r.value_table()?;
         if !r.is_empty() {
             return Err(invalid(
                 "trailing bytes after solver tables (corrupt or truncated file)",
@@ -719,7 +830,7 @@ impl Solver {
         Ok(Self {
             regret,
             strategy_sum,
-            value: fast_map(),
+            value,
             start_hearts,
             abstract_keys,
             iterations,
@@ -731,7 +842,7 @@ impl Solver {
 /// Magic + version prefix so a wrong or stale file fails with a clear error
 /// instead of a panic. Bump the version whenever the byte layout changes.
 const SOLVER_MAGIC: u32 = 0x3132_5453; // "T21S" little-endian
-const SOLVER_FORMAT_VERSION: u8 = 1;
+const SOLVER_FORMAT_VERSION: u8 = 2;
 
 fn invalid(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
@@ -807,6 +918,23 @@ impl<'a> Reader<'a> {
             let a = self.f64()?;
             let b = self.f64()?;
             table.insert(k, [a, b]);
+        }
+        Ok(table)
+    }
+
+    fn value_table(&mut self) -> io::Result<FastMap<u32, f64>> {
+        let n = self.u64()? as usize;
+        let remaining = self.bytes.len() - self.pos;
+        if n > remaining / 12 {
+            return Err(invalid(
+                "solver value table length exceeds file size (corrupt file)",
+            ));
+        }
+        let mut table = FastMap::with_capacity_and_hasher(n, Default::default());
+        for _ in 0..n {
+            let k = self.u32()?;
+            let v = self.f64()?;
+            table.insert(k, v);
         }
         Ok(table)
     }

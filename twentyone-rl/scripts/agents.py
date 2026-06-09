@@ -50,33 +50,47 @@ class ThresholdAgent:
 
 
 class SolverAgent:
-    """Plays the (near-)Nash strategy from a trained Rust `Solver`.
+    """Plays a trained Rust `Solver` in one of three modes.
 
-    With ``greedy=True`` (default) it plays the most-probable action of the
-    learned average strategy, which is the stronger player against a fixed
-    opponent. With ``greedy=False`` it samples the mixed strategy — the
-    unexploitable equilibrium policy whose exploitability the solver measures.
+    - ``"greedy"`` (default): the most-probable action of the learned average
+      strategy — the stronger table player against a fixed opponent.
+    - ``"mixed"``: samples the mixed strategy — the unexploitable equilibrium
+      policy whose exploitability the solver measures.
+    - ``"search"``: inference-time within-round lookahead on the exact cards
+      (perfect-information Monte-Carlo over the hidden card); can outplay the
+      table, especially for the abstracted full-game model.
     """
 
     def __init__(
         self,
         solver: twentyone.Solver,
         seed: int = 0,
-        name: str = "Solver",
+        name: str | None = None,
         greedy: bool = True,
+        mode: str | None = None,
     ) -> None:
         self.solver = solver
-        self.name = name
-        self.greedy = greedy
+        self.mode = mode if mode is not None else ("greedy" if greedy else "mixed")
+        if self.mode not in ("greedy", "mixed", "search"):
+            raise ValueError(f"unknown SolverAgent mode: {self.mode!r}")
+        self.name = name if name is not None else f"Solver({self.mode})"
         self._rng = random.Random(seed)
 
     @classmethod
     def load(
-        cls, path: str, seed: int = 0, name: str = "Solver", greedy: bool = True
+        cls,
+        path: str,
+        seed: int = 0,
+        name: str | None = None,
+        greedy: bool = True,
+        mode: str | None = None,
     ) -> SolverAgent:
-        return cls(twentyone.Solver.load(path), seed=seed, name=name, greedy=greedy)
+        return cls(twentyone.Solver.load(path), seed=seed, name=name, greedy=greedy, mode=mode)
 
     def act(self, env: twentyone.Env, player: int) -> twentyone.Action:
-        p_draw = self.solver.draw_probability(env, player)
-        draw = p_draw >= 0.5 if self.greedy else self._rng.random() < p_draw
+        if self.mode == "search":
+            draw = self.solver.search_draw(env, player)
+        else:
+            p_draw = self.solver.draw_probability(env, player)
+            draw = p_draw >= 0.5 if self.mode == "greedy" else self._rng.random() < p_draw
         return twentyone.Action.Draw if draw else twentyone.Action.Stand
