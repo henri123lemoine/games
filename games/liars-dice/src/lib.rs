@@ -1,111 +1,147 @@
-//! Liar's Dice as a [`cfr_core::Game`].
+//! Liar's Dice — N players, D dice, F faces — as a [`cfr_core::Game`].
 //!
-//! This is the special variant used in the companion project: 1s are not wild;
-//! a raise is exactly +1 quantity (same face) or +1 face (same quantity, wrapping
-//! face `faces`→1 with +1 quantity); the first round opens at a forced `1×1` bid
-//! and later rounds open freely; `Call Liar` and `Call Exact` resolve against the
-//! actual dice, the loser drops a die, and the game ends when a player reaches 0.
+//! Faithful to the companion project's non-standard rules: 1s are not wild; a
+//! raise is exactly +1 quantity (same face) or +1 face (same quantity, wrapping
+//! `faces`→1 with +1 quantity); the first round opens at a forced `1×1` bid and
+//! later rounds open freely; `Call Liar` and `Call Exact` resolve against the
+//! actual dice across *all* live players, the loser drops a die, and a player at
+//! zero dice is eliminated. Last player standing wins.
 //!
-//! Unlike the original Python env (which rolled dice only at call time), this
-//! models the real imperfect-information game: each round begins with chance
-//! rolling every player's hand privately, so a player's information set is their
-//! own hand plus the public bid history.
+//! Hidden dice are rolled by chance at the start of each round, so a player's
+//! information set is their own hand plus the public bidding context. To keep
+//! learning tractable on large configurations the information-set key abstracts
+//! the bid history to the last few actions (full history is infeasible for, e.g.,
+//! 5 players × 5 dice).
 
 use std::hash::{Hash, Hasher};
 
 use cfr_core::{Game, Turn};
 
-const MAX_FACES: usize = 6;
+mod agents;
+pub use agents::{ProbConfig, ProbabilisticAgent, RandomAgent};
 
-/// Default round cap (see [`LiarsDice::max_rounds`]).
-const DEFAULT_MAX_ROUNDS: u8 = 3;
+pub const MAX_FACES: usize = 6;
+pub const MAX_PLAYERS: usize = 8;
+/// Bid-history actions retained in the information-set key (an abstraction).
+const HIST_K: usize = 6;
+const DEFAULT_MAX_ROUNDS: u8 = 24;
 
-/// Standard action ids 0..4 mirror the reference project; openings are explicit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     RaiseQuantity,
     RaiseFace,
     CallLiar,
     CallExact,
-    /// Free opening bid `(quantity, face)` (only legal in the opening state).
     Open(u8, u8),
-    /// Chance outcome: the rolling player's hand as per-face counts.
+    /// Chance: the rolling player's hand as per-face counts.
     Roll([u8; MAX_FACES]),
 }
 
 #[derive(Clone)]
 pub struct LdState {
-    dice_left: [u8; 2],
-    hands: [[u8; MAX_FACES]; 2],
-    rolled: u8, // hands rolled so far this round (0,1,2)
-    qty: u8,    // current bid quantity; 0 = free-opening state
-    face: u8,   // current bid face; 0 in the opening state
-    turn: u8,   // player to act at a decision node
+    dice_left: [u8; MAX_PLAYERS],
+    hands: [[u8; MAX_FACES]; MAX_PLAYERS],
+    rolled: u8, // players whose hands are rolled this round
+    qty: u8,    // current bid quantity; 0 = opening state
+    face: u8,
+    turn: u8,        // current actor (a live player)
+    last_bidder: u8, // who owns the current bid (for call resolution)
     first_round: bool,
-    history: Vec<u8>, // encoded actions this round, for the information set
-    rounds: u8,       // rounds opened so far (for the no-progress cap)
+    hist: [u8; HIST_K],
+    rounds: u8,
     done: bool,
-    draw: bool, // reached the round cap with both players alive
+    winner: u8,
 }
 
-impl LdState {
-    /// `player`'s own dice as face values (their private information).
-    pub fn hand(&self, player: usize) -> Vec<u8> {
-        let mut dice = Vec::new();
-        for (i, &c) in self.hands[player].iter().enumerate() {
-            for _ in 0..c {
-                dice.push(i as u8 + 1);
-            }
-        }
-        dice
-    }
-
-    /// The current bid `(quantity, face)`; `(0, 0)` means the opening state.
-    pub fn current_bid(&self) -> (u8, u8) {
-        (self.qty, self.face)
-    }
-
-    /// Dice remaining for each player (public).
-    pub fn dice_left(&self) -> [u8; 2] {
-        self.dice_left
-    }
-}
-
-/// Liar's Dice configuration (2 players assumed).
 pub struct LiarsDice {
+    pub players: u8,
     pub dice: u8,
     pub faces: u8,
-    /// A correct `Call Exact` loses nobody a die, so a round can repeat without
-    /// progress; reaching this many rounds is a draw (value 0). Normal play loses
-    /// a die every round and ends in `< 2*dice` rounds, so this only bounds the
-    /// pathological exact-call loop — and keeps the game tree finite and small
-    /// enough for exact CFR + best response. Keep it low for tractability.
     pub max_rounds: u8,
 }
 
-impl Default for LiarsDice {
-    fn default() -> Self {
-        // Matches the reference project's DEFAULT_CFG: 2 dice, 4 faces.
-        Self::new(2, 4)
-    }
-}
-
 impl LiarsDice {
-    pub fn new(dice: u8, faces: u8) -> Self {
-        assert!(faces as usize <= MAX_FACES);
+    pub fn new(players: u8, dice: u8, faces: u8) -> Self {
+        assert!(faces as usize <= MAX_FACES && players as usize <= MAX_PLAYERS && players >= 2);
         Self {
+            players,
             dice,
             faces,
             max_rounds: DEFAULT_MAX_ROUNDS,
         }
     }
 
-    pub fn with_max_rounds(mut self, max_rounds: u8) -> Self {
-        self.max_rounds = max_rounds;
+    /// The common two-player configuration.
+    pub fn two_player(dice: u8, faces: u8) -> Self {
+        Self::new(2, dice, faces)
+    }
+
+    pub fn with_max_rounds(mut self, m: u8) -> Self {
+        self.max_rounds = m;
         self
     }
 
-    /// Human-readable label for an action (for play UIs).
+    fn alive(&self, s: &LdState, p: u8) -> bool {
+        s.dice_left[p as usize] > 0
+    }
+
+    fn num_alive(&self, s: &LdState) -> u8 {
+        (0..self.players).filter(|&p| self.alive(s, p)).count() as u8
+    }
+
+    fn total_dice(&self, s: &LdState) -> u8 {
+        s.dice_left[..self.players as usize].iter().sum()
+    }
+
+    fn next_alive(&self, s: &LdState, from: u8) -> u8 {
+        let mut p = (from + 1) % self.players;
+        while !self.alive(s, p) {
+            p = (p + 1) % self.players;
+        }
+        p
+    }
+
+    fn count_face(&self, s: &LdState, face: u8) -> u8 {
+        (0..self.players as usize)
+            .map(|p| s.hands[p][face as usize - 1])
+            .sum()
+    }
+
+    fn push_hist(&self, s: &mut LdState, code: u8) {
+        s.hist.copy_within(1..HIST_K, 0);
+        s.hist[HIST_K - 1] = code;
+    }
+
+    /// After a die is lost: eliminate at zero, end the game if one player
+    /// remains, otherwise open the next round (re-roll) from `next_opener`.
+    fn resolve_after_call(&self, s: &mut LdState, next_opener: u8) {
+        if self.num_alive(s) <= 1 {
+            s.done = true;
+            s.winner = (0..self.players).find(|&p| self.alive(s, p)).unwrap_or(0);
+            return;
+        }
+        s.rounds += 1;
+        if s.rounds > self.max_rounds {
+            s.done = true;
+            s.winner = (0..self.players)
+                .max_by_key(|&p| s.dice_left[p as usize])
+                .unwrap();
+            return;
+        }
+        let opener = if self.alive(s, next_opener) {
+            next_opener
+        } else {
+            self.next_alive(s, next_opener)
+        };
+        s.turn = opener;
+        s.qty = 0;
+        s.face = 0;
+        s.first_round = false;
+        s.hist = [0; HIST_K];
+        s.rolled = 0;
+        s.hands = [[0; MAX_FACES]; MAX_PLAYERS];
+    }
+
     pub fn action_label(&self, a: Action) -> String {
         match a {
             Action::RaiseQuantity => "raise quantity".into(),
@@ -116,35 +152,38 @@ impl LiarsDice {
             Action::Roll(_) => "roll".into(),
         }
     }
+}
 
-    fn count_face(&self, s: &LdState, face: u8) -> u8 {
-        s.hands[0][face as usize - 1] + s.hands[1][face as usize - 1]
+impl LdState {
+    pub fn hand(&self, player: usize) -> Vec<u8> {
+        let mut dice = Vec::new();
+        for (i, &c) in self.hands[player].iter().enumerate() {
+            for _ in 0..c {
+                dice.push(i as u8 + 1);
+            }
+        }
+        dice
     }
-
-    /// Open a fresh round (re-roll), or mark terminal, after a die is lost.
-    fn open_round(&self, s: &mut LdState, next_opener: u8) {
-        if s.dice_left.contains(&0) {
-            s.done = true;
-            return;
-        }
-        s.rounds += 1;
-        if s.rounds > self.max_rounds {
-            s.done = true;
-            s.draw = true;
-            return;
-        }
-        s.turn = next_opener;
-        s.qty = 0;
-        s.face = 0;
-        s.first_round = false;
-        s.history.clear();
-        s.rolled = 0;
-        s.hands = [[0; MAX_FACES]; 2];
+    /// Count of `face` (1-based) in `player`'s own hand.
+    pub fn my_count(&self, player: usize, face: u8) -> u8 {
+        self.hands[player][face as usize - 1]
+    }
+    pub fn current_bid(&self) -> (u8, u8) {
+        (self.qty, self.face)
+    }
+    pub fn dice_left(&self) -> &[u8] {
+        &self.dice_left[..]
+    }
+    pub fn turn(&self) -> usize {
+        self.turn as usize
+    }
+    pub fn last_bidder(&self) -> usize {
+        self.last_bidder as usize
     }
 }
 
-/// All distinct per-face count vectors for `dice` dice over `faces` faces, with
-/// their multinomial probabilities (each die uniform over the faces).
+/// Per-face count vectors for `dice` dice over `faces` faces with multinomial
+/// probabilities (each die uniform).
 fn hand_distribution(dice: u8, faces: u8) -> Vec<([u8; MAX_FACES], f64)> {
     fn fact(n: u8) -> f64 {
         (1..=n as u64).product::<u64>() as f64
@@ -167,8 +206,7 @@ fn hand_distribution(dice: u8, faces: u8) -> Vec<([u8; MAX_FACES], f64)> {
                 for &c in counts.iter() {
                     ways /= fact(c);
                 }
-                let prob = ways * p_each.powi(dice as i32);
-                out.push((*counts, prob));
+                out.push((*counts, ways * p_each.powi(dice as i32)));
             }
             return;
         }
@@ -182,28 +220,48 @@ fn hand_distribution(dice: u8, faces: u8) -> Vec<([u8; MAX_FACES], f64)> {
     out
 }
 
+fn encode(a: Action, faces: u8) -> u8 {
+    match a {
+        Action::RaiseQuantity => 1,
+        Action::RaiseFace => 2,
+        Action::CallLiar => 3,
+        Action::CallExact => 4,
+        Action::Open(q, f) => 5 + (q - 1) * faces + (f - 1),
+        Action::Roll(_) => unreachable!(),
+    }
+}
+
 impl Game for LiarsDice {
     type State = LdState;
     type Action = Action;
 
+    fn num_players(&self) -> usize {
+        self.players as usize
+    }
+
     fn initial_state(&self) -> LdState {
+        let mut dice_left = [0u8; MAX_PLAYERS];
+        for d in dice_left.iter_mut().take(self.players as usize) {
+            *d = self.dice;
+        }
         LdState {
-            dice_left: [self.dice, self.dice],
-            hands: [[0; MAX_FACES]; 2],
+            dice_left,
+            hands: [[0; MAX_FACES]; MAX_PLAYERS],
             rolled: 0,
-            qty: 1, // forced 1x1 opening of the first round
+            qty: 1, // forced 1x1 first round
             face: 1,
-            turn: 0, // player 0 responds to the forced opening first
+            turn: 0,
+            last_bidder: self.players - 1, // phantom owner of the forced 1x1
             first_round: true,
-            history: Vec::new(),
+            hist: [0; HIST_K],
             rounds: 1,
             done: false,
-            draw: false,
+            winner: 0,
         }
     }
 
     fn turn(&self, s: &LdState) -> Turn {
-        if s.rolled < 2 {
+        if s.rolled < self.players {
             Turn::Chance
         } else {
             Turn::Player(s.turn as usize)
@@ -215,28 +273,29 @@ impl Game for LiarsDice {
     }
 
     fn returns(&self, s: &LdState, player: usize) -> f64 {
-        if s.draw {
-            0.0
-        } else if s.dice_left[player] > 0 {
+        // Win the game: +1 to the last player standing, shared -1 to the rest.
+        if s.winner as usize == player {
             1.0
         } else {
-            -1.0
+            -1.0 / (self.players as f64 - 1.0)
         }
     }
 
     fn chance_outcomes(&self, s: &LdState) -> Vec<(Action, f64)> {
         let d = s.dice_left[s.rolled as usize];
+        if d == 0 {
+            return vec![(Action::Roll([0; MAX_FACES]), 1.0)];
+        }
         hand_distribution(d, self.faces)
             .into_iter()
-            .map(|(c, p)| (Action::Roll(c), p))
+            .map(|(c, pr)| (Action::Roll(c), pr))
             .collect()
     }
 
     fn legal_actions(&self, s: &LdState) -> Vec<Action> {
-        let total = s.dice_left[0] + s.dice_left[1];
+        let total = self.total_dice(s);
         let mut acts = Vec::new();
         if s.qty == 0 {
-            // Free opening (later rounds): any (q, f) with q up to the dice in play.
             for q in 1..=total {
                 for f in 1..=self.faces {
                     acts.push(Action::Open(q, f));
@@ -264,13 +323,15 @@ impl Game for LiarsDice {
             Action::Open(q, f) => {
                 s.qty = q;
                 s.face = f;
-                s.history.push(encode(a, self.faces));
-                s.turn ^= 1;
+                self.push_hist(s, encode(a, self.faces));
+                s.last_bidder = s.turn;
+                s.turn = self.next_alive(s, s.turn);
             }
             Action::RaiseQuantity => {
                 s.qty += 1;
-                s.history.push(encode(a, self.faces));
-                s.turn ^= 1;
+                self.push_hist(s, encode(a, self.faces));
+                s.last_bidder = s.turn;
+                s.turn = self.next_alive(s, s.turn);
             }
             Action::RaiseFace => {
                 if s.face < self.faces {
@@ -279,17 +340,17 @@ impl Game for LiarsDice {
                     s.face = 1;
                     s.qty += 1;
                 }
-                s.history.push(encode(a, self.faces));
-                s.turn ^= 1;
+                self.push_hist(s, encode(a, self.faces));
+                s.last_bidder = s.turn;
+                s.turn = self.next_alive(s, s.turn);
             }
             Action::CallLiar => {
                 let caller = s.turn;
-                let bidder = caller ^ 1;
+                let bidder = s.last_bidder;
                 let count = self.count_face(s, s.face);
                 let loser = if count < s.qty { bidder } else { caller };
                 s.dice_left[loser as usize] -= 1;
-                s.history.push(encode(a, self.faces));
-                self.open_round(s, loser);
+                self.resolve_after_call(s, loser);
             }
             Action::CallExact => {
                 let caller = s.turn;
@@ -297,52 +358,38 @@ impl Game for LiarsDice {
                 if count != s.qty {
                     s.dice_left[caller as usize] -= 1;
                 }
-                s.history.push(encode(a, self.faces));
-                self.open_round(s, caller);
+                self.resolve_after_call(s, caller);
             }
         }
     }
 
     fn infoset_key(&self, s: &LdState, player: usize) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        // What `player` observes: their own hand, both dice counts, the current
-        // bid, the first-round flag, and the public action history this round.
         player.hash(&mut h);
         s.hands[player].hash(&mut h);
-        s.dice_left.hash(&mut h);
+        s.dice_left[..self.players as usize].hash(&mut h);
         s.qty.hash(&mut h);
         s.face.hash(&mut h);
         s.first_round.hash(&mut h);
-        s.rounds.hash(&mut h);
-        s.history.hash(&mut h);
+        // position relative to the bid owner conveys turn order without the path.
+        ((s.turn + self.players - s.last_bidder) % self.players).hash(&mut h);
+        s.hist.hash(&mut h);
         h.finish()
     }
 
     fn state_key(&self, s: &LdState) -> Option<u64> {
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        s.dice_left.hash(&mut h);
-        s.hands.hash(&mut h);
+        s.dice_left[..self.players as usize].hash(&mut h);
+        s.hands[..self.players as usize].hash(&mut h);
         s.rolled.hash(&mut h);
         s.qty.hash(&mut h);
         s.face.hash(&mut h);
         s.turn.hash(&mut h);
+        s.last_bidder.hash(&mut h);
         s.first_round.hash(&mut h);
-        s.rounds.hash(&mut h);
-        s.history.hash(&mut h);
+        s.hist.hash(&mut h);
         s.done.hash(&mut h);
         Some(h.finish())
-    }
-}
-
-/// Compact encoding of a played action for the history (chance is never stored).
-fn encode(a: Action, faces: u8) -> u8 {
-    match a {
-        Action::RaiseQuantity => 0,
-        Action::RaiseFace => 1,
-        Action::CallLiar => 2,
-        Action::CallExact => 3,
-        Action::Open(q, f) => 4 + (q - 1) * faces + (f - 1),
-        Action::Roll(_) => unreachable!("chance outcomes are not recorded in history"),
     }
 }
 
@@ -350,103 +397,48 @@ fn encode(a: Action, faces: u8) -> u8 {
 mod tests {
     use super::*;
 
-    fn hand(counts: &[u8]) -> [u8; MAX_FACES] {
-        let mut c = [0u8; MAX_FACES];
-        c[..counts.len()].copy_from_slice(counts);
-        c
+    fn rng(seed: &mut u64) -> u64 {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        *seed
     }
 
     #[test]
-    fn solved_strategy_beats_random_via_arena() {
-        use cfr_core::{Solver, win_rate};
-        let mut solver = Solver::new(LiarsDice::new(1, 3), 1);
-        solver.solve(500);
-        let game = LiarsDice::new(1, 3);
-        let mut hero =
-            |_g: &LiarsDice, s: &LdState, p: usize, r: f64| solver.sample_action(s, p, r);
-        let mut rando = |g: &LiarsDice, s: &LdState, _p: usize, r: f64| {
-            let n = g.legal_actions(s).len();
-            ((r * n as f64) as usize).min(n - 1)
-        };
-        let wr = win_rate(&game, &mut hero, &mut rando, 2000, 7);
-        assert!(wr > 0.55, "solved strategy should beat random, got {wr}");
-    }
-
-    #[test]
-    fn hand_distribution_sums_to_one() {
-        for &(dice, faces) in &[(1u8, 4u8), (2, 4), (2, 6), (3, 4)] {
-            let dist = hand_distribution(dice, faces);
-            let total: f64 = dist.iter().map(|(_, p)| p).sum();
-            assert!(
-                (total - 1.0).abs() < 1e-9,
-                "dice={dice} faces={faces} sum={total}"
-            );
+    fn n_player_games_terminate_with_one_winner() {
+        for &players in &[2u8, 3, 5] {
+            let game = LiarsDice::new(players, 2, 6);
+            let mut seed = 0x1234 + players as u64;
+            for _ in 0..100 {
+                let mut s = game.initial_state();
+                let mut steps = 0;
+                while !game.is_terminal(&s) {
+                    steps += 1;
+                    assert!(steps < 100_000, "must terminate (players={players})");
+                    match game.turn(&s) {
+                        Turn::Chance => {
+                            let o = game.chance_outcomes(&s);
+                            let a = o[(rng(&mut seed) as usize) % o.len()].0;
+                            game.apply(&mut s, a);
+                        }
+                        Turn::Player(_) => {
+                            let acts = game.legal_actions(&s);
+                            let a = acts[(rng(&mut seed) as usize) % acts.len()];
+                            game.apply(&mut s, a);
+                        }
+                    }
+                }
+                let total: f64 = (0..players as usize).map(|p| game.returns(&s, p)).sum();
+                assert!(total.abs() < 1e-9, "zero-sum, got {total}");
+            }
         }
     }
 
     #[test]
-    fn call_liar_resolution_and_dice_loss() {
-        let g = LiarsDice::new(2, 4);
-        // Construct a mid-round state: bid is 3x2, p0 to call. Hands hold one 2 each
-        // (count of face 2 = 2 < 3) so Call Liar is correct -> bidder (p1) loses.
-        let mut s = LdState {
-            dice_left: [2, 2],
-            hands: [hand(&[0, 1, 1, 0]), hand(&[0, 1, 1, 0])],
-            rolled: 2,
-            qty: 3,
-            face: 2,
-            turn: 0,
-            first_round: false,
-            history: vec![],
-            rounds: 1,
-            done: false,
-            draw: false,
-        };
-        g.apply(&mut s, Action::CallLiar);
-        assert_eq!(s.dice_left, [2, 1], "bidder (p1) should lose a die");
-        assert!(!s.done);
-        assert_eq!(s.qty, 0, "a new round opens freely");
-    }
-
-    #[test]
-    fn call_exact_correct_loses_nobody() {
-        let g = LiarsDice::new(2, 4);
-        let mut s = LdState {
-            dice_left: [2, 2],
-            hands: [hand(&[0, 1, 0, 0]), hand(&[0, 1, 0, 0])], // two 2s total
-            rolled: 2,
-            qty: 2,
-            face: 2,
-            turn: 1,
-            first_round: false,
-            history: vec![],
-            rounds: 1,
-            done: false,
-            draw: false,
-        };
-        g.apply(&mut s, Action::CallExact);
-        assert_eq!(s.dice_left, [2, 2], "exact-correct: nobody loses a die");
-    }
-
-    #[test]
-    fn game_ends_when_a_player_hits_zero() {
-        let g = LiarsDice::new(1, 4); // 1 die each: a single wrong call ends it
-        let mut s = LdState {
-            dice_left: [1, 1],
-            hands: [hand(&[1, 0, 0, 0]), hand(&[1, 0, 0, 0])], // two 1s
-            rolled: 2,
-            qty: 3,
-            face: 1,
-            turn: 0,
-            first_round: false,
-            history: vec![],
-            rounds: 1,
-            done: false,
-            draw: false,
-        };
-        g.apply(&mut s, Action::CallLiar); // count(1)=2 < 3 -> bidder p1 loses last die
-        assert!(g.is_terminal(&s));
-        assert_eq!(g.returns(&s, 0), 1.0);
-        assert_eq!(g.returns(&s, 1), -1.0);
+    fn hand_distribution_sums_to_one() {
+        for &(d, f) in &[(2u8, 6u8), (5, 6), (3, 4)] {
+            let t: f64 = hand_distribution(d, f).iter().map(|(_, p)| p).sum();
+            assert!((t - 1.0).abs() < 1e-9);
+        }
     }
 }

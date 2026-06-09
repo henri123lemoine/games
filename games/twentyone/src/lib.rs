@@ -192,12 +192,11 @@ mod tests {
     #[test]
     fn arena_runs_on_twentyone() {
         let game = TwentyOne::new(6);
-        let mut rando = |g: &TwentyOne, s: &T21State, _p: usize, r: f64| {
+        let rando = |g: &TwentyOne, s: &T21State, _p: usize, r: f64| {
             let n = g.legal_actions(s).len();
             ((r * n as f64) as usize).min(n - 1)
         };
-        let mut rando2 = rando;
-        let wr = cfr_core::win_rate(&game, &mut rando, &mut rando2, 400, 1);
+        let wr = cfr_core::win_rate(&game, &rando, &rando, 400, 1);
         assert!((0.3..0.7).contains(&wr), "random vs random ~0.5, got {wr}");
     }
 }

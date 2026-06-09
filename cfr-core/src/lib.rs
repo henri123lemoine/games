@@ -13,10 +13,33 @@
 //! returns; the algorithms are written once against that interface.
 
 mod arena;
+mod mccfr;
 mod solver;
 
-pub use arena::{Agent, play, win_rate};
+pub use arena::{Agent, Rng, play, play_n, win_rate, winrate_vs_field};
+pub use mccfr::Mccfr;
 pub use solver::Solver;
+
+use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
+
+/// FxHash-style hasher for already-well-distributed `u64` keys.
+#[derive(Default)]
+pub(crate) struct FxHasher(u64);
+impl Hasher for FxHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(b as u64);
+        }
+    }
+    fn write_u64(&mut self, i: u64) {
+        self.0 = (self.0.rotate_left(5) ^ i).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+pub(crate) type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 
 /// Whose turn it is at a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,25 +1,4 @@
-use std::collections::HashMap;
-use std::hash::{BuildHasherDefault, Hasher};
-
-use crate::{Game, Turn};
-
-/// FxHash-style hasher for the already-well-distributed `u64` information-set keys.
-#[derive(Default)]
-struct FxHasher(u64);
-impl Hasher for FxHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.write_u64(b as u64);
-        }
-    }
-    fn write_u64(&mut self, i: u64) {
-        self.0 = (self.0.rotate_left(5) ^ i).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
-    }
-}
-type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
+use crate::{FastMap, Game, Turn};
 
 /// Index of the maximum element (first on ties).
 fn argmax(v: &[f64]) -> usize {

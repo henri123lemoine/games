@@ -46,9 +46,9 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0xD1CE_F00D);
 
-    let game = LiarsDice::new(dice, faces);
+    let game = LiarsDice::two_player(dice, faces);
     eprint!("Solving {dice}x{faces} Liar's Dice... ");
-    let mut solver = Solver::new(LiarsDice::new(dice, faces), 1);
+    let mut solver = Solver::new(LiarsDice::two_player(dice, faces), 1);
     solver.solve(3000);
     eprintln!("done ({} infosets).", solver.num_infosets());
     println!(
