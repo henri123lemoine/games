@@ -8,6 +8,7 @@ repository = "https://github.com/henri123lemoine/twentyone"
 [dependencies]
 thiserror = "2.0.14"
 serde = { version = "1", features = ["derive"] }
+rayon = "1.10"
 
 [lib]
 name = "twentyone_core"

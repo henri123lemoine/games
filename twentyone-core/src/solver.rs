@@ -15,9 +15,53 @@
 //! average strategy. NashConv = br0 + br1 → 0 at equilibrium.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::io::{self, Read, Write};
 
+use rayon::prelude::*;
+
 use crate::env::Env;
+
+/// FxHash-style hasher: the information-set keys are already well-distributed
+/// bit-packed `u64`s, so a single multiply-rotate mixes them far faster than the
+/// default SipHash — this is the solver's hottest inner-loop cost.
+#[derive(Default)]
+struct FxHasher(u64);
+
+impl Hasher for FxHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u8(b);
+        }
+    }
+    fn write_u8(&mut self, i: u8) {
+        self.write_u64(i as u64);
+    }
+    fn write_u32(&mut self, i: u32) {
+        self.write_u64(i as u64);
+    }
+    fn write_u64(&mut self, i: u64) {
+        const SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+        self.0 = (self.0.rotate_left(5) ^ i).wrapping_mul(SEED);
+    }
+}
+
+type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
+
+/// Per-information-set table mapping a key to `[draw, stand]` regrets or strategy
+/// sums.
+type InfoTable = FastMap<u64, [f64; 2]>;
+
+/// The result of solving one round subgame in isolation: its round key, the
+/// regret and average-strategy updates, and the continuation value to player 0.
+type SubgameResult = (u32, InfoTable, InfoTable, f64);
+
+fn fast_map<K, V>() -> FastMap<K, V> {
+    FastMap::default()
+}
 
 const STARTING_HEARTS: u8 = 6;
 const DRAW: usize = 0;
@@ -58,11 +102,11 @@ impl Rng {
 }
 
 pub struct Solver {
-    regret: HashMap<u64, [f64; 2]>,
-    strategy_sum: HashMap<u64, [f64; 2]>,
+    regret: FastMap<u64, [f64; 2]>,
+    strategy_sum: FastMap<u64, [f64; 2]>,
     /// Equilibrium value to player 0 at the start of round (h0, h1, round),
     /// filled by backward induction and used as continuation for shallower rounds.
-    value: HashMap<u32, f64>,
+    value: FastMap<u32, f64>,
     /// Starting hearts per player (6 for the full game; smaller values define a
     /// shorter variant that is exactly solvable for validation).
     start_hearts: u8,
@@ -83,7 +127,7 @@ struct BrCtx {
     br: usize,
     deal_samples: u32,
     rng: Rng,
-    between: HashMap<u32, f64>,
+    between: FastMap<u32, f64>,
 }
 
 fn round_state_key(h0: u8, h1: u8, round: u8) -> u32 {
@@ -163,9 +207,9 @@ impl Solver {
 
     fn configured(seed: u64, start_hearts: u8, abstract_keys: bool) -> Self {
         Self {
-            regret: HashMap::new(),
-            strategy_sum: HashMap::new(),
-            value: HashMap::new(),
+            regret: fast_map(),
+            strategy_sum: fast_map(),
+            value: fast_map(),
             start_hearts,
             abstract_keys,
             iterations: 0,
@@ -202,11 +246,24 @@ impl Solver {
 
     // ----- strategy helpers -------------------------------------------------
 
-    fn regret_matching(&self, key: u64, can_draw: bool) -> [f64; 2] {
+    /// Regret matching using the current regrets for `key`, preferring the
+    /// subgame-local table (this chunk's in-progress updates) and falling back to
+    /// the merged global table (prior chunks). Local-first keeps parallel subgame
+    /// solves independent.
+    fn regret_matching(
+        &self,
+        key: u64,
+        can_draw: bool,
+        local: &FastMap<u64, [f64; 2]>,
+    ) -> [f64; 2] {
         if !can_draw {
             return [0.0, 1.0];
         }
-        let r = self.regret.get(&key).copied().unwrap_or([0.0; 2]);
+        let r = local
+            .get(&key)
+            .or_else(|| self.regret.get(&key))
+            .copied()
+            .unwrap_or([0.0; 2]);
         let s0 = r[DRAW].max(0.0);
         let s1 = r[STAND].max(0.0);
         let sum = s0 + s1;
@@ -217,17 +274,39 @@ impl Solver {
         }
     }
 
-    fn average_strategy(&self, key: u64, can_draw: bool) -> [f64; 2] {
+    fn normalize_strategy(s: [f64; 2], can_draw: bool) -> [f64; 2] {
         if !can_draw {
             return [0.0, 1.0];
         }
-        let s = self.strategy_sum.get(&key).copied().unwrap_or([0.0; 2]);
         let sum = s[DRAW] + s[STAND];
         if sum > 0.0 {
             [s[DRAW] / sum, s[STAND] / sum]
         } else {
             [0.5, 0.5]
         }
+    }
+
+    /// Average strategy from the merged global table (used for play and the
+    /// best-response measurement, after training has merged all subgames).
+    fn average_strategy(&self, key: u64, can_draw: bool) -> [f64; 2] {
+        let s = self.strategy_sum.get(&key).copied().unwrap_or([0.0; 2]);
+        Self::normalize_strategy(s, can_draw)
+    }
+
+    /// Average strategy preferring the subgame-local table, for the continuation
+    /// estimate computed while a subgame is still being solved.
+    fn average_strategy_local(
+        &self,
+        key: u64,
+        can_draw: bool,
+        local: &FastMap<u64, [f64; 2]>,
+    ) -> [f64; 2] {
+        let s = local
+            .get(&key)
+            .or_else(|| self.strategy_sum.get(&key))
+            .copied()
+            .unwrap_or([0.0; 2]);
+        Self::normalize_strategy(s, can_draw)
     }
 
     /// Probability of drawing under the average strategy for `key`, for play.
@@ -256,27 +335,69 @@ impl Solver {
         // keeps hearts and advances the round; a decided round reduces a heart
         // count). Unreachable (hearts, round) carry-overs never occur in play or
         // as continuations, so skipping them is exact.
+        //
+        // Subgames at the same round are mutually independent — they only read
+        // already-solved deeper-round continuation values, and their information
+        // sets are keyed disjointly by (hearts, round) — so a whole round is
+        // solved in parallel. Each subgame accumulates into private local tables
+        // (seeded on demand from the global tables), and the round's results are
+        // merged back single-threaded, which keeps the result independent of how
+        // many threads run.
         let mut subgames = reachable_subgames(self.start_hearts);
-        subgames.sort_unstable_by(|a, b| b.2.cmp(&a.2));
-        for (h0, h1, round) in subgames {
-            self.solve_round(h0, h1, round, iters_per_subgame);
+        subgames.sort_unstable_by(|a, b| b.2.cmp(&a.2).then_with(|| a.cmp(b)));
+        let base_iters = self.iterations;
+
+        let mut i = 0;
+        while i < subgames.len() {
+            let round = subgames[i].2;
+            let mut seeded = Vec::new();
+            while i < subgames.len() && subgames[i].2 == round {
+                let (h0, h1, r) = subgames[i];
+                seeded.push((h0, h1, r, self.rng.next()));
+                i += 1;
+            }
+            let results: Vec<SubgameResult> = seeded
+                .par_iter()
+                .map(|&(h0, h1, r, seed)| {
+                    self.solve_subgame(h0, h1, r, iters_per_subgame, base_iters, seed)
+                })
+                .collect();
+            for (rk, lr, ls, v) in results {
+                self.regret.extend(lr);
+                self.strategy_sum.extend(ls);
+                self.value.insert(rk, v);
+            }
         }
         self.iterations += iters_per_subgame;
     }
 
-    fn solve_round(&mut self, h0: u8, h1: u8, round: u8, iters: u64) {
+    /// Solve a single round subgame in isolation, returning its round key, the
+    /// regret and average-strategy updates (local tables seeded from the global
+    /// ones), and the estimated continuation value to player 0.
+    fn solve_subgame(
+        &self,
+        h0: u8,
+        h1: u8,
+        round: u8,
+        iters: u64,
+        base_iters: u64,
+        seed: u64,
+    ) -> SubgameResult {
+        let mut rng = Rng::new(seed);
+        let mut lr: FastMap<u64, [f64; 2]> = fast_map();
+        let mut ls: FastMap<u64, [f64; 2]> = fast_map();
         let base = Env::from_state([h0, h1], round);
         for t in 1..=iters {
-            let weight = (self.iterations + t) as f64;
+            let weight = (base_iters + t) as f64;
             for traverser in 0..2 {
-                let cards = deal_from(&mut self.rng);
+                let cards = deal_from(&mut rng);
                 let mut env = base.clone();
                 env.deal_specific(cards).unwrap();
-                self.traverse(&env, traverser, weight);
+                self.traverse(&env, traverser, weight, &mut lr, &mut ls, &mut rng);
             }
         }
-        let v0 = self.estimate_round_value(h0, h1, round, VALUE_SAMPLES);
-        self.value.insert(round_state_key(h0, h1, round), v0);
+        let v0 = self.estimate_round_value(h0, h1, round, VALUE_SAMPLES, &ls, &mut rng);
+        (round_state_key(h0, h1, round), lr, ls, v0)
     }
 
     /// One external-sampling MCCFR+ traversal of a single round, returning the
@@ -284,9 +405,18 @@ impl Solver {
     /// are evaluated and regrets updated (CFR+, clipped); the drawn card after a
     /// Draw is sampled. At the opponent's nodes the action is sampled from the
     /// current strategy and the average strategy is accumulated (weighted by
-    /// `weight` for linear CFR+ averaging). The cross-round continuation value is
+    /// `weight` for linear CFR+ averaging). Regret/strategy updates go to the
+    /// subgame-local tables `lr`/`ls`. The cross-round continuation value is
     /// substituted when a non-terminal round ends.
-    fn traverse(&mut self, env: &Env, traverser: usize, weight: f64) -> f64 {
+    fn traverse(
+        &self,
+        env: &Env,
+        traverser: usize,
+        weight: f64,
+        lr: &mut FastMap<u64, [f64; 2]>,
+        ls: &mut FastMap<u64, [f64; 2]>,
+        rng: &mut Rng,
+    ) -> f64 {
         if !env.round_active() {
             if env.is_game_over() {
                 return env.utility(traverser);
@@ -299,54 +429,67 @@ impl Solver {
         let mask = env.deck_mask();
         let can_draw = mask != 0;
         let key = self.info_key(env, player);
-        let sigma = self.regret_matching(key, can_draw);
+        let sigma = self.regret_matching(key, can_draw, lr);
 
         if player == traverser {
             let mut stood = env.clone();
             stood.stand().unwrap();
-            let v_stand = self.traverse(&stood, traverser, weight);
+            let v_stand = self.traverse(&stood, traverser, weight, lr, ls, rng);
             let mut v_draw = 0.0;
             if can_draw {
-                let card = nth_deck_card(mask, self.rng.below(deck_count(mask)));
+                let card = nth_deck_card(mask, rng.below(deck_count(mask)));
                 let mut drawn = env.clone();
                 drawn.draw_specific(card).unwrap();
-                v_draw = self.traverse(&drawn, traverser, weight);
+                v_draw = self.traverse(&drawn, traverser, weight, lr, ls, rng);
             }
             let node_v = sigma[STAND] * v_stand + sigma[DRAW] * v_draw;
-            let entry = self.regret.entry(key).or_insert([0.0; 2]);
+            let entry = lr
+                .entry(key)
+                .or_insert_with(|| self.regret.get(&key).copied().unwrap_or([0.0; 2]));
             entry[STAND] = (entry[STAND] + v_stand - node_v).max(0.0);
             if can_draw {
                 entry[DRAW] = (entry[DRAW] + v_draw - node_v).max(0.0);
             }
             node_v
         } else {
-            let s = self.strategy_sum.entry(key).or_insert([0.0; 2]);
+            let s = ls
+                .entry(key)
+                .or_insert_with(|| self.strategy_sum.get(&key).copied().unwrap_or([0.0; 2]));
             s[STAND] += weight * sigma[STAND];
             if can_draw {
                 s[DRAW] += weight * sigma[DRAW];
             }
-            if can_draw && self.rng.unit() < sigma[DRAW] {
-                let card = nth_deck_card(mask, self.rng.below(deck_count(mask)));
+            if can_draw && rng.unit() < sigma[DRAW] {
+                let card = nth_deck_card(mask, rng.below(deck_count(mask)));
                 let mut drawn = env.clone();
                 drawn.draw_specific(card).unwrap();
-                self.traverse(&drawn, traverser, weight)
+                self.traverse(&drawn, traverser, weight, lr, ls, rng)
             } else {
                 let mut stood = env.clone();
                 stood.stand().unwrap();
-                self.traverse(&stood, traverser, weight)
+                self.traverse(&stood, traverser, weight, lr, ls, rng)
             }
         }
     }
 
     /// Monte-Carlo estimate (to player 0) of a round subgame under the current
-    /// average strategy, used as the continuation value for shallower rounds.
-    /// Cheap and low-bias; the headline exploitability metric is still computed
-    /// by exact best response, so this estimate's variance does not enter it.
-    fn estimate_round_value(&mut self, h0: u8, h1: u8, round: u8, samples: u32) -> f64 {
+    /// average strategy (preferring the subgame-local table `ls`), used as the
+    /// continuation value for shallower rounds. Cheap and low-bias; the headline
+    /// exploitability metric is still computed by exact best response, so this
+    /// estimate's variance does not enter it.
+    fn estimate_round_value(
+        &self,
+        h0: u8,
+        h1: u8,
+        round: u8,
+        samples: u32,
+        ls: &FastMap<u64, [f64; 2]>,
+        rng: &mut Rng,
+    ) -> f64 {
         let mut total = 0.0;
         for _ in 0..samples {
             let mut env = Env::from_state([h0, h1], round);
-            let cards = self.sample_deal();
+            let cards = deal_from(rng);
             env.deal_specific(cards).unwrap();
             loop {
                 if !env.round_active() {
@@ -361,9 +504,9 @@ impl Solver {
                 let mask = env.deck_mask();
                 let can_draw = mask != 0;
                 let key = self.info_key(&env, player);
-                let sigma = self.average_strategy(key, can_draw);
-                if can_draw && self.rng.unit() < sigma[DRAW] {
-                    let card = nth_deck_card(mask, self.rng.below(deck_count(mask)));
+                let sigma = self.average_strategy_local(key, can_draw, ls);
+                if can_draw && rng.unit() < sigma[DRAW] {
+                    let card = nth_deck_card(mask, rng.below(deck_count(mask)));
                     env.draw_specific(card).unwrap();
                 } else {
                     env.stand().unwrap();
@@ -371,10 +514,6 @@ impl Solver {
             }
         }
         total / samples as f64
-    }
-
-    fn sample_deal(&mut self) -> [u8; 4] {
-        deal_from(&mut self.rng)
     }
 
     /// Continuation value to player 0 once a round has ended into the given
@@ -408,7 +547,7 @@ impl Solver {
             br: 0,
             deal_samples,
             rng: Rng::new(seed),
-            between: HashMap::new(),
+            between: fast_map(),
         };
         let br0 = self.round_value(h, h, 1, &mut ctx);
         ctx.br = 1;
@@ -432,7 +571,7 @@ impl Solver {
         }
 
         let base = Env::from_state([h0, h1], round);
-        let mut within: HashMap<u64, f64> = HashMap::new();
+        let mut within: FastMap<u64, f64> = fast_map();
         let mut total = 0.0;
         let mut count = 0u32;
         if ctx.deal_samples == 0 {
@@ -472,7 +611,7 @@ impl Solver {
     }
 
     /// Best-response value to `ctx.br` for an in-progress (or just-ended) round.
-    fn within_value(&self, env: &Env, ctx: &mut BrCtx, within: &mut HashMap<u64, f64>) -> f64 {
+    fn within_value(&self, env: &Env, ctx: &mut BrCtx, within: &mut FastMap<u64, f64>) -> f64 {
         if !env.round_active() {
             if env.is_game_over() {
                 return env.utility(ctx.br);
@@ -540,6 +679,8 @@ impl Solver {
 
     pub fn save(&self, path: &str) -> io::Result<()> {
         let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&SOLVER_MAGIC.to_le_bytes());
+        buf.push(SOLVER_FORMAT_VERSION);
         buf.extend_from_slice(&self.iterations.to_le_bytes());
         buf.push(self.start_hearts);
         buf.push(self.abstract_keys as u8);
@@ -552,18 +693,33 @@ impl Solver {
     pub fn load(path: &str) -> io::Result<Self> {
         let mut bytes = Vec::new();
         std::fs::File::open(path)?.read_to_end(&mut bytes)?;
-        let mut pos = 0usize;
-        let iterations = read_u64(&bytes, &mut pos);
-        let start_hearts = bytes[pos];
-        pos += 1;
-        let abstract_keys = bytes[pos] != 0;
-        pos += 1;
-        let regret = read_table(&bytes, &mut pos);
-        let strategy_sum = read_table(&bytes, &mut pos);
+        let mut r = Reader::new(&bytes);
+        let magic = r.u32()?;
+        if magic != SOLVER_MAGIC {
+            return Err(invalid(
+                "not a Twenty-One solver file (bad magic); was it saved by an incompatible build? rebuild and retrain",
+            ));
+        }
+        let version = r.u8()?;
+        if version != SOLVER_FORMAT_VERSION {
+            return Err(invalid(format!(
+                "unsupported solver format version {version} (expected {SOLVER_FORMAT_VERSION}); retrain with this build"
+            )));
+        }
+        let iterations = r.u64()?;
+        let start_hearts = r.u8()?;
+        let abstract_keys = r.u8()? != 0;
+        let regret = r.table()?;
+        let strategy_sum = r.table()?;
+        if !r.is_empty() {
+            return Err(invalid(
+                "trailing bytes after solver tables (corrupt or truncated file)",
+            ));
+        }
         Ok(Self {
             regret,
             strategy_sum,
-            value: HashMap::new(),
+            value: fast_map(),
             start_hearts,
             abstract_keys,
             iterations,
@@ -572,7 +728,16 @@ impl Solver {
     }
 }
 
-fn write_table(buf: &mut Vec<u8>, table: &HashMap<u64, [f64; 2]>) {
+/// Magic + version prefix so a wrong or stale file fails with a clear error
+/// instead of a panic. Bump the version whenever the byte layout changes.
+const SOLVER_MAGIC: u32 = 0x3132_5453; // "T21S" little-endian
+const SOLVER_FORMAT_VERSION: u8 = 1;
+
+fn invalid(msg: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, msg.into())
+}
+
+fn write_table(buf: &mut Vec<u8>, table: &FastMap<u64, [f64; 2]>) {
     buf.extend_from_slice(&(table.len() as u64).to_le_bytes());
     for (k, v) in table {
         buf.extend_from_slice(&k.to_le_bytes());
@@ -581,33 +746,94 @@ fn write_table(buf: &mut Vec<u8>, table: &HashMap<u64, [f64; 2]>) {
     }
 }
 
-fn read_u64(bytes: &[u8], pos: &mut usize) -> u64 {
-    let v = u64::from_le_bytes(bytes[*pos..*pos + 8].try_into().unwrap());
-    *pos += 8;
-    v
+/// Bounds-checked little-endian byte reader: every read fails cleanly with an
+/// `UnexpectedEof` error rather than panicking on an out-of-range slice.
+struct Reader<'a> {
+    bytes: &'a [u8],
+    pos: usize,
 }
 
-fn read_f64(bytes: &[u8], pos: &mut usize) -> f64 {
-    let v = f64::from_le_bytes(bytes[*pos..*pos + 8].try_into().unwrap());
-    *pos += 8;
-    v
-}
-
-fn read_table(bytes: &[u8], pos: &mut usize) -> HashMap<u64, [f64; 2]> {
-    let n = read_u64(bytes, pos) as usize;
-    let mut table = HashMap::with_capacity(n);
-    for _ in 0..n {
-        let k = read_u64(bytes, pos);
-        let a = read_f64(bytes, pos);
-        let b = read_f64(bytes, pos);
-        table.insert(k, [a, b]);
+impl<'a> Reader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, pos: 0 }
     }
-    table
+
+    fn is_empty(&self) -> bool {
+        self.pos == self.bytes.len()
+    }
+
+    fn take(&mut self, n: usize) -> io::Result<&[u8]> {
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or_else(|| invalid("length overflow"))?;
+        let slice = self
+            .bytes
+            .get(self.pos..end)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "solver file truncated"))?;
+        self.pos = end;
+        Ok(slice)
+    }
+
+    fn u8(&mut self) -> io::Result<u8> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u32(&mut self) -> io::Result<u32> {
+        Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
+    }
+
+    fn u64(&mut self) -> io::Result<u64> {
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    }
+
+    fn f64(&mut self) -> io::Result<f64> {
+        Ok(f64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    }
+
+    fn table(&mut self) -> io::Result<FastMap<u64, [f64; 2]>> {
+        let n = self.u64()? as usize;
+        // Guard against a corrupt length claiming more entries than the file can
+        // possibly hold (24 bytes each) before allocating.
+        let remaining = self.bytes.len() - self.pos;
+        if n > remaining / 24 {
+            return Err(invalid(
+                "solver table length exceeds file size (corrupt file)",
+            ));
+        }
+        let mut table = FastMap::with_capacity_and_hasher(n, Default::default());
+        for _ in 0..n {
+            let k = self.u64()?;
+            let a = self.f64()?;
+            let b = self.f64()?;
+            table.insert(k, [a, b]);
+        }
+        Ok(table)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parallel_solve_is_deterministic() {
+        // Per-subgame RNGs are seeded in a fixed order and round results merged in
+        // a fixed order, so training is reproducible and independent of how many
+        // threads rayon happens to use. A multi-subgame-per-round variant (2
+        // hearts) exercises the parallel path.
+        let mut a = Solver::abstracted(99, 2);
+        a.solve(500);
+        let mut b = Solver::abstracted(99, 2);
+        b.solve(500);
+        assert_eq!(a.num_infosets(), b.num_infosets());
+        let mut keys: Vec<u64> = a.strategy_sum.keys().copied().collect();
+        keys.sort_unstable();
+        for k in keys.iter().take(64) {
+            assert_eq!(a.average_draw_prob(*k), b.average_draw_prob(*k));
+            assert_eq!(a.regret.get(k), b.regret.get(k));
+        }
+    }
 
     #[test]
     fn solver_reduces_exploitability() {
@@ -629,18 +855,45 @@ mod tests {
 
     #[test]
     fn save_load_roundtrip() {
-        let mut solver = Solver::new(7);
-        solver.solve(300);
-        let path = std::env::temp_dir().join("twentyone_solver_test.bin");
-        let path = path.to_str().unwrap();
-        solver.save(path).unwrap();
-        let reloaded = Solver::load(path).unwrap();
-        assert_eq!(reloaded.iterations(), solver.iterations());
-        assert_eq!(reloaded.num_infosets(), solver.num_infosets());
-        let key = *solver.strategy_sum.keys().next().unwrap();
-        assert_eq!(
-            reloaded.average_draw_prob(key),
-            solver.average_draw_prob(key)
-        );
+        for mut solver in [Solver::new(7), Solver::abstracted(7, 6)] {
+            solver.solve(300);
+            let path = std::env::temp_dir().join(format!(
+                "twentyone_solver_test_{}.bin",
+                solver.abstract_keys
+            ));
+            let path = path.to_str().unwrap();
+            solver.save(path).unwrap();
+            let reloaded = Solver::load(path).unwrap();
+            assert_eq!(reloaded.iterations(), solver.iterations());
+            assert_eq!(reloaded.num_infosets(), solver.num_infosets());
+            assert_eq!(reloaded.abstract_keys, solver.abstract_keys);
+            let key = *solver.strategy_sum.keys().next().unwrap();
+            assert_eq!(
+                reloaded.average_draw_prob(key),
+                solver.average_draw_prob(key)
+            );
+        }
+    }
+
+    #[test]
+    fn load_rejects_invalid_files() {
+        let dir = std::env::temp_dir();
+
+        // Random/garbage bytes (e.g. a file from an incompatible build) must
+        // error cleanly, never panic.
+        let garbage = dir.join("twentyone_solver_garbage.bin");
+        std::fs::write(&garbage, vec![0xABu8; 4096]).unwrap();
+        assert!(Solver::load(garbage.to_str().unwrap()).is_err());
+
+        // A valid file truncated mid-table must error rather than over-read.
+        let mut solver = Solver::with_hearts(3, 2);
+        solver.solve(200);
+        let good = dir.join("twentyone_solver_good.bin");
+        solver.save(good.to_str().unwrap()).unwrap();
+        let mut bytes = std::fs::read(&good).unwrap();
+        bytes.truncate(bytes.len() - 16);
+        let truncated = dir.join("twentyone_solver_truncated.bin");
+        std::fs::write(&truncated, &bytes).unwrap();
+        assert!(Solver::load(truncated.to_str().unwrap()).is_err());
     }
 }
