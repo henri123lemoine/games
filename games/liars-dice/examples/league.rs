@@ -111,7 +111,7 @@ fn main() {
                 champion.bidder_bias
             );
             // Fictitious play: periodically add the champion to the league.
-            if promotions % 4 == 0 {
+            if promotions.is_multiple_of(4) {
                 league.push(champion);
                 champ_score = score(champion, &league);
             }
