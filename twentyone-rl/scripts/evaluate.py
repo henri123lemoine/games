@@ -29,13 +29,18 @@ def main() -> None:
     parser.add_argument("--games", type=int, default=2000, help="games per matchup")
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--eval-deals", type=int, default=0, help="exploitability deals (0=exact)")
+    parser.add_argument(
+        "--mixed",
+        action="store_true",
+        help="play the sampled equilibrium policy instead of the greedy one",
+    )
     args = parser.parse_args()
 
     solver = twentyone.Solver.load(str(args.solver))
-    hero = SolverAgent(solver, seed=args.seed, name="Solver")
+    hero = SolverAgent(solver, seed=args.seed, name="Solver", greedy=not args.mixed)
     logger.info(
         f"Loaded {args.solver}: {solver.iterations()} iters/subgame, "
-        f"{solver.num_infosets()} infosets"
+        f"{solver.num_infosets()} infosets; play={'mixed' if args.mixed else 'greedy'}"
     )
 
     if args.eval_deals >= 0:
