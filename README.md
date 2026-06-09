@@ -11,18 +11,19 @@ A high-performance implementation of the Twenty-One card game designed for reinf
 ## Quick Start
 
 ```bash
-# Build the Rust-backed environment + solver into the RL venv
-cd twentyone-py
-maturin build --release -i ../twentyone-rl/.venv/bin/python3
-cd ../twentyone-rl
-uv pip install --no-cache --no-deps ../twentyone-py/target/wheels/twentyone-*.whl
+cd twentyone-rl
+uv sync   # builds the Rust-backed `twentyone` extension into the venv
 
-# Watch a game, see convergence to Nash, train and evaluate a solver
+# Watch a game, see convergence, train and evaluate a solver, then play it
 uv run examples/basic_play.py
 uv run scripts/convergence.py --hearts 1
 uv run scripts/train_solver.py --hearts 6 --iters 400000 --chunks 8 --abstract --eval-deals -1
 uv run scripts/evaluate.py --solver data/solver_6h.bin --eval-deals -1
+uv run scripts/play.py --solver data/solver_6h.bin
 ```
+
+After editing Rust, force a rebuild with `uv sync --reinstall-package twentyone`
+(uv caches the build by version and won't otherwise rebuild on Rust changes).
 
 The solver computes a Nash-equilibrium strategy via external-sampling MCCFR+ in
 Rust; see [twentyone-rl/README.md](twentyone-rl/README.md) for the approach.

@@ -69,13 +69,23 @@ below; exact values vary slightly with seed.)
 
 ## Setup
 
+The `twentyone` extension is a local path dependency, so a normal `uv sync`
+(re)builds it from source:
+
 ```bash
-# Build and install the Rust-backed environment + solver into this venv
-cd ../twentyone-py
-maturin build --release -i ../twentyone-rl/.venv/bin/python3
-cd ../twentyone-rl
-uv pip install --no-cache --no-deps ../twentyone-py/target/wheels/twentyone-*.whl
+uv sync
 ```
+
+> **After editing Rust** (`twentyone-core` / `twentyone-py`), force a rebuild —
+> uv caches the build by version and won't notice Rust source changes on its own,
+> which otherwise leaves a stale extension installed:
+>
+> ```bash
+> uv sync --reinstall-package twentyone
+> ```
+>
+> Saved solver files carry a format version, so a stale build loading a current
+> model fails with a clear error rather than crashing.
 
 ## Measuring convergence (small variants)
 
@@ -127,7 +137,21 @@ uv run examples/basic_play.py
 ## Performance & correctness
 
 The Rust engine plays ~1.7M full games/second (~38M steps/s) single-threaded;
-`cargo run --release --example bench` reports it. Game behaviour is locked by
-`twentyone-core/tests/rules_invariants.rs`: a golden-master digest of a
-deterministic battery of games plus rule-invariant checks over thousands of
-random games, so optimizations that change the rules fail the test.
+`cargo run --release --example bench` reports it.
+
+Training is **multi-core**: subgames at the same round are independent (disjoint
+information sets, read-only deeper-round continuations), so each round is solved
+across all cores with rayon. On an 18-core machine an abstracted 6-heart
+`solve(50000)` drops from ~124s to ~24s (~5×), and the full 400k-iter model
+trains in a few minutes. Results stay deterministic and thread-count-independent.
+
+Correctness is guarded by tests at every layer:
+
+- `twentyone-core/tests/rules_invariants.rs` — a golden-master digest of a
+  deterministic battery of games plus rule-invariant checks over thousands of
+  random games, so any change to the rules fails the test.
+- `twentyone-core` unit tests — controllable-vs-RNG engine parity, solver
+  convergence, parallel determinism, and save/load (including rejecting stale or
+  corrupt files cleanly).
+- `tests/` (pytest) — end-to-end train → save → load → play through the real
+  Python bindings (`uv run --with pytest pytest tests/`).
