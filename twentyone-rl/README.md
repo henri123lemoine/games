@@ -136,21 +136,21 @@ uv run scripts/gauntlet.py --solvers data/*.bin --games 2000
 
 It prints each solver's **training budget** (iters/subgame). A model that wins
 only because it trained longer isn't a real improvement, so to compare *methods*
-fairly, train every candidate with the same `--iters` and confirm the budgets
-match in the standings.
+fairly, train every candidate with the same budget (`--budget-seconds N` trains
+to a wall-clock cap) and confirm the budgets line up in the standings.
 
-**Inference-time search does not help here.** `scripts/experiment_search.py`
-pits a within-round lookahead agent (perfect-information Monte-Carlo over the
-hidden card) against the greedy table agent: search loses significantly (~47.6 %,
-95 % CI [45.8, 49.4]) and is weaker against the threshold ladder too. The CFR
-strategy already accounts for the hidden card; determinized search breaks that
-(strategy fusion). So strength comes from *training*, not from thinking longer at
-play — `mode='search'` exists mainly to make that measurable.
+**See [BAKEOFF.md](BAKEOFF.md)** for a full controlled comparison of the strength
+levers — decomposed vs full-game CFR, abstraction on/off, two inference-search
+methods, and Deep CFR — each under an equal 5-minute budget. Headline: decomposed
+CFR+ with abstraction wins; **inference-time search does not help here** (both a
+determinized PIMC search and a strategy-fusion-free 1-ply lookahead lose to the
+greedy table, ~47%), because the equilibrium table already plays the hidden card
+correctly. Strength comes from *training*, not from thinking longer at play.
 
 ## Layout
 
 - `scripts/agents.py` — `RandomAgent`, `ThresholdAgent`, `SolverAgent`
-  (`mode='greedy' | 'mixed' | 'search'`); a uniform `act(env, player)` interface.
+  (`mode='greedy' | 'mixed' | 'search' | 'lookahead'`); uniform `act(env, player)`.
 - `scripts/arena.py` — head-to-head matches with Wilson confidence intervals.
 - `scripts/train_solver.py` — train and checkpoint a solver.
 - `scripts/evaluate.py` — exploitability + win-rate report.
