@@ -516,15 +516,17 @@ impl Env {
     }
 
     /// A lossy abstraction of [`Env::sufficient_key`] for large variants: it keeps
-    /// round, hearts, own total, and stood flags exact but summarizes the unseen
-    /// set by only its cardinality and sum rather than its exact membership.
+    /// round, hearts, own total, and stood flags exact, but instead of the exact
+    /// unseen-card *set* it stores the count of unseen cards in four value bands
+    /// (1–3, 4–6, 7–9, 10–11).
     ///
-    /// Those two moments are what drive the draw decision — the bust probability
-    /// and the expected next-card value — so play under this abstraction stays
-    /// strong, while the per-subgame information-set count drops by more than an
-    /// order of magnitude, letting CFR converge far faster on the full game.
-    /// (The headline exploitability metric still uses the true game, so it fairly
-    /// measures how exploitable the abstract strategy is in real play.)
+    /// That histogram is what the draw decision actually needs — it determines
+    /// the bust probability (how many unseen cards exceed `21 - total`) and the
+    /// opponent's possible holdings — so play under this abstraction stays strong,
+    /// while the per-subgame information-set count drops by roughly an order of
+    /// magnitude, letting CFR converge far faster on the full game. (The headline
+    /// exploitability metric still uses the true game, so it fairly measures how
+    /// exploitable the abstract strategy is in real play.)
     pub fn abstract_key(&self, player: usize) -> u64 {
         let rs = match &self.round_state {
             Some(rs) => rs,
@@ -542,22 +544,22 @@ impl Env {
             seen |= 1 << (op.up_cards[i] as u16 - 1);
         }
         let unseen = (!seen) & 0x7FF;
-        let count = unseen.count_ones() as u64;
-        let mut sum: u64 = 0;
-        let mut m = unseen;
-        while m != 0 {
-            sum += (m.trailing_zeros() + 1) as u64;
-            m &= m - 1;
-        }
+        let band = |lo: u32, hi: u32| ((unseen >> (lo - 1)) & ((1 << (hi - lo + 1)) - 1)).count_ones();
+        let b0 = band(1, 3) as u64;
+        let b1 = band(4, 6) as u64;
+        let b2 = band(7, 9) as u64;
+        let b3 = band(10, 11) as u64;
         let round = (self.round as u64).min(63);
         (round & 0x3F)
             | ((self.hearts[player] as u64 & 0x7) << 6)
             | ((self.hearts[opp] as u64 & 0x7) << 9)
             | ((me.total as u64 & 0x7F) << 12)
-            | ((count & 0xF) << 19)
-            | ((sum & 0x7F) << 23)
-            | ((me.last_action_stand as u64) << 30)
-            | ((op.last_action_stand as u64) << 31)
+            | ((b0 & 0x3) << 19)
+            | ((b1 & 0x3) << 21)
+            | ((b2 & 0x3) << 23)
+            | ((b3 & 0x3) << 25)
+            | ((me.last_action_stand as u64) << 27)
+            | ((op.last_action_stand as u64) << 28)
     }
 
     /// A packed god's-eye key sufficient to determine the value of the current
