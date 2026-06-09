@@ -103,9 +103,13 @@ first-player bias. Pass `--eval-deals -1` to skip the (slow) exploitability
 measurement, or `--mixed` to play the sampled equilibrium policy instead of the
 greedy one.
 
-## Watching a game
+## Playing against it
 
 ```bash
+# You are seated as player 0; enter d/s each turn. --seat 1 swaps sides.
+uv run scripts/play.py --solver data/solver_6h.bin
+
+# Or just watch two bots:
 uv run examples/basic_play.py
 ```
 
@@ -117,4 +121,13 @@ uv run examples/basic_play.py
 - `scripts/train_solver.py` — train and checkpoint a solver.
 - `scripts/evaluate.py` — exploitability + win-rate report.
 - `scripts/convergence.py` — exact-exploitability convergence on small variants.
+- `scripts/play.py` — play a game against a trained solver.
 - `src/twentyone_rl/display.py` — human-readable game rendering.
+
+## Performance & correctness
+
+The Rust engine plays ~1.7M full games/second (~38M steps/s) single-threaded;
+`cargo run --release --example bench` reports it. Game behaviour is locked by
+`twentyone-core/tests/rules_invariants.rs`: a golden-master digest of a
+deterministic battery of games plus rule-invariant checks over thousands of
+random games, so optimizations that change the rules fail the test.
