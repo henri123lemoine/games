@@ -1,24 +1,6 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.so
-*.egg-info/
-*dist-info/
-dist/
-build/
-*.whl
-
 # Rust
 **/target
-# For library crates, Cargo.lock should be ignored
-# For binary crates, it should be tracked
-# Since these are primarily library crates, ignore them
 Cargo.lock
-
-# UV/Build artifacts
-.python-version
 
 # IDE
 .vscode/
@@ -30,6 +12,7 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 
-# Misc
+# Local
 data/
 .claude/
+.worktrees/
