@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyType};
-use twentyone_core::{Action as CoreAction, Env as CoreEnv, Observation as CoreObservation, RoundOutcome as CoreRoundOutcome, StepResult as CoreStepResult};
+use twentyone_core::{Action as CoreAction, Env as CoreEnv, Observation as CoreObservation, RoundOutcome as CoreRoundOutcome, Solver as CoreSolver, StepResult as CoreStepResult};
 
 /// Action available to the current player: draw a card or stand.
 #[pyclass(eq, eq_int)]
@@ -329,12 +329,97 @@ impl Env {
         self.clone()
     }
 
+    /// Lossless sufficient-statistic information-set key for `player`, used to
+    /// index an equilibrium strategy table.
+    fn sufficient_key(&self, player: usize) -> u64 {
+        self.inner.sufficient_key(player)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Env(round={}, hearts=[{}, {}])",
             self.round(),
             self.hearts(0),
             self.hearts(1)
+        )
+    }
+}
+
+/// CFR+ solver that computes a near-Nash equilibrium strategy for Twenty-One.
+///
+/// Train with `solve`, measure quality with `exploitability`, and play with
+/// `draw_probability`. Strategies persist via `save`/`load`.
+#[pyclass]
+pub struct Solver {
+    inner: CoreSolver,
+}
+
+#[pymethods]
+impl Solver {
+    /// Create a solver for the full 6-heart game.
+    #[new]
+    fn new(seed: u64) -> Self {
+        Self {
+            inner: CoreSolver::new(seed),
+        }
+    }
+
+    /// Create a solver for a variant with `start_hearts` hearts per player.
+    /// Smaller values define a shorter, exactly-solvable game for validation.
+    #[classmethod]
+    fn with_hearts(_cls: &Bound<'_, PyType>, seed: u64, start_hearts: u8) -> Self {
+        Self {
+            inner: CoreSolver::with_hearts(seed, start_hearts),
+        }
+    }
+
+    /// Run `iters_per_subgame` CFR+ iterations on every round subgame.
+    fn solve(&mut self, iters_per_subgame: u64) {
+        self.inner.solve(iters_per_subgame);
+    }
+
+    /// Exact/sampled exploitability: returns (br0, br1, nashconv). With
+    /// `deal_samples == 0` the opening deal of each round is enumerated exactly;
+    /// otherwise it is Monte-Carlo sampled with the given `seed`.
+    fn exploitability(&self, deal_samples: u32, seed: u64) -> (f64, f64, f64) {
+        self.inner.exploitability(deal_samples, seed)
+    }
+
+    /// Probability of drawing under the equilibrium average strategy for the
+    /// current player in `env`. Returns 0.0 when the deck is empty (forced stand).
+    fn draw_probability(&self, env: &Env, player: usize) -> f64 {
+        if env.inner.deck_mask() == 0 {
+            return 0.0;
+        }
+        self.inner.average_draw_prob(env.inner.sufficient_key(player))
+    }
+
+    fn iterations(&self) -> u64 {
+        self.inner.iterations()
+    }
+
+    fn num_infosets(&self) -> usize {
+        self.inner.num_infosets()
+    }
+
+    fn save(&self, path: &str) -> PyResult<()> {
+        self.inner
+            .save(path)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))
+    }
+
+    #[classmethod]
+    fn load(_cls: &Bound<'_, PyType>, path: &str) -> PyResult<Self> {
+        CoreSolver::load(path)
+            .map(|inner| Self { inner })
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Solver(iterations={}, infosets={})",
+            self.inner.iterations(),
+            self.inner.num_infosets()
         )
     }
 }
@@ -350,5 +435,6 @@ fn _twentyone(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Observation>()?;
     m.add_class::<RoundOutcome>()?;
     m.add_class::<StepResult>()?;
+    m.add_class::<Solver>()?;
     Ok(())
 }

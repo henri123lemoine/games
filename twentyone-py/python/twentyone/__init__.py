@@ -15,7 +15,7 @@ Example:
     >>> result = env.step(twentyone.Action.Draw)
 """
 
-from ._twentyone import Action, Env, Observation, RoundOutcome, StepResult
+from ._twentyone import Action, Env, Observation, RoundOutcome, Solver, StepResult
 
 __version__ = "0.1.0"
-__all__ = ["Action", "Env", "Observation", "RoundOutcome", "StepResult"]
+__all__ = ["Action", "Env", "Observation", "RoundOutcome", "Solver", "StepResult"]
