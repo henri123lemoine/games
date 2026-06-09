@@ -49,6 +49,9 @@ pub struct ProbConfig {
     pub safety: f64,
     /// Probability of a deliberate bluff raise (using the supplied randomness).
     pub bluff: f64,
+    /// Opponent inference: a bidder credibly holds this many of the bid's face,
+    /// so we discount the required count by it when judging their bid's truth.
+    pub bidder_bias: f64,
 }
 
 impl Default for ProbConfig {
@@ -58,6 +61,7 @@ impl Default for ProbConfig {
             exact_cut: 0.32,
             safety: 0.42,
             bluff: 0.08,
+            bidder_bias: 0.6,
         }
     }
 }
@@ -76,12 +80,22 @@ impl ProbabilisticAgent {
         }
     }
 
-    /// Probability the bid `(q, face)` is true given my hand.
-    fn p_true(&self, game: &LiarsDice, s: &LdState, player: usize, q: u8, face: u8) -> f64 {
+    /// Probability the bid `(q, face)` is true given my hand. `signal` discounts
+    /// the count we must find among unknown dice — used to credit a bidder for
+    /// credibly holding their own face.
+    fn p_true(
+        &self,
+        game: &LiarsDice,
+        s: &LdState,
+        player: usize,
+        q: u8,
+        face: u8,
+        signal: f64,
+    ) -> f64 {
         let total: u8 = s.dice_left().iter().sum();
         let my_dice = s.dice_left()[player];
         let unknown = (total - my_dice) as u32;
-        let need = q as i64 - s.my_count(player, face) as i64;
+        let need = (q as f64 - s.my_count(player, face) as f64 - signal).ceil() as i64;
         binom_sf(unknown, 1.0 / game.faces as f64, need)
     }
 
@@ -131,7 +145,7 @@ impl ProbabilisticAgent {
             return Action::Open(q0, best_face);
         }
 
-        let p_true = self.p_true(game, s, player, q, face);
+        let p_true = self.p_true(game, s, player, q, face, self.cfg.bidder_bias);
         let p_exact = self.p_exact(game, s, player, q, face);
         let can_exact = actions.contains(&Action::CallExact);
         let can_liar = actions.contains(&Action::CallLiar);
@@ -149,7 +163,7 @@ impl ProbabilisticAgent {
         let mut best: Option<(Action, f64)> = None;
         for &a in &actions {
             if let Some((nq, nf)) = self.raised_bid(game, q, face, a) {
-                let pt = self.p_true(game, s, player, nq, nf);
+                let pt = self.p_true(game, s, player, nq, nf, 0.0);
                 if best.is_none_or(|(_, b)| pt > b) {
                     best = Some((a, pt));
                 }
