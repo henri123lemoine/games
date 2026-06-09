@@ -55,7 +55,22 @@ pub struct ProbConfig {
 }
 
 impl Default for ProbConfig {
+    /// League-tuned on 5p5d6f (see `examples/league`): aggressive bids, eager
+    /// EXACT calls (this variant punishes neither when right), ready to call liar.
     fn default() -> Self {
+        Self {
+            liar_cut: 0.275,
+            exact_cut: 0.500,
+            safety: 0.191,
+            bluff: 0.046,
+            bidder_bias: 0.383,
+        }
+    }
+}
+
+impl ProbConfig {
+    /// The original hand-set baseline, kept for regression comparison.
+    pub fn baseline() -> Self {
         Self {
             liar_cut: 0.32,
             exact_cut: 0.32,
