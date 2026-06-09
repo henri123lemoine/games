@@ -544,7 +544,8 @@ impl Env {
             seen |= 1 << (op.up_cards[i] as u16 - 1);
         }
         let unseen = (!seen) & 0x7FF;
-        let band = |lo: u32, hi: u32| ((unseen >> (lo - 1)) & ((1 << (hi - lo + 1)) - 1)).count_ones();
+        let band =
+            |lo: u32, hi: u32| ((unseen >> (lo - 1)) & ((1 << (hi - lo + 1)) - 1)).count_ones();
         let b0 = band(1, 3) as u64;
         let b1 = band(4, 6) as u64;
         let b2 = band(7, 9) as u64;

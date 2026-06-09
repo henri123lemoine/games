@@ -20,7 +20,7 @@ uv pip install --no-cache --no-deps ../twentyone-py/target/wheels/twentyone-*.wh
 # Watch a game, see convergence to Nash, train and evaluate a solver
 uv run examples/basic_play.py
 uv run scripts/convergence.py --hearts 1
-uv run scripts/train_solver.py --hearts 6 --iters 300000 --eval-deals -1
+uv run scripts/train_solver.py --hearts 6 --iters 400000 --chunks 8 --abstract --eval-deals -1
 uv run scripts/evaluate.py --solver data/solver_6h.bin --eval-deals -1
 ```
 
