@@ -1,9 +1,0 @@
-[workspace]
-resolver = "2"
-members = ["core", "games/liars-dice", "games/twentyone"]
-
-[workspace.package]
-edition = "2024"
-
-[workspace.dependencies]
-cfr-core = { path = "core" }

@@ -1,0 +1,18 @@
+# Workspace for the CFR / imperfect-information games lab.
+#
+# `cfr-core` holds the algorithms (the Game trait, CFR variants, exact
+# exploitability, the arena); `games/*` are games implemented against it. The
+# original Twenty-One sub-project (twentyone-core/py/rl) is a self-contained
+# specialized engine + bindings and is excluded from this workspace so its build
+# (and the maturin/uv flow) is unaffected.
+[workspace]
+resolver = "2"
+members = ["cfr-core", "games/liars-dice", "games/twentyone"]
+exclude = ["twentyone-core", "twentyone-py", "twentyone-rl"]
+
+[workspace.package]
+edition = "2024"
+
+[workspace.dependencies]
+cfr-core = { path = "cfr-core" }
+rayon = "1.10"

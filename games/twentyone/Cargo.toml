@@ -10,4 +10,4 @@ path = "src/lib.rs"
 
 [dependencies]
 cfr-core = { workspace = true }
-twentyone-core = { path = "../../../twentyone-core" }
+twentyone-core = { path = "../../twentyone-core" }
