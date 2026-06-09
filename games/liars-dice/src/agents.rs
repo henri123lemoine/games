@@ -67,13 +67,13 @@ impl Default for ProbConfig {
     /// EXACT calls (this variant punishes neither when right), ready to call liar.
     fn default() -> Self {
         Self {
-            liar_cut: 0.275,
-            exact_cut: 0.500,
-            safety: 0.191,
-            bluff: 0.046,
-            bidder_bias: 0.383,
-            open_frac: 0.5,
-            mix: 0.06,
+            liar_cut: 0.238,
+            exact_cut: 0.523,
+            safety: 0.129,
+            bluff: 0.005,
+            bidder_bias: 0.412,
+            open_frac: 0.346,
+            mix: 0.051,
         }
     }
 }

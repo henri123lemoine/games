@@ -49,10 +49,14 @@ win share across the panel so it's robust rather than overfit to one opponent.
 | probabilistic vs random field | 5p5d6f | **0.98** (fair 0.20) |
 | probabilistic vs random field | 2p5d6f | **0.999** |
 | tuned vs a field of the untuned default | 5p5d6f | **0.47** (fair 0.20) |
-| rollout vs a field of the probabilistic agent | 3p3d6f | **0.39** (fair 0.33) |
+| **rollout vs a field of the probabilistic agent** | 3p3d6f | **0.63** (fair 0.33) |
+| **rollout vs a field of the probabilistic agent** | 5p5d6f | **0.27** (fair 0.20) |
 
 So the tuned belief agent dominates random and the untuned baseline, and the
-rollout lookahead adds a further edge over the belief policy itself.
+rollout lookahead with **bid-conditioned determinization** dominates the belief
+policy itself — nearly 2× fair share at 3 players. Because the conditioning
+assumes opponents bid in relation to their dice (as any thinking player does), it
+models a human far better than a uniform resample.
 
 ## Run it
 
