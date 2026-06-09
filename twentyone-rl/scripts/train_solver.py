@@ -16,9 +16,9 @@ import twentyone
 from loguru import logger
 
 
-def build_solver(hearts: int, seed: int) -> twentyone.Solver:
-    if hearts == 6:
-        return twentyone.Solver(seed)
+def build_solver(hearts: int, seed: int, abstract: bool) -> twentyone.Solver:
+    if abstract:
+        return twentyone.Solver.abstracted(seed, hearts)
     return twentyone.Solver.with_hearts(seed, hearts)
 
 
@@ -41,9 +41,14 @@ def main() -> None:
         help="measure exploitability every N chunks (0 = only after the final chunk)",
     )
     parser.add_argument("--out", type=Path, default=Path("data/solver.bin"))
+    parser.add_argument(
+        "--abstract",
+        action="store_true",
+        help="key information sets by the unseen-set abstraction (for the full game)",
+    )
     args = parser.parse_args()
 
-    solver = build_solver(args.hearts, args.seed)
+    solver = build_solver(args.hearts, args.seed, args.abstract)
     chunk = max(1, args.iters // args.chunks)
     logger.info(
         f"Training {args.hearts}-heart solver: {args.chunks} x {chunk} iters/subgame "

@@ -66,6 +66,12 @@ pub struct Solver {
     /// Starting hearts per player (6 for the full game; smaller values define a
     /// shorter variant that is exactly solvable for validation).
     start_hearts: u8,
+    /// When true, information sets are keyed by [`Env::abstract_key`] (a lossy
+    /// summary of the unseen set) instead of the lossless [`Env::sufficient_key`].
+    /// Trades exactness for far fewer infosets, making the full game converge to
+    /// strong play quickly. Best-response exploitability is still measured on the
+    /// true game.
+    abstract_keys: bool,
     iterations: u64,
     rng: Rng,
 }
@@ -144,14 +150,46 @@ impl Solver {
     /// The full game uses 6; smaller values yield a shorter, exactly-solvable
     /// game useful for validating convergence.
     pub fn with_hearts(seed: u64, start_hearts: u8) -> Self {
+        Self::configured(seed, start_hearts, false)
+    }
+
+    /// Construct a solver that keys information sets by the lossy
+    /// [`Env::abstract_key`] abstraction — use for the full 6-heart game, where
+    /// the lossless representation has too many information sets to converge to
+    /// strong play in reasonable time.
+    pub fn abstracted(seed: u64, start_hearts: u8) -> Self {
+        Self::configured(seed, start_hearts, true)
+    }
+
+    fn configured(seed: u64, start_hearts: u8, abstract_keys: bool) -> Self {
         Self {
             regret: HashMap::new(),
             strategy_sum: HashMap::new(),
             value: HashMap::new(),
             start_hearts,
+            abstract_keys,
             iterations: 0,
             rng: Rng::new(seed),
         }
+    }
+
+    #[inline]
+    fn info_key(&self, env: &Env, player: usize) -> u64 {
+        if self.abstract_keys {
+            env.abstract_key(player)
+        } else {
+            env.sufficient_key(player)
+        }
+    }
+
+    /// Draw probability under the learned average strategy for the current player
+    /// in `env`, using whichever information-set keying this solver was trained
+    /// with. Returns 0.0 when the deck is empty (a forced stand).
+    pub fn play_draw_prob(&self, env: &Env, player: usize) -> f64 {
+        if env.deck_mask() == 0 {
+            return 0.0;
+        }
+        self.average_draw_prob(self.info_key(env, player))
     }
 
     pub fn iterations(&self) -> u64 {
@@ -260,7 +298,7 @@ impl Solver {
         let player = env.current_player();
         let mask = env.deck_mask();
         let can_draw = mask != 0;
-        let key = env.sufficient_key(player);
+        let key = self.info_key(env, player);
         let sigma = self.regret_matching(key, can_draw);
 
         if player == traverser {
@@ -322,7 +360,7 @@ impl Solver {
                 let player = env.current_player();
                 let mask = env.deck_mask();
                 let can_draw = mask != 0;
-                let key = env.sufficient_key(player);
+                let key = self.info_key(&env, player);
                 let sigma = self.average_strategy(key, can_draw);
                 if can_draw && self.rng.unit() < sigma[DRAW] {
                     let card = nth_deck_card(mask, self.rng.below(deck_count(mask)));
@@ -471,7 +509,7 @@ impl Solver {
             }
             best
         } else {
-            let key = env.sufficient_key(player);
+            let key = self.info_key(env, player);
             let sigma = self.average_strategy(key, can_draw);
             let mut v = 0.0;
             if sigma[STAND] > 0.0 {
@@ -504,6 +542,7 @@ impl Solver {
         let mut buf: Vec<u8> = Vec::new();
         buf.extend_from_slice(&self.iterations.to_le_bytes());
         buf.push(self.start_hearts);
+        buf.push(self.abstract_keys as u8);
         write_table(&mut buf, &self.regret);
         write_table(&mut buf, &self.strategy_sum);
         let mut f = std::fs::File::create(path)?;
@@ -517,6 +556,8 @@ impl Solver {
         let iterations = read_u64(&bytes, &mut pos);
         let start_hearts = bytes[pos];
         pos += 1;
+        let abstract_keys = bytes[pos] != 0;
+        pos += 1;
         let regret = read_table(&bytes, &mut pos);
         let strategy_sum = read_table(&bytes, &mut pos);
         Ok(Self {
@@ -524,6 +565,7 @@ impl Solver {
             strategy_sum,
             value: HashMap::new(),
             start_hearts,
+            abstract_keys,
             iterations,
             rng: Rng::new(0x5DEECE66D ^ iterations),
         })

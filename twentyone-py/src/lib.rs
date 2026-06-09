@@ -373,6 +373,17 @@ impl Solver {
         }
     }
 
+    /// Create a solver that keys information sets by a lossy abstraction of the
+    /// unseen-card set. Use for the full 6-heart game, whose lossless
+    /// representation has too many information sets to converge to strong play
+    /// quickly; exploitability is still measured exactly on the true game.
+    #[classmethod]
+    fn abstracted(_cls: &Bound<'_, PyType>, seed: u64, start_hearts: u8) -> Self {
+        Self {
+            inner: CoreSolver::abstracted(seed, start_hearts),
+        }
+    }
+
     /// Run `iters_per_subgame` CFR+ iterations on every round subgame.
     fn solve(&mut self, iters_per_subgame: u64) {
         self.inner.solve(iters_per_subgame);
@@ -388,10 +399,7 @@ impl Solver {
     /// Probability of drawing under the equilibrium average strategy for the
     /// current player in `env`. Returns 0.0 when the deck is empty (forced stand).
     fn draw_probability(&self, env: &Env, player: usize) -> f64 {
-        if env.inner.deck_mask() == 0 {
-            return 0.0;
-        }
-        self.inner.average_draw_prob(env.inner.sufficient_key(player))
+        self.inner.play_draw_prob(&env.inner, player)
     }
 
     fn iterations(&self) -> u64 {
