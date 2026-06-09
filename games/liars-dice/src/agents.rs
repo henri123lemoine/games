@@ -52,6 +52,12 @@ pub struct ProbConfig {
     /// Opponent inference: a bidder credibly holds this many of the bid's face,
     /// so we discount the required count by it when judging their bid's truth.
     pub bidder_bias: f64,
+    /// Opening aggression: fraction of the *expected* unknown count of my best
+    /// face to fold into the opening bid (0 = bid only what I hold).
+    pub open_frac: f64,
+    /// Soft calling band: randomize LIAR over a window above `liar_cut` so the
+    /// agent isn't a deterministic, readable caller.
+    pub mix: f64,
 }
 
 impl Default for ProbConfig {
@@ -64,6 +70,8 @@ impl Default for ProbConfig {
             safety: 0.191,
             bluff: 0.046,
             bidder_bias: 0.383,
+            open_frac: 0.5,
+            mix: 0.06,
         }
     }
 }
@@ -77,6 +85,8 @@ impl ProbConfig {
             safety: 0.42,
             bluff: 0.08,
             bidder_bias: 0.6,
+            open_frac: 0.0,
+            mix: 0.0,
         }
     }
 }
@@ -153,7 +163,11 @@ impl ProbabilisticAgent {
                 }
             }
             let total: u8 = s.dice_left().iter().sum();
-            let mut q0 = best_count.max(1);
+            let my_dice = s.dice_left()[player];
+            let unknown = (total - my_dice) as f64;
+            let expected_extra = unknown / game.faces as f64;
+            let mut q0 = (best_count as f64 + expected_extra * self.cfg.open_frac).round() as u8;
+            q0 = q0.clamp(1, total);
             if r < self.cfg.bluff && q0 < total {
                 q0 += 1; // a light bluff
             }
@@ -169,9 +183,19 @@ impl ProbabilisticAgent {
         if can_exact && p_exact > self.cfg.exact_cut {
             return Action::CallExact;
         }
-        // Bid looks like a lie: call it.
-        if can_liar && p_true < self.cfg.liar_cut {
-            return Action::CallLiar;
+        // Bid looks like a lie: call it, with a soft randomized band so the
+        // calling threshold isn't perfectly readable.
+        if can_liar {
+            let call_p = if p_true < self.cfg.liar_cut {
+                1.0
+            } else if self.cfg.mix > 0.0 && p_true < self.cfg.liar_cut + self.cfg.mix {
+                (self.cfg.liar_cut + self.cfg.mix - p_true) / self.cfg.mix
+            } else {
+                0.0
+            };
+            if r < call_p {
+                return Action::CallLiar;
+            }
         }
 
         // Otherwise raise to the most plausible reachable bid.

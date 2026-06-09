@@ -40,16 +40,20 @@ fn perturb(c: ProbConfig, rng: &mut Rng) -> ProbConfig {
         safety: clamp(c.safety + rng.jitter(0.05), 0.10, 0.85),
         bluff: clamp(c.bluff + rng.jitter(0.03), 0.0, 0.35),
         bidder_bias: clamp(c.bidder_bias + rng.jitter(0.15), 0.0, 2.5),
+        open_frac: clamp(c.open_frac + rng.jitter(0.10), 0.0, 1.0),
+        mix: clamp(c.mix + rng.jitter(0.03), 0.0, 0.25),
     }
 }
 
-fn cfg(liar: f64, exact: f64, safe: f64, bluff: f64, bias: f64) -> ProbConfig {
+fn cfg(liar: f64, exact: f64, safe: f64, bluff: f64, bias: f64, open: f64, mix: f64) -> ProbConfig {
     ProbConfig {
         liar_cut: liar,
         exact_cut: exact,
         safety: safe,
         bluff,
         bidder_bias: bias,
+        open_frac: open,
+        mix,
     }
 }
 
@@ -65,11 +69,12 @@ fn main() {
     // A spread of distinct styles the champion must beat on average.
     let mut league: Vec<ProbConfig> = vec![
         ProbConfig::default(),
-        cfg(0.20, 0.45, 0.55, 0.03, 0.9), // conservative / trusting
-        cfg(0.42, 0.30, 0.25, 0.20, 0.3), // aggressive bluffer
-        cfg(0.22, 0.25, 0.40, 0.05, 1.3), // very trusting, exact-happy
-        cfg(0.45, 0.40, 0.30, 0.02, 0.1), // paranoid caller
-        cfg(0.30, 0.50, 0.45, 0.10, 0.6), // exact-focused
+        ProbConfig::baseline(),
+        cfg(0.20, 0.45, 0.55, 0.03, 0.9, 0.3, 0.0), // conservative / trusting
+        cfg(0.42, 0.30, 0.25, 0.20, 0.3, 0.7, 0.1), // aggressive bluffer
+        cfg(0.22, 0.25, 0.40, 0.05, 1.3, 0.4, 0.05), // very trusting, exact-happy
+        cfg(0.45, 0.40, 0.30, 0.02, 0.1, 0.6, 0.0), // paranoid caller
+        cfg(0.30, 0.50, 0.45, 0.10, 0.6, 0.8, 0.08), // exact-focused
     ];
 
     let score = |c: ProbConfig, league: &[ProbConfig]| -> f64 {

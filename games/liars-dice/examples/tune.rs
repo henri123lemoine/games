@@ -41,6 +41,8 @@ fn perturb(c: ProbConfig, rng: &mut Rng) -> ProbConfig {
         safety: clamp(c.safety + rng.jitter(0.06), 0.10, 0.85),
         bluff: clamp(c.bluff + rng.jitter(0.04), 0.0, 0.35),
         bidder_bias: clamp(c.bidder_bias + rng.jitter(0.20), 0.0, 2.5),
+        open_frac: clamp(c.open_frac + rng.jitter(0.10), 0.0, 1.0),
+        mix: clamp(c.mix + rng.jitter(0.03), 0.0, 0.25),
     }
 }
 
