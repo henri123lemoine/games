@@ -146,7 +146,14 @@ impl Env {
         }
     }
 
-    /// Create a new environment using predetermined deck orders per round.
+    /// Create a new environment with a chosen seed and starting heart count.
+    pub fn with_hearts(seed: u64, starting_hearts: u8) -> Self {
+        Self {
+            hearts: [starting_hearts, starting_hearts],
+            ..Self::new(seed)
+        }
+    }
+
     /// Create a new environment using predetermined deck orders per round.
     /// Intended for deterministic tests.
     pub fn new_with_preset_decks(preset_decks: Vec<[u8; NUM_CARDS]>) -> Self {

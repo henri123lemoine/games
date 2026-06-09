@@ -1,23 +1,15 @@
-# Technique bake-off
+# Technique bake-off (historical record)
 
 A controlled comparison of the strength levers, each given an **equal 5-minute
 wall-clock training budget** and required to play in **< 0.1 s/move**. Strength
-is measured two ways: head-to-head win rate (the parallel `gauntlet.py`, 1500
+was measured two ways: head-to-head win rate (parallel gauntlet, 1500
 games/pairing, draws = half) and exact best-response exploitability on the small
 1-heart variant (lower = closer to unbeatable). Machine: 18 cores, CPU only.
 
-Reproduce:
-
-```bash
-# train each contender to the same budget
-uv run scripts/train_solver.py --hearts 6 --abstract            --budget-seconds 300 --out data/bake/b0_baseline.bin
-uv run scripts/train_solver.py --hearts 6                       --budget-seconds 300 --out data/bake/blossless.bin
-uv run scripts/train_solver.py --hearts 6 --abstract --full     --budget-seconds 300 --chunk-iters 3000 --out data/bake/t1_fulltree.bin
-# rank them
-uv run scripts/gauntlet.py --solvers data/bake/*.bin --games 1500 --workers 5
-# inference search A/B
-uv run scripts/experiment_search.py --solver data/bake/b0_baseline.bin --games 3000
-```
+These runs were driven by a since-deleted Python harness (`twentyone-rl`, in git
+history); the solver, exploitability, and all techniques below live in this
+crate (`twentyone::Solver`), and `examples/solve.rs` reproduces the
+train-and-measure loop.
 
 ## Ranking (best → worst)
 

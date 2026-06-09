@@ -1,13 +1,15 @@
 [package]
-name = "twentyone-game"
+name = "twentyone"
 version = "0.1.0"
 edition = "2024"
-description = "Twenty-One expressed as a cfr-core Game (wraps twentyone-core's engine)"
+description = "Twenty-One: game engine, fast decomposed CFR+ solver, and cfr-core Game adapter"
 
 [lib]
-name = "twentyone_game"
+name = "twentyone"
 path = "src/lib.rs"
 
 [dependencies]
 cfr-core = { workspace = true }
-twentyone-core = { path = "../../legacy/twentyone-core" }
+rayon = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"

@@ -1,14 +1,9 @@
-# Workspace for the games lab.
-#
-# `cfr-core` holds the algorithms (the Game trait, CFR variants, exact
-# exploitability, the arena); `games/*` are games implemented against it.
-# `legacy/` is the original Twenty-One sub-project (specialized engine, PyO3
-# bindings, RL harness) — self-contained and excluded from this workspace so its
-# build and maturin/uv flow are unaffected.
+# Workspace for the games lab: `cfr-core` holds the algorithms (the Game trait,
+# CFR variants, exact exploitability, the arena); `games/*` are games
+# implemented against it.
 [workspace]
 resolver = "2"
 members = ["cfr-core", "games/liars-dice", "games/twentyone", "games/chess"]
-exclude = ["legacy"]
 
 [workspace.package]
 edition = "2024"

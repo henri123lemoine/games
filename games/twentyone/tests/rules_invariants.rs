@@ -12,7 +12,7 @@
 //!   bounds, game-over condition) over many random games, so a refactor that
 //!   keeps the hash by coincidence still can't violate the rules.
 
-use twentyone_core::{Action, Env};
+use twentyone::{Action, Env};
 
 /// Simple deterministic policy: draw while below 17, else stand.
 fn threshold_action(total: u8) -> Action {
