@@ -1,49 +1,38 @@
 # CLAUDE.md
 
-This project explores reinforcement learning in Twenty-One, a simple hidden-information card game. The implementation uses a modular architecture with a Rust environment core and Python bindings for ML experiments.
+A games lab: algorithms for playing games (CFR variants, belief agents,
+Monte-Carlo rollout search, alpha-beta) applied to multiple games through one
+shared `Game` trait. (The directory is still named `twentyone` after the
+original sub-project; the repo has outgrown that framing.)
 
-## Project Structure
+## Structure
 
-- **twentyone-core/**: Pure Rust game engine library
-- **twentyone-py/**: Python bindings using PyO3 for zero-overhead Rust integration
-- **twentyone-rl/**: RL agents, training algorithms, and experiments
+- **cfr-core/**: the algorithms — `Game` trait, CFR+ (`Solver`, exact, tiny 2p
+  games only) + exact best-response exploitability, external-sampling `Mccfr`,
+  and the game-agnostic arena (`play_n`, `winrate_vs_field`, `playout_from`).
+- **games/liars-dice/**: N-player Liar's Dice (non-standard rules; see its
+  README) + belief/rollout agents. The strongest bot is `RolloutAgent`.
+- **games/chess/**: chess with perft-validated move generation and an
+  alpha-beta search agent.
+- **games/twentyone/**: Twenty-One wrapped as a `Game` (thin; wraps the legacy
+  engine).
+- **legacy/**: the original Twenty-One sub-project — `twentyone-core` (engine +
+  fast decomposed CFR solver), `twentyone-py` (PyO3 bindings), `twentyone-rl`
+  (Python RL harness). Self-contained, excluded from the Cargo workspace, has
+  its own CLAUDE.md files.
 
-## Development Workflow
-
-### Building and Testing
+## Workflow
 
 ```bash
-# Build Python bindings
-cd twentyone-py && maturin develop
+cargo test --release                                  # everything
+cargo run --release -p liars-dice --example play 5 5 6   # play Liar's Dice
+cargo run --release -p chess --example play               # play chess
 
-# Install RL package
-cd ../twentyone-rl
-
-# Run examples
-uv run examples/basic_play.py
-uv run examples/train_agent.py
+# legacy Twenty-One (Python):
+cd legacy/twentyone-rl && uv sync
+# after editing legacy Rust: uv sync --reinstall-package twentyone
 ```
 
-### Code Standards
-
-- **Rust code**: Follow guidelines in `twentyone-core/CLAUDE.md`
-- **Python code**: Follow guidelines in `twentyone-rl/CLAUDE.md`
-- **Dependencies**: Use `uv` for Python package management
-- **Type safety**: Maintain full type annotations in Python, leverage Rust's type system
-
-## Game Rules
-
-Twenty-One is a 2-player card game with hearts system:
-
-- 2 players, each starting with 6 hearts
-- Each round uses cards 1-11 (one of each)
-- Goal: Get closest to 21 without going over
-- Round winner deals damage equal to round number
-- Game ends when a player reaches 0 hearts
-
-**Each Round:**
-
-1. Both players receive 2 cards: one face-up (visible to opponent), one face-down (hidden)
-2. Players alternate turns choosing to draw (face-up) or stand
-3. Round ends when both stand or no cards remain
-4. Winner determined by closest to 21 without busting
+Keep `cargo fmt` + `cargo clippy --release --all-targets` clean before
+committing. Evaluation convention: win rates are reported against a *field* of
+opponents with the hero rotated through every seat; "fair" is `1/players`.

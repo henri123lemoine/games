@@ -5,7 +5,7 @@ description = "Reinforcement learning experiments for the Twenty-One card game"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "twentyone @ file:///Users/henrilemoine/Documents/Programming/PersonalProjects/games/twentyone/twentyone-py",
+    "twentyone",
     "loguru>=0.7",
     "numpy>=1.24",
     "torch>=2.0.0",
@@ -13,6 +13,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "mypy>=1.0", "ruff>=0.1"]
+
+[tool.uv.sources]
+twentyone = { path = "../twentyone-py" }
 
 [build-system]
 requires = ["hatchling"]

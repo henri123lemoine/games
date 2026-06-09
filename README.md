@@ -1,8 +1,8 @@
-# CFR / imperfect-information games lab
+# Games lab
 
-This repo started as a Twenty-One solver and grew into a small framework for
-applying counterfactual-regret and search algorithms to imperfect-information
-games. Two parts:
+Algorithms for playing games — CFR variants, belief agents, Monte-Carlo rollout
+search, alpha-beta — applied to multiple games through one shared `Game` trait.
+(Started life as a Twenty-One solver; that sub-project now lives in `legacy/`.)
 
 ```
 cfr-core/            the algorithms — a Game trait, CFR+/MCCFR, exact
@@ -10,20 +10,24 @@ cfr-core/            the algorithms — a Game trait, CFR+/MCCFR, exact
 games/
   liars-dice/        N-player × D-dice × F-face Liar's Dice + strong belief and
                      Monte-Carlo-rollout agents (see games/liars-dice/README)
+  chess/             chess: perft-validated move generation + alpha-beta agent
   twentyone/         Twenty-One expressed against the same Game trait
-
-twentyone-core/      the original, specialized Twenty-One engine + fast solver
-twentyone-py/        PyO3 bindings for it
-twentyone-rl/        the Twenty-One RL experiments / harness
+legacy/              the original Twenty-One sub-project: specialized engine +
+                     fast solver, PyO3 bindings, Python RL harness
 ```
 
-`cargo test` / `cargo run -p liars-dice --example play 5 5 6` work at the root;
-the `twentyone-*` crates are a self-contained sub-project (excluded from the Cargo
-workspace) with their own `uv` flow, documented below.
+```bash
+cargo test --release                                      # everything
+cargo run --release -p liars-dice --example play 5 5 6    # play Liar's Dice
+cargo run --release -p chess --example play               # play chess
+```
+
+The `legacy/` crates are excluded from the Cargo workspace and keep their own
+`uv` flow, documented below.
 
 ---
 
-# Twenty-One (the original sub-project)
+# Twenty-One (the original sub-project, in `legacy/`)
 
 A high-performance implementation of the Twenty-One card game designed for
 reinforcement learning research.
@@ -31,7 +35,7 @@ reinforcement learning research.
 ## Quick Start
 
 ```bash
-cd twentyone-rl
+cd legacy/twentyone-rl
 uv sync   # builds the Rust-backed `twentyone` extension into the venv
 
 # Watch a game, see convergence, train and evaluate a solver, then play it
