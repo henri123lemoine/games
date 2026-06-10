@@ -71,8 +71,28 @@ function isReveal(d: unknown): d is LdReveal {
   return k === 'liar' || k === 'exact';
 }
 
+/** Pip positions per face, named by compass point on the die's 3×3 layout.
+ * Pips are absolutely positioned in CSS so they scale with the die itself
+ * (percentage padding/grid tracks resolve against the *parent*, which is what
+ * broke pip rendering before). */
+const PIP_LAYOUT: Record<number, string[]> = {
+  1: ['c'],
+  2: ['ne', 'sw'],
+  3: ['ne', 'c', 'sw'],
+  4: ['nw', 'ne', 'sw', 'se'],
+  5: ['nw', 'ne', 'c', 'sw', 'se'],
+  6: ['nw', 'ne', 'w', 'e', 'sw', 'se'],
+  7: ['nw', 'ne', 'w', 'c', 'e', 'sw', 'se'],
+  8: ['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se'],
+  9: ['nw', 'n', 'ne', 'w', 'c', 'e', 'sw', 's', 'se'],
+};
+
 function dieHtml(value: number, extra = ''): string {
-  return `<span class="ld-die${extra}" data-v="${value}">${'<i></i>'.repeat(9)}</span>`;
+  const pips = PIP_LAYOUT[value];
+  const inner = pips
+    ? pips.map((p) => `<i class="ld-pip-${p}"></i>`).join('')
+    : `<b class="ld-die-num">${value}</b>`;
+  return `<span class="ld-die${extra}" data-v="${value}">${inner}</span>`;
 }
 
 function cupHtml(count: number): string {

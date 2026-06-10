@@ -23,24 +23,34 @@ export const STYLE = `
   height: clamp(360px, 56vh, 540px);
 }
 
+/* Layered felt: a lamp-light sheen, woven-grain noise, and the green pile
+ * sit on the padding box; the mahogany rail is painted on the border box. */
 .ld-felt {
   position: absolute;
   inset: 5% 2%;
   border-radius: 50% / 46%;
-  background: radial-gradient(ellipse at 50% 38%, #2c6a44 0%, #1e4c30 55%, #133221 100%);
-  border: 9px solid #4a3120;
+  border: 10px solid transparent;
+  background:
+    radial-gradient(ellipse 60% 44% at 50% 30%, rgba(255, 252, 230, 0.07), transparent 70%)
+      padding-box,
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E")
+      padding-box,
+    radial-gradient(ellipse at 50% 38%, #2e5e40 0%, #224830 55%, #142c1d 100%) padding-box,
+    linear-gradient(155deg, #7a5530 0%, #46301b 40%, #5d3e22 70%, #33210f 100%) border-box;
   box-shadow:
-    inset 0 0 70px rgba(0, 0, 0, 0.55),
-    0 0 0 2px #2a1c12,
-    0 12px 32px rgba(0, 0, 0, 0.5);
+    inset 0 0 80px rgba(0, 0, 0, 0.55),
+    inset 0 3px 8px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(0, 0, 0, 0.6),
+    0 1px 0 rgba(255, 255, 255, 0.06),
+    0 16px 40px rgba(0, 0, 0, 0.55);
 }
 
 .ld-felt::after {
   content: '';
   position: absolute;
-  inset: 8%;
+  inset: 7%;
   border-radius: inherit;
-  border: 2px dashed rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(212, 169, 92, 0.16);
 }
 
 /* ---------- center: bid, ladder, round ---------- */
@@ -61,10 +71,11 @@ export const STYLE = `
 }
 
 .ld-round {
-  font-size: 11px;
+  font-family: var(--mono);
+  font-size: 10.5px;
   letter-spacing: 1.5px;
   text-transform: uppercase;
-  color: rgba(230, 237, 243, 0.55);
+  color: rgba(234, 230, 216, 0.55);
 }
 
 .ld-bid-box {
@@ -80,8 +91,9 @@ export const STYLE = `
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 32px;
-  font-weight: 800;
+  font-family: var(--display);
+  font-size: 34px;
+  font-weight: 700;
   color: var(--text);
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
 }
@@ -89,6 +101,7 @@ export const STYLE = `
 .ld-bid-main .ld-die {
   width: 36px;
   height: 36px;
+  rotate: -3deg;
 }
 
 .ld-x {
@@ -105,19 +118,20 @@ export const STYLE = `
 
 .ld-bid-sub {
   font-size: 12px;
-  color: rgba(230, 237, 243, 0.65);
+  color: rgba(234, 230, 216, 0.65);
 }
 
 .ld-open-hint {
   font-size: 14px;
   font-style: italic;
-  color: rgba(230, 237, 243, 0.7);
+  color: rgba(234, 230, 216, 0.7);
 }
 
 .ld-win-text {
+  font-family: var(--display);
   font-size: 24px;
-  font-weight: 800;
-  color: #e3b341;
+  font-weight: 700;
+  color: var(--accent);
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
 }
 
@@ -133,7 +147,7 @@ export const STYLE = `
   align-items: center;
   gap: 5px;
   font-size: 11px;
-  color: rgba(230, 237, 243, 0.45);
+  color: rgba(234, 230, 216, 0.45);
 }
 
 .ld-rung .ld-die {
@@ -167,7 +181,7 @@ export const STYLE = `
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
-  background: rgba(1, 4, 9, 0.55);
+  background: rgba(10, 13, 9, 0.6);
   border: 1px solid var(--border);
   border-radius: 14px;
   backdrop-filter: blur(3px);
@@ -180,8 +194,8 @@ export const STYLE = `
 }
 
 @keyframes ld-glow {
-  0%, 100% { box-shadow: 0 0 0 1px var(--accent), 0 0 12px rgba(88, 166, 255, 0.25); }
-  50% { box-shadow: 0 0 0 1px var(--accent), 0 0 24px rgba(88, 166, 255, 0.55); }
+  0%, 100% { box-shadow: 0 0 0 1px var(--accent), 0 0 12px rgba(212, 169, 92, 0.25); }
+  50% { box-shadow: 0 0 0 1px var(--accent), 0 0 24px rgba(212, 169, 92, 0.55); }
 }
 
 .ld-out {
@@ -219,7 +233,7 @@ export const STYLE = `
 }
 
 .ld-crown {
-  color: #e3b341;
+  color: var(--accent);
 }
 
 .ld-hand {
@@ -258,56 +272,61 @@ export const STYLE = `
 
 /* ---------- dice ---------- */
 
+/* Pips are absolutely positioned with percentage offsets, which resolve
+ * against the die's own box — the pattern stays correct at every size the
+ * die is used (hand, bid, ladder, buttons, fly chip). */
 .ld-die {
+  position: relative;
   width: 24px;
   height: 24px;
-  border-radius: 18%;
-  background: linear-gradient(145deg, #fdfdf4, #d9d9cb);
-  box-shadow: inset 0 -2px 3px rgba(0, 0, 0, 0.18), 0 1px 3px rgba(0, 0, 0, 0.5);
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: repeat(3, 1fr);
-  padding: 12%;
-  box-sizing: border-box;
+  border-radius: 20%;
+  background: linear-gradient(145deg, #f9f4e2 0%, #ece4ca 55%, #d6cbab 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.75),
+    inset 0 -2px 3px rgba(94, 78, 48, 0.3),
+    0 2px 4px rgba(0, 0, 0, 0.45);
   flex: none;
 }
 
 .ld-die i {
-  width: 82%;
-  height: 82%;
-  place-self: center;
+  position: absolute;
+  width: 22%;
+  height: 22%;
   border-radius: 50%;
-  background: #202028;
-  visibility: hidden;
+  background: radial-gradient(circle at 36% 30%, #51463a, #221b12 75%);
+  transform: translate(-50%, -50%);
 }
 
-.ld-die[data-v='1'] i:nth-child(5),
-.ld-die[data-v='2'] i:nth-child(3),
-.ld-die[data-v='2'] i:nth-child(7),
-.ld-die[data-v='3'] i:nth-child(3),
-.ld-die[data-v='3'] i:nth-child(5),
-.ld-die[data-v='3'] i:nth-child(7),
-.ld-die[data-v='4'] i:nth-child(1),
-.ld-die[data-v='4'] i:nth-child(3),
-.ld-die[data-v='4'] i:nth-child(7),
-.ld-die[data-v='4'] i:nth-child(9),
-.ld-die[data-v='5'] i:nth-child(1),
-.ld-die[data-v='5'] i:nth-child(3),
-.ld-die[data-v='5'] i:nth-child(5),
-.ld-die[data-v='5'] i:nth-child(7),
-.ld-die[data-v='5'] i:nth-child(9),
-.ld-die[data-v='6'] i:nth-child(1),
-.ld-die[data-v='6'] i:nth-child(3),
-.ld-die[data-v='6'] i:nth-child(4),
-.ld-die[data-v='6'] i:nth-child(6),
-.ld-die[data-v='6'] i:nth-child(7),
-.ld-die[data-v='6'] i:nth-child(9) {
-  visibility: visible;
+.ld-pip-nw { left: 26%; top: 26%; }
+.ld-pip-n  { left: 50%; top: 26%; }
+.ld-pip-ne { left: 74%; top: 26%; }
+.ld-pip-w  { left: 26%; top: 50%; }
+.ld-pip-c  { left: 50%; top: 50%; }
+.ld-pip-e  { left: 74%; top: 50%; }
+.ld-pip-sw { left: 26%; top: 74%; }
+.ld-pip-s  { left: 50%; top: 74%; }
+.ld-pip-se { left: 74%; top: 74%; }
+
+.ld-die-num {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 70%;
+  font-weight: 800;
+  color: #221b12;
 }
+
+/* A thrown hand, not a stamped row: each die settles at its own angle. */
+.ld-hand .ld-die:nth-child(2n) { rotate: 2.5deg; }
+.ld-hand .ld-die:nth-child(3n) { rotate: -2deg; }
+.ld-hand .ld-die:nth-child(4n + 1) { rotate: -1.4deg; }
+.ld-hand .ld-die:nth-child(5n + 2) { rotate: 1.8deg; }
 
 .ld-die.ld-hit {
-  background: linear-gradient(145deg, #ffeaae, #e9ca6c);
-  box-shadow: 0 0 0 2px var(--accent), 0 0 10px rgba(88, 166, 255, 0.6);
+  background: linear-gradient(145deg, #ffedb9, #e9cb74);
+  box-shadow: 0 0 0 2px var(--accent), 0 0 10px rgba(212, 169, 92, 0.6);
 }
 
 .ld-flip {
@@ -387,19 +406,19 @@ export const STYLE = `
 @keyframes ld-lose-flash {
   0%, 100% { box-shadow: 0 0 0 1px var(--bad); }
   50% {
-    box-shadow: 0 0 0 3px var(--bad), 0 0 26px rgba(248, 81, 73, 0.7);
-    background: rgba(248, 81, 73, 0.18);
+    box-shadow: 0 0 0 3px var(--bad), 0 0 26px rgba(217, 106, 90, 0.7);
+    background: rgba(217, 106, 90, 0.18);
   }
 }
 
 .ld-safe .ld-pod {
   border-color: var(--good);
-  box-shadow: 0 0 0 1px var(--good), 0 0 18px rgba(63, 185, 80, 0.5);
+  box-shadow: 0 0 0 1px var(--good), 0 0 18px rgba(143, 174, 110, 0.5);
 }
 
 .ld-winner .ld-pod {
-  border-color: #e3b341;
-  box-shadow: 0 0 0 1px #e3b341, 0 0 26px rgba(227, 179, 65, 0.55);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 26px rgba(212, 169, 92, 0.55);
 }
 
 .ld-float {
@@ -475,6 +494,8 @@ export const STYLE = `
 
 /* ---------- controls ---------- */
 
+/* The player's rail: a leather strip below the felt that the bid controls
+ * sit on, so they read as part of the table rather than a floating toolbar. */
 .ld-controls {
   display: flex;
   gap: 10px;
@@ -482,6 +503,11 @@ export const STYLE = `
   align-items: center;
   flex-wrap: wrap;
   min-height: 64px;
+  padding: 9px 14px;
+  background: linear-gradient(180deg, rgba(40, 56, 38, 0.5), rgba(21, 31, 20, 0.5));
+  border: 1px solid rgba(212, 169, 92, 0.14);
+  border-radius: 16px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), inset 0 0 24px rgba(0, 0, 0, 0.25);
 }
 
 .ld-btn {
@@ -489,8 +515,8 @@ export const STYLE = `
   align-items: center;
   gap: 8px;
   padding: 10px 18px;
-  background: var(--bg-inset);
-  border: 1px solid var(--border);
+  background: linear-gradient(180deg, #233527 0%, #162417 100%);
+  border: 1px solid #3a4a38;
   border-radius: var(--radius);
   color: var(--text);
   font: inherit;
@@ -517,26 +543,26 @@ export const STYLE = `
 
 .ld-btn-liar {
   color: var(--bad);
-  border-color: rgba(248, 81, 73, 0.55);
+  border-color: rgba(217, 106, 90, 0.55);
   letter-spacing: 1px;
 }
 
 .ld-btn-liar:hover:not(:disabled) {
   border-color: var(--bad);
-  background: rgba(248, 81, 73, 0.12);
-  box-shadow: 0 0 14px rgba(248, 81, 73, 0.35);
+  background: rgba(217, 106, 90, 0.12);
+  box-shadow: 0 0 14px rgba(217, 106, 90, 0.35);
 }
 
 .ld-btn-exact {
   color: var(--accent-2);
-  border-color: rgba(188, 140, 255, 0.55);
+  border-color: rgba(143, 174, 110, 0.55);
   letter-spacing: 1px;
 }
 
 .ld-btn-exact:hover:not(:disabled) {
   border-color: var(--accent-2);
-  background: rgba(188, 140, 255, 0.12);
-  box-shadow: 0 0 14px rgba(188, 140, 255, 0.3);
+  background: rgba(143, 174, 110, 0.12);
+  box-shadow: 0 0 14px rgba(143, 174, 110, 0.3);
 }
 
 .ld-open {
@@ -545,10 +571,6 @@ export const STYLE = `
   gap: 16px;
   flex-wrap: wrap;
   justify-content: center;
-  padding: 10px 16px;
-  background: var(--bg-inset);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
 }
 
 .ld-open-label {
@@ -565,8 +587,9 @@ export const STYLE = `
 }
 
 .ld-qty-n {
-  font-size: 22px;
-  font-weight: 800;
+  font-family: var(--display);
+  font-size: 23px;
+  font-weight: 700;
   min-width: 2ch;
   text-align: center;
 }
@@ -613,7 +636,7 @@ export const STYLE = `
 
 .ld-face-btn.ld-sel {
   border-color: var(--accent);
-  box-shadow: 0 0 10px rgba(88, 166, 255, 0.35);
+  box-shadow: 0 0 10px rgba(212, 169, 92, 0.35);
 }
 
 .ld-fallback {
