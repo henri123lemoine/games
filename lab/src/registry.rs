@@ -11,6 +11,9 @@ use solvers::mcts::Mcts;
 use solvers::{AlphaBeta, Rollout};
 use twentyone::game::{Action as T21Action, T21State, TwentyOne};
 
+use crate::compare::{
+    BotBuilder, BotSpec, BoxedAgent, CompareArgs, TourneyArgs, head_to_head, round_robin, vs_field,
+};
 use crate::runner::{AnyMatch, TypedMatch};
 
 /// Loose `key=value` options from the command line.
@@ -73,7 +76,56 @@ pub fn entries() -> Vec<Entry> {
             opts_help: "size=9  sims=6000  seat=0|1 (0=Black)  seed=...",
             make: make_go,
         },
+        Entry {
+            id: "2048",
+            summary: "2048 (single-player) — play it, or watch an MCTS bot",
+            opts_help: "bot=mcts|mcts-eval (omit to play yourself)  sims=200  depth=8  seed=...",
+            make: make_2048,
+        },
+        Entry {
+            id: "snake",
+            summary: "Snake (single-player) — play it, or watch an MCTS bot",
+            opts_help: "width=10 height=10  bot=mcts|mcts-eval (omit to play yourself)  sims=200  depth=12  seed=...",
+            make: make_snake,
+        },
     ]
+}
+
+fn make_2048(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
+    let seed = o.get("seed", default_seed());
+    let sims: u32 = o.get("sims", 200);
+    let bot: Option<Box<dyn Agent<g2048::G2048>>> = match o.str("bot", "").as_str() {
+        "" => None,
+        "mcts" => Some(Box::new(Mcts::new(sims, seed ^ 0x2048))),
+        "mcts-eval" => Some(Box::new(Mcts::with_eval(
+            sims,
+            g2048::Heuristic2048,
+            o.get("depth", 8),
+            seed ^ 0x2048,
+        ))),
+        other => return Err(format!("unknown bot '{other}' (mcts|mcts-eval)")),
+    };
+    let human = if bot.is_some() { usize::MAX } else { 0 };
+    Ok(TypedMatch::new(g2048::G2048, vec![bot], human, seed).boxed())
+}
+
+fn make_snake(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
+    let game = snake::Snake::new(o.get("width", 10), o.get("height", 10));
+    let seed = o.get("seed", default_seed());
+    let sims: u32 = o.get("sims", 200);
+    let bot: Option<Box<dyn Agent<snake::Snake>>> = match o.str("bot", "").as_str() {
+        "" => None,
+        "mcts" => Some(Box::new(Mcts::new(sims, seed ^ 0x57AE))),
+        "mcts-eval" => Some(Box::new(Mcts::with_eval(
+            sims,
+            snake::SnakeEval,
+            o.get("depth", 12),
+            seed ^ 0x57AE,
+        ))),
+        other => return Err(format!("unknown bot '{other}' (mcts|mcts-eval)")),
+    };
+    let human = if bot.is_some() { usize::MAX } else { 0 };
+    Ok(TypedMatch::new(game, vec![bot], human, seed).boxed())
 }
 
 fn make_othello(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
@@ -242,6 +294,166 @@ fn make_twentyone(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
     let bots: Vec<Option<Box<dyn Agent<TwentyOne>>>> =
         vec![None, Some(Box::new(SolverBot(solver)))];
     Ok(TypedMatch::new(game, bots, 0, o.get("seed", default_seed())).boxed())
+}
+
+/// A game registered for bot-vs-bot evaluation: `compare` runs two specs
+/// against each other (paired GSPRT for 2-player configurations, hero-vs-field
+/// binomial SPRT otherwise); `tourney` runs a round-robin Elo table.
+pub struct CompareEntry {
+    pub id: &'static str,
+    pub bots_help: &'static str,
+    pub compare: fn(&CompareArgs) -> Result<(), String>,
+    pub tourney: fn(&TourneyArgs) -> Result<(), String>,
+}
+
+pub fn compare_entries() -> Vec<CompareEntry> {
+    vec![
+        CompareEntry {
+            id: "chess",
+            bots_help: "alphabeta[:depth=5] | alphabeta-rich[:depth=5] (rich eval)",
+            compare: |a| head_to_head(&chess::Chess, a, 6, chess_bot),
+            tourney: |a| round_robin(&chess::Chess, a, 6, chess_bot),
+        },
+        CompareEntry {
+            id: "othello",
+            bots_help: "alphabeta[:depth=6] | mcts[:sims=2000]",
+            compare: |a| head_to_head(&othello::Othello, a, 4, othello_bot),
+            tourney: |a| round_robin(&othello::Othello, a, 4, othello_bot),
+        },
+        CompareEntry {
+            id: "connect4",
+            bots_help: "alphabeta[:depth=9] | mcts[:sims=2000]",
+            compare: |a| head_to_head(&connect4::Connect4, a, 4, connect4_bot),
+            tourney: |a| round_robin(&connect4::Connect4, a, 4, connect4_bot),
+        },
+        CompareEntry {
+            id: "go",
+            bots_help: "mcts[:sims=2000] | mcts-eval[:sims=2000,depth=NxN] | mcts-spec[:sims=2000]",
+            compare: |a| head_to_head(&go::Go::new(a.opts.get("size", 9)), a, 0, go_bot),
+            tourney: |a| round_robin(&go::Go::new(a.opts.get("size", 9)), a, 0, go_bot),
+        },
+        CompareEntry {
+            id: "liars-dice",
+            bots_help: "rollout[:rollouts=1000] | belief | random",
+            compare: |a| {
+                let game = liars_dice_game(&a.opts);
+                use game_core::Game;
+                if game.num_players() == 2 {
+                    head_to_head(&game, a, 0, liars_dice_bot)
+                } else {
+                    vs_field(&game, a, liars_dice_bot)
+                }
+            },
+            tourney: |a| round_robin(&liars_dice_game(&a.opts), a, 0, liars_dice_bot),
+        },
+    ]
+}
+
+fn liars_dice_game(o: &Opts) -> LiarsDice {
+    LiarsDice::new(o.get("players", 5), o.get("dice", 5), o.get("faces", 6))
+}
+
+fn chess_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<chess::Chess>, String> {
+    let depth: u32 = spec.opts.get("depth", 5);
+    Ok(match spec.name.as_str() {
+        "alphabeta" => Box::new(move |_| {
+            Box::new(AlphaBeta::new(depth, chess::MaterialEval, chess::ChessSpec))
+                as BoxedAgent<chess::Chess>
+        }),
+        "alphabeta-rich" => Box::new(move |_| {
+            Box::new(AlphaBeta::new(depth, chess::RichEval, chess::ChessSpec))
+                as BoxedAgent<chess::Chess>
+        }),
+        other => {
+            return Err(format!(
+                "unknown chess bot '{other}' (alphabeta|alphabeta-rich)"
+            ));
+        }
+    })
+}
+
+fn othello_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<othello::Othello>, String> {
+    Ok(match spec.name.as_str() {
+        "alphabeta" => {
+            let depth: u32 = spec.opts.get("depth", 6);
+            Box::new(move |_| {
+                Box::new(AlphaBeta::new(
+                    depth,
+                    othello::OthelloEval,
+                    othello::OthelloSpec,
+                )) as BoxedAgent<othello::Othello>
+            })
+        }
+        "mcts" => {
+            let sims: u32 = spec.opts.get("sims", 2000);
+            Box::new(move |seed| Box::new(Mcts::new(sims, seed)) as BoxedAgent<othello::Othello>)
+        }
+        other => return Err(format!("unknown othello bot '{other}' (alphabeta|mcts)")),
+    })
+}
+
+fn connect4_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<connect4::Connect4>, String> {
+    Ok(match spec.name.as_str() {
+        "alphabeta" => {
+            let depth: u32 = spec.opts.get("depth", 9);
+            Box::new(move |_| {
+                Box::new(AlphaBeta::new(depth, connect4::Connect4Eval, NoSpec))
+                    as BoxedAgent<connect4::Connect4>
+            })
+        }
+        "mcts" => {
+            let sims: u32 = spec.opts.get("sims", 2000);
+            Box::new(move |seed| Box::new(Mcts::new(sims, seed)) as BoxedAgent<connect4::Connect4>)
+        }
+        other => return Err(format!("unknown connect4 bot '{other}' (alphabeta|mcts)")),
+    })
+}
+
+fn go_bot(spec: &BotSpec, o: &Opts) -> Result<BotBuilder<go::Go>, String> {
+    let sims: u32 = spec.opts.get("sims", 2000);
+    let size: usize = o.get("size", 9);
+    Ok(match spec.name.as_str() {
+        "mcts" => Box::new(move |seed| Box::new(Mcts::new(sims, seed)) as BoxedAgent<go::Go>),
+        "mcts-eval" => {
+            let depth: u32 = spec.opts.get("depth", (size * size) as u32);
+            Box::new(move |seed| {
+                Box::new(Mcts::with_eval(sims, go::GoEval, depth, seed)) as BoxedAgent<go::Go>
+            })
+        }
+        "mcts-spec" => Box::new(move |seed| {
+            Box::new(Mcts::with_spec(sims, go::GoSpec, seed)) as BoxedAgent<go::Go>
+        }),
+        other => {
+            return Err(format!(
+                "unknown go bot '{other}' (mcts|mcts-eval|mcts-spec)"
+            ));
+        }
+    })
+}
+
+fn liars_dice_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<LiarsDice>, String> {
+    Ok(match spec.name.as_str() {
+        "rollout" => {
+            let rollouts: u32 = spec.opts.get("rollouts", 1000);
+            Box::new(move |seed| {
+                Box::new(Rollout::new(
+                    rollouts,
+                    ProbabilisticAgent::default_agent(),
+                    BidConditioned::default(),
+                    seed,
+                )) as BoxedAgent<LiarsDice>
+            })
+        }
+        "belief" => {
+            Box::new(|_| Box::new(ProbabilisticAgent::default_agent()) as BoxedAgent<LiarsDice>)
+        }
+        "random" => Box::new(|_| Box::new(RandomAgent) as BoxedAgent<LiarsDice>),
+        other => {
+            return Err(format!(
+                "unknown liars-dice bot '{other}' (rollout|belief|random)"
+            ));
+        }
+    })
 }
 
 fn default_seed() -> u64 {

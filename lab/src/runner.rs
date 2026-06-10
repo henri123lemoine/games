@@ -21,7 +21,8 @@ pub trait AnyMatch {
 }
 
 /// An `AnyMatch` over a concrete game: the human at `human` seat, a bot
-/// everywhere else.
+/// everywhere else. A `human` seat beyond the seat count means every seat is
+/// a bot and the match plays itself to the end (spectator mode).
 pub struct TypedMatch<G: GameUi> {
     game: G,
     state: G::State,
@@ -33,7 +34,10 @@ pub struct TypedMatch<G: GameUi> {
 impl<G: GameUi + 'static> TypedMatch<G> {
     pub fn new(game: G, bots: Vec<Option<Box<dyn Agent<G>>>>, human: usize, seed: u64) -> Self {
         assert_eq!(bots.len(), game.num_players());
-        assert!(bots[human].is_none(), "human seat must have no bot");
+        assert!(
+            human >= bots.len() || bots[human].is_none(),
+            "human seat must have no bot"
+        );
         let state = game.initial_state();
         Self {
             game,
