@@ -198,10 +198,17 @@ impl PolicyValueEncoder<chess::Chess> for ChessEnc {
     }
 }
 
-/// Owns the net and runs a fresh PUCT search per move.
+/// Shares the net (compare builders clone it per game) and runs a fresh PUCT
+/// search per move.
 struct AzeroBot {
-    net: Mlp,
+    net: std::sync::Arc<Mlp>,
     sims: usize,
+}
+
+fn load_azero_net(path: &str) -> Result<std::sync::Arc<Mlp>, String> {
+    Mlp::load(std::path::Path::new(path))
+        .map(std::sync::Arc::new)
+        .map_err(|e| format!("failed to load azero net '{path}': {e}"))
 }
 
 impl Agent<chess::Chess> for AzeroBot {
@@ -220,15 +227,10 @@ fn make_chess(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
     let bot = || -> Result<Box<dyn Agent<chess::Chess>>, String> {
         Ok(match bot_kind.as_str() {
             "alphabeta" => Box::new(AlphaBeta::new(depth, chess::MaterialEval, chess::ChessSpec)),
-            "azero" => {
-                let path = o.str("net", "data/azero/chess.bin");
-                let net = Mlp::load(std::path::Path::new(&path))
-                    .map_err(|e| format!("failed to load azero net '{path}': {e}"))?;
-                Box::new(AzeroBot {
-                    net,
-                    sims: o.get("sims", 256),
-                })
-            }
+            "azero" => Box::new(AzeroBot {
+                net: load_azero_net(&o.str("net", "data/azero/chess.bin"))?,
+                sims: o.get("sims", 256),
+            }),
             other => return Err(format!("unknown bot '{other}' (alphabeta|azero)")),
         })
     };
@@ -310,7 +312,8 @@ pub fn compare_entries() -> Vec<CompareEntry> {
     vec![
         CompareEntry {
             id: "chess",
-            bots_help: "alphabeta[:depth=5] | alphabeta-rich[:depth=5] (rich eval)",
+            bots_help: "alphabeta[:depth=5] | alphabeta-rich[:depth=5] (rich eval) | \
+                        azero[:net=data/azero/chess.bin,sims=256]",
             compare: |a| head_to_head(&chess::Chess, a, 6, chess_bot),
             tourney: |a| round_robin(&chess::Chess, a, 6, chess_bot),
         },
@@ -364,9 +367,19 @@ fn chess_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<chess::Chess>, Stri
             Box::new(AlphaBeta::new(depth, chess::RichEval, chess::ChessSpec))
                 as BoxedAgent<chess::Chess>
         }),
+        "azero" => {
+            let net = load_azero_net(&spec.opts.str("net", "data/azero/chess.bin"))?;
+            let sims: usize = spec.opts.get("sims", 256);
+            Box::new(move |_| {
+                Box::new(AzeroBot {
+                    net: net.clone(),
+                    sims,
+                }) as BoxedAgent<chess::Chess>
+            })
+        }
         other => {
             return Err(format!(
-                "unknown chess bot '{other}' (alphabeta|alphabeta-rich)"
+                "unknown chess bot '{other}' (alphabeta|alphabeta-rich|azero)"
             ));
         }
     })
