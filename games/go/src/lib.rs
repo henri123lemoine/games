@@ -23,7 +23,10 @@
 //! of [`Game::state_key`], so positions identical up to the draw-guard clock
 //! share a key.
 
+mod knowledge;
 mod ui;
+
+pub use knowledge::{GoEval, GoSpec};
 
 use game_core::{Game, Turn};
 
