@@ -14,8 +14,8 @@
 
 pub mod azero;
 mod cfr;
-pub mod mcts;
 mod mccfr;
+pub mod mcts;
 pub mod os_mccfr;
 mod rollout;
 pub mod search;
