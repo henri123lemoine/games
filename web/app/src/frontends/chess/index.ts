@@ -1,6 +1,8 @@
-// Chess frontend: a dedicated board with click-to-move and legal-move hints,
-// sliding piece animation, last-move/check highlights, captured-piece trays
-// and a promotion picker. Spectator mode renders and animates only.
+// Chess frontend: a classic cream-and-green club board with click-to-move and
+// pointer drag-and-drop, legal-move hints, sliding piece animation,
+// last-move/check highlights, captured-piece trays and a promotion picker.
+// Pieces are a hand-drawn inline SVG set. Spectator mode renders and animates
+// only.
 //
 // Game-private JSON contract with games/chess/src/ui.rs:
 //   view_data:  {"board":"<64 chars, rank 8 first, file a first; '.' empty,
@@ -35,7 +37,15 @@ interface BarEls {
   score: HTMLElement;
 }
 
-const GLYPH: Record<string, string> = { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' };
+interface DragState {
+  pointerId: number;
+  from: number;
+  el: HTMLElement;
+  ghost: HTMLElement;
+  wasSelected: boolean;
+  hover: number | null;
+}
+
 const TRAY_ORDER = ['q', 'r', 'b', 'n', 'p'] as const;
 const START_COUNT: Record<string, number> = { q: 1, r: 2, b: 2, n: 2, p: 8 };
 const PIECE_POINTS: Record<string, number> = { q: 9, r: 5, b: 3, n: 3, p: 1 };
@@ -43,6 +53,36 @@ const PROMO_ORDER = ['q', 'r', 'b', 'n'] as const;
 const UCI_RE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
 const SLIDE_MS = 240;
 const SETTLE_MS = 120;
+const SNAP_MS = 160;
+
+// Hand-drawn minimal piece set on the conventional 45x45 grid. Shape classes:
+// pcb body (filled + outlined), pcd detail stroke, pcf detail fill.
+const PIECE_SHAPES: Record<string, string> = {
+  p: `<circle class="pcb" cx="22.5" cy="15.5" r="4.5"/>
+<path class="pcb" d="M22.5 19.7c-3.3 0-5.4 2.4-5.4 5 0 1.8 0.9 3.3 2.3 4.3-2.9 1.6-4.9 4.2-4.9 6.5h16c0-2.3-2-4.9-4.9-6.5 1.4-1 2.3-2.5 2.3-4.3 0-2.6-2.1-5-5.4-5z"/>
+<rect class="pcb" x="14" y="35.5" width="17" height="4.5" rx="2"/>`,
+  n: `<path class="pcb" d="M14.5 35.5c0-7.5 1-11.5 4-14-2.5 0-6-1-7.5-4l0-2c0-1.5 1.5-3.2 3.5-3.5 2-0.4 3.4-2 4-5l2.1 3 2.4-3.5c1 1.5 1.6 2.7 1.6 3.8 4.4 1.7 8.9 6.7 8.9 13.7v11.5z"/>
+<circle class="pcf" cx="16.2" cy="15.4" r="1"/>
+<rect class="pcb" x="12" y="35.5" width="21.5" height="4.5" rx="2"/>`,
+  b: `<circle class="pcb" cx="22.5" cy="9" r="1.9"/>
+<path class="pcb" d="M22.5 11.5c3.4 2.5 5.5 5.6 5.5 8.9 0 2.3-1.1 4.4-2.9 5.7 3 2 5 6 5.4 9.4h-16c0.4-3.4 2.4-7.4 5.4-9.4-1.8-1.3-2.9-3.4-2.9-5.7 0-3.3 2.1-6.4 5.5-8.9z"/>
+<path class="pcd" d="M22.5 15v6.4M19.6 18.2h5.8"/>
+<rect class="pcb" x="12.5" y="35.5" width="20" height="4.5" rx="2"/>`,
+  r: `<path class="pcb" d="M13.5 35.5v-4l2-2.5v-10l-2-2v-7h4v3h3v-3h4v3h3v-3h4v7l-2 2v10l2 2.5v4z"/>
+<rect class="pcb" x="11.5" y="35.5" width="22" height="4.5" rx="2"/>`,
+  q: `<path class="pcb" d="M14 21l-2.5-9.5 5 4.7 1.6-7.7 3 6.6 1.4-8.1 1.4 8.1 3-6.6 1.6 7.7 5-4.7-2.5 9.5c1 3-0.3 5.2-2.1 6.6 2.6 1.9 4.2 4.3 4.5 7.9h-21.8c0.3-3.6 1.9-6 4.5-7.9-1.8-1.4-3.1-3.6-2.1-6.6z"/>
+<rect class="pcb" x="11.5" y="35.5" width="22" height="4.5" rx="2"/>`,
+  k: `<path class="pcb" d="M21.3 4h2.4v3h2.9v2.4h-2.9v3h-2.4v-3h-2.9v-2.4h2.9z"/>
+<path class="pcb" d="M22.5 12.8c5.3 0 9 3.3 9 7.4 0 2.5-1.4 4.8-3.5 6.2 3.2 2 5.3 5 5.6 9.1h-22.2c0.3-4.1 2.4-7.1 5.6-9.1-2.1-1.4-3.5-3.7-3.5-6.2 0-4.1 3.7-7.4 9-7.4z"/>
+<path class="pcd" d="M16.2 21h12.6"/>
+<rect class="pcb" x="11" y="35.5" width="23" height="4.5" rx="2"/>`,
+};
+
+function pieceSvg(type: string, white: boolean): string {
+  const shapes = PIECE_SHAPES[type] ?? '';
+  const color = white ? 'chess-pc-w' : 'chess-pc-b';
+  return `<svg class="chess-pc ${color}" viewBox="0 0 45 45" aria-hidden="true">${shapes}</svg>`;
+}
 
 /** Squares are 0..63, a1 = 0, h1 = 7, a8 = 56 (matches the Rust side). */
 function sqIndex(name: string): number {
@@ -104,7 +144,9 @@ class ChessFrontend implements GameFrontend {
   private moves = new Map<number, Map<number, string[]>>();
   private selected: number | null = null;
   private inputArmed = false;
-  private resizeObs: ResizeObserver | null = null;
+  private drag: DragState | null = null;
+  private skipSlide = false;
+  private promoFromDrag = false;
 
   mount(host: HTMLElement, ctx: FrontendCtx): void {
     this.ctx = ctx;
@@ -120,10 +162,14 @@ class ChessFrontend implements GameFrontend {
     host.innerHTML = `
       <div class="chess-root">
         <div class="chess-bar chess-bar-top">${bar}</div>
-        <div class="chess-board">
-          <div class="chess-squares"></div>
-          <div class="chess-pieces"></div>
-          <div class="chess-promo" hidden></div>
+        <div class="chess-stage">
+          <div class="chess-ranks"></div>
+          <div class="chess-board">
+            <div class="chess-squares"></div>
+            <div class="chess-pieces"></div>
+            <div class="chess-promo" hidden></div>
+          </div>
+          <div class="chess-files"></div>
         </div>
         <div class="chess-bar chess-bar-bottom">${bar}</div>
       </div>`;
@@ -151,6 +197,15 @@ class ChessFrontend implements GameFrontend {
       this.bars[color].root.querySelector('.chess-bar-name')!.textContent = name(color);
     }
 
+    const ranks = host.querySelector<HTMLElement>('.chess-ranks')!;
+    const files = host.querySelector<HTMLElement>('.chess-files')!;
+    for (let i = 0; i < 8; i++) {
+      const rank = this.flipped ? i + 1 : 8 - i;
+      const file = this.flipped ? 7 - i : i;
+      ranks.insertAdjacentHTML('beforeend', `<span>${rank}</span>`);
+      files.insertAdjacentHTML('beforeend', `<span>${'abcdefgh'[file]}</span>`);
+    }
+
     const squares = host.querySelector<HTMLElement>('.chess-squares')!;
     this.squareEls = new Array<HTMLElement>(64);
     for (let row = 0; row < 8; row++) {
@@ -161,25 +216,17 @@ class ChessFrontend implements GameFrontend {
         const el = document.createElement('div');
         el.className = `chess-sq ${(file + rank) % 2 === 1 ? 'chess-sq-light' : 'chess-sq-dark'}`;
         el.dataset.sq = String(sq);
-        if (col === 0) {
-          el.insertAdjacentHTML(
-            'beforeend',
-            `<span class="chess-coord chess-coord-rank">${rank + 1}</span>`,
-          );
-        }
-        if (row === 7) {
-          el.insertAdjacentHTML(
-            'beforeend',
-            `<span class="chess-coord chess-coord-file">${'abcdefgh'[file]}</span>`,
-          );
-        }
         this.squareEls[sq] = el;
         squares.append(el);
       }
     }
-    squares.addEventListener('click', (e) => {
-      const sqEl = (e.target as HTMLElement).closest<HTMLElement>('.chess-sq');
-      if (sqEl?.dataset.sq) this.onSquareClick(Number(sqEl.dataset.sq));
+
+    this.boardEl.addEventListener('pointerdown', (e) => this.onPointerDown(e));
+    this.boardEl.addEventListener('pointermove', (e) => this.onPointerMove(e));
+    this.boardEl.addEventListener('pointerup', (e) => this.onPointerUp(e));
+    this.boardEl.addEventListener('pointercancel', () => this.cancelDrag(true));
+    this.boardEl.addEventListener('contextmenu', (e) => {
+      if (this.drag) e.preventDefault();
     });
     this.promoEl.addEventListener('click', (e) => {
       if (e.target === this.promoEl) {
@@ -187,9 +234,6 @@ class ChessFrontend implements GameFrontend {
         this.select(null);
       }
     });
-
-    this.resizeObs = new ResizeObserver(() => this.updateFont());
-    this.resizeObs.observe(this.boardEl);
   }
 
   render(state: ViewState): void {
@@ -201,6 +245,8 @@ class ChessFrontend implements GameFrontend {
   }
 
   async animate(event: MatchEventData, after: ViewState): Promise<void> {
+    const skip = this.skipSlide;
+    this.skipSlide = false;
     this.disarm();
     const view = parseView(after.viewData);
     if (!view) return;
@@ -208,10 +254,10 @@ class ChessFrontend implements GameFrontend {
     if (move) this.lastMove = { from: sqIndex(move.from), to: sqIndex(move.to) };
     this.gameOver = after.isOver;
     const scale = this.ctx.animationScale();
-    if (move && scale > 0) await this.slide(move, scale);
+    if (move && scale > 0 && !skip) await this.slide(move, scale);
     this.view = view;
     this.syncAll();
-    if (scale > 0) await sleep(SETTLE_MS * scale);
+    if (scale > 0 && !skip) await sleep(SETTLE_MS * scale);
   }
 
   promptAction(labels: string[]): void {
@@ -236,15 +282,26 @@ class ChessFrontend implements GameFrontend {
   }
 
   unmount(): void {
-    this.resizeObs?.disconnect();
-    this.resizeObs = null;
     this.host.replaceChildren();
   }
 
   // ---------- input ----------
 
-  private onSquareClick(sq: number): void {
-    if (!this.inputArmed || !this.promoEl.hidden) return;
+  private squareAt(x: number, y: number): number | null {
+    const r = this.boardEl.getBoundingClientRect();
+    if (x < r.left || x >= r.right || y < r.top || y >= r.bottom) return null;
+    const col = Math.floor(((x - r.left) / r.width) * 8);
+    const row = Math.floor(((y - r.top) / r.height) * 8);
+    const file = this.flipped ? 7 - col : col;
+    const rank = this.flipped ? row : 7 - row;
+    return rank * 8 + file;
+  }
+
+  private onPointerDown(e: PointerEvent): void {
+    if (!this.inputArmed || !this.promoEl.hidden || this.drag) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    const sq = this.squareAt(e.clientX, e.clientY);
+    if (sq === null) return;
     if (this.selected !== null) {
       const labels = this.moves.get(this.selected)?.get(sq);
       if (labels) {
@@ -253,7 +310,127 @@ class ChessFrontend implements GameFrontend {
         return;
       }
     }
-    this.select(this.moves.has(sq) && sq !== this.selected ? sq : null);
+    if (!this.moves.has(sq)) {
+      this.select(null);
+      return;
+    }
+    const el = this.pieceEls.get(sq);
+    if (!el) return;
+    e.preventDefault();
+    const wasSelected = this.selected === sq;
+    this.select(sq);
+    const ghost = el.cloneNode(true) as HTMLElement;
+    ghost.classList.add('chess-piece-ghost');
+    this.piecesEl.append(ghost);
+    el.classList.add('chess-piece-drag');
+    this.boardEl.classList.add('chess-dragging');
+    this.drag = { pointerId: e.pointerId, from: sq, el, ghost, wasSelected, hover: null };
+    this.boardEl.setPointerCapture(e.pointerId);
+    this.moveDragTo(e.clientX, e.clientY);
+  }
+
+  private onPointerMove(e: PointerEvent): void {
+    if (!this.drag || e.pointerId !== this.drag.pointerId) return;
+    this.moveDragTo(e.clientX, e.clientY);
+  }
+
+  private moveDragTo(x: number, y: number): void {
+    if (!this.drag) return;
+    const r = this.boardEl.getBoundingClientRect();
+    const cell = r.width / 8;
+    const px = x - r.left - cell / 2;
+    const py = y - r.top - cell / 2;
+    this.drag.el.style.transform = `translate(${px}px, ${py}px) scale(1.15)`;
+    const sq = this.squareAt(x, y);
+    if (sq === this.drag.hover) return;
+    if (this.drag.hover !== null) this.squareEls[this.drag.hover].classList.remove('chess-sq-drop');
+    this.drag.hover = null;
+    if (sq !== null && sq !== this.drag.from && this.moves.get(this.drag.from)?.has(sq)) {
+      this.squareEls[sq].classList.add('chess-sq-drop');
+      this.drag.hover = sq;
+    }
+  }
+
+  private onPointerUp(e: PointerEvent): void {
+    if (!this.drag || e.pointerId !== this.drag.pointerId) return;
+    const d = this.drag;
+    this.drag = null;
+    this.endDragVisuals(d);
+    const sq = this.squareAt(e.clientX, e.clientY);
+    const labels = sq !== null && sq !== d.from ? this.moves.get(d.from)?.get(sq) : undefined;
+    if (sq !== null && labels) {
+      this.settle(d.el, sq);
+      this.removeVictim(d.from, sq);
+      if (labels.length > 1) {
+        this.promoFromDrag = true;
+        this.openPromo(labels);
+      } else {
+        this.submitMove(labels[0], true);
+      }
+      return;
+    }
+    this.snapBack(d.el, d.from);
+    if (sq === d.from && d.wasSelected) this.select(null);
+  }
+
+  private cancelDrag(animate: boolean): void {
+    if (!this.drag) return;
+    const d = this.drag;
+    this.drag = null;
+    this.endDragVisuals(d);
+    if (animate) this.snapBack(d.el, d.from);
+    else {
+      d.el.classList.remove('chess-piece-drag');
+      this.place(d.el, d.from);
+    }
+  }
+
+  private endDragVisuals(d: DragState): void {
+    if (d.hover !== null) this.squareEls[d.hover].classList.remove('chess-sq-drop');
+    d.ghost.remove();
+    this.boardEl.classList.remove('chess-dragging');
+  }
+
+  private settle(el: HTMLElement, sq: number): void {
+    el.classList.remove('chess-piece-drag');
+    el.style.zIndex = '5';
+    this.place(el, sq);
+  }
+
+  private snapBack(el: HTMLElement, sq: number): void {
+    el.classList.remove('chess-piece-drag');
+    const ms = SNAP_MS * this.ctx.animationScale();
+    if (ms <= 0) {
+      this.place(el, sq);
+      return;
+    }
+    el.style.zIndex = '5';
+    el.style.transitionDuration = `${ms}ms`;
+    void el.offsetWidth;
+    this.place(el, sq);
+    window.setTimeout(() => {
+      el.style.transitionDuration = '';
+      el.style.zIndex = '';
+    }, ms + 30);
+  }
+
+  /** Clear the captured piece (incl. en passant) the instant a drag drops. */
+  private removeVictim(from: number, to: number): void {
+    const direct = this.pieceEls.get(to);
+    if (direct) {
+      direct.remove();
+      this.pieceEls.delete(to);
+      return;
+    }
+    if (!this.view) return;
+    const mover = pieceAt(this.view.board, from).toLowerCase();
+    if (mover !== 'p' || from % 8 === to % 8) return;
+    const epSq = Math.floor(from / 8) * 8 + (to % 8);
+    const ep = this.pieceEls.get(epSq);
+    if (ep) {
+      ep.remove();
+      this.pieceEls.delete(epSq);
+    }
   }
 
   private select(sq: number | null): void {
@@ -270,7 +447,9 @@ class ChessFrontend implements GameFrontend {
     }
   }
 
-  private submitMove(label: string): void {
+  private submitMove(label: string, fromDrag = false): void {
+    this.skipSlide = fromDrag;
+    this.promoFromDrag = false;
     this.disarm();
     this.ctx.submit(label);
   }
@@ -279,6 +458,7 @@ class ChessFrontend implements GameFrontend {
     const from = sqIndex(labels[0].slice(0, 2));
     const ch = this.view ? pieceAt(this.view.board, from) : 'P';
     const white = ch === ch.toUpperCase();
+    const fromDrag = this.promoFromDrag;
     const panel = document.createElement('div');
     panel.className = 'chess-promo-panel';
     for (const suffix of PROMO_ORDER) {
@@ -286,9 +466,9 @@ class ChessFrontend implements GameFrontend {
       if (!label) continue;
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = `chess-promo-btn ${white ? 'chess-piece-w' : 'chess-piece-b'}`;
-      btn.textContent = GLYPH[suffix] ?? '';
-      btn.onclick = () => this.submitMove(label);
+      btn.className = 'chess-promo-btn';
+      btn.innerHTML = pieceSvg(suffix, white);
+      btn.onclick = () => this.submitMove(label, fromDrag);
       panel.append(btn);
     }
     this.promoEl.replaceChildren(panel);
@@ -296,11 +476,15 @@ class ChessFrontend implements GameFrontend {
   }
 
   private closePromo(): void {
+    const restore = this.promoFromDrag;
+    this.promoFromDrag = false;
     this.promoEl.hidden = true;
     this.promoEl.replaceChildren();
+    if (restore && this.view) this.syncPieces(this.view);
   }
 
   private disarm(): void {
+    this.cancelDrag(false);
     this.inputArmed = false;
     this.moves.clear();
     this.clearSelection();
@@ -312,7 +496,7 @@ class ChessFrontend implements GameFrontend {
   private clearSelection(): void {
     this.selected = null;
     for (const el of this.squareEls) {
-      el.classList.remove('chess-sq-selected', 'chess-sq-target', 'chess-sq-capture');
+      el.classList.remove('chess-sq-selected', 'chess-sq-target', 'chess-sq-capture', 'chess-sq-drop');
     }
   }
 
@@ -333,9 +517,8 @@ class ChessFrontend implements GameFrontend {
       const ch = pieceAt(view.board, sq);
       if (ch === '.') continue;
       const el = document.createElement('div');
-      const white = ch === ch.toUpperCase();
-      el.className = `chess-piece ${white ? 'chess-piece-w' : 'chess-piece-b'}`;
-      el.textContent = GLYPH[ch.toLowerCase()] ?? '';
+      el.className = 'chess-piece';
+      el.innerHTML = pieceSvg(ch.toLowerCase(), ch === ch.toUpperCase());
       this.place(el, sq);
       this.pieceEls.set(sq, el);
       frag.append(el);
@@ -387,8 +570,8 @@ class ChessFrontend implements GameFrontend {
       els.tray.replaceChildren(
         ...taken.pieces.map((p) => {
           const s = document.createElement('span');
-          s.className = `chess-tray-piece ${color === 'w' ? 'chess-piece-b' : 'chess-piece-w'}`;
-          s.textContent = GLYPH[p] ?? '';
+          s.className = 'chess-tray-piece';
+          s.innerHTML = pieceSvg(p, color === 'b');
           return s;
         }),
       );
@@ -431,11 +614,6 @@ class ChessFrontend implements GameFrontend {
     }
     await sleep(ms + 30);
   }
-
-  private updateFont(): void {
-    const w = this.boardEl.clientWidth;
-    if (w > 0) this.piecesEl.style.fontSize = `${(w / 8) * 0.72}px`;
-  }
 }
 
 export function createChessFrontend(): GameFrontend {
@@ -461,8 +639,8 @@ const CSS_TEXT = `
   gap: 10px;
   margin: auto;
   width: 100%;
-  max-width: 540px;
-  max-width: min(540px, calc(100dvh - 270px));
+  max-width: 560px;
+  max-width: min(560px, calc(100dvh - 250px));
   min-width: 260px;
 }
 
@@ -508,10 +686,18 @@ const CSS_TEXT = `
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 1px;
-  font-size: 1.15rem;
-  line-height: 1;
-  min-height: 1.15rem;
+  gap: 0;
+  min-height: 18px;
+}
+
+.chess-tray-piece {
+  width: 17px;
+  height: 17px;
+  margin-left: -3px;
+}
+
+.chess-tray-piece:first-child {
+  margin-left: 0;
 }
 
 .chess-score {
@@ -521,15 +707,50 @@ const CSS_TEXT = `
   font-variant-numeric: tabular-nums;
 }
 
+.chess-stage {
+  display: grid;
+  grid-template-areas: 'ranks board' '. files';
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+}
+
+.chess-ranks {
+  grid-area: ranks;
+  display: flex;
+  flex-direction: column;
+  padding-right: 7px;
+}
+
+.chess-files {
+  grid-area: files;
+  display: flex;
+  padding-top: 5px;
+}
+
+.chess-ranks span,
+.chess-files span {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+
 .chess-board {
+  grid-area: board;
   position: relative;
-  width: 100%;
   aspect-ratio: 1 / 1;
-  border-radius: calc(var(--radius) - 3px);
+  border: 1px solid #30331f;
+  border-radius: 2px;
   overflow: hidden;
-  box-shadow: 0 14px 36px rgba(1, 4, 9, 0.5);
+  box-shadow: 0 1px 0 rgba(244, 238, 218, 0.05), 0 14px 30px rgba(5, 8, 3, 0.45);
   user-select: none;
   -webkit-user-select: none;
+  touch-action: none;
 }
 
 .chess-squares {
@@ -545,36 +766,41 @@ const CSS_TEXT = `
 }
 
 .chess-sq-light {
-  background: #b9c7da;
+  background: #e9ddbd;
 }
 
 .chess-sq-dark {
-  background: #50647f;
+  background: #6f8a5d;
 }
 
 .chess-armed .chess-sq-movable {
-  cursor: pointer;
+  cursor: grab;
+}
+
+.chess-dragging,
+.chess-dragging .chess-sq {
+  cursor: grabbing;
 }
 
 .chess-armed .chess-sq-movable:hover::before {
   content: '';
   position: absolute;
   inset: 0;
-  background: rgba(88, 166, 255, 0.16);
+  background: rgba(212, 169, 92, 0.18);
 }
 
 .chess-sq-last::before {
   content: '';
   position: absolute;
   inset: 0;
-  background: rgba(88, 166, 255, 0.27);
+  background: rgba(212, 169, 92, 0.34);
 }
 
 .chess-sq-selected::before {
   content: '';
   position: absolute;
   inset: 0;
-  background: rgba(88, 166, 255, 0.45);
+  background: rgba(212, 169, 92, 0.55);
 }
 
 .chess-sq-target,
@@ -587,25 +813,29 @@ const CSS_TEXT = `
   position: absolute;
   inset: 0;
   margin: auto;
-  width: 27%;
-  height: 27%;
+  width: 26%;
+  height: 26%;
   border-radius: 50%;
-  background: rgba(7, 12, 20, 0.38);
+  background: rgba(22, 24, 12, 0.32);
 }
 
 .chess-sq-capture::after {
   content: '';
   position: absolute;
-  inset: 7%;
+  inset: 5%;
   border-radius: 50%;
-  border: 3px solid rgba(248, 81, 73, 0.65);
+  border: 3px solid rgba(22, 24, 12, 0.38);
+}
+
+.chess-sq-drop {
+  box-shadow: inset 0 0 0 3px rgba(212, 169, 92, 0.95);
 }
 
 .chess-sq-check {
   background-image: radial-gradient(
     circle at 50% 50%,
-    rgba(248, 81, 73, 0.65) 22%,
-    rgba(248, 81, 73, 0.25) 50%,
+    rgba(217, 106, 90, 0.62) 22%,
+    rgba(217, 106, 90, 0.24) 50%,
     transparent 68%
   );
 }
@@ -613,44 +843,16 @@ const CSS_TEXT = `
 .chess-sq-mate {
   background-image: radial-gradient(
     circle at 50% 50%,
-    rgba(248, 81, 73, 0.85) 26%,
-    rgba(248, 81, 73, 0.35) 55%,
+    rgba(217, 106, 90, 0.85) 26%,
+    rgba(217, 106, 90, 0.35) 55%,
     transparent 75%
   );
-}
-
-.chess-coord {
-  position: absolute;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-  opacity: 0.85;
-  pointer-events: none;
-}
-
-.chess-coord-rank {
-  top: 3px;
-  left: 4px;
-}
-
-.chess-coord-file {
-  bottom: 3px;
-  right: 4px;
-}
-
-.chess-sq-light .chess-coord {
-  color: #50647f;
-}
-
-.chess-sq-dark .chess-coord {
-  color: #b9c7da;
 }
 
 .chess-pieces {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  font-size: 44px;
 }
 
 .chess-piece {
@@ -662,31 +864,85 @@ const CSS_TEXT = `
   display: flex;
   align-items: center;
   justify-content: center;
-  line-height: 1;
   z-index: 1;
   will-change: transform;
   transition: transform 0ms cubic-bezier(0.22, 0.85, 0.3, 1);
-  font-family: 'Segoe UI Symbol', 'Noto Sans Symbols 2', 'DejaVu Sans', sans-serif;
 }
 
-.chess-piece-w {
-  color: #f4f1e8;
-  text-shadow: 0 2px 3px rgba(1, 4, 9, 0.55), 0 0 2px rgba(1, 4, 9, 0.7);
+.chess-pc {
+  display: block;
 }
 
-.chess-piece-b {
-  color: #23272e;
-  text-shadow: 0 1px 2px rgba(244, 241, 232, 0.22), 0 0 2px rgba(244, 241, 232, 0.28);
+.chess-piece .chess-pc {
+  width: 92%;
+  height: 92%;
+  filter: drop-shadow(0 2px 2px rgba(15, 14, 6, 0.32));
+}
+
+.chess-pc-w .pcb {
+  fill: #f5efdc;
+  stroke: #3a382c;
+}
+
+.chess-pc-w .pcd {
+  stroke: #3a382c;
+  fill: none;
+}
+
+.chess-pc-w .pcf {
+  fill: #3a382c;
+}
+
+.chess-pc-b .pcb {
+  fill: #33302a;
+  stroke: #e9e2ca;
+}
+
+.chess-pc-b .pcd {
+  stroke: #e9e2ca;
+  fill: none;
+}
+
+.chess-pc-b .pcf {
+  fill: #e9e2ca;
+}
+
+.chess-pc .pcb,
+.chess-pc .pcd {
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.chess-piece-drag {
+  z-index: 7;
+}
+
+.chess-piece-drag .chess-pc {
+  filter: drop-shadow(0 9px 12px rgba(10, 10, 4, 0.45));
+}
+
+.chess-piece-ghost {
+  opacity: 0.35;
+}
+
+.chess-piece-ghost .chess-pc {
+  filter: none;
+}
+
+.chess-tray-piece .chess-pc {
+  width: 100%;
+  height: 100%;
 }
 
 .chess-promo {
   position: absolute;
   inset: 0;
-  z-index: 6;
+  z-index: 8;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(1, 4, 9, 0.62);
+  background: rgba(10, 12, 6, 0.55);
 }
 
 .chess-promo[hidden] {
@@ -700,7 +956,7 @@ const CSS_TEXT = `
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 16px 48px rgba(1, 4, 9, 0.6);
+  box-shadow: 0 16px 48px rgba(5, 8, 3, 0.6);
 }
 
 .chess-promo-btn {
@@ -709,14 +965,17 @@ const CSS_TEXT = `
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 42px;
-  line-height: 1;
+  padding: 7px;
   background: var(--bg-inset);
   border: 1px solid var(--border);
   border-radius: calc(var(--radius) - 3px);
   cursor: pointer;
   transition: border-color 0.15s ease, transform 0.15s ease;
-  font-family: 'Segoe UI Symbol', 'Noto Sans Symbols 2', 'DejaVu Sans', sans-serif;
+}
+
+.chess-promo-btn .chess-pc {
+  width: 100%;
+  height: 100%;
 }
 
 .chess-promo-btn:hover {
