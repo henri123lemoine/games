@@ -80,6 +80,55 @@ impl GameUi for Go {
         }
     }
 
+    /// Web view schema: `{"size":N,"cells":"<N*N chars b/w/.>","turn":0|1,
+    /// "captures":[b,w],"lastMove":null,"komi":7.5}`. `cells` is indexed
+    /// `row * size + col` with row 0 = board row 1; the last move is not part
+    /// of the state, so clients track it from [`GameUi::transition_data`].
+    fn view_data(&self, state: &GoState, _viewer: usize) -> Option<String> {
+        let cells: String = (0..self.size() * self.size())
+            .map(|p| match state.stone(p) {
+                Some(0) => 'b',
+                Some(_) => 'w',
+                None => '.',
+            })
+            .collect();
+        let caps = state.captures();
+        Some(format!(
+            r#"{{"size":{},"cells":"{cells}","turn":{},"captures":[{},{}],"lastMove":null,"komi":{KOMI}}}"#,
+            self.size(),
+            state.to_move,
+            caps[0],
+            caps[1],
+        ))
+    }
+
+    /// Web transition schema: `{"move":"c3"|"pass","seat":0|1}` plus, for
+    /// placements, `"point"` (board index) and `"captured"` (board indices of
+    /// removed stones).
+    fn transition_data(
+        &self,
+        before: &GoState,
+        action: GoAction,
+        after: &GoState,
+        _viewer: usize,
+    ) -> Option<String> {
+        let seat = before.to_move;
+        match action {
+            GoAction::Pass => Some(format!(r#"{{"move":"pass","seat":{seat}}}"#)),
+            GoAction::Place(p) => {
+                let coord = self.action_label(before, action);
+                let captured = (0..self.size() * self.size())
+                    .filter(|&q| before.stone(q) == Some(seat ^ 1) && after.stone(q).is_none())
+                    .map(|q| q.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                Some(format!(
+                    r#"{{"move":"{coord}","seat":{seat},"point":{p},"captured":[{captured}]}}"#
+                ))
+            }
+        }
+    }
+
     fn result_text(&self, state: &GoState, viewer: usize) -> String {
         let (black, white) = self.area_scores(state);
         let verdict = if self.returns(state, viewer) > 0.0 {
@@ -91,5 +140,33 @@ impl GameUi for Go {
             "Black {black} vs White {} ({white} + {KOMI} komi). {verdict}",
             white as f64 + KOMI
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A black play on b3 captures the white stone at b2; the web JSON must
+    /// carry the placement point and the captured indices.
+    #[test]
+    fn view_and_transition_json() {
+        let g = Go::new(3);
+        let mut s = g.parse_state(&["...", "XOX", ".X."], 0);
+        let before = s.clone();
+        g.apply(&mut s, GoAction::Place(7));
+        assert_eq!(
+            g.view_data(&s, 0).unwrap(),
+            r#"{"size":3,"cells":".b.b.b.b.","turn":1,"captures":[1,0],"lastMove":null,"komi":7.5}"#
+        );
+        assert_eq!(
+            g.transition_data(&before, GoAction::Place(7), &s, 0)
+                .unwrap(),
+            r#"{"move":"b3","seat":0,"point":7,"captured":[4]}"#
+        );
+        assert_eq!(
+            g.transition_data(&s, GoAction::Pass, &s, 0).unwrap(),
+            r#"{"move":"pass","seat":1}"#
+        );
     }
 }

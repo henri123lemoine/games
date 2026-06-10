@@ -49,6 +49,59 @@ impl GameUi for G2048 {
         }
     }
 
+    /// JSON view for the web frontend (`web/app/src/frontends/2048`):
+    ///
+    /// ```json
+    /// {"cells":[0,2,0,...,16],"score":20,"over":false}
+    /// ```
+    ///
+    /// `cells` is the 16 tile values row-major from the top-left (`0` =
+    /// empty, else the tile value, e.g. `2048`); `score` is the cumulative
+    /// score; `over` is whether the game has ended.
+    fn view_data(&self, state: &G2048State, _viewer: usize) -> Option<String> {
+        let cells = (0..SIZE)
+            .flat_map(|r| (0..SIZE).map(move |c| (r, c)))
+            .map(|(r, c)| state.tile(r, c).to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        Some(format!(
+            "{{\"cells\":[{cells}],\"score\":{},\"over\":{}}}",
+            state.score(),
+            self.is_terminal(state)
+        ))
+    }
+
+    /// JSON transition for the web frontend. Shifts emit
+    ///
+    /// ```json
+    /// {"dir":"up","gained":8}
+    /// ```
+    ///
+    /// (`dir` ∈ `up|down|left|right`, `gained` = points the move scored).
+    /// Spawn actions emit `{"spawn":{"cell":i,"value":2|4}}` (`cell`
+    /// row-major), but in match flow spawns are chance moves resolved without
+    /// events — the post-shift view precedes the spawn, so frontends detect
+    /// the new tile by diffing consecutive views.
+    fn transition_data(
+        &self,
+        before: &G2048State,
+        action: G2048Action,
+        after: &G2048State,
+        _viewer: usize,
+    ) -> Option<String> {
+        match action {
+            G2048Action::Shift(dir) => Some(format!(
+                "{{\"dir\":\"{}\",\"gained\":{}}}",
+                dir_name(dir),
+                after.score() - before.score()
+            )),
+            G2048Action::Spawn { cell, four } => Some(format!(
+                "{{\"spawn\":{{\"cell\":{cell},\"value\":{}}}}}",
+                if four { 4 } else { 2 }
+            )),
+        }
+    }
+
     /// Accepts `w`/`a`/`s`/`d` and the words `up`/`down`/`left`/`right`
     /// (case-insensitive), only when that shift is legal.
     fn parse_action(&self, state: &G2048State, input: &str) -> Option<G2048Action> {
@@ -112,6 +165,52 @@ mod tests {
         assert_eq!(
             game.parse_action(&s, "d"),
             Some(G2048Action::Shift(Dir::Right))
+        );
+    }
+
+    #[test]
+    fn view_data_schema() {
+        let game = G2048;
+        let s = G2048State::from_tiles([[2, 0, 0, 0], [0, 16, 0, 0], [0; 4], [0; 4]], 20);
+        assert_eq!(
+            game.view_data(&s, 0).unwrap(),
+            "{\"cells\":[2,0,0,0,0,16,0,0,0,0,0,0,0,0,0,0],\"score\":20,\"over\":false}"
+        );
+
+        let done = G2048State::from_tiles(
+            [[2, 4, 2, 4], [4, 2, 4, 2], [2, 4, 2, 4], [4, 2, 4, 2]],
+            100,
+        );
+        assert!(
+            game.view_data(&done, 0)
+                .unwrap()
+                .ends_with("\"over\":true}")
+        );
+    }
+
+    #[test]
+    fn transition_data_schema() {
+        let game = G2048;
+        let mut s = G2048State::from_tiles([[2, 2, 0, 0], [0; 4], [0; 4], [0; 4]], 0);
+        let before = s.clone();
+        let action = G2048Action::Shift(Dir::Left);
+        game.apply(&mut s, action);
+        assert_eq!(
+            game.transition_data(&before, action, &s, 0).unwrap(),
+            "{\"dir\":\"left\",\"gained\":4}"
+        );
+        assert_eq!(
+            game.transition_data(
+                &before,
+                G2048Action::Spawn {
+                    cell: 6,
+                    four: true
+                },
+                &s,
+                0
+            )
+            .unwrap(),
+            "{\"spawn\":{\"cell\":6,\"value\":4}}"
         );
     }
 

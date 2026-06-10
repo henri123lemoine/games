@@ -1,6 +1,7 @@
-// The arcade shell: game picker → match setup → match screen. One engine
-// worker drives play; the shell owns the loop and narration, frontends own
-// the board.
+// The arcade shell: pick a game and you are immediately playing it against
+// the lab's bot — configuration lives in a quiet settings drawer, not between
+// you and the board. One engine worker drives play; the shell owns the loop
+// and narration, frontends own the board.
 
 import { EngineHost } from '../engine/host';
 import type { GameInfo, Manifest, MatchEventData, ViewState } from '../engine/protocol';
@@ -19,25 +20,30 @@ const GAME_NAMES: Record<string, string> = {
   snake: 'Snake',
 };
 
-const GAME_GLYPHS: Record<string, string> = {
-  chess: '♞',
-  'liars-dice': '⚄',
-  twentyone: '♥',
-  othello: '◐',
-  connect4: '◍',
-  go: '◉',
-  '2048': '⌗',
-  snake: '⌇',
+const GAME_TAGLINES: Record<string, string> = {
+  chess: 'alpha-beta search, perft-validated rules',
+  'liars-dice': 'belief-tracking bots that bluff back',
+  twentyone: 'a CFR+ solver trained as you watch',
+  othello: 'weighted squares and mobility',
+  connect4: 'deep tactical search',
+  go: 'Monte-Carlo tree search, 9×9',
+  '2048': 'an MCTS bot, or your own arrows',
+  snake: 'the classic, with a watchful bot',
 };
 
 /** Single-player games spectate via a bot option, not a seat. */
 const SINGLE_PLAYER = new Set(['2048', 'snake']);
 
-/** Browser-friendly default overrides (single-threaded wasm). */
-const WEB_DEFAULTS: Record<string, Record<string, string>> = {
-  go: { sims: '2000' },
-  'liars-dice': { rollouts: '400' },
-  twentyone: { iters: '20000' },
+/** What clicking a card starts: browser-tuned, no questions asked. */
+const DEFAULT_OPTS: Record<string, Record<string, string>> = {
+  chess: { depth: '4' },
+  'liars-dice': { players: '5', dice: '5', rollouts: '400' },
+  twentyone: { hearts: '3', iters: '1500' },
+  othello: { depth: '5' },
+  connect4: { depth: '7' },
+  go: { size: '9', sims: '1500' },
+  '2048': {},
+  snake: {},
 };
 
 /** Trained artifacts fetched as static assets, keyed by the path the
@@ -51,14 +57,14 @@ interface OptField {
   value: string;
 }
 
-function parseOptFields(help: string, gameId: string): OptField[] {
+function parseOptFields(help: string, current: Record<string, string>): OptField[] {
   const fields: OptField[] = [];
   const seen = new Set<string>();
   for (const m of help.matchAll(/([A-Za-z0-9_-]+)=([^\s]+)/g)) {
     const key = m[1];
     if (key === 'seed' || key === 'seat' || /^\d+$/.test(key) || seen.has(key)) continue;
     seen.add(key);
-    const value = WEB_DEFAULTS[gameId]?.[key] ?? m[2].split('|')[0].replace(/\.{3}$/, '');
+    const value = current[key] ?? m[2].split('|')[0].replace(/\.{3}$/, '');
     fields.push({ key, value });
   }
   return fields;
@@ -68,10 +74,41 @@ function randomSeed(): number {
   return (Math.floor(Math.random() * 0x7fff_ffff) | 1) >>> 0;
 }
 
+/** Static mini-board previews on the home cards — each game introduces
+ * itself with its own board, not an icon. */
+function miniFor(id: string): string {
+  switch (id) {
+    case 'chess':
+      return `<div class="mini mini-chess"><span class="mini-pc" style="left:12%;top:8%">♞</span><span class="mini-pc mini-pc-w" style="left:58%;top:52%">♙</span></div>`;
+    case 'liars-dice':
+      return `<div class="mini mini-dice">
+        <span class="mini-die"><i style="left:25%;top:25%"></i><i style="left:65%;top:65%"></i></span>
+        <span class="mini-die mini-die-2"><i style="left:45%;top:45%"></i><i style="left:18%;top:18%"></i><i style="left:72%;top:72%"></i></span>
+        <span class="mini-cup"></span></div>`;
+    case 'twentyone':
+      return `<div class="mini mini-t21"><span class="mini-card">7♠</span><span class="mini-card mini-card-2">9♦</span><span class="mini-heart">♥♥♥</span></div>`;
+    case 'othello':
+      return `<div class="mini mini-othello"><span class="mini-disc mini-disc-b" style="left:28%;top:28%"></span><span class="mini-disc mini-disc-w" style="left:52%;top:28%"></span><span class="mini-disc mini-disc-w" style="left:28%;top:52%"></span><span class="mini-disc mini-disc-b" style="left:52%;top:52%"></span></div>`;
+    case 'connect4':
+      return `<div class="mini mini-c4"></div>`;
+    case 'go':
+      return `<div class="mini mini-go"><span class="mini-stone mini-stone-b" style="left:30%;top:30%"></span><span class="mini-stone mini-stone-w" style="left:55%;top:47%"></span><span class="mini-stone mini-stone-b" style="left:38%;top:63%"></span></div>`;
+    case '2048':
+      return `<div class="mini mini-2048"><span>2</span><span class="v4">4</span><span class="v8">8</span><span class="v16">16</span></div>`;
+    case 'snake':
+      return `<div class="mini mini-snake"><span class="mini-seg" style="left:18%;top:55%"></span><span class="mini-seg" style="left:33%;top:55%"></span><span class="mini-seg" style="left:48%;top:55%"></span><span class="mini-seg mini-head" style="left:48%;top:38%"></span><span class="mini-food" style="left:72%;top:25%"></span></div>`;
+    default:
+      return `<div class="mini"></div>`;
+  }
+}
+
+type Mode = 'play' | 'watch';
+
 export class App {
   private host = new EngineHost();
   private manifest!: Manifest;
   private frontend: GameFrontend | null = null;
+  private tourney: TournamentScreen | null = null;
   private gen = 0;
   private speedScale = 1;
   private submitResolve: ((input: string) => void) | null = null;
@@ -81,123 +118,96 @@ export class App {
   constructor(private root: HTMLElement) {}
 
   async start(): Promise<void> {
-    this.root.innerHTML = '<div class="boot">Loading the engine…</div>';
+    this.root.innerHTML = '<div class="boot">Waking the engine…</div>';
     this.manifest = await this.host.manifest();
     this.renderHome();
   }
 
   // ---------- home ----------
 
-  private tourney: TournamentScreen | null = null;
-
-  private renderTournament(): void {
-    this.teardownMatch();
-    this.tourney = new TournamentScreen(this.root, this.manifest.compare, this.host, () =>
-      this.renderHome(),
-    );
-    this.tourney.render();
-  }
-
   private renderHome(): void {
-    this.teardownMatch();
+    this.teardown();
     const cards = this.manifest.games
       .map(
         (g) => `
-        <button class="card" data-game="${g.id}">
-          <span class="card-glyph">${GAME_GLYPHS[g.id] ?? '∎'}</span>
-          <span class="card-name">${GAME_NAMES[g.id] ?? g.id}</span>
-          <span class="card-summary">${g.summary}</span>
-        </button>`,
+        <div class="card" data-game="${g.id}" role="button" tabindex="0">
+          ${miniFor(g.id)}
+          <div class="card-text">
+            <span class="card-name">${GAME_NAMES[g.id] ?? g.id}</span>
+            <span class="card-summary">${GAME_TAGLINES[g.id] ?? g.summary}</span>
+          </div>
+          <button type="button" class="card-watch" title="Watch bots play">watch</button>
+        </div>`,
       )
       .join('');
     this.root.innerHTML = `
       <div class="home">
         <header class="hero">
-          <h1>Games Arcade</h1>
-          <p>Play against the lab's bots — search and learned policies in Rust,
-             compiled to WebAssembly, running entirely in your browser.</p>
+          <p class="eyebrow">rust · webassembly · runs on your device</p>
+          <h1>The Games Room</h1>
+          <p>Eight games, one engine. Sit down against the lab's bots —
+             or let them play each other.</p>
         </header>
         <div class="card-grid">${cards}</div>
         <div class="home-foot">
-          <button type="button" class="link tourney-link">Tournament lab &rarr;</button>
+          <button type="button" class="link tourney-link">Bot tournament lab &rarr;</button>
         </div>
       </div>`;
-    for (const el of this.root.querySelectorAll<HTMLButtonElement>('.card')) {
-      el.onclick = () => {
-        const game = this.manifest.games.find((g) => g.id === el.dataset.game);
-        if (game) this.renderSetup(game);
+    for (const el of this.root.querySelectorAll<HTMLElement>('.card')) {
+      const game = this.manifest.games.find((g) => g.id === el.dataset.game);
+      if (!game) continue;
+      const play = () => void this.startMatch(game, 'play');
+      el.onclick = play;
+      el.onkeydown = (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          play();
+        }
+      };
+      el.querySelector<HTMLButtonElement>('.card-watch')!.onclick = (e) => {
+        e.stopPropagation();
+        void this.startMatch(game, 'watch');
       };
     }
     this.root.querySelector<HTMLButtonElement>('.tourney-link')!.onclick = () =>
       this.renderTournament();
   }
 
-  // ---------- setup ----------
-
-  private renderSetup(game: GameInfo): void {
-    this.teardownMatch();
-    const fields = parseOptFields(game.opts, game.id);
-    const fieldRows = fields
-      .map(
-        (f) => `
-        <label class="opt-row">
-          <span>${f.key}</span>
-          <input name="opt-${f.key}" value="${f.value}" autocomplete="off" />
-        </label>`,
-      )
-      .join('');
-    const seatChoices = SINGLE_PLAYER.has(game.id)
-      ? ''
-      : `<label class="opt-row"><span>seat</span>
-           <input name="opt-seat" value="0" autocomplete="off" /></label>`;
-    this.root.innerHTML = `
-      <div class="setup">
-        <button type="button" class="link back">&larr; all games</button>
-        <h2>${GAME_NAMES[game.id] ?? game.id}</h2>
-        <p class="muted">${game.summary}</p>
-        <div class="mode-row">
-          <button type="button" class="mode selected" data-mode="play">Play</button>
-          <button type="button" class="mode" data-mode="watch">Watch bots</button>
-        </div>
-        <div class="opts">
-          ${seatChoices}
-          ${fieldRows}
-          <label class="opt-row"><span>seed</span>
-            <input name="opt-seed" value="${randomSeed()}" autocomplete="off" /></label>
-        </div>
-        <button type="button" class="primary start">Start match</button>
-      </div>`;
-    let mode: 'play' | 'watch' = 'play';
-    for (const el of this.root.querySelectorAll<HTMLButtonElement>('.mode')) {
-      el.onclick = () => {
-        mode = el.dataset.mode as 'play' | 'watch';
-        this.root
-          .querySelectorAll('.mode')
-          .forEach((m) => m.classList.toggle('selected', m === el));
-      };
-    }
-    this.root.querySelector<HTMLButtonElement>('.back')!.onclick = () => this.renderHome();
-    this.root.querySelector<HTMLButtonElement>('.start')!.onclick = () => {
-      const opts: Record<string, string> = {};
-      for (const input of this.root.querySelectorAll<HTMLInputElement>('.opts input')) {
-        const key = input.name.replace(/^opt-/, '');
-        if (input.value.trim() !== '') opts[key] = input.value.trim();
-      }
-      if (mode === 'watch') {
-        if (SINGLE_PLAYER.has(game.id)) opts.bot ||= 'mcts-eval';
-        else opts.seat = 'watch';
-      } else if (SINGLE_PLAYER.has(game.id)) {
-        delete opts.bot;
-      }
-      void this.startMatch(game, opts);
-    };
+  private renderTournament(): void {
+    this.teardown();
+    this.tourney = new TournamentScreen(this.root, this.manifest.compare, this.host, () =>
+      this.renderHome(),
+    );
+    this.tourney.render();
   }
 
   // ---------- match ----------
 
-  private async startMatch(game: GameInfo, opts: Record<string, string>): Promise<void> {
+  private buildOpts(game: GameInfo, mode: Mode, overrides: Record<string, string>): Record<string, string> {
+    const opts: Record<string, string> = { ...DEFAULT_OPTS[game.id], ...overrides };
+    if (mode === 'watch') {
+      if (SINGLE_PLAYER.has(game.id)) opts.bot ||= 'mcts-eval';
+      else opts.seat = 'watch';
+    } else if (SINGLE_PLAYER.has(game.id)) {
+      delete opts.bot;
+    } else if (opts.seat === 'watch') {
+      opts.seat = '0';
+    }
+    opts.seed ||= String(randomSeed());
+    return opts;
+  }
+
+  private async startMatch(
+    game: GameInfo,
+    mode: Mode,
+    overrides: Record<string, string> = {},
+  ): Promise<void> {
     const gen = ++this.gen;
-    this.renderMatchSkeleton(game, opts);
+    const opts = this.buildOpts(game, mode, overrides);
+    this.renderMatchSkeleton(game, mode, opts);
+    if (game.id === 'twentyone') {
+      this.setStatus('Training the CFR+ solver in your browser…');
+    }
     try {
       await this.loadArtifacts(opts);
       const st = await this.host.create(game.id, opts);
@@ -217,15 +227,16 @@ export class App {
       this.setStatus(st.humanSeat < 0 ? 'Bots playing…' : 'Thinking…');
       void this.runLoop(gen);
     } catch (e) {
-      if (gen === this.gen) this.setStatus(`Failed to start: ${message(e)}`, 'error');
+      if (gen === this.gen) this.setStatus(`Could not start: ${message(e)}`, 'error');
     }
   }
 
-  private renderMatchSkeleton(game: GameInfo, opts: Record<string, string>): void {
+  private renderMatchSkeleton(game: GameInfo, mode: Mode, opts: Record<string, string>): void {
+    const modeLabel = mode === 'watch' ? 'take a seat' : 'watch bots';
     this.root.innerHTML = `
       <div class="match">
         <header class="match-bar">
-          <button type="button" class="link back">&larr; all games</button>
+          <button type="button" class="link back">&larr; games</button>
           <span class="match-title">${GAME_NAMES[game.id] ?? game.id}</span>
           <span class="spacer"></span>
           <label class="speed-label">speed
@@ -236,7 +247,9 @@ export class App {
               <option value="0">instant</option>
             </select>
           </label>
-          <button type="button" class="link again">new match</button>
+          <button type="button" class="link mode-toggle">${modeLabel}</button>
+          <button type="button" class="link again">rematch</button>
+          <button type="button" class="link gear" title="Match settings">⚙</button>
         </header>
         <div class="match-body">
           <section class="board"></section>
@@ -249,13 +262,26 @@ export class App {
             </form>
           </aside>
         </div>
+        <div class="drawer" hidden>
+          <div class="drawer-panel">
+            <h3>Match settings</h3>
+            <div class="drawer-fields"></div>
+            <div class="drawer-actions">
+              <button type="button" class="primary drawer-apply">Restart with these</button>
+              <button type="button" class="link drawer-close">cancel</button>
+            </div>
+          </div>
+        </div>
       </div>`;
     this.logEl = this.root.querySelector('.log');
     this.statusEl = this.root.querySelector('.status');
     this.root.querySelector<HTMLButtonElement>('.back')!.onclick = () => this.renderHome();
-    this.root.querySelector<HTMLButtonElement>('.again')!.onclick = () => {
-      void this.startMatch(game, { ...opts, seed: String(randomSeed()) });
-    };
+    this.root.querySelector<HTMLButtonElement>('.again')!.onclick = () =>
+      void this.startMatch(game, mode, { ...opts, seed: String(randomSeed()) });
+    this.root.querySelector<HTMLButtonElement>('.mode-toggle')!.onclick = () =>
+      void this.startMatch(game, mode === 'watch' ? 'play' : 'watch', {
+        seed: String(randomSeed()),
+      });
     this.root.querySelector<HTMLSelectElement>('.speed')!.onchange = (e) => {
       this.speedScale = Number((e.target as HTMLSelectElement).value);
     };
@@ -267,6 +293,46 @@ export class App {
         this.submit(input.value.trim());
         input.value = '';
       }
+    };
+    this.wireDrawer(game, mode, opts);
+  }
+
+  private wireDrawer(game: GameInfo, mode: Mode, opts: Record<string, string>): void {
+    const drawer = this.root.querySelector<HTMLElement>('.drawer')!;
+    const fieldsEl = drawer.querySelector<HTMLElement>('.drawer-fields')!;
+    const open = () => {
+      const fields = parseOptFields(game.opts, opts);
+      const seatRow = SINGLE_PLAYER.has(game.id)
+        ? ''
+        : `<label class="opt-row"><span>seat</span>
+             <input name="d-seat" value="${opts.seat ?? '0'}" autocomplete="off" /></label>`;
+      fieldsEl.innerHTML = `
+        ${seatRow}
+        ${fields
+          .map(
+            (f) => `<label class="opt-row"><span>${f.key}</span>
+              <input name="d-${f.key}" value="${f.value}" autocomplete="off" /></label>`,
+          )
+          .join('')}
+        <label class="opt-row"><span>seed</span>
+          <input name="d-seed" value="${opts.seed ?? randomSeed()}" autocomplete="off" /></label>`;
+      drawer.hidden = false;
+    };
+    this.root.querySelector<HTMLButtonElement>('.gear')!.onclick = open;
+    drawer.querySelector<HTMLButtonElement>('.drawer-close')!.onclick = () => {
+      drawer.hidden = true;
+    };
+    drawer.onclick = (e) => {
+      if (e.target === drawer) drawer.hidden = true;
+    };
+    drawer.querySelector<HTMLButtonElement>('.drawer-apply')!.onclick = () => {
+      const overrides: Record<string, string> = {};
+      for (const input of fieldsEl.querySelectorAll<HTMLInputElement>('input')) {
+        const key = input.name.replace(/^d-/, '');
+        if (input.value.trim() !== '') overrides[key] = input.value.trim();
+      }
+      const nextMode: Mode = overrides.seat === 'watch' ? 'watch' : mode;
+      void this.startMatch(game, nextMode, overrides);
     };
   }
 
@@ -354,7 +420,7 @@ export class App {
     this.statusEl.className = `status status-${kind}`;
   }
 
-  private teardownMatch(): void {
+  private teardown(): void {
     this.gen++;
     this.tourney?.destroy();
     this.tourney = null;

@@ -298,13 +298,26 @@ impl Agent<TwentyOne> for SolverBot {
 fn make_twentyone(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
     let hearts: u8 = o.get("hearts", 6);
     let iters: u64 = o.get("iters", 50_000);
-    let mut solver = if hearts <= 2 {
-        twentyone::Solver::with_hearts(0xD1CE, hearts)
-    } else {
-        twentyone::Solver::abstracted(0xD1CE, hearts)
+    // A pre-trained artifact (shipped on the web, optional natively) beats
+    // train-at-startup; fall back to training when none matches.
+    let artifact = format!("data/twentyone/solver-h{hearts}.bin");
+    let solver = match crate::artifacts::read(&artifact)
+        .ok()
+        .and_then(|b| twentyone::Solver::from_bytes(&b).ok())
+        .filter(|s| s.start_hearts() == hearts)
+    {
+        Some(s) => s,
+        None => {
+            let mut solver = if hearts <= 2 {
+                twentyone::Solver::with_hearts(0xD1CE, hearts)
+            } else {
+                twentyone::Solver::abstracted(0xD1CE, hearts)
+            };
+            eprintln!("training the Twenty-One solver ({iters} iters/subgame)...");
+            solver.solve(iters);
+            solver
+        }
     };
-    eprintln!("training the Twenty-One solver ({iters} iters/subgame)...");
-    solver.solve(iters);
     let solver = std::sync::Arc::new(solver);
     let seat = parse_seat(o, 2)?;
     let game = TwentyOne::new(hearts);

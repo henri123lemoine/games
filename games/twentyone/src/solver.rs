@@ -190,6 +190,11 @@ impl Solver {
         Self::with_hearts(seed, STARTING_HEARTS)
     }
 
+    /// Hearts per player in the variant this solver was built for.
+    pub fn start_hearts(&self) -> u8 {
+        self.start_hearts
+    }
+
     /// Construct a solver for a variant with `start_hearts` hearts per player.
     /// The full game uses 6; smaller values yield a shorter, exactly-solvable
     /// game useful for validating convergence.
@@ -1008,7 +1013,8 @@ impl Solver {
 
     // ----- persistence ------------------------------------------------------
 
-    pub fn save(&self, path: &str) -> io::Result<()> {
+    /// The versioned encoding behind [`Solver::save`].
+    pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf: Vec<u8> = Vec::new();
         buf.extend_from_slice(&SOLVER_MAGIC.to_le_bytes());
         buf.push(SOLVER_FORMAT_VERSION);
@@ -1022,14 +1028,17 @@ impl Solver {
             buf.extend_from_slice(&k.to_le_bytes());
             buf.extend_from_slice(&v.to_le_bytes());
         }
-        let mut f = std::fs::File::create(path)?;
-        f.write_all(&buf)
+        buf
     }
 
-    pub fn load(path: &str) -> io::Result<Self> {
-        let mut bytes = Vec::new();
-        std::fs::File::open(path)?.read_to_end(&mut bytes)?;
-        let mut r = Reader::new(&bytes);
+    pub fn save(&self, path: &str) -> io::Result<()> {
+        let mut f = std::fs::File::create(path)?;
+        f.write_all(&self.to_bytes())
+    }
+
+    /// Parses a solver produced by [`Solver::to_bytes`] / [`Solver::save`].
+    pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        let mut r = Reader::new(bytes);
         let magic = r.u32()?;
         if magic != SOLVER_MAGIC {
             return Err(invalid(
@@ -1062,6 +1071,12 @@ impl Solver {
             iterations,
             rng: Rng::new(0x5DEECE66D ^ iterations),
         })
+    }
+
+    pub fn load(path: &str) -> io::Result<Self> {
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?.read_to_end(&mut bytes)?;
+        Self::from_bytes(&bytes)
     }
 }
 

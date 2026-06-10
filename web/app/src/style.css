@@ -1,18 +1,23 @@
-/* Arcade shell theme. Per-game frontends own everything inside .board and
-   bring their own visual identity; these tokens keep the page coherent. */
+/* The Games Room — shell theme.
+   Identity: a club games room at night. Felt greens, warm linen text, brass
+   accents; serif display type over a quiet sans body, mono for engine data.
+   Per-game frontends own everything inside .board and inherit only these
+   tokens, so the room stays coherent while each table keeps its character. */
 
 :root {
-  --bg: #0d1117;
-  --bg-raised: #161b22;
-  --bg-inset: #010409;
-  --border: #2d333b;
-  --text: #e6edf3;
-  --text-dim: #8b949e;
-  --accent: #58a6ff;
-  --accent-2: #bc8cff;
-  --good: #3fb950;
-  --bad: #f85149;
+  --bg: #11150f;
+  --bg-raised: #1a211a;
+  --bg-inset: #0b0e0a;
+  --border: #2d352c;
+  --text: #eae6d8;
+  --text-dim: #9da28e;
+  --accent: #d4a95c;
+  --accent-2: #8fae6e;
+  --good: #8fae6e;
+  --bad: #d96a5a;
   --radius: 10px;
+  --display: 'Iowan Old Style', 'Palatino Nova', Palatino, 'Book Antiqua', Georgia, serif;
+  --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
   font-size: 16px;
 }
 
@@ -27,10 +32,12 @@ body {
 }
 
 body {
-  background: var(--bg);
+  background:
+    radial-gradient(1200px 600px at 50% -200px, #1a2418 0%, transparent 60%),
+    var(--bg);
   color: var(--text);
   font-family:
-    'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -44,6 +51,8 @@ body {
   padding: 80px 0;
   text-align: center;
   color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 0.85rem;
 }
 
 button {
@@ -64,9 +73,9 @@ button {
 }
 
 .primary {
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  color: #04111f;
-  font-weight: 600;
+  background: var(--accent);
+  color: #181408;
+  font-weight: 650;
   border: none;
   border-radius: var(--radius);
   padding: 12px 26px;
@@ -74,144 +83,349 @@ button {
 }
 
 .primary:hover {
-  filter: brightness(1.12);
+  filter: brightness(1.1);
 }
 
 .muted {
   color: var(--text-dim);
 }
 
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* ---------- home ---------- */
 
 .hero {
   text-align: center;
-  padding: 30px 0 26px;
+  padding: 38px 0 30px;
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
 }
 
 .hero h1 {
-  margin: 0 0 10px;
-  font-size: 2.3rem;
-  letter-spacing: -0.02em;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  margin: 0 0 12px;
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 3rem;
+  letter-spacing: 0.01em;
 }
 
-.hero p {
+.hero p:not(.eyebrow) {
   margin: 0 auto;
-  max-width: 560px;
+  max-width: 460px;
   color: var(--text-dim);
-  line-height: 1.5;
+  line-height: 1.55;
 }
 
 .card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 14px;
-  margin-top: 18px;
+  margin-top: 26px;
 }
 
 .card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
+  gap: 12px;
   text-align: left;
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 18px;
+  padding: 14px 14px 16px;
+  cursor: pointer;
   transition:
-    transform 0.12s,
-    border-color 0.12s;
+    transform 0.14s,
+    border-color 0.14s,
+    box-shadow 0.14s;
 }
 
 .card:hover {
-  transform: translateY(-2px);
+  transform: translateY(-3px);
   border-color: var(--accent);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
 }
 
-.card-glyph {
-  font-size: 1.9rem;
-  line-height: 1;
+.card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
 .card-name {
+  font-family: var(--display);
   font-weight: 650;
-  font-size: 1.06rem;
+  font-size: 1.15rem;
 }
 
 .card-summary {
   color: var(--text-dim);
-  font-size: 0.85rem;
+  font-size: 0.82rem;
   line-height: 1.35;
 }
 
-/* ---------- setup ---------- */
-
-.setup {
-  max-width: 460px;
-  margin: 0 auto;
-  padding-top: 14px;
-}
-
-.setup h2 {
-  margin: 14px 0 4px;
-}
-
-.mode-row {
-  display: flex;
-  gap: 8px;
-  margin: 18px 0;
-}
-
-.mode {
-  flex: 1;
-  background: var(--bg-raised);
+.card-watch {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: rgba(11, 14, 10, 0.72);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px;
-}
-
-.mode.selected {
-  border-color: var(--accent);
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.opts {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 20px;
-}
-
-.opt-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.opt-row span {
-  width: 90px;
+  border-radius: 999px;
   color: var(--text-dim);
-  font-size: 0.9rem;
+  font-size: 0.72rem;
+  padding: 3px 10px;
+  opacity: 0;
+  transition: opacity 0.14s;
 }
 
-.opt-row input {
-  flex: 1;
-  background: var(--bg-inset);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text);
-  padding: 8px 10px;
-  font: inherit;
+.card:hover .card-watch,
+.card-watch:focus-visible {
+  opacity: 1;
 }
 
-.opt-row input:focus {
-  outline: none;
+.card-watch:hover {
+  color: var(--accent);
   border-color: var(--accent);
+}
+
+/* ---------- mini boards (card previews) ---------- */
+
+.mini {
+  position: relative;
+  height: 110px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.45);
+}
+
+.mini-chess {
+  background:
+    repeating-conic-gradient(#cdbb94 0% 25%, #6f8a5d 0% 50%);
+  background-size: 36px 36px;
+}
+
+.mini-pc {
+  position: absolute;
+  font-size: 34px;
+  color: #20241c;
+  line-height: 1;
+}
+
+.mini-pc-w {
+  color: #f4efe0;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.mini-dice {
+  background: radial-gradient(closest-side at 50% 40%, #2c4231, #1d2c21 90%);
+}
+
+.mini-die {
+  position: absolute;
+  left: 22%;
+  top: 30%;
+  width: 34px;
+  height: 34px;
+  background: #f1ead6;
+  border-radius: 7px;
+  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.5);
+  transform: rotate(-8deg);
+}
+
+.mini-die-2 {
+  left: 48%;
+  top: 42%;
+  transform: rotate(11deg);
+}
+
+.mini-die i {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  background: #23281e;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.mini-cup {
+  position: absolute;
+  right: 8%;
+  top: 18%;
+  width: 34px;
+  height: 44px;
+  background: linear-gradient(#5a4632, #3e3022);
+  border-radius: 6px 6px 14px 14px;
+  box-shadow: inset 0 -5px 0 rgba(0, 0, 0, 0.35);
+  transform: rotate(7deg);
+}
+
+.mini-t21 {
+  background: radial-gradient(closest-side at 50% 40%, #3a2c2c, #241c1c 90%);
+}
+
+.mini-card {
+  position: absolute;
+  left: 24%;
+  top: 20%;
+  width: 38px;
+  height: 54px;
+  background: #f3eedd;
+  color: #232323;
+  border-radius: 5px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 3px 4px;
+  transform: rotate(-7deg);
+  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.5);
+}
+
+.mini-card-2 {
+  left: 42%;
+  top: 26%;
+  transform: rotate(8deg);
+  color: #b3372f;
+}
+
+.mini-heart {
+  position: absolute;
+  right: 10%;
+  bottom: 12%;
+  color: var(--bad);
+  letter-spacing: 2px;
+}
+
+.mini-othello {
+  background:
+    linear-gradient(rgba(0, 0, 0, 0.18) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.18) 1px, transparent 1px),
+    #2f6b46;
+  background-size: 24px 24px;
+}
+
+.mini-disc {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.45);
+}
+
+.mini-disc-b {
+  background: radial-gradient(circle at 35% 30%, #4a4a4a, #111);
+}
+
+.mini-disc-w {
+  background: radial-gradient(circle at 35% 30%, #fff, #cfc9b8);
+}
+
+.mini-c4 {
+  background:
+    radial-gradient(circle 9px at 18px 18px, var(--bg-raised) 98%, transparent) 0 0 / 36px 36px,
+    radial-gradient(circle 9px at 18px 18px, #d9613f 98%, transparent) 0 36px / 72px 72px,
+    radial-gradient(circle 9px at 54px 54px, #e8c25a 98%, transparent) 0 0 / 72px 72px,
+    #2c4f86;
+}
+
+.mini-go {
+  background:
+    linear-gradient(rgba(60, 40, 12, 0.5) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(60, 40, 12, 0.5) 1px, transparent 1px),
+    linear-gradient(#d8b06d, #c89c55);
+  background-size: 22px 22px;
+}
+
+.mini-stone {
+  position: absolute;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.4);
+}
+
+.mini-stone-b {
+  background: radial-gradient(circle at 35% 30%, #555, #0c0c0c);
+}
+
+.mini-stone-w {
+  background: radial-gradient(circle at 35% 30%, #fff, #d9d4c3);
+}
+
+.mini-2048 {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  padding: 10px 28px;
+  background: #243024;
+  align-items: stretch;
+}
+
+.mini-2048 span {
+  display: grid;
+  place-items: center;
+  background: #ece2cc;
+  color: #5a503e;
+  border-radius: 5px;
+  font-weight: 800;
+  font-size: 0.95rem;
+}
+
+.mini-2048 .v4 {
+  background: #e8d4ac;
+}
+
+.mini-2048 .v8 {
+  background: #e3a35f;
+  color: #fff;
+}
+
+.mini-2048 .v16 {
+  background: #d97f4e;
+  color: #fff;
+}
+
+.mini-snake {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    #0d120d;
+  background-size: 18px 18px;
+}
+
+.mini-seg {
+  position: absolute;
+  width: 15px;
+  height: 15px;
+  background: var(--good);
+  border-radius: 4px;
+  box-shadow: 0 0 8px rgba(143, 174, 110, 0.5);
+}
+
+.mini-head {
+  background: #b5d489;
+}
+
+.mini-food {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  background: var(--bad);
+  border-radius: 50%;
+  box-shadow: 0 0 8px rgba(217, 106, 90, 0.7);
+}
+
+.home-foot {
+  text-align: center;
+  margin-top: 28px;
 }
 
 /* ---------- match ---------- */
@@ -219,15 +433,16 @@ button {
 .match-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding-bottom: 14px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 16px;
 }
 
 .match-title {
+  font-family: var(--display);
   font-weight: 650;
-  font-size: 1.1rem;
+  font-size: 1.2rem;
 }
 
 .spacer {
@@ -250,6 +465,19 @@ button {
   font-size: 0.85rem;
 }
 
+.gear {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  padding: 3px 9px;
+}
+
+.gear:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .match-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;
@@ -267,7 +495,7 @@ button {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px;
-  min-height: 420px;
+  min-height: 460px;
   display: flex;
   align-items: stretch;
   justify-content: center;
@@ -277,7 +505,7 @@ button {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-height: 420px;
+  min-height: 460px;
 }
 
 .status {
@@ -303,10 +531,10 @@ button {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 10px 12px;
-  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 0.8rem;
   line-height: 1.55;
-  max-height: 420px;
+  max-height: 460px;
 }
 
 .log-line {
@@ -340,12 +568,78 @@ button {
   padding: 8px 12px;
 }
 
-/* ---------- tournament lab ---------- */
+/* ---------- settings drawer ---------- */
 
-.home-foot {
-  text-align: center;
-  margin-top: 26px;
+.drawer {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 7, 5, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 30;
 }
+
+.drawer[hidden] {
+  display: none;
+}
+
+.drawer-panel {
+  width: min(420px, calc(100vw - 40px));
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+}
+
+.drawer-panel h3 {
+  margin: 0 0 14px;
+  font-family: var(--display);
+  font-weight: 650;
+}
+
+.drawer-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.opt-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.opt-row span {
+  width: 96px;
+  color: var(--text-dim);
+  font-size: 0.88rem;
+}
+
+.opt-row input {
+  flex: 1;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.opt-row input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ---------- tournament lab ---------- */
 
 .tourney {
   max-width: 760px;
@@ -355,6 +649,7 @@ button {
 
 .tourney h2 {
   margin: 14px 0 4px;
+  font-family: var(--display);
 }
 
 .tourney-form {
@@ -376,14 +671,14 @@ button {
 }
 
 .tourney-form textarea {
-  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 0.85rem;
   resize: vertical;
 }
 
 .bots-help {
   font-size: 0.78rem;
-  margin: -2px 0 6px 100px;
+  margin: -2px 0 6px 106px;
 }
 
 .tourney-form .primary {
@@ -396,6 +691,7 @@ button {
   font-size: 0.9rem;
   min-height: 1.4em;
   margin-bottom: 12px;
+  font-family: var(--mono);
 }
 
 .t-table {
@@ -425,7 +721,7 @@ button {
 }
 
 .t-spec {
-  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 0.82rem;
 }
 
@@ -442,7 +738,7 @@ button {
 
 .t-grid tbody th {
   text-align: left;
-  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-weight: 500;
   font-size: 0.75rem;
   color: var(--text-dim);
@@ -452,7 +748,7 @@ button {
   color: var(--text-dim);
 }
 
-/* ---------- generic frontend ---------- */
+/* ---------- generic frontend (fallback only) ---------- */
 
 .generic {
   display: flex;
@@ -464,7 +760,7 @@ button {
 
 .generic-view {
   margin: 0;
-  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 0.95rem;
   line-height: 1.45;
   white-space: pre;
