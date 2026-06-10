@@ -37,7 +37,9 @@ use std::fmt::{self, Write as _};
 use std::hash::Hasher;
 use std::marker::PhantomData;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use game_core::{Agent, Eval, Game, SearchSpec, Turn};
 

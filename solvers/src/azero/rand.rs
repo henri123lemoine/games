@@ -2,6 +2,7 @@
 
 use game_core::Rng;
 
+#[cfg_attr(not(feature = "parallel"), allow(dead_code))]
 pub(crate) fn splitmix64(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -9,6 +10,7 @@ pub(crate) fn splitmix64(mut x: u64) -> u64 {
     x ^ (x >> 31)
 }
 
+#[cfg_attr(not(feature = "parallel"), allow(dead_code))]
 pub(crate) fn mix(a: u64, b: u64) -> u64 {
     splitmix64(a ^ b.wrapping_mul(0x9E37_79B9_7F4A_7C15))
 }

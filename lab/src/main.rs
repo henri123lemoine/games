@@ -9,15 +9,11 @@
 //! e.g. `lab play chess depth=6 seat=1`, `lab play liars-dice players=3
 //! dice=2`, `lab compare connect4 a=alphabeta:depth=7 b=alphabeta:depth=3`.
 
-mod compare;
-mod registry;
-mod runner;
-
 use std::collections::HashMap;
 use std::io::{self, Write};
 
-use compare::{CompareArgs, TourneyArgs, split_specs};
-use registry::{CompareEntry, Opts, compare_entries, entries};
+use lab::compare::{CompareArgs, TourneyArgs, split_specs};
+use lab::registry::{CompareEntry, Opts, compare_entries, entries};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -156,8 +152,11 @@ fn play(game_id: &str, kvs: &[String]) {
     };
 
     loop {
-        for line in m.advance() {
-            println!("{line}");
+        for e in m.advance() {
+            println!("{}", e.text);
+            if let Some(d) = e.detail {
+                println!("{d}");
+            }
         }
         if m.is_over() {
             println!("\n=== {} ===", m.result_text());
@@ -187,9 +186,10 @@ fn play(game_id: &str, kvs: &[String]) {
                 continue;
             }
             match m.apply_human(&line) {
-                Ok(narration) => {
-                    for n in narration {
-                        println!("{n}");
+                Ok(e) => {
+                    println!("{}", e.text);
+                    if let Some(d) = e.detail {
+                        println!("{d}");
                     }
                     break;
                 }

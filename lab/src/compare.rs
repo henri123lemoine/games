@@ -7,8 +7,9 @@
 
 use std::collections::HashMap;
 
-use game_core::stats::{BinomialSprt, Sprt, Verdict, elo_estimate};
+use game_core::stats::{BinomialSprt, Sprt, Verdict, elo_estimate, fit_elo};
 use game_core::{Agent, Game, Rng, Turn, play_n};
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 use crate::registry::Opts;
@@ -156,7 +157,25 @@ fn wdl(utility: f64) -> (u64, u64, u64) {
     }
 }
 
-/// `pair_count` seat-swapped pairs in parallel; W-D-L from A's perspective.
+/// One seat-swapped pair at pair seed `s`; W-D-L from A's perspective.
+pub fn play_one_pair<G: Game>(
+    game: &G,
+    a: &BotBuilder<G>,
+    b: &BotBuilder<G>,
+    open_plies: u64,
+    s: u64,
+) -> (u64, u64, u64) {
+    let pa = a(s ^ 0xA11CE);
+    let pb = b(s ^ 0xB0B);
+    let u1 = play_scored(game, &*pa, &*pb, open_plies, s);
+    let u2 = -play_scored(game, &*pb, &*pa, open_plies, s);
+    let (w1, d1, l1) = wdl(u1);
+    let (w2, d2, l2) = wdl(u2);
+    (w1 + w2, d1 + d2, l1 + l2)
+}
+
+/// `pairs` seat-swapped pairs (in parallel when the `parallel` feature is on);
+/// W-D-L from A's perspective.
 fn play_pairs<G: Game + Sync>(
     game: &G,
     a: &BotBuilder<G>,
@@ -165,19 +184,86 @@ fn play_pairs<G: Game + Sync>(
     seed: u64,
     pairs: std::ops::Range<u64>,
 ) -> (u64, u64, u64) {
-    pairs
-        .into_par_iter()
-        .map(|k| {
-            let s = mix(seed, k);
-            let pa = a(s ^ 0xA11CE);
-            let pb = b(s ^ 0xB0B);
-            let u1 = play_scored(game, &*pa, &*pb, open_plies, s);
-            let u2 = -play_scored(game, &*pb, &*pa, open_plies, s);
-            let (w1, d1, l1) = wdl(u1);
-            let (w2, d2, l2) = wdl(u2);
-            (w1 + w2, d1 + d2, l1 + l2)
+    let one = |k: u64| play_one_pair(game, a, b, open_plies, mix(seed, k));
+    let sum = |x: (u64, u64, u64), y: (u64, u64, u64)| (x.0 + y.0, x.1 + y.1, x.2 + y.2);
+    #[cfg(feature = "parallel")]
+    return pairs.into_par_iter().map(one).reduce(|| (0, 0, 0), sum);
+    #[cfg(not(feature = "parallel"))]
+    pairs.map(one).fold((0, 0, 0), sum)
+}
+
+/// One N-player field game: hero (A) rotated to seat `g % n` against a field
+/// of B; `true` when the hero wins. Seeds derive from `mix(seed, g)`.
+pub fn play_one_field_game<G: Game>(
+    game: &G,
+    a: &BotBuilder<G>,
+    b: &BotBuilder<G>,
+    g: u64,
+    seed: u64,
+) -> bool {
+    let s = mix(seed, g);
+    let n = game.num_players();
+    let hero_seat = (g as usize) % n;
+    let hero = a(s ^ 0xA11CE);
+    let field: Vec<BoxedAgent<G>> = (0..n - 1)
+        .map(|i| b(s ^ 0xB0B ^ (i as u64) << 17))
+        .collect();
+    let mut fi = 0;
+    let agents: Vec<&dyn Agent<G>> = (0..n)
+        .map(|p| {
+            if p == hero_seat {
+                &*hero
+            } else {
+                fi += 1;
+                &*field[fi - 1]
+            }
         })
-        .reduce(|| (0, 0, 0), |x, y| (x.0 + y.0, x.1 + y.1, x.2 + y.2))
+        .collect();
+    play_n(game, &agents, &mut Rng::new(s)) == hero_seat
+}
+
+/// Non-printing pair runner for external drivers (the web engine): parses the
+/// two specs and plays the seat-swapped pairs in `pairs`.
+#[allow(clippy::too_many_arguments)]
+pub fn run_pairs<G: Game + Sync>(
+    game: &G,
+    opts: &Opts,
+    a: &str,
+    b: &str,
+    default_open: u64,
+    parse: BotParser<G>,
+    seed: u64,
+    pairs: std::ops::Range<u64>,
+) -> Result<(u64, u64, u64), String> {
+    let a = parse(&parse_spec(a)?, opts)?;
+    let b = parse(&parse_spec(b)?, opts)?;
+    let open = opts.get("open", default_open);
+    Ok(play_pairs(game, &a, &b, open, seed, pairs))
+}
+
+/// Non-printing field runner: hero A rotated through seats against a field of
+/// B; returns (hero wins, hero losses) over the games in `games`.
+pub fn run_field<G: Game + Sync>(
+    game: &G,
+    opts: &Opts,
+    a: &str,
+    b: &str,
+    parse: BotParser<G>,
+    seed: u64,
+    games: std::ops::Range<u64>,
+) -> Result<(u64, u64), String> {
+    let a = parse(&parse_spec(a)?, opts)?;
+    let b = parse(&parse_spec(b)?, opts)?;
+    let mut wins = 0u64;
+    let mut losses = 0u64;
+    for g in games {
+        if play_one_field_game(game, &a, &b, g, seed) {
+            wins += 1;
+        } else {
+            losses += 1;
+        }
+    }
+    Ok((wins, losses))
 }
 
 /// Two-player compare: paired seat-swapped games into a GSPRT on
@@ -286,33 +372,18 @@ pub fn vs_field<G: Game + Sync>(
     let mut next = 0u64;
     while next < args.max_games {
         let hi = (next + batch).min(args.max_games);
-        let (wins, losses) = (next..hi)
-            .into_par_iter()
-            .map(|g| {
-                let s = mix(args.seed, g);
-                let hero_seat = (g as usize) % n;
-                let hero = a(s ^ 0xA11CE);
-                let field: Vec<BoxedAgent<G>> = (0..n - 1)
-                    .map(|i| b(s ^ 0xB0B ^ (i as u64) << 17))
-                    .collect();
-                let mut fi = 0;
-                let agents: Vec<&dyn Agent<G>> = (0..n)
-                    .map(|p| {
-                        if p == hero_seat {
-                            &*hero
-                        } else {
-                            fi += 1;
-                            &*field[fi - 1]
-                        }
-                    })
-                    .collect();
-                if play_n(game, &agents, &mut Rng::new(s)) == hero_seat {
-                    (1u64, 0u64)
-                } else {
-                    (0, 1)
-                }
-            })
-            .reduce(|| (0, 0), |x, y| (x.0 + y.0, x.1 + y.1));
+        let one = |g: u64| {
+            if play_one_field_game(game, &a, &b, g, args.seed) {
+                (1u64, 0u64)
+            } else {
+                (0, 1)
+            }
+        };
+        let sum = |x: (u64, u64), y: (u64, u64)| (x.0 + y.0, x.1 + y.1);
+        #[cfg(feature = "parallel")]
+        let (wins, losses) = (next..hi).into_par_iter().map(one).reduce(|| (0, 0), sum);
+        #[cfg(not(feature = "parallel"))]
+        let (wins, losses) = (next..hi).map(one).fold((0, 0), sum);
         next = hi;
         sprt.update(wins, losses);
         let (w, l) = sprt.counts();
@@ -421,37 +492,4 @@ pub fn round_robin<G: Game + Sync>(
         );
     }
     Ok(())
-}
-
-/// Bradley-Terry maximum-likelihood ratings (draws as half-wins, each pairing
-/// regularized with half a draw) converted to Elo and mean-anchored at 0.
-fn fit_elo(records: &[Vec<(u64, u64, u64)>]) -> Vec<f64> {
-    let n = records.len();
-    let points = |i: usize, j: usize| {
-        let (w, d, _) = records[i][j];
-        w as f64 + d as f64 / 2.0 + 0.25
-    };
-    let mut gamma = vec![1.0f64; n];
-    for _ in 0..500 {
-        let prev = gamma.clone();
-        for i in 0..n {
-            let wins: f64 = (0..n).filter(|&j| j != i).map(|j| points(i, j)).sum();
-            let denom: f64 = (0..n)
-                .filter(|&j| j != i)
-                .map(|j| {
-                    let games = points(i, j) + points(j, i);
-                    games / (prev[i] + prev[j])
-                })
-                .sum();
-            gamma[i] = wins / denom;
-        }
-        let log_mean = gamma.iter().map(|g| g.ln()).sum::<f64>() / n as f64;
-        let scale = log_mean.exp();
-        for g in &mut gamma {
-            *g /= scale;
-        }
-    }
-    let elos: Vec<f64> = gamma.iter().map(|g| 400.0 * g.log10()).collect();
-    let mean = elos.iter().sum::<f64>() / n as f64;
-    elos.into_iter().map(|e| e - mean).collect()
 }

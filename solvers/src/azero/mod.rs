@@ -20,8 +20,10 @@
 mod mlp;
 mod puct;
 mod rand;
+#[cfg(feature = "parallel")]
 mod train;
 
 pub use mlp::{Mlp, Sample, SgdMomentum};
 pub use puct::{PolicyValueEncoder, Puct, PuctAgent};
+#[cfg(feature = "parallel")]
 pub use train::{AzeroConfig, IterStats, SelfPlayTrainer};

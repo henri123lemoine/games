@@ -12,7 +12,8 @@ use solvers::{AlphaBeta, Rollout};
 use twentyone::game::{Action as T21Action, T21State, TwentyOne};
 
 use crate::compare::{
-    BotBuilder, BotSpec, BoxedAgent, CompareArgs, TourneyArgs, head_to_head, round_robin, vs_field,
+    BotBuilder, BotSpec, BoxedAgent, CompareArgs, TourneyArgs, head_to_head, round_robin,
+    run_field, run_pairs, vs_field,
 };
 use crate::runner::{AnyMatch, TypedMatch};
 
@@ -38,42 +39,55 @@ pub struct Entry {
     pub make: fn(&Opts) -> Result<Box<dyn AnyMatch>, String>,
 }
 
+/// Parses `seat=` — the human's seat index, or `watch` to make every seat a
+/// bot and spectate.
+fn parse_seat(o: &Opts, seats: usize) -> Result<usize, String> {
+    let s = o.str("seat", "0");
+    if s == "watch" {
+        return Ok(usize::MAX);
+    }
+    match s.parse::<usize>() {
+        Ok(i) if i < seats => Ok(i),
+        _ => Err(format!("seat must be 0..={} or 'watch'", seats - 1)),
+    }
+}
+
 pub fn entries() -> Vec<Entry> {
     vec![
         Entry {
             id: "chess",
             summary: "chess vs alpha-beta (perft-validated rules)",
-            opts_help: "depth=5  seat=0 (0=White)  bot=alphabeta|azero  net=data/azero/chess.bin  sims=256  seed=...",
+            opts_help: "depth=5  seat=0|1|watch (0=White)  bot=alphabeta|azero  net=data/azero/chess.bin  sims=256  seed=...",
             make: make_chess,
         },
         Entry {
             id: "liars-dice",
             summary: "N-player Liar's Dice vs determinized-rollout bots",
-            opts_help: "players=5 dice=5 faces=6 rollouts=1000 bot=rollout|belief|random seed=...",
+            opts_help: "players=5 dice=5 faces=6 rollouts=1000 bot=rollout|belief|random seat=0|..|watch seed=...",
             make: make_liars_dice,
         },
         Entry {
             id: "twentyone",
             summary: "Twenty-One vs the decomposed CFR+ solver (trains at startup)",
-            opts_help: "hearts=6 iters=50000 (training iters/subgame)  seed=...",
+            opts_help: "hearts=6 iters=50000 (training iters/subgame)  seat=0|1|watch  seed=...",
             make: make_twentyone,
         },
         Entry {
             id: "othello",
             summary: "Othello vs alpha-beta (weighted squares + mobility)",
-            opts_help: "depth=6  seat=0|1 (0=Black)  seed=...",
+            opts_help: "depth=6  seat=0|1|watch (0=Black)  seed=...",
             make: make_othello,
         },
         Entry {
             id: "connect4",
             summary: "Connect-4 vs alpha-beta",
-            opts_help: "depth=9  seat=0|1  seed=...",
+            opts_help: "depth=9  seat=0|1|watch  seed=...",
             make: make_connect4,
         },
         Entry {
             id: "go",
             summary: "Go (area scoring, komi 7.5) vs MCTS",
-            opts_help: "size=9  sims=6000  seat=0|1 (0=Black)  seed=...",
+            opts_help: "size=9  sims=6000  seat=0|1|watch (0=Black)  seed=...",
             make: make_go,
         },
         Entry {
@@ -130,7 +144,7 @@ fn make_snake(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
 
 fn make_othello(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
     let depth: u32 = o.get("depth", 6);
-    let seat: usize = o.get("seat", 0);
+    let seat = parse_seat(o, 2)?;
     let bot = || -> Box<dyn Agent<othello::Othello>> {
         Box::new(AlphaBeta::new(
             depth,
@@ -146,7 +160,7 @@ fn make_othello(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
 
 fn make_connect4(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
     let depth: u32 = o.get("depth", 9);
-    let seat: usize = o.get("seat", 0);
+    let seat = parse_seat(o, 2)?;
     let bot = || -> Box<dyn Agent<connect4::Connect4>> {
         Box::new(AlphaBeta::new(depth, connect4::Connect4Eval, NoSpec))
     };
@@ -165,7 +179,7 @@ fn make_connect4(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
 fn make_go(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
     let size: usize = o.get("size", 9);
     let sims: u32 = o.get("sims", 6000);
-    let seat: usize = o.get("seat", 0);
+    let seat = parse_seat(o, 2)?;
     let seed = o.get("seed", default_seed());
     let bots = (0..2)
         .map(|p| {
@@ -206,7 +220,8 @@ struct AzeroBot {
 }
 
 fn load_azero_net(path: &str) -> Result<std::sync::Arc<Mlp>, String> {
-    Mlp::load(std::path::Path::new(path))
+    let bytes = crate::artifacts::read(path)?;
+    Mlp::from_bytes(&bytes)
         .map(std::sync::Arc::new)
         .map_err(|e| format!("failed to load azero net '{path}': {e}"))
 }
@@ -219,10 +234,7 @@ impl Agent<chess::Chess> for AzeroBot {
 
 fn make_chess(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
     let depth: u32 = o.get("depth", 5);
-    let seat: usize = o.get("seat", 0);
-    if seat > 1 {
-        return Err("seat must be 0 or 1".into());
-    }
+    let seat = parse_seat(o, 2)?;
     let bot_kind = o.str("bot", "alphabeta");
     let bot = || -> Result<Box<dyn Agent<chess::Chess>>, String> {
         Ok(match bot_kind.as_str() {
@@ -260,15 +272,16 @@ fn make_liars_dice(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
             other => return Err(format!("unknown bot '{other}'")),
         })
     };
-    let mut bots: Vec<Option<Box<dyn Agent<LiarsDice>>>> = vec![None];
-    for p in 1..players as usize {
-        bots.push(Some(bot(p)?));
+    let seat = parse_seat(o, players as usize)?;
+    let mut bots: Vec<Option<Box<dyn Agent<LiarsDice>>>> = Vec::new();
+    for p in 0..players as usize {
+        bots.push(if p == seat { None } else { Some(bot(p)?) });
     }
-    Ok(TypedMatch::new(game, bots, 0, seed).boxed())
+    Ok(TypedMatch::new(game, bots, seat, seed).boxed())
 }
 
 /// Plays the solved strategy greedily via the solver's draw probability.
-struct SolverBot(twentyone::Solver);
+struct SolverBot(std::sync::Arc<twentyone::Solver>);
 
 impl Agent<TwentyOne> for SolverBot {
     fn act(&self, game: &TwentyOne, state: &T21State, player: usize, _r: f64) -> usize {
@@ -292,20 +305,39 @@ fn make_twentyone(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
     };
     eprintln!("training the Twenty-One solver ({iters} iters/subgame)...");
     solver.solve(iters);
+    let solver = std::sync::Arc::new(solver);
+    let seat = parse_seat(o, 2)?;
     let game = TwentyOne::new(hearts);
-    let bots: Vec<Option<Box<dyn Agent<TwentyOne>>>> =
-        vec![None, Some(Box::new(SolverBot(solver)))];
-    Ok(TypedMatch::new(game, bots, 0, o.get("seed", default_seed())).boxed())
+    let bots: Vec<Option<Box<dyn Agent<TwentyOne>>>> = (0..2)
+        .map(|p| {
+            if p == seat {
+                None
+            } else {
+                Some(Box::new(SolverBot(solver.clone())) as Box<dyn Agent<TwentyOne>>)
+            }
+        })
+        .collect();
+    Ok(TypedMatch::new(game, bots, seat, o.get("seed", default_seed())).boxed())
 }
 
 /// A game registered for bot-vs-bot evaluation: `compare` runs two specs
 /// against each other (paired GSPRT for 2-player configurations, hero-vs-field
 /// binomial SPRT otherwise); `tourney` runs a round-robin Elo table.
+/// Non-printing pair runner: `(opts, spec_a, spec_b, seed, pair_range)` →
+/// W-D-L from A's perspective. Used by external drivers (the web engine).
+pub type PairsFn =
+    fn(&Opts, &str, &str, u64, std::ops::Range<u64>) -> Result<(u64, u64, u64), String>;
+/// Field runner for N-player configurations: hero A vs a field of B →
+/// (hero wins, losses).
+pub type FieldFn = fn(&Opts, &str, &str, u64, std::ops::Range<u64>) -> Result<(u64, u64), String>;
+
 pub struct CompareEntry {
     pub id: &'static str,
     pub bots_help: &'static str,
     pub compare: fn(&CompareArgs) -> Result<(), String>,
     pub tourney: fn(&TourneyArgs) -> Result<(), String>,
+    pub pairs: PairsFn,
+    pub field: Option<FieldFn>,
 }
 
 pub fn compare_entries() -> Vec<CompareEntry> {
@@ -316,24 +348,34 @@ pub fn compare_entries() -> Vec<CompareEntry> {
                         azero[:net=data/azero/chess.bin,sims=256]",
             compare: |a| head_to_head(&chess::Chess, a, 6, chess_bot),
             tourney: |a| round_robin(&chess::Chess, a, 6, chess_bot),
+            pairs: |o, a, b, s, r| run_pairs(&chess::Chess, o, a, b, 6, chess_bot, s, r),
+            field: None,
         },
         CompareEntry {
             id: "othello",
             bots_help: "alphabeta[:depth=6] | mcts[:sims=2000]",
             compare: |a| head_to_head(&othello::Othello, a, 4, othello_bot),
             tourney: |a| round_robin(&othello::Othello, a, 4, othello_bot),
+            pairs: |o, a, b, s, r| run_pairs(&othello::Othello, o, a, b, 4, othello_bot, s, r),
+            field: None,
         },
         CompareEntry {
             id: "connect4",
             bots_help: "alphabeta[:depth=9] | mcts[:sims=2000]",
             compare: |a| head_to_head(&connect4::Connect4, a, 4, connect4_bot),
             tourney: |a| round_robin(&connect4::Connect4, a, 4, connect4_bot),
+            pairs: |o, a, b, s, r| run_pairs(&connect4::Connect4, o, a, b, 4, connect4_bot, s, r),
+            field: None,
         },
         CompareEntry {
             id: "go",
             bots_help: "mcts[:sims=2000] | mcts-eval[:sims=2000,depth=NxN] | mcts-spec[:sims=2000]",
             compare: |a| head_to_head(&go::Go::new(a.opts.get("size", 9)), a, 0, go_bot),
             tourney: |a| round_robin(&go::Go::new(a.opts.get("size", 9)), a, 0, go_bot),
+            pairs: |o, a, b, s, r| {
+                run_pairs(&go::Go::new(o.get("size", 9)), o, a, b, 0, go_bot, s, r)
+            },
+            field: None,
         },
         CompareEntry {
             id: "liars-dice",
@@ -348,6 +390,10 @@ pub fn compare_entries() -> Vec<CompareEntry> {
                 }
             },
             tourney: |a| round_robin(&liars_dice_game(&a.opts), a, 0, liars_dice_bot),
+            pairs: |o, a, b, s, r| run_pairs(&liars_dice_game(o), o, a, b, 0, liars_dice_bot, s, r),
+            field: Some(|o, a, b, s, r| {
+                run_field(&liars_dice_game(o), o, a, b, liars_dice_bot, s, r)
+            }),
         },
     ]
 }
@@ -469,10 +515,18 @@ fn liars_dice_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<LiarsDice>, St
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn default_seed() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .subsec_nanos() as u64
         | 1
+}
+
+/// Wasm hosts always pass `seed=` explicitly (replays stay shareable); this
+/// fallback only keeps seedless option maps from panicking.
+#[cfg(target_arch = "wasm32")]
+fn default_seed() -> u64 {
+    0x5EED_BA5E_D00D | 1
 }

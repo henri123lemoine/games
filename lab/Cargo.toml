@@ -4,14 +4,22 @@ version = "0.1.0"
 edition = "2024"
 description = "The lab's binding layer: a registry of games and bots, type-erased matches, and the generic terminal client"
 
+[lib]
+name = "lab"
+path = "src/lib.rs"
+
 [[bin]]
 name = "lab"
 path = "src/main.rs"
 
+[features]
+default = ["parallel"]
+parallel = ["dep:rayon", "solvers/parallel"]
+
 [dependencies]
 game-core = { workspace = true }
-rayon = { workspace = true }
-solvers = { path = "../solvers" }
+rayon = { workspace = true, optional = true }
+solvers = { path = "../solvers", default-features = false }
 chess = { path = "../games/chess" }
 liars-dice = { path = "../games/liars-dice" }
 twentyone = { path = "../games/twentyone" }

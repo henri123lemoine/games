@@ -37,6 +37,27 @@ pub trait GameUi: Game {
         None
     }
 
+    /// What `viewer` can see of `state`, as game-private JSON for rich (web)
+    /// clients. The schema is a contract between this game and its own
+    /// frontend; the shared layers never interpret it. Default: no structured
+    /// view (clients fall back to [`GameUi::render`]).
+    fn view_data(&self, _state: &Self::State, _viewer: usize) -> Option<String> {
+        None
+    }
+
+    /// Structured counterpart of [`GameUi::describe_transition`]: game-private
+    /// JSON describing a just-played transition for rich clients to animate
+    /// from. Default: nothing extra.
+    fn transition_data(
+        &self,
+        _before: &Self::State,
+        _action: Self::Action,
+        _after: &Self::State,
+        _viewer: usize,
+    ) -> Option<String> {
+        None
+    }
+
     /// One line announcing the result at a terminal state, from `viewer`'s seat.
     fn result_text(&self, state: &Self::State, viewer: usize) -> String {
         debug_assert!(self.is_terminal(state));

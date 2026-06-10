@@ -3,7 +3,7 @@
 # implemented against it.
 [workspace]
 resolver = "2"
-members = ["game-core", "solvers", "games/liars-dice", "games/twentyone", "games/chess", "games/othello", "games/go", "games/connect4", "games/g2048", "games/snake", "lab"]
+members = ["game-core", "solvers", "games/liars-dice", "games/twentyone", "games/chess", "games/othello", "games/go", "games/connect4", "games/g2048", "games/snake", "lab", "web/engine"]
 
 [workspace.package]
 edition = "2024"

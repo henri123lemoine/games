@@ -8,9 +8,14 @@ description = "Generic game-playing algorithms over game-core's traits: CFR vari
 name = "solvers"
 path = "src/lib.rs"
 
+[features]
+default = ["parallel"]
+parallel = ["dep:rayon"]
+
 [dependencies]
 game-core = { workspace = true }
-rayon = { workspace = true }
+rayon = { workspace = true, optional = true }
+web-time = "1"
 
 [dev-dependencies]
 chess = { path = "../games/chess" }

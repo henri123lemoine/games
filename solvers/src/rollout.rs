@@ -13,6 +13,7 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 
 use game_core::{Agent, Determinizer, Game, Rng, playout_from};
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 /// Monte-Carlo lookahead over any [`Game`] with a [`Determinizer`]. The base
@@ -66,25 +67,25 @@ impl<G: Game, A: Agent<G> + Sync, D: Determinizer<G>> Agent<G> for Rollout<G, A,
             .flat_map(|k| (0..n_chunks).map(move |c| (k, c)))
             .collect();
         let mut wins = vec![0u32; actions.len()];
-        for (k, w) in tasks
-            .par_iter()
-            .map(|&(k, c)| {
-                let seats: Vec<&dyn Agent<G>> = (0..n).map(|_| base as &dyn Agent<G>).collect();
-                let mut w = 0u32;
-                for j in (rollouts * c / n_chunks)..(rollouts * (c + 1) / n_chunks) {
-                    let mut rng =
-                        Rng::new(seed0 ^ (j as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-                    let mut sim = state.clone();
-                    det.determinize(game, &mut sim, player, &mut rng);
-                    game.apply(&mut sim, actions[k]);
-                    if playout_from(game, sim, &seats, &mut rng) == player {
-                        w += 1;
-                    }
+        let run = |&(k, c): &(usize, u32)| {
+            let seats: Vec<&dyn Agent<G>> = (0..n).map(|_| base as &dyn Agent<G>).collect();
+            let mut w = 0u32;
+            for j in (rollouts * c / n_chunks)..(rollouts * (c + 1) / n_chunks) {
+                let mut rng = Rng::new(seed0 ^ (j as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                let mut sim = state.clone();
+                det.determinize(game, &mut sim, player, &mut rng);
+                game.apply(&mut sim, actions[k]);
+                if playout_from(game, sim, &seats, &mut rng) == player {
+                    w += 1;
                 }
-                (k, w)
-            })
-            .collect::<Vec<_>>()
-        {
+            }
+            (k, w)
+        };
+        #[cfg(feature = "parallel")]
+        let results = tasks.par_iter().map(run).collect::<Vec<_>>();
+        #[cfg(not(feature = "parallel"))]
+        let results = tasks.iter().map(run).collect::<Vec<_>>();
+        for (k, w) in results {
             wins[k] += w;
         }
         let mut best = 0;

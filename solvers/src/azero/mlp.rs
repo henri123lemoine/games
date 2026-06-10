@@ -279,13 +279,8 @@ impl Mlp {
         (ce, mse)
     }
 
-    /// Writes a versioned binary checkpoint via a temp file + atomic rename.
-    pub fn save(&self, path: &Path) -> io::Result<()> {
-        if let Some(dir) = path.parent()
-            && !dir.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(dir)?;
-        }
+    /// The versioned checkpoint encoding behind [`Mlp::save`].
+    pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(24 + self.params.len() * 4);
         buf.extend_from_slice(MAGIC);
         buf.extend_from_slice(&VERSION.to_le_bytes());
@@ -295,23 +290,12 @@ impl Mlp {
         for w in &self.params {
             buf.extend_from_slice(&w.to_le_bytes());
         }
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("checkpoint");
-        let tmp = path.with_file_name(format!("{name}.tmp"));
-        std::fs::write(&tmp, &buf)?;
-        std::fs::rename(&tmp, path)
+        buf
     }
 
-    pub fn load(path: &Path) -> io::Result<Mlp> {
-        let data = std::fs::read(path)?;
-        let bad = |m: &str| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("{}: {m}", path.display()),
-            )
-        };
+    /// Parses a checkpoint produced by [`Mlp::to_bytes`] / [`Mlp::save`].
+    pub fn from_bytes(data: &[u8]) -> io::Result<Mlp> {
+        let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_string());
         if data.len() < 24 {
             return Err(bad("truncated header"));
         }
@@ -337,6 +321,33 @@ impl Mlp {
             hidden,
             policy,
             params,
+        })
+    }
+
+    /// Writes a versioned binary checkpoint via a temp file + atomic rename.
+    pub fn save(&self, path: &Path) -> io::Result<()> {
+        if let Some(dir) = path.parent()
+            && !dir.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(dir)?;
+        }
+        let buf = self.to_bytes();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("checkpoint");
+        let tmp = path.with_file_name(format!("{name}.tmp"));
+        std::fs::write(&tmp, &buf)?;
+        std::fs::rename(&tmp, path)
+    }
+
+    pub fn load(path: &Path) -> io::Result<Mlp> {
+        let data = std::fs::read(path)?;
+        Self::from_bytes(&data).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{}: {e}", path.display()),
+            )
         })
     }
 }

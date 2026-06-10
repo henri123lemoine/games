@@ -217,6 +217,40 @@ impl BinomialSprt {
     }
 }
 
+/// Bradley-Terry maximum-likelihood ratings from a round-robin W-D-L matrix
+/// (draws as half-wins, each pairing regularized with half a draw), converted
+/// to Elo and mean-anchored at 0. `records[i][j]` is i's record against j.
+pub fn fit_elo(records: &[Vec<(u64, u64, u64)>]) -> Vec<f64> {
+    let n = records.len();
+    let points = |i: usize, j: usize| {
+        let (w, d, _) = records[i][j];
+        w as f64 + d as f64 / 2.0 + 0.25
+    };
+    let mut gamma = vec![1.0f64; n];
+    for _ in 0..500 {
+        let prev = gamma.clone();
+        for i in 0..n {
+            let wins: f64 = (0..n).filter(|&j| j != i).map(|j| points(i, j)).sum();
+            let denom: f64 = (0..n)
+                .filter(|&j| j != i)
+                .map(|j| {
+                    let games = points(i, j) + points(j, i);
+                    games / (prev[i] + prev[j])
+                })
+                .sum();
+            gamma[i] = wins / denom;
+        }
+        let log_mean = gamma.iter().map(|g| g.ln()).sum::<f64>() / n as f64;
+        let scale = log_mean.exp();
+        for g in &mut gamma {
+            *g /= scale;
+        }
+    }
+    let elos: Vec<f64> = gamma.iter().map(|g| 400.0 * g.log10()).collect();
+    let mean = elos.iter().sum::<f64>() / n as f64;
+    elos.into_iter().map(|e| e - mean).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
