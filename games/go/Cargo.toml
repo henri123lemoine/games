@@ -1,0 +1,15 @@
+[package]
+name = "go"
+version = "0.1.0"
+edition = "2024"
+description = "go as a game-core Game"
+
+[lib]
+name = "go"
+path = "src/lib.rs"
+
+[dependencies]
+game-core = { workspace = true }
+
+[dev-dependencies]
+solvers = { path = "../../solvers" }

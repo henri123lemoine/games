@@ -1,0 +1,15 @@
+[package]
+name = "connect4"
+version = "0.1.0"
+edition = "2024"
+description = "connect4 as a game-core Game"
+
+[lib]
+name = "connect4"
+path = "src/lib.rs"
+
+[dependencies]
+game-core = { workspace = true }
+
+[dev-dependencies]
+solvers = { path = "../../solvers" }

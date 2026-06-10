@@ -1,0 +1,15 @@
+[package]
+name = "othello"
+version = "0.1.0"
+edition = "2024"
+description = "othello as a game-core Game"
+
+[lib]
+name = "othello"
+path = "src/lib.rs"
+
+[dependencies]
+game-core = { workspace = true }
+
+[dev-dependencies]
+solvers = { path = "../../solvers" }

@@ -12,8 +12,11 @@
 //! Game-*specific* algorithms (e.g. Twenty-One's round-decomposed solver) live
 //! with their game; this crate is only for algorithms that generalize.
 
+pub mod azero;
 mod cfr;
+pub mod mcts;
 mod mccfr;
+pub mod os_mccfr;
 mod rollout;
 pub mod search;
 

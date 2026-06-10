@@ -11,3 +11,6 @@ path = "src/lib.rs"
 [dependencies]
 game-core = { workspace = true }
 rayon = { workspace = true }
+
+[dev-dependencies]
+chess = { path = "../games/chess" }
