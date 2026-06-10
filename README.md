@@ -23,8 +23,10 @@ games/
   liars-dice/        N-player Liar's Dice + belief policy + determinization
   twentyone/         Twenty-One + its bespoke decomposed CFR+ solver
 lab/                 registry of games & bots, type-erased matches, and the
-                     one terminal client for every game (a web server slots
-                     in on the same two interfaces)
+                     one terminal client for every game
+web/                 the same lab compiled to WebAssembly: engine bindings +
+                     a browser arcade with per-game frontends and live bot
+                     tournaments, all client-side (see web/README.md)
 ```
 
 ## Play anything
@@ -42,6 +44,13 @@ cargo run --release -p lab -- play twentyone hearts=6 iters=100000
 
 One client drives every game: menus by number, or game-native input (`e2e4`,
 `open 2x4`, `d`/`s`). Hidden information is viewer-scoped throughout.
+
+Or in a browser — the whole lab compiles to wasm:
+
+```bash
+wasm-pack build web/engine --target web --out-dir pkg
+cd web/app && npm install && npm run dev
+```
 
 ## Develop
 
