@@ -1,0 +1,381 @@
+/* Arcade shell theme. Per-game frontends own everything inside .board and
+   bring their own visual identity; these tokens keep the page coherent. */
+
+:root {
+  --bg: #0d1117;
+  --bg-raised: #161b22;
+  --bg-inset: #010409;
+  --border: #2d333b;
+  --text: #e6edf3;
+  --text-dim: #8b949e;
+  --accent: #58a6ff;
+  --accent-2: #bc8cff;
+  --good: #3fb950;
+  --bad: #f85149;
+  --radius: 10px;
+  font-size: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 20px 60px;
+}
+
+.boot {
+  padding: 80px 0;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 4px 6px;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+.primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #04111f;
+  font-weight: 600;
+  border: none;
+  border-radius: var(--radius);
+  padding: 12px 26px;
+  transition: filter 0.15s;
+}
+
+.primary:hover {
+  filter: brightness(1.12);
+}
+
+.muted {
+  color: var(--text-dim);
+}
+
+/* ---------- home ---------- */
+
+.hero {
+  text-align: center;
+  padding: 30px 0 26px;
+}
+
+.hero h1 {
+  margin: 0 0 10px;
+  font-size: 2.3rem;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.hero p {
+  margin: 0 auto;
+  max-width: 560px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  text-align: left;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  transition:
+    transform 0.12s,
+    border-color 0.12s;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent);
+}
+
+.card-glyph {
+  font-size: 1.9rem;
+  line-height: 1;
+}
+
+.card-name {
+  font-weight: 650;
+  font-size: 1.06rem;
+}
+
+.card-summary {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+/* ---------- setup ---------- */
+
+.setup {
+  max-width: 460px;
+  margin: 0 auto;
+  padding-top: 14px;
+}
+
+.setup h2 {
+  margin: 14px 0 4px;
+}
+
+.mode-row {
+  display: flex;
+  gap: 8px;
+  margin: 18px 0;
+}
+
+.mode {
+  flex: 1;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+}
+
+.mode.selected {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.opts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.opt-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.opt-row span {
+  width: 90px;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+}
+
+.opt-row input {
+  flex: 1;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.opt-row input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ---------- match ---------- */
+
+.match-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.match-title {
+  font-weight: 650;
+  font-size: 1.1rem;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.speed-label {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+.speed {
+  margin-left: 6px;
+  background: var(--bg-inset);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.match-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 18px;
+}
+
+@media (max-width: 800px) {
+  .match-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.board {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  min-height: 420px;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+}
+
+.side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 420px;
+}
+
+.status {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-weight: 600;
+}
+
+.status-error {
+  color: var(--bad);
+}
+
+.status-result {
+  color: var(--good);
+}
+
+.log {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  max-height: 420px;
+}
+
+.log-line {
+  white-space: pre-wrap;
+}
+
+.log-detail {
+  color: var(--text-dim);
+}
+
+.free-input {
+  display: flex;
+  gap: 8px;
+}
+
+.free-input input {
+  flex: 1;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.free-input button {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+/* ---------- generic frontend ---------- */
+
+.generic {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  align-items: center;
+}
+
+.generic-view {
+  margin: 0;
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  white-space: pre;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.generic-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.action-btn {
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  transition: border-color 0.12s;
+}
+
+.action-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
