@@ -1,0 +1,15 @@
+[package]
+name = "snake"
+version = "0.1.0"
+edition = "2024"
+description = "snake as a game-core Game"
+
+[lib]
+name = "snake"
+path = "src/lib.rs"
+
+[dependencies]
+game-core = { workspace = true }
+
+[dev-dependencies]
+solvers = { path = "../../solvers" }

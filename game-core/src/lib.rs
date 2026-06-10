@@ -17,6 +17,7 @@
 //!   every game the same terminal client and, later, the same web service.
 
 mod arena;
+pub mod stats;
 mod ui;
 
 pub use arena::{Agent, Rng, play, play_n, playout_from, win_rate, winrate_vs_field};

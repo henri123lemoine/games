@@ -1,0 +1,15 @@
+[package]
+name = "g2048"
+version = "0.1.0"
+edition = "2024"
+description = "g2048 as a game-core Game"
+
+[lib]
+name = "g2048"
+path = "src/lib.rs"
+
+[dependencies]
+game-core = { workspace = true }
+
+[dev-dependencies]
+solvers = { path = "../../solvers" }
