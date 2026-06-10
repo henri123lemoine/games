@@ -87,8 +87,10 @@ sane default — never reach into a specific game.
 
 ## The path to the website
 
-`lab` already contains the two pieces a server needs, deliberately separated
-from the terminal:
+The full client-side web design (wasm engine, per-game frontends, tournaments
+in the browser) is specified in [WEB.md](WEB.md). The short version: `lab`
+already contains the two pieces any serving layer needs, deliberately
+separated from the terminal:
 
 1. **The registry** (`lab/src/registry.rs`): `game id + options + bot id →
    Box<dyn AnyMatch>` — the catalog of what can be played.

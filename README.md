@@ -4,7 +4,9 @@ Game-playing algorithms (CFR variants, alpha-beta search, determinized
 Monte-Carlo rollouts) written **once** against a shared `Game` trait, applied to
 many games — the OpenSpiel idea, scoped to a personal lab. Games contribute only
 their rules and knowledge (an evaluator, a determinizer, a UI surface); they
-never contain algorithm code. See [ARCHITECTURE.md](ARCHITECTURE.md).
+never contain algorithm code. See [ARCHITECTURE.md](ARCHITECTURE.md); the
+in-browser arcade (everything compiled to wasm, per-game frontends) is
+designed in [WEB.md](WEB.md).
 
 ```
 game-core/           foundations: Game trait, Agent, capability traits
