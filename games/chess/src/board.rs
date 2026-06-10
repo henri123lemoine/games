@@ -152,7 +152,7 @@ pub struct Board {
 
 pub const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-const KNIGHT_DELTAS: [(i8, i8); 8] = [
+pub(crate) const KNIGHT_DELTAS: [(i8, i8); 8] = [
     (1, 2),
     (2, 1),
     (2, -1),
@@ -162,7 +162,7 @@ const KNIGHT_DELTAS: [(i8, i8); 8] = [
     (-2, 1),
     (-1, 2),
 ];
-const KING_DELTAS: [(i8, i8); 8] = [
+pub(crate) const KING_DELTAS: [(i8, i8); 8] = [
     (1, 0),
     (1, 1),
     (0, 1),
@@ -172,8 +172,99 @@ const KING_DELTAS: [(i8, i8); 8] = [
     (0, -1),
     (1, -1),
 ];
-const ORTHO_DIRS: [(i8, i8); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
-const DIAG_DIRS: [(i8, i8); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
+
+/// Ray directions indexed N, S, E, W, NE, NW, SE, SW; the first four are the
+/// rook directions. `DIR_DELTAS` is the square-index step per direction and
+/// `RAY_LEN[sq][dir]` the number of on-board steps from `sq` to the edge.
+pub(crate) mod dir {
+    pub const N: usize = 0;
+    pub const S: usize = 1;
+    pub const E: usize = 2;
+    pub const W: usize = 3;
+    pub const NE: usize = 4;
+    pub const NW: usize = 5;
+    pub const SE: usize = 6;
+    pub const SW: usize = 7;
+}
+pub(crate) const DIR_DELTAS: [i8; 8] = [8, -8, 1, -1, 9, 7, -7, -9];
+const DIR_STEPS: [(i8, i8); 8] = [
+    (0, 1),
+    (0, -1),
+    (1, 0),
+    (-1, 0),
+    (1, 1),
+    (-1, 1),
+    (1, -1),
+    (-1, -1),
+];
+
+const fn leaper_attacks(deltas: [(i8, i8); 8]) -> [u64; 64] {
+    let mut table = [0u64; 64];
+    let mut sq = 0;
+    while sq < 64 {
+        let mut i = 0;
+        while i < 8 {
+            let f = (sq % 8) as i8 + deltas[i].0;
+            let r = (sq / 8) as i8 + deltas[i].1;
+            if f >= 0 && f < 8 && r >= 0 && r < 8 {
+                table[sq] |= 1u64 << (r * 8 + f);
+            }
+            i += 1;
+        }
+        sq += 1;
+    }
+    table
+}
+
+/// `[color][sq]`: squares from which a pawn of `color` attacks `sq`.
+const fn pawn_attacker_squares() -> [[u64; 64]; 2] {
+    let mut table = [[0u64; 64]; 2];
+    let mut sq = 0;
+    while sq < 64 {
+        let mut color = 0;
+        while color < 2 {
+            let dr: i8 = if color == 0 { -1 } else { 1 };
+            let mut k = 0;
+            while k < 2 {
+                let df: i8 = if k == 0 { -1 } else { 1 };
+                let f = (sq % 8) as i8 + df;
+                let r = (sq / 8) as i8 + dr;
+                if f >= 0 && f < 8 && r >= 0 && r < 8 {
+                    table[color][sq] |= 1u64 << (r * 8 + f);
+                }
+                k += 1;
+            }
+            color += 1;
+        }
+        sq += 1;
+    }
+    table
+}
+
+const fn ray_lengths() -> [[u8; 8]; 64] {
+    let mut table = [[0u8; 8]; 64];
+    let mut sq = 0;
+    while sq < 64 {
+        let mut d = 0;
+        while d < 8 {
+            let mut f = (sq % 8) as i8 + DIR_STEPS[d].0;
+            let mut r = (sq / 8) as i8 + DIR_STEPS[d].1;
+            while f >= 0 && f < 8 && r >= 0 && r < 8 {
+                table[sq][d] += 1;
+                f += DIR_STEPS[d].0;
+                r += DIR_STEPS[d].1;
+            }
+            d += 1;
+        }
+        sq += 1;
+    }
+    table
+}
+
+const KNIGHT_ATTACKS: [u64; 64] = leaper_attacks(KNIGHT_DELTAS);
+const KING_ATTACKS: [u64; 64] = leaper_attacks(KING_DELTAS);
+const PAWN_ATTACKERS: [[u64; 64]; 2] = pawn_attacker_squares();
+pub(crate) const RAY_LEN: [[u8; 8]; 64] = ray_lengths();
 
 fn castle_rights_lost(sq: u8) -> u8 {
     match sq {
@@ -390,49 +481,36 @@ impl Board {
         self.stm = color.flip();
     }
 
+    fn any_piece_on(&self, mut bb: u64, want: (Color, Piece)) -> bool {
+        while bb != 0 {
+            let s = bb.trailing_zeros() as usize;
+            bb &= bb - 1;
+            if self.squares[s] == Some(want) {
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn is_attacked(&self, sq: u8, by: Color) -> bool {
-        let f = (sq % 8) as i8;
-        let r = (sq / 8) as i8;
-
-        let pawn_dr = match by {
-            Color::White => -1,
-            Color::Black => 1,
-        };
-        for df in [-1, 1] {
-            if let Some(s) = square_at(f + df, r + pawn_dr)
-                && self.squares[s as usize] == Some((by, Piece::Pawn))
-            {
-                return true;
-            }
+        let sq = sq as usize;
+        if self.any_piece_on(PAWN_ATTACKERS[by.index()][sq], (by, Piece::Pawn))
+            || self.any_piece_on(KNIGHT_ATTACKS[sq], (by, Piece::Knight))
+            || self.any_piece_on(KING_ATTACKS[sq], (by, Piece::King))
+        {
+            return true;
         }
 
-        for (df, dr) in KNIGHT_DELTAS {
-            if let Some(s) = square_at(f + df, r + dr)
-                && self.squares[s as usize] == Some((by, Piece::Knight))
-            {
-                return true;
-            }
-        }
-
-        for (df, dr) in KING_DELTAS {
-            if let Some(s) = square_at(f + df, r + dr)
-                && self.squares[s as usize] == Some((by, Piece::King))
-            {
-                return true;
-            }
-        }
-
-        for (dirs, slider) in [(ORTHO_DIRS, Piece::Rook), (DIAG_DIRS, Piece::Bishop)] {
-            for (df, dr) in dirs {
-                let mut step = 1;
-                while let Some(s) = square_at(f + df * step, r + dr * step) {
-                    if let Some((c, p)) = self.squares[s as usize] {
-                        if c == by && (p == slider || p == Piece::Queen) {
-                            return true;
-                        }
-                        break;
+        for d in 0..8 {
+            let slider = if d < 4 { Piece::Rook } else { Piece::Bishop };
+            let mut s = sq as i32;
+            for _ in 0..RAY_LEN[sq][d] {
+                s += DIR_DELTAS[d] as i32;
+                if let Some((c, p)) = self.squares[s as usize] {
+                    if c == by && (p == slider || p == Piece::Queen) {
+                        return true;
                     }
-                    step += 1;
+                    break;
                 }
             }
         }

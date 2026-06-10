@@ -1,47 +1,117 @@
-//! Pseudo-legal move generation with copy-make legality filtering, plus perft.
+//! Pseudo-legal move generation with incremental legality filtering, plus
+//! perft. Legality of a pseudo-legal move is decided without applying it in
+//! the common cases: a non-king move made while not in check is illegal only
+//! if it uncovers a slider ray to the mover's king, and a king move only if
+//! its destination is already attacked. En-passant captures and moves made
+//! while in check fall back to copy-make probing.
 
 use crate::board::{
-    Board, CASTLE_BK, CASTLE_BQ, CASTLE_WK, CASTLE_WQ, Color, Move, Piece, square_at,
+    Board, CASTLE_BK, CASTLE_BQ, CASTLE_WK, CASTLE_WQ, Color, DIR_DELTAS, KING_DELTAS,
+    KNIGHT_DELTAS, Move, Piece, RAY_LEN, dir, square_at,
 };
 
-const KNIGHT_DELTAS: [(i8, i8); 8] = [
-    (1, 2),
-    (2, 1),
-    (2, -1),
-    (1, -2),
-    (-1, -2),
-    (-2, -1),
-    (-2, 1),
-    (-1, 2),
-];
-const KING_DELTAS: [(i8, i8); 8] = [
-    (1, 0),
-    (1, 1),
-    (0, 1),
-    (-1, 1),
-    (-1, 0),
-    (-1, -1),
-    (0, -1),
-    (1, -1),
-];
-const ORTHO_DIRS: [(i8, i8); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
-const DIAG_DIRS: [(i8, i8); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
+const ORTHO_RAYS: [usize; 4] = [dir::E, dir::W, dir::N, dir::S];
+const DIAG_RAYS: [usize; 4] = [dir::NE, dir::SE, dir::NW, dir::SW];
 const PROMO_PIECES: [Piece; 4] = [Piece::Queen, Piece::Rook, Piece::Bishop, Piece::Knight];
+
+#[derive(Clone, Copy)]
+struct Targets {
+    len: u8,
+    sq: [u8; 8],
+}
+
+const fn leaper_targets(deltas: [(i8, i8); 8]) -> [Targets; 64] {
+    let mut table = [Targets { len: 0, sq: [0; 8] }; 64];
+    let mut from = 0;
+    while from < 64 {
+        let mut i = 0;
+        while i < 8 {
+            let f = (from % 8) as i8 + deltas[i].0;
+            let r = (from / 8) as i8 + deltas[i].1;
+            if f >= 0 && f < 8 && r >= 0 && r < 8 {
+                let n = table[from].len as usize;
+                table[from].sq[n] = (r * 8 + f) as u8;
+                table[from].len += 1;
+            }
+            i += 1;
+        }
+        from += 1;
+    }
+    table
+}
+
+const KNIGHT_TARGETS: [Targets; 64] = leaper_targets(KNIGHT_DELTAS);
+const KING_TARGETS: [Targets; 64] = leaper_targets(KING_DELTAS);
 
 pub fn pseudo_moves(board: &Board) -> Vec<Move> {
     generate(board, false)
 }
 
 pub fn legal_moves(board: &Board) -> Vec<Move> {
-    let us = board.stm;
+    let in_check = board.in_check(board.stm);
     pseudo_moves(board)
         .into_iter()
-        .filter(|&m| {
-            let mut child = board.clone();
-            child.apply(m);
-            !child.is_attacked(child.kings[us.index()], child.stm)
-        })
+        .filter(|&m| is_legal(board, m, in_check))
         .collect()
+}
+
+fn is_legal(board: &Board, m: Move, in_check: bool) -> bool {
+    let us = board.stm;
+    let (_, piece) = board.squares[m.from as usize].expect("move from empty square");
+    let is_ep = piece == Piece::Pawn && board.ep == Some(m.to) && m.from % 8 != m.to % 8;
+    if in_check || is_ep {
+        let mut child = board.clone();
+        child.apply(m);
+        return !child.is_attacked(child.kings[us.index()], child.stm);
+    }
+    if piece == Piece::King {
+        return !board.is_attacked(m.to, us.flip());
+    }
+    !uncovers_king(board, m)
+}
+
+fn ray_dir_index(from: u8, to: u8) -> Option<usize> {
+    let df = (to % 8) as i8 - (from % 8) as i8;
+    let dr = (to / 8) as i8 - (from / 8) as i8;
+    if df != 0 && dr != 0 && df.abs() != dr.abs() {
+        return None;
+    }
+    Some(match (df.signum(), dr.signum()) {
+        (0, 1) => dir::N,
+        (0, -1) => dir::S,
+        (1, 0) => dir::E,
+        (-1, 0) => dir::W,
+        (1, 1) => dir::NE,
+        (-1, 1) => dir::NW,
+        (1, -1) => dir::SE,
+        _ => dir::SW,
+    })
+}
+
+/// Whether a non-king, non-en-passant move made while not in check exposes
+/// the mover's king to an enemy slider through the vacated from-square.
+fn uncovers_king(board: &Board, m: Move) -> bool {
+    let king = board.kings[board.stm.index()];
+    let Some(d) = ray_dir_index(king, m.from) else {
+        return false;
+    };
+    let them = board.stm.flip();
+    let slider = if d < 4 { Piece::Rook } else { Piece::Bishop };
+    let mut s = king as i32;
+    for _ in 0..RAY_LEN[king as usize][d] {
+        s += DIR_DELTAS[d] as i32;
+        let sq = s as u8;
+        if sq == m.from {
+            continue;
+        }
+        if sq == m.to {
+            return false;
+        }
+        if let Some((c, p)) = board.squares[s as usize] {
+            return c == them && (p == slider || p == Piece::Queen);
+        }
+    }
+    false
 }
 
 fn generate(board: &Board, captures_only: bool) -> Vec<Move> {
@@ -56,18 +126,32 @@ fn generate(board: &Board, captures_only: bool) -> Vec<Move> {
         }
         match piece {
             Piece::Pawn => gen_pawn(board, from, us, captures_only, &mut moves),
-            Piece::Knight => gen_leaper(board, from, us, &KNIGHT_DELTAS, captures_only, &mut moves),
+            Piece::Knight => gen_leaper(
+                board,
+                us,
+                &KNIGHT_TARGETS[from as usize],
+                from,
+                captures_only,
+                &mut moves,
+            ),
             Piece::King => {
-                gen_leaper(board, from, us, &KING_DELTAS, captures_only, &mut moves);
+                gen_leaper(
+                    board,
+                    us,
+                    &KING_TARGETS[from as usize],
+                    from,
+                    captures_only,
+                    &mut moves,
+                );
                 if !captures_only {
                     gen_castles(board, us, &mut moves);
                 }
             }
-            Piece::Bishop => gen_slider(board, from, us, &DIAG_DIRS, captures_only, &mut moves),
-            Piece::Rook => gen_slider(board, from, us, &ORTHO_DIRS, captures_only, &mut moves),
+            Piece::Bishop => gen_slider(board, from, us, &DIAG_RAYS, captures_only, &mut moves),
+            Piece::Rook => gen_slider(board, from, us, &ORTHO_RAYS, captures_only, &mut moves),
             Piece::Queen => {
-                gen_slider(board, from, us, &ORTHO_DIRS, captures_only, &mut moves);
-                gen_slider(board, from, us, &DIAG_DIRS, captures_only, &mut moves);
+                gen_slider(board, from, us, &ORTHO_RAYS, captures_only, &mut moves);
+                gen_slider(board, from, us, &DIAG_RAYS, captures_only, &mut moves);
             }
         }
     }
@@ -141,30 +225,26 @@ fn gen_pawn(board: &Board, from: u8, us: Color, captures_only: bool, moves: &mut
 
 fn gen_leaper(
     board: &Board,
-    from: u8,
     us: Color,
-    deltas: &[(i8, i8)],
+    targets: &Targets,
+    from: u8,
     captures_only: bool,
     moves: &mut Vec<Move>,
 ) {
-    let f = (from % 8) as i8;
-    let r = (from / 8) as i8;
-    for &(df, dr) in deltas {
-        if let Some(to) = square_at(f + df, r + dr) {
-            match board.squares[to as usize] {
-                Some((c, _)) if c == us => {}
-                Some(_) => moves.push(Move {
-                    from,
-                    to,
-                    promo: None,
-                }),
-                None if !captures_only => moves.push(Move {
-                    from,
-                    to,
-                    promo: None,
-                }),
-                None => {}
-            }
+    for &to in &targets.sq[..targets.len as usize] {
+        match board.squares[to as usize] {
+            Some((c, _)) if c == us => {}
+            Some(_) => moves.push(Move {
+                from,
+                to,
+                promo: None,
+            }),
+            None if !captures_only => moves.push(Move {
+                from,
+                to,
+                promo: None,
+            }),
+            None => {}
         }
     }
 }
@@ -173,16 +253,16 @@ fn gen_slider(
     board: &Board,
     from: u8,
     us: Color,
-    dirs: &[(i8, i8)],
+    rays: &[usize; 4],
     captures_only: bool,
     moves: &mut Vec<Move>,
 ) {
-    let f = (from % 8) as i8;
-    let r = (from / 8) as i8;
-    for &(df, dr) in dirs {
-        let mut step = 1;
-        while let Some(to) = square_at(f + df * step, r + dr * step) {
-            match board.squares[to as usize] {
+    for &d in rays {
+        let mut s = from as i32;
+        for _ in 0..RAY_LEN[from as usize][d] {
+            s += DIR_DELTAS[d] as i32;
+            let to = s as u8;
+            match board.squares[s as usize] {
                 Some((c, _)) => {
                     if c != us {
                         moves.push(Move {
@@ -203,7 +283,6 @@ fn gen_slider(
                     }
                 }
             }
-            step += 1;
         }
     }
 }
@@ -254,17 +333,17 @@ pub fn perft(board: &Board, depth: u32) -> u64 {
     if depth == 0 {
         return 1;
     }
-    let us = board.stm;
+    let in_check = board.in_check(board.stm);
     let mut nodes = 0;
     for m in pseudo_moves(board) {
-        let mut child = board.clone();
-        child.apply(m);
-        if child.is_attacked(child.kings[us.index()], child.stm) {
+        if !is_legal(board, m, in_check) {
             continue;
         }
         nodes += if depth == 1 {
             1
         } else {
+            let mut child = board.clone();
+            child.apply(m);
             perft(&child, depth - 1)
         };
     }
