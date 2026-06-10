@@ -13,6 +13,7 @@
 //! same-colored bishops).
 
 mod board;
+pub mod encode;
 mod movegen;
 mod search;
 mod ui;
