@@ -7,7 +7,7 @@ equilibrium-quality measurement. Same idea as OpenSpiel, scoped down.
 
 ## Layout
 
-- `core/` (`cfr-core`) — the `Game` trait and the generic algorithms:
+- `core/` (`game-core`) — the `Game` trait and the generic algorithms:
   - `Solver::solve` — CFR+ (vanilla: full-tree, both players + chance enumerated,
     explicit reach probabilities), which converges to a Nash equilibrium.
   - `Solver::exploitability` — **exact** best-response exploitability (NashConv)
@@ -50,7 +50,7 @@ trait Game {
 average strategy to the known value of −1/18:
 
 ```
-$ cargo test --release -p cfr-core --test kuhn      # passes
+$ cargo test --release -p game-core --test kuhn      # passes
 ```
 
 **Liar's Dice (1 die × 3 faces) — a true exploitability curve the reference

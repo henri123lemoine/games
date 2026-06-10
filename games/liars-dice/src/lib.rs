@@ -1,4 +1,4 @@
-//! Liar's Dice — N players, D dice, F faces — as a [`cfr_core::Game`].
+//! Liar's Dice — N players, D dice, F faces — as a [`game_core::Game`].
 //!
 //! Faithful to the companion project's non-standard rules: 1s are not wild; a
 //! raise is exactly +1 quantity (same face) or +1 face (same quantity, wrapping
@@ -15,10 +15,11 @@
 
 use std::hash::{Hash, Hasher};
 
-use cfr_core::{Game, Turn};
+use game_core::{Game, Turn};
 
 mod agents;
-pub use agents::{ProbConfig, ProbabilisticAgent, RandomAgent, RolloutAgent};
+mod ui;
+pub use agents::{BidConditioned, ProbConfig, ProbabilisticAgent, RandomAgent};
 
 pub const MAX_FACES: usize = 6;
 pub const MAX_PLAYERS: usize = 8;
@@ -156,7 +157,7 @@ impl LiarsDice {
         &self,
         s: &mut LdState,
         observer: usize,
-        rng: &mut cfr_core::Rng,
+        rng: &mut game_core::Rng,
         bidder_bias: f64,
         endorser_bias: f64,
     ) {

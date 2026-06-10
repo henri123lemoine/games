@@ -1,4 +1,6 @@
-use crate::{FastMap, Game, Turn};
+use game_core::{Game, Turn};
+
+use crate::FastMap;
 
 /// Index of the maximum element (first on ties).
 fn argmax(v: &[f64]) -> usize {
@@ -28,14 +30,14 @@ fn regret_match(regret: &[f64]) -> Vec<f64> {
 /// players enumerated, with explicit reach probabilities), which is exact and
 /// deterministic — appropriate for games small enough that their best response
 /// is enumerable. Monte-Carlo sampling is a later optimization for larger games.
-pub struct Solver<G: Game> {
+pub struct Cfr<G: Game> {
     game: G,
     regret: FastMap<u64, Vec<f64>>,
     strategy: FastMap<u64, Vec<f64>>,
     iterations: u64,
 }
 
-impl<G: Game> Solver<G> {
+impl<G: Game> Cfr<G> {
     pub fn new(game: G, _seed: u64) -> Self {
         Self {
             game,

@@ -1,0 +1,13 @@
+[package]
+name = "solvers"
+version = "0.1.0"
+edition = "2024"
+description = "Generic game-playing algorithms over game-core's traits: CFR variants, exact exploitability, alpha-beta search, determinized Monte-Carlo rollouts"
+
+[lib]
+name = "solvers"
+path = "src/lib.rs"
+
+[dependencies]
+game-core = { workspace = true }
+rayon = { workspace = true }

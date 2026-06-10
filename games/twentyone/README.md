@@ -25,7 +25,7 @@ everything it did is now a `cargo run` away.)
   sufficient statistics; the full 6-heart game optionally uses a value-band
   abstraction of the unseen set (~7× smaller, the bake-off champion).
   Exact best-response exploitability, parallel training, save/load.
-- `game` — the engine adapted to `cfr_core::Game` (deal and draws surface as
+- `game` — the engine adapted to `game_core::Game` (deal and draws surface as
   chance nodes), so Twenty-One plugs into the same arena as the other games.
 
 ## Results

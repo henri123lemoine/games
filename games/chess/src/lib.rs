@@ -1,4 +1,4 @@
-//! Chess as a [`cfr_core::Game`].
+//! Chess as a [`game_core::Game`].
 //!
 //! Perfect information, no chance nodes: `turn` is always a player decision
 //! and `infoset_key` equals the canonical position key. Move generation is
@@ -15,12 +15,13 @@
 mod board;
 mod movegen;
 mod search;
+mod ui;
 
 pub use board::{Board, Color, Move, Piece, START_FEN};
 pub use movegen::{legal_moves, perft, perft_divide};
-pub use search::{AlphaBetaAgent, evaluate};
+pub use search::{ChessSpec, MaterialEval, evaluate};
 
-use cfr_core::{Game, Turn};
+use game_core::{Game, Turn};
 
 /// White is player 0, Black is player 1.
 pub struct Chess;

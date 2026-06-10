@@ -1,0 +1,16 @@
+[package]
+name = "lab"
+version = "0.1.0"
+edition = "2024"
+description = "The lab's binding layer: a registry of games and bots, type-erased matches, and the generic terminal client"
+
+[[bin]]
+name = "lab"
+path = "src/main.rs"
+
+[dependencies]
+game-core = { workspace = true }
+solvers = { path = "../solvers" }
+chess = { path = "../games/chess" }
+liars-dice = { path = "../games/liars-dice" }
+twentyone = { path = "../games/twentyone" }

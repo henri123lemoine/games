@@ -2,12 +2,15 @@
 name = "liars-dice"
 version = "0.1.0"
 edition = "2024"
-description = "Liar's Dice (imperfect-information variant) as a cfr-core Game"
+description = "Liar's Dice (imperfect-information variant) as a game-core Game"
 
 [lib]
 name = "liars_dice"
 path = "src/lib.rs"
 
 [dependencies]
-cfr-core = { workspace = true }
+game-core = { workspace = true }
 rayon = { workspace = true }
+
+[dev-dependencies]
+solvers = { path = "../../solvers" }

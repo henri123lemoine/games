@@ -32,11 +32,6 @@ pub fn pseudo_moves(board: &Board) -> Vec<Move> {
     generate(board, false)
 }
 
-/// Captures, en passant, and promotions — the quiescence move set.
-pub fn pseudo_captures(board: &Board) -> Vec<Move> {
-    generate(board, true)
-}
-
 pub fn legal_moves(board: &Board) -> Vec<Move> {
     let us = board.stm;
     pseudo_moves(board)

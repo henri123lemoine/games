@@ -2,7 +2,8 @@
 //! game with a known Nash equilibrium where exploitability drives to zero. If the
 //! generic solver converges here, the algorithm is implemented correctly.
 
-use cfr_core::{Game, Solver, Turn};
+use game_core::{Game, Turn};
+use solvers::Cfr;
 
 /// Kuhn poker. Cards J=0, Q=1, K=2; ante 1; one betting round. State is the two
 /// dealt cards (filled by two chance steps) plus the public action history.
@@ -120,7 +121,7 @@ impl Game for Kuhn {
 
 #[test]
 fn kuhn_converges_to_nash() {
-    let mut solver = Solver::new(Kuhn, 1);
+    let mut solver = Cfr::new(Kuhn, 1);
     solver.solve(50_000);
     assert_eq!(solver.num_infosets(), 12, "Kuhn has 12 information sets");
 

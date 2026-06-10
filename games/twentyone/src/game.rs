@@ -1,4 +1,4 @@
-//! Twenty-One expressed as a [`cfr_core::Game`], adapting [`crate::env::Env`].
+//! Twenty-One expressed as a [`game_core::Game`], adapting [`crate::env::Env`].
 //!
 //! The engine's controllable-chance API (`deal_specific` / `draw_specific` /
 //! `stand`) lets us surface chance explicitly: between rounds a chance node deals
@@ -9,7 +9,7 @@
 //! the wrapper); solving the real game uses the specialized decomposed solver in [`crate::solver`].
 
 use crate::env::Env;
-use cfr_core::{Game, Turn};
+use game_core::{Game, Turn};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Action {
@@ -26,6 +26,13 @@ pub struct T21State {
     env: Env,
     /// True at the chance node that resolves a just-chosen `Draw`.
     drawing: bool,
+}
+
+impl T21State {
+    /// The wrapped engine state (read-only; for evals/UIs/specialized agents).
+    pub fn env(&self) -> &Env {
+        &self.env
+    }
 }
 
 /// Twenty-One with a configurable starting heart count (6 = the full game).
@@ -194,7 +201,7 @@ mod tests {
             let n = g.legal_actions(s).len();
             ((r * n as f64) as usize).min(n - 1)
         };
-        let wr = cfr_core::win_rate(&game, &rando, &rando, 400, 1);
+        let wr = game_core::win_rate(&game, &rando, &rando, 400, 1);
         assert!((0.3..0.7).contains(&wr), "random vs random ~0.5, got {wr}");
     }
 }

@@ -1,0 +1,9 @@
+[package]
+name = "game-core"
+version = "0.1.0"
+edition = "2024"
+description = "Game trait, capability traits, agents, and the match arena - the lab foundations"
+
+[lib]
+name = "game_core"
+path = "src/lib.rs"

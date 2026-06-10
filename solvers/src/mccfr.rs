@@ -10,7 +10,9 @@
 //! Regrets use the CFR+ floor (clipped at zero), which converges fast in
 //! practice. The stored average strategy is what you play.
 
-use crate::{FastMap, Game, Turn};
+use game_core::{Game, Turn};
+
+use crate::FastMap;
 
 fn regret_match(regret: &[f64]) -> Vec<f64> {
     let sum: f64 = regret.iter().map(|r| r.max(0.0)).sum();

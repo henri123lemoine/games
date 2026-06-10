@@ -2,11 +2,14 @@
 name = "chess"
 version = "0.1.0"
 edition = "2024"
-description = "Chess as a cfr-core Game, with perft-validated move generation and an alpha-beta agent"
+description = "Chess as a game-core Game, with perft-validated move generation and an alpha-beta agent"
 
 [lib]
 name = "chess"
 path = "src/lib.rs"
 
 [dependencies]
-cfr-core = { workspace = true }
+game-core = { workspace = true }
+
+[dev-dependencies]
+solvers = { path = "../../solvers" }

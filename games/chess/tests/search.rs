@@ -1,5 +1,6 @@
-use cfr_core::{Agent, Game, win_rate};
-use chess::{AlphaBetaAgent, Board, Chess};
+use chess::{Board, Chess, ChessSpec, MaterialEval};
+use game_core::{Agent, Game, win_rate};
+use solvers::AlphaBeta;
 
 fn random_agent() -> impl Agent<Chess> {
     |game: &Chess, state: &Board, _player: usize, r: f64| -> usize {
@@ -11,7 +12,7 @@ fn random_agent() -> impl Agent<Chess> {
 #[test]
 fn crushes_random() {
     let game = Chess;
-    let engine = AlphaBetaAgent::new(3);
+    let engine = AlphaBeta::new(3, MaterialEval, ChessSpec);
     let rate = win_rate(&game, &engine, &random_agent(), 30, 0xC0FFEE);
     assert!(rate >= 0.9, "win rate vs random was only {rate}");
 }
@@ -20,7 +21,7 @@ fn crushes_random() {
 fn plays_mate_in_one() {
     let game = Chess;
     let board = Board::from_fen("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1").expect("valid FEN");
-    let engine = AlphaBetaAgent::new(3);
+    let engine = AlphaBeta::new(3, MaterialEval, ChessSpec);
 
     let actions = game.legal_actions(&board);
     let chosen = actions[engine.act(&game, &board, 0, 0.0)];

@@ -2,14 +2,14 @@
 name = "twentyone"
 version = "0.1.0"
 edition = "2024"
-description = "Twenty-One: game engine, fast decomposed CFR+ solver, and cfr-core Game adapter"
+description = "Twenty-One: game engine, fast decomposed CFR+ solver, and game-core Game adapter"
 
 [lib]
 name = "twentyone"
 path = "src/lib.rs"
 
 [dependencies]
-cfr-core = { workspace = true }
+game-core = { workspace = true }
 rayon = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

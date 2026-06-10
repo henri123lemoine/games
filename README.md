@@ -1,25 +1,46 @@
 # Games lab
 
-Algorithms for playing games — CFR variants, belief agents, Monte-Carlo rollout
-search, alpha-beta — applied to multiple games through one shared `Game` trait.
+Game-playing algorithms (CFR variants, alpha-beta search, determinized
+Monte-Carlo rollouts) written **once** against a shared `Game` trait, applied to
+many games — the OpenSpiel idea, scoped to a personal lab. Games contribute only
+their rules and knowledge (an evaluator, a determinizer, a UI surface); they
+never contain algorithm code. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ```
-cfr-core/            the algorithms — a Game trait, CFR+/MCCFR, exact
-                     exploitability, a game-agnostic arena (see cfr-core/README)
+game-core/           foundations: Game trait, Agent, capability traits
+                     (Eval, Determinizer, SearchSpec, GameUi), match arena
+solvers/             the algorithms, generic over any game with the right
+                     capabilities: cfr, mccfr, exploitability, alpha-beta,
+                     determinized rollout
 games/
-  liars-dice/        N-player × D-dice × F-face Liar's Dice + strong belief and
-                     Monte-Carlo-rollout agents (see games/liars-dice/README)
-  chess/             chess: perft-validated move generation + alpha-beta agent
-  twentyone/         Twenty-One: engine + fast decomposed CFR+ solver + Game
-                     adapter (the repo's original project; see its README)
+  chess/             perft-validated rules + eval/search knowledge
+  liars-dice/        N-player Liar's Dice + belief policy + determinization
+  twentyone/         Twenty-One + its bespoke decomposed CFR+ solver
+lab/                 registry of games & bots, type-erased matches, and the
+                     one terminal client for every game (a web server slots
+                     in on the same two interfaces)
 ```
+
+## Play anything
 
 ```bash
-cargo test --release                                      # everything
-cargo run --release -p liars-dice --example play 5 5 6    # play Liar's Dice
-cargo run --release -p chess --example play               # play chess
-cargo run --release -p twentyone --example play           # play Twenty-One
+cargo run --release -p lab -- list
+cargo run --release -p lab -- play chess depth=6
+cargo run --release -p lab -- play liars-dice players=5 dice=5 rollouts=1000
+cargo run --release -p lab -- play twentyone hearts=6 iters=100000
 ```
 
-Each game's README has its rules, agents, and measured results; `cfr-core`'s has
-the algorithm details.
+One client drives every game: menus by number, or game-native input (`e2e4`,
+`open 2x4`, `d`/`s`). Hidden information is viewer-scoped throughout.
+
+## Develop
+
+```bash
+cargo test --release        # perft suite, Kuhn→Nash, rules invariants, search
+cargo clippy --release --all-targets
+```
+
+Research harnesses live as examples in each game crate (`liars-dice`:
+`evaluate`, `league`, `rollout_eval`, `ab`, `exploitability`; `twentyone`:
+`solve`). Results and per-game docs are in each game's README;
+`games/twentyone/BAKEOFF.md` records the Twenty-One technique shoot-out.

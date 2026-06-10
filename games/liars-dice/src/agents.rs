@@ -3,9 +3,7 @@
 //! distribution (each unknown die shows a given face with probability `1/faces`,
 //! since 1s are not wild), which scales to any number of players and dice.
 
-use std::cell::Cell;
-
-use cfr_core::{Agent, Game, Rng, playout_from};
+use game_core::{Agent, Determinizer, Game, Rng};
 
 use crate::{Action, LdState, LiarsDice};
 
@@ -228,136 +226,27 @@ impl Agent<LiarsDice> for ProbabilisticAgent {
     }
 }
 
-/// Monte-Carlo lookahead: at each decision, *determinize* (resample opponents'
-/// hidden dice consistent with my own hand and everyone's bids this round), play
-/// each candidate action forward to the end with the probabilistic policy on
-/// every seat, and choose the action with the highest estimated win probability.
-/// At the wide opening node it rollout-evaluates one sensible opening per face
-/// rather than the full bid grid. Candidates are evaluated in parallel.
-pub struct RolloutAgent {
-    pub rollouts: u32,
-    pub policy: ProbConfig,
-    /// Defer to the raw policy at nodes wider than this (a safety valve; bid
-    /// nodes have ≤4 actions and openings are reduced to one per face).
-    pub cand_cap: usize,
-    /// Determinization: chance the current bidder is credited with holding the
-    /// face they bid (when their resampled hand has none).
+/// Determinization knowledge for [`solvers`' rollout agent]: re-roll hidden
+/// hands uniformly, crediting bidders with plausibly holding the face they bid
+/// (see [`LiarsDice::resample_hidden`]). Defaults are the A/B winners: credit
+/// the current bidder only.
+pub struct BidConditioned {
     pub bidder_bias: f64,
-    /// Determinization: same credit for players who bid earlier this round.
     pub endorser_bias: f64,
-    /// Rollout-evaluate one opening per face instead of deferring to the policy.
-    pub search_openings: bool,
-    rng: Cell<u64>,
 }
 
-impl RolloutAgent {
-    /// Defaults are the winners of the `examples/ab` isolation study: openings
-    /// from the policy heuristic (rollout-picking between faces was noisier than
-    /// the heuristic), current-bidder credit only (crediting every raiser
-    /// over-inflates simulated counts), CRN paired rollouts.
-    pub fn new(rollouts: u32, policy: ProbConfig, seed: u64) -> Self {
+impl Default for BidConditioned {
+    fn default() -> Self {
         Self {
-            rollouts,
-            policy,
-            cand_cap: 8,
             bidder_bias: 0.6,
             endorser_bias: 0.0,
-            search_openings: false,
-            rng: Cell::new(seed | 1),
         }
-    }
-
-    /// Opening candidates: for each face, the policy-style opening quantity
-    /// (own count plus a fraction of the expected count among unknown dice).
-    fn opening_candidates(&self, game: &LiarsDice, s: &LdState, player: usize) -> Vec<usize> {
-        let total: u8 = s.dice_left().iter().sum();
-        let my_dice = s.dice_left()[player];
-        let expected = (total - my_dice) as f64 / game.faces as f64;
-        let mut out = Vec::new();
-        for f in 1..=game.faces {
-            let mine = s.my_count(player, f);
-            let q0 =
-                ((mine as f64 + expected * self.policy.open_frac).round() as u8).clamp(1, total);
-            let idx = (q0 as usize - 1) * game.faces as usize + (f as usize - 1);
-            if !out.contains(&idx) {
-                out.push(idx);
-            }
-        }
-        out
     }
 }
 
-impl Agent<LiarsDice> for RolloutAgent {
-    fn act(&self, game: &LiarsDice, state: &LdState, player: usize, r: f64) -> usize {
-        use rayon::prelude::*;
-
-        let actions = game.legal_actions(state);
-        let candidates: Vec<usize> = if state.current_bid().0 == 0 {
-            if self.search_openings {
-                self.opening_candidates(game, state, player)
-            } else {
-                return ProbabilisticAgent::new(self.policy).act(game, state, player, r);
-            }
-        } else {
-            (0..actions.len()).collect()
-        };
-        if candidates.len() > self.cand_cap {
-            return ProbabilisticAgent::new(self.policy).act(game, state, player, r);
-        }
-        if candidates.len() == 1 {
-            return candidates[0];
-        }
-        let seed0 = self.rng.get() ^ r.to_bits();
-        self.rng.set(
-            self.rng
-                .get()
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1),
-        );
-        let (policy, rollouts) = (self.policy, self.rollouts);
-        let (b_bias, e_bias) = (self.bidder_bias, self.endorser_bias);
-        let n = game.num_players();
-        // Fan out (candidate × rollout-chunk) tasks so a handful of candidates
-        // still fills every core. Common random numbers: rollout j re-seeds from
-        // (seed0, j) only, so every candidate faces the SAME determinized world j
-        // and comparisons between candidates are paired — far lower decision
-        // noise than independent streams per candidate.
-        let n_chunks = 8u32;
-        let tasks: Vec<(usize, u32)> = (0..candidates.len())
-            .flat_map(|k| (0..n_chunks).map(move |c| (k, c)))
-            .collect();
-        let mut wins = vec![0u32; candidates.len()];
-        for (k, w) in tasks
-            .par_iter()
-            .map(|&(k, c)| {
-                let base = ProbabilisticAgent::new(policy);
-                let seats: Vec<&dyn Agent<LiarsDice>> =
-                    (0..n).map(|_| &base as &dyn Agent<LiarsDice>).collect();
-                let action = actions[candidates[k]];
-                let mut w = 0u32;
-                for j in (rollouts * c / n_chunks)..(rollouts * (c + 1) / n_chunks) {
-                    let mut rng =
-                        Rng::new(seed0 ^ (j as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-                    let mut sim = state.clone();
-                    game.resample_hidden(&mut sim, player, &mut rng, b_bias, e_bias);
-                    game.apply(&mut sim, action);
-                    if playout_from(game, sim, &seats, &mut rng) == player {
-                        w += 1;
-                    }
-                }
-                (k, w)
-            })
-            .collect::<Vec<_>>()
-        {
-            wins[k] += w;
-        }
-        let mut best = 0;
-        for k in 1..wins.len() {
-            if wins[k] > wins[best] {
-                best = k;
-            }
-        }
-        candidates[best]
+impl Determinizer<LiarsDice> for BidConditioned {
+    fn determinize(&self, game: &LiarsDice, state: &mut LdState, observer: usize, rng: &mut Rng) {
+        game.resample_hidden(state, observer, rng, self.bidder_bias, self.endorser_bias);
     }
 }
 

@@ -3,8 +3,9 @@
 //!
 //!     cargo run --release -p liars-dice --example gauntlet [players] [dice] [faces] [iters]
 
-use cfr_core::{Agent, Mccfr, winrate_vs_field};
+use game_core::{Agent, winrate_vs_field};
 use liars_dice::{LdState, LiarsDice, ProbabilisticAgent, RandomAgent};
+use solvers::Mccfr;
 
 fn arg<T: std::str::FromStr>(i: usize, d: T) -> T {
     std::env::args()

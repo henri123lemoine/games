@@ -1,6 +1,6 @@
 # Liar's Dice
 
-The companion project's non-standard Liar's Dice, as a `cfr_core::Game` and a set
+The companion project's non-standard Liar's Dice, as a `game_core::Game` and a set
 of strong agents — generalised to **N players × D dice × F faces** so it scales
 from 2-player toy games up to the 5-player, 5-dice, 6-face target.
 

@@ -3,8 +3,9 @@
 //!
 //!     cargo run --release -p liars-dice --example ab [players] [dice] [faces] [rollouts] [games]
 
-use cfr_core::winrate_vs_field;
-use liars_dice::{LiarsDice, ProbConfig, ProbabilisticAgent, RolloutAgent};
+use game_core::winrate_vs_field;
+use liars_dice::{BidConditioned, LiarsDice, ProbabilisticAgent};
+use solvers::Rollout;
 
 fn arg<T: std::str::FromStr>(i: usize, d: T) -> T {
     std::env::args()
@@ -25,18 +26,18 @@ fn main() {
     let fair = 1.0 / players as f64;
     println!("{players}p{dice}d{faces}f, {rollouts} rollouts, {games} games/arm (fair {fair:.3})");
 
-    let arms: [(&str, bool, f64, f64); 5] = [
-        ("open=policy bias=(0.6,0.0)", false, 0.6, 0.0),
-        ("open=policy bias=(0.6,0.35)", false, 0.6, 0.35),
-        ("open=search bias=(0.6,0.0)", true, 0.6, 0.0),
-        ("open=search bias=(0.6,0.35)", true, 0.6, 0.35),
-        ("open=policy bias=(0.8,0.2)", false, 0.8, 0.2),
+    let arms: [(&str, f64, f64); 4] = [
+        ("bias=(0.6,0.0)  [default]", 0.6, 0.0),
+        ("bias=(0.6,0.35)", 0.6, 0.35),
+        ("bias=(0.8,0.2)", 0.8, 0.2),
+        ("bias=(0.0,0.0)  [uniform]", 0.0, 0.0),
     ];
-    for (name, open, bb, eb) in arms {
-        let mut hero = RolloutAgent::new(rollouts, ProbConfig::default(), 0x5151);
-        hero.search_openings = open;
-        hero.bidder_bias = bb;
-        hero.endorser_bias = eb;
+    for (name, bb, eb) in arms {
+        let det = BidConditioned {
+            bidder_bias: bb,
+            endorser_bias: eb,
+        };
+        let hero = Rollout::new(rollouts, ProbabilisticAgent::default_agent(), det, 0x5151);
         let wr = winrate_vs_field(&game, &hero, &field, games, 0x2024);
         println!("  {name:<32} {wr:.3}");
     }

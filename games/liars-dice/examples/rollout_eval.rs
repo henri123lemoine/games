@@ -3,8 +3,9 @@
 //!
 //!     cargo run --release -p liars-dice --example rollout_eval [players] [dice] [faces] [rollouts] [games]
 
-use cfr_core::winrate_vs_field;
-use liars_dice::{LiarsDice, ProbConfig, ProbabilisticAgent, RandomAgent, RolloutAgent};
+use game_core::winrate_vs_field;
+use liars_dice::{BidConditioned, LiarsDice, ProbabilisticAgent, RandomAgent};
+use solvers::Rollout;
 
 fn arg<T: std::str::FromStr>(i: usize, d: T) -> T {
     std::env::args()
@@ -22,7 +23,12 @@ fn main() {
 
     let game = LiarsDice::new(players, dice, faces);
     let fair = 1.0 / players as f64;
-    let hero = RolloutAgent::new(rollouts, ProbConfig::default(), 0x5151);
+    let hero = Rollout::new(
+        rollouts,
+        ProbabilisticAgent::default_agent(),
+        BidConditioned::default(),
+        0x5151,
+    );
     let prob = ProbabilisticAgent::default_agent();
     let rand = RandomAgent;
 

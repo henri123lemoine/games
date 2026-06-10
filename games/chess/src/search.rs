@@ -1,13 +1,10 @@
-//! Fixed-depth iterative-deepening negamax with alpha-beta, quiescence on
-//! captures, MVV-LVA ordering, and a material + piece-square evaluation.
+//! Chess search *knowledge*: a material + piece-square evaluation and a
+//! search spec (captures/promotions are noisy; MVV-LVA ordering). The search
+//! algorithm itself is the generic `solvers::AlphaBeta`.
 
 use crate::Chess;
 use crate::board::{Board, Color, Move, Piece};
-use crate::movegen::{legal_moves, pseudo_captures, pseudo_moves};
-use cfr_core::Agent;
-
-const INF: i32 = 1_000_000;
-const MATE: i32 = 100_000;
+use game_core::{Eval, SearchSpec};
 
 #[rustfmt::skip]
 const PAWN_PST: [i32; 64] = [
@@ -179,132 +176,35 @@ fn move_order_score(board: &Board, m: &Move) -> i32 {
     s
 }
 
-fn order_moves(board: &Board, moves: &mut [Move]) {
-    moves.sort_by_key(|m| -move_order_score(board, m));
-}
+/// [`Eval`] for chess: material + piece-square tables (+ endgame king
+/// tables and a bare-king mop-up term), in centipawns.
+pub struct MaterialEval;
 
-fn quiesce(board: &Board, mut alpha: i32, beta: i32) -> i32 {
-    let stand = evaluate(board);
-    if stand >= beta {
-        return stand;
-    }
-    if stand > alpha {
-        alpha = stand;
-    }
-
-    let us = board.stm;
-    let mut captures = pseudo_captures(board);
-    order_moves(board, &mut captures);
-
-    let mut best = stand;
-    for m in captures {
-        let mut child = board.clone();
-        child.apply(m);
-        if child.is_attacked(child.kings[us.index()], child.stm) {
-            continue;
+impl Eval<Chess> for MaterialEval {
+    fn eval(&self, _game: &Chess, state: &Board, player: usize) -> f64 {
+        let stm_score = evaluate(state) as f64;
+        if state.stm.index() == player {
+            stm_score
+        } else {
+            -stm_score
         }
-        let score = -quiesce(&child, -beta, -alpha);
-        if score > best {
-            best = score;
-        }
-        if score > alpha {
-            alpha = score;
-        }
-        if alpha >= beta {
-            break;
-        }
-    }
-    best
-}
-
-fn negamax(board: &Board, depth: u32, mut alpha: i32, beta: i32, ply: i32) -> i32 {
-    if board.halfmove >= 100 || board.insufficient_material() {
-        return 0;
-    }
-    if depth == 0 {
-        return quiesce(board, alpha, beta);
-    }
-
-    let us = board.stm;
-    let mut moves = pseudo_moves(board);
-    order_moves(board, &mut moves);
-
-    let mut best = -INF;
-    let mut any_legal = false;
-    for m in moves {
-        let mut child = board.clone();
-        child.apply(m);
-        if child.is_attacked(child.kings[us.index()], child.stm) {
-            continue;
-        }
-        any_legal = true;
-        let score = -negamax(&child, depth - 1, -beta, -alpha, ply + 1);
-        if score > best {
-            best = score;
-        }
-        if score > alpha {
-            alpha = score;
-        }
-        if alpha >= beta {
-            break;
-        }
-    }
-
-    if !any_legal {
-        return if board.in_check(us) { -MATE + ply } else { 0 };
-    }
-    best
-}
-
-/// Deterministic fixed-depth alpha-beta searcher. The arena's tie-break `r`
-/// is ignored; the first best-scoring move in search order is played.
-pub struct AlphaBetaAgent {
-    depth: u32,
-}
-
-impl AlphaBetaAgent {
-    pub fn new(depth: u32) -> Self {
-        assert!(depth >= 1, "search depth must be at least 1");
-        Self { depth }
-    }
-
-    pub fn best_move(&self, board: &Board) -> Option<Move> {
-        let mut moves = legal_moves(board);
-        if moves.is_empty() {
-            return None;
-        }
-        order_moves(board, &mut moves);
-
-        let mut best = moves[0];
-        for depth in 1..=self.depth {
-            if let Some(pos) = moves.iter().position(|&m| m == best) {
-                moves[..=pos].rotate_right(1);
-            }
-            let mut alpha = -INF;
-            let mut best_this = moves[0];
-            for &m in &moves {
-                let mut child = board.clone();
-                child.apply(m);
-                let score = -negamax(&child, depth - 1, -INF, -alpha, 1);
-                if score > alpha {
-                    alpha = score;
-                    best_this = m;
-                }
-            }
-            best = best_this;
-        }
-        Some(best)
     }
 }
 
-impl Agent<Chess> for AlphaBetaAgent {
-    fn act(&self, game: &Chess, state: &Board, _player: usize, _r: f64) -> usize {
-        use cfr_core::Game;
-        let actions = game.legal_actions(state);
-        let best = self.best_move(state).expect("act called on terminal state");
-        actions
-            .iter()
-            .position(|&m| m == best)
-            .expect("best move is legal")
+/// [`SearchSpec`] for chess: captures (incl. en passant) and promotions are
+/// noisy; MVV-LVA ordering.
+pub struct ChessSpec;
+
+impl SearchSpec<Chess> for ChessSpec {
+    fn is_noisy(&self, _game: &Chess, state: &Board, m: Move) -> bool {
+        state.squares[m.to as usize].is_some()
+            || m.promo.is_some()
+            || (state.ep == Some(m.to)
+                && m.from % 8 != m.to % 8
+                && matches!(state.squares[m.from as usize], Some((_, Piece::Pawn))))
+    }
+
+    fn order_hint(&self, _game: &Chess, state: &Board, m: Move) -> i64 {
+        move_order_score(state, &m) as i64
     }
 }

@@ -4,7 +4,7 @@
 //!
 //!     cargo run --release -p liars-dice --example tune [players] [dice] [faces] [steps] [games]
 
-use cfr_core::winrate_vs_field;
+use game_core::winrate_vs_field;
 use liars_dice::{LiarsDice, ProbConfig, ProbabilisticAgent, RandomAgent};
 
 fn arg<T: std::str::FromStr>(i: usize, d: T) -> T {

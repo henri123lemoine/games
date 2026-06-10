@@ -1,13 +1,13 @@
-# Workspace for the games lab: `cfr-core` holds the algorithms (the Game trait,
+# Workspace for the games lab: `game-core` holds the algorithms (the Game trait,
 # CFR variants, exact exploitability, the arena); `games/*` are games
 # implemented against it.
 [workspace]
 resolver = "2"
-members = ["cfr-core", "games/liars-dice", "games/twentyone", "games/chess"]
+members = ["game-core", "solvers", "games/liars-dice", "games/twentyone", "games/chess", "lab"]
 
 [workspace.package]
 edition = "2024"
 
 [workspace.dependencies]
-cfr-core = { path = "cfr-core" }
+game-core = { path = "game-core" }
 rayon = "1.10"

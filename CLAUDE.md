@@ -1,35 +1,47 @@
 # CLAUDE.md
 
-A games lab: algorithms for playing games (CFR variants, belief agents,
-Monte-Carlo rollout search, alpha-beta) applied to multiple games through one
-shared `Game` trait. (The directory is still named `twentyone` after the
-original project; the repo has outgrown that framing.)
+A games lab: game-playing algorithms written once against a shared `Game`
+trait, applied to many games. Read [ARCHITECTURE.md](ARCHITECTURE.md) before
+restructuring anything — the layering and capability-trait contract there are
+deliberate. (The directory is still named `twentyone` after the original
+project; the repo has outgrown that framing.)
 
 ## Structure
 
-- **cfr-core/**: the algorithms — `Game` trait, CFR+ (`Solver`, exact, tiny 2p
-  games only) + exact best-response exploitability, external-sampling `Mccfr`,
-  and the game-agnostic arena (`play_n`, `winrate_vs_field`, `playout_from`).
-- **games/liars-dice/**: N-player Liar's Dice (non-standard rules; see its
-  README) + belief/rollout agents. The strongest bot is `RolloutAgent`.
-- **games/chess/**: chess with perft-validated move generation and an
-  alpha-beta search agent.
-- **games/twentyone/**: Twenty-One — the engine, the fast decomposed CFR+
-  solver (`twentyone::Solver`, the strong way to solve the real game; see its
-  BAKEOFF.md), and the `cfr_core::Game` adapter. Pure Rust; the former Python
-  harness is deleted (findings preserved in BAKEOFF.md, history in git).
+- **game-core/**: foundations only — `Game`, `Agent`, `Rng`, the arena, and the
+  capability traits (`Eval`, `Determinizer`, `SearchSpec`, `GameUi`). No
+  algorithms here, ever.
+- **solvers/**: the generic algorithms — `Cfr` (vanilla CFR+, exact
+  exploitability; tiny 2p games), `Mccfr`, `AlphaBeta` (needs `Eval`, sharpened
+  by `SearchSpec`), `Rollout` (needs `Determinizer`; common-random-numbers
+  paired rollouts, rayon-parallel).
+- **games/**: rules + knowledge per game. chess (perft-validated; the bot is
+  generic `AlphaBeta` + chess's `MaterialEval`/`ChessSpec`), liars-dice
+  (non-standard rules — see its README; the bot is generic `Rollout` + the
+  belief `ProbabilisticAgent` + `BidConditioned` determinization), twentyone
+  (bespoke decomposed CFR+ solver stays game-side by design; see BAKEOFF.md).
+- **lab/**: the binding layer — registry (game id + opts + bot → type-erased
+  `AnyMatch`) and the one terminal client for all games. A future web server
+  reuses exactly these two interfaces; see ARCHITECTURE.md.
+
+## Rules of the design
+
+- Algorithms never live in game crates; game knowledge never lives in solvers.
+  New shared knowledge becomes a capability trait in game-core with a default.
+- Games depend on `game-core` only (solvers allowed in dev-dependencies).
+- New game = `Game` + `GameUi` impl + one registry entry. New algorithm = one
+  file in `solvers`. Nothing else changes.
 
 ## Workflow
 
 ```bash
-cargo test --release                                      # everything
-cargo run --release -p liars-dice --example play 5 5 6    # play Liar's Dice
-cargo run --release -p chess --example play               # play chess
-cargo run --release -p twentyone --example play           # play Twenty-One
+cargo test --release                       # perft, Kuhn→Nash, invariants, search
+cargo run --release -p lab -- list         # what's playable
+cargo run --release -p lab -- play chess depth=6
+cargo run --release -p lab -- play liars-dice players=5 dice=5
 ```
 
 Keep `cargo fmt` + `cargo clippy --release --all-targets` clean before
-committing. Evaluation convention: win rates are reported against a *field* of
-opponents with the hero rotated through every seat; "fair" is `1/players`.
-Measure one change at a time (`liars-dice/examples/ab`) — single eval runs can
-be ~2σ lucky draws.
+committing. Evaluation convention: win share against a *field* of opponents,
+hero rotated through every seat; "fair" is `1/players`. Measure one change at a
+time (`liars-dice/examples/ab`) — single eval runs can be ~2σ lucky draws.

@@ -3,7 +3,7 @@
 //!
 //!     cargo run --release -p liars-dice --example evaluate
 
-use cfr_core::winrate_vs_field;
+use game_core::winrate_vs_field;
 use liars_dice::{LiarsDice, ProbabilisticAgent, RandomAgent};
 
 fn main() {
