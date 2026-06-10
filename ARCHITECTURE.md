@@ -108,14 +108,20 @@ solvers from disk) instead of train-at-startup. None of it touches `game-core`,
 
 ## Current algorithm/game matrix
 
-|                | chess | liars-dice | twentyone | kuhn (test) |
-|----------------|:-----:|:----------:|:---------:|:-----------:|
-| `Cfr` (+ exact exploitability) | — (too big) | tiny configs | — (too big) | ✓ → Nash |
-| `Mccfr` | — | impractical (deep ladder) | — | ✓ |
-| `AlphaBeta` | ✓ (the bot) | — (imperfect info) | — | — |
-| `Rollout` | possible (`Identity`) | ✓ (the bot) | possible | — |
-| bespoke | — | belief policy | decomposed CFR+ (the bot) | — |
+|                | chess | othello | connect4 | go | liars-dice | twentyone | kuhn (test) |
+|----------------|:-----:|:-------:|:--------:|:--:|:----------:|:---------:|:-----------:|
+| `Cfr` (+ exact exploitability) | — | — | — | — | tiny configs | — | ✓ → Nash |
+| `Mccfr` / `OsMccfr` | — | — | — | — | OS handles the deep ladder | — | ✓ |
+| `AlphaBeta` | ✓ (the bot) | ✓ (the bot) | ✓ (the bot) | — (no eval) | — (imperfect info) | — | — |
+| `Mcts` | possible | possible | possible | ✓ (the bot) | — | — | — |
+| `azero` (PUCT + self-play net) | ✓ (training) | possible | possible | possible | — | — | — |
+| `Rollout` | possible | possible | possible | possible | ✓ (the bot) | possible | — |
+| bespoke | — | — | — | — | belief policy | decomposed CFR+ (the bot) | — |
 
 The dashes are honest: tabular CFR can't fit big games, search can't see hidden
-information. The frontier (outcome-sampling MCCFR over abstractions, MCTS/ISMCTS,
-learned evals) slots into `solvers` without touching anything else.
+information, Go has no hand-written eval. Notable measured facts: outcome-sampling
+MCCFR runs a 200-deep ladder in milliseconds/iteration where external sampling
+would need ~1e41 nodes; CFR+ regret flooring provably stalls outcome sampling
+(documented in `solvers/src/os_mccfr.rs`); the azero loop's checkpoint beats
+random at chess within minutes of CPU self-play, while real chess *strength*
+remains a GPU-scale endeavor.

@@ -10,10 +10,14 @@ never contain algorithm code. See [ARCHITECTURE.md](ARCHITECTURE.md).
 game-core/           foundations: Game trait, Agent, capability traits
                      (Eval, Determinizer, SearchSpec, GameUi), match arena
 solvers/             the algorithms, generic over any game with the right
-                     capabilities: cfr, mccfr, exploitability, alpha-beta,
-                     determinized rollout
+                     capabilities: cfr, mccfr, os-mccfr, exploitability,
+                     alpha-beta, MCTS, determinized rollout, and an
+                     AlphaZero-style self-play learner (PUCT + pure-Rust net)
 games/
-  chess/             perft-validated rules + eval/search knowledge
+  chess/             perft-validated rules + eval/search knowledge + net encoder
+  othello/           weighted-square eval; bot = generic alpha-beta
+  connect4/          windowed eval; bot = generic alpha-beta
+  go/                9x9+ area scoring; bot = generic MCTS
   liars-dice/        N-player Liar's Dice + belief policy + determinization
   twentyone/         Twenty-One + its bespoke decomposed CFR+ solver
 lab/                 registry of games & bots, type-erased matches, and the
@@ -26,6 +30,10 @@ lab/                 registry of games & bots, type-erased matches, and the
 ```bash
 cargo run --release -p lab -- list
 cargo run --release -p lab -- play chess depth=6
+cargo run --release -p lab -- play chess bot=azero            # the self-play net
+cargo run --release -p lab -- play go size=9 sims=6000
+cargo run --release -p lab -- play othello
+cargo run --release -p lab -- play connect4
 cargo run --release -p lab -- play liars-dice players=5 dice=5 rollouts=1000
 cargo run --release -p lab -- play twentyone hearts=6 iters=100000
 ```
