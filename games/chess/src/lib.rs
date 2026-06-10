@@ -20,7 +20,7 @@ mod ui;
 
 pub use board::{Board, Color, Move, Piece, START_FEN};
 pub use movegen::{legal_moves, perft, perft_divide};
-pub use search::{ChessSpec, MaterialEval, evaluate};
+pub use search::{ChessSpec, MaterialEval, RichEval, evaluate, rich_evaluate};
 
 use game_core::{Game, Turn};
 
