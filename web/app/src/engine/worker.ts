@@ -4,6 +4,8 @@
 import init, {
   WebMatch,
   create_match,
+  elo,
+  fit_elo_table,
   list_games,
   load_artifact,
   play_field,
@@ -68,6 +70,10 @@ function handle(req: EngineRequest): unknown {
       return JSON.parse(
         play_field(req.game, JSON.stringify(req.opts), req.a, req.b, req.seed, req.lo, req.hi),
       );
+    case 'elo':
+      return JSON.parse(elo(req.w, req.d, req.l));
+    case 'fitElo':
+      return JSON.parse(fit_elo_table(JSON.stringify(req.records)));
   }
 }
 

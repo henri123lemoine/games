@@ -6,6 +6,7 @@ import { EngineHost } from '../engine/host';
 import type { GameInfo, Manifest, MatchEventData, ViewState } from '../engine/protocol';
 import { frontendFor } from '../frontends';
 import type { FrontendCtx, GameFrontend } from '../frontends/types';
+import { TournamentScreen } from './tournament';
 
 const GAME_NAMES: Record<string, string> = {
   chess: 'Chess',
@@ -87,6 +88,16 @@ export class App {
 
   // ---------- home ----------
 
+  private tourney: TournamentScreen | null = null;
+
+  private renderTournament(): void {
+    this.teardownMatch();
+    this.tourney = new TournamentScreen(this.root, this.manifest.compare, this.host, () =>
+      this.renderHome(),
+    );
+    this.tourney.render();
+  }
+
   private renderHome(): void {
     this.teardownMatch();
     const cards = this.manifest.games
@@ -107,6 +118,9 @@ export class App {
              compiled to WebAssembly, running entirely in your browser.</p>
         </header>
         <div class="card-grid">${cards}</div>
+        <div class="home-foot">
+          <button type="button" class="link tourney-link">Tournament lab &rarr;</button>
+        </div>
       </div>`;
     for (const el of this.root.querySelectorAll<HTMLButtonElement>('.card')) {
       el.onclick = () => {
@@ -114,6 +128,8 @@ export class App {
         if (game) this.renderSetup(game);
       };
     }
+    this.root.querySelector<HTMLButtonElement>('.tourney-link')!.onclick = () =>
+      this.renderTournament();
   }
 
   // ---------- setup ----------
@@ -340,6 +356,8 @@ export class App {
 
   private teardownMatch(): void {
     this.gen++;
+    this.tourney?.destroy();
+    this.tourney = null;
     this.frontend?.unmount();
     this.frontend = null;
     this.submitResolve = null;

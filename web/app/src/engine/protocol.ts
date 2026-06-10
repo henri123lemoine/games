@@ -72,7 +72,9 @@ export type EngineRequest =
       seed: number;
       lo: number;
       hi: number;
-    };
+    }
+  | { id: number; op: 'elo'; w: number; d: number; l: number }
+  | { id: number; op: 'fitElo'; records: [number, number, number][][] };
 
 export type EngineResponse =
   | { id: number; ok: true; data: unknown }

@@ -91,6 +91,14 @@ export class EngineHost {
     }>;
   }
 
+  elo(w: number, d: number, l: number): Promise<{ elo: number; margin: number }> {
+    return this.call({ op: 'elo', w, d, l }) as Promise<{ elo: number; margin: number }>;
+  }
+
+  fitElo(records: [number, number, number][][]): Promise<number[]> {
+    return this.call({ op: 'fitElo', records }) as Promise<number[]>;
+  }
+
   terminate(): void {
     this.worker.terminate();
     for (const p of this.pending.values()) p.reject(new Error('engine terminated'));
