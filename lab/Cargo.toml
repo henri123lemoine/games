@@ -14,3 +14,6 @@ solvers = { path = "../solvers" }
 chess = { path = "../games/chess" }
 liars-dice = { path = "../games/liars-dice" }
 twentyone = { path = "../games/twentyone" }
+othello = { path = "../games/othello" }
+go = { path = "../games/go" }
+connect4 = { path = "../games/connect4" }
