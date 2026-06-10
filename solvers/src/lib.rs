@@ -13,15 +13,15 @@
 //! with their game; this crate is only for algorithms that generalize.
 
 pub mod azero;
-pub mod pg;
-pub mod qlearn;
-pub mod td;
 mod cfr;
 mod mccfr;
 pub mod mcts;
 pub mod os_mccfr;
+pub mod pg;
+pub mod qlearn;
 mod rollout;
 pub mod search;
+pub mod td;
 
 pub use cfr::Cfr;
 pub use mccfr::Mccfr;
