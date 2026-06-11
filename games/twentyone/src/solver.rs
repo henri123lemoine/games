@@ -185,6 +185,21 @@ fn deal_from(rng: &mut Rng) -> [u8; 4] {
     [cards[0], cards[1], cards[2], cards[3]]
 }
 
+/// `env` after the mover stands.
+fn stood(env: &Env) -> Env {
+    let mut e = env.clone();
+    e.stand().unwrap();
+    e
+}
+
+/// `env` after the mover draws a card sampled uniformly from `mask`.
+fn drawn_sampled(env: &Env, mask: u16, rng: &mut Rng) -> Env {
+    let mut e = env.clone();
+    e.draw_specific(nth_deck_card(mask, rng.below(deck_count(mask))))
+        .unwrap();
+    e
+}
+
 impl Solver {
     pub fn new(seed: u64) -> Self {
         Self::with_hearts(seed, STARTING_HEARTS)
@@ -251,80 +266,7 @@ impl Solver {
     /// beat the greedy table where the table's *probability* and its *value*
     /// disagree (typically undertrained, near-50/50 spots). Returns true to draw.
     pub fn lookahead_best_action(&self, env: &Env, player: usize) -> bool {
-        let mask = env.deck_mask();
-        if mask == 0 {
-            return false;
-        }
-        if self.value.is_empty() {
-            return self.average_draw_prob(self.info_key(env, player)) >= 0.5;
-        }
-        let unseen = env.unseen_mask(player);
-        let mut sum_stand = 0.0;
-        let mut sum_draw = 0.0;
-        let mut m = unseen;
-        while m != 0 {
-            let f = (m.trailing_zeros() + 1) as u8;
-            m &= m - 1;
-            let hypo = env.with_opp_facedown(player, f);
-            let mut memo: FastMap<u64, f64> = fast_map();
-            let mut stood = hypo.clone();
-            stood.stand().unwrap();
-            sum_stand += self.blueprint_value(&stood, player, &mut memo);
-            sum_draw += self.blueprint_draw_expectation(&hypo, player, hypo.deck_mask(), &mut memo);
-        }
-        sum_draw > sum_stand
-    }
-
-    /// Value to `me` of a determinized round when *both* players follow the
-    /// blueprint average strategy (a pure expectation, no maximisation), memoized
-    /// by the god's-eye search key.
-    fn blueprint_value(&self, env: &Env, me: usize, memo: &mut FastMap<u64, f64>) -> f64 {
-        if !env.round_active() {
-            if env.is_game_over() {
-                return env.utility(me);
-            }
-            let v0 = self.continuation_for_p0(env.hearts(0), env.hearts(1), env.round());
-            return if me == 0 { v0 } else { -v0 };
-        }
-        let wkey = env.search_key();
-        if let Some(v) = memo.get(&wkey) {
-            return *v;
-        }
-        let player = env.current_player();
-        let mask = env.deck_mask();
-        let can_draw = mask != 0;
-        let sigma = self.average_strategy(self.info_key(env, player), can_draw);
-        let mut v = 0.0;
-        if sigma[STAND] > 0.0 {
-            let mut stood = env.clone();
-            stood.stand().unwrap();
-            v += sigma[STAND] * self.blueprint_value(&stood, me, memo);
-        }
-        if sigma[DRAW] > 0.0 && can_draw {
-            v += sigma[DRAW] * self.blueprint_draw_expectation(env, me, mask, memo);
-        }
-        memo.insert(wkey, v);
-        v
-    }
-
-    fn blueprint_draw_expectation(
-        &self,
-        env: &Env,
-        me: usize,
-        mask: u16,
-        memo: &mut FastMap<u64, f64>,
-    ) -> f64 {
-        let n = deck_count(mask);
-        let mut acc = 0.0;
-        let mut m = mask;
-        while m != 0 {
-            let c = (m.trailing_zeros() + 1) as u8;
-            m &= m - 1;
-            let mut drawn = env.clone();
-            drawn.draw_specific(c).unwrap();
-            acc += self.blueprint_value(&drawn, me, memo);
-        }
-        acc / n as f64
+        self.determinized_best_action(env, player, false)
     }
 
     /// Inference-time search: choose `player`'s action by looking ahead through
@@ -342,6 +284,14 @@ impl Solver {
     /// little search per move. Falls back to the table strategy if continuation
     /// values are unavailable (e.g. an old model without them).
     pub fn search_best_action(&self, env: &Env, player: usize) -> bool {
+        self.determinized_best_action(env, player, true)
+    }
+
+    /// The shared driver behind both: enumerate the opponent's face-down over
+    /// `player`'s unseen set, score stand vs. draw for each determinization
+    /// with [`Self::determinized_value`] (fresh memo each — the keys are god's-eye),
+    /// and compare the sums.
+    fn determinized_best_action(&self, env: &Env, player: usize, maximize_me: bool) -> bool {
         let mask = env.deck_mask();
         if mask == 0 {
             return false;
@@ -358,18 +308,26 @@ impl Solver {
             m &= m - 1;
             let hypo = env.with_opp_facedown(player, f);
             let mut memo: FastMap<u64, f64> = fast_map();
-            let mut stood = hypo.clone();
-            stood.stand().unwrap();
-            sum_stand += self.search_value(&stood, player, &mut memo);
-            sum_draw += self.draw_expectation(&hypo, player, hypo.deck_mask(), &mut memo);
+            sum_stand += self.determinized_value(&stood(&hypo), player, maximize_me, &mut memo);
+            sum_draw +=
+                self.draw_expectation(&hypo, player, maximize_me, hypo.deck_mask(), &mut memo);
         }
         sum_draw > sum_stand
     }
 
-    /// Value to `me` of an in-progress (or just-ended) determinized round when
-    /// `me` plays the within-round best response and the opponent plays this
-    /// solver's average strategy. Memoized by the god's-eye search key.
-    fn search_value(&self, env: &Env, me: usize, memo: &mut FastMap<u64, f64>) -> f64 {
+    /// Value to `me` of a determinized round, memoized by the god's-eye search
+    /// key. The opponent always plays this solver's average strategy. With
+    /// `maximize_me` false, so does `me` — a pure blueprint expectation, no
+    /// strategy fusion. With it true, `me` best-responds within the round —
+    /// the determinized search. Game end yields the exact utility; a
+    /// non-terminal round end substitutes the trained continuation value.
+    fn determinized_value(
+        &self,
+        env: &Env,
+        me: usize,
+        maximize_me: bool,
+        memo: &mut FastMap<u64, f64>,
+    ) -> f64 {
         if !env.round_active() {
             if env.is_game_over() {
                 return env.utility(me);
@@ -384,25 +342,20 @@ impl Solver {
         let player = env.current_player();
         let mask = env.deck_mask();
         let can_draw = mask != 0;
-        let value = if player == me {
-            let mut stood = env.clone();
-            stood.stand().unwrap();
-            let mut best = self.search_value(&stood, me, memo);
+        let value = if maximize_me && player == me {
+            let mut best = self.determinized_value(&stood(env), me, maximize_me, memo);
             if can_draw {
-                best = best.max(self.draw_expectation(env, me, mask, memo));
+                best = best.max(self.draw_expectation(env, me, maximize_me, mask, memo));
             }
             best
         } else {
-            let key = self.info_key(env, player);
-            let sigma = self.average_strategy(key, can_draw);
+            let sigma = self.average_strategy(self.info_key(env, player), can_draw);
             let mut v = 0.0;
             if sigma[STAND] > 0.0 {
-                let mut stood = env.clone();
-                stood.stand().unwrap();
-                v += sigma[STAND] * self.search_value(&stood, me, memo);
+                v += sigma[STAND] * self.determinized_value(&stood(env), me, maximize_me, memo);
             }
             if sigma[DRAW] > 0.0 && can_draw {
-                v += sigma[DRAW] * self.draw_expectation(env, me, mask, memo);
+                v += sigma[DRAW] * self.draw_expectation(env, me, maximize_me, mask, memo);
             }
             v
         };
@@ -416,6 +369,7 @@ impl Solver {
         &self,
         env: &Env,
         me: usize,
+        maximize_me: bool,
         mask: u16,
         memo: &mut FastMap<u64, f64>,
     ) -> f64 {
@@ -427,7 +381,7 @@ impl Solver {
             m &= m - 1;
             let mut drawn = env.clone();
             drawn.draw_specific(c).unwrap();
-            acc += self.search_value(&drawn, me, memo);
+            acc += self.determinized_value(&drawn, me, maximize_me, memo);
         }
         acc / n as f64
     }
@@ -628,14 +582,10 @@ impl Solver {
         let sigma = self.regret_matching(key, can_draw, lr);
 
         if player == traverser {
-            let mut stood = env.clone();
-            stood.stand().unwrap();
-            let v_stand = self.traverse(&stood, traverser, weight, lr, ls, rng);
+            let v_stand = self.traverse(&stood(env), traverser, weight, lr, ls, rng);
             let mut v_draw = 0.0;
             if can_draw {
-                let card = nth_deck_card(mask, rng.below(deck_count(mask)));
-                let mut drawn = env.clone();
-                drawn.draw_specific(card).unwrap();
+                let drawn = drawn_sampled(env, mask, rng);
                 v_draw = self.traverse(&drawn, traverser, weight, lr, ls, rng);
             }
             let node_v = sigma[STAND] * v_stand + sigma[DRAW] * v_draw;
@@ -656,14 +606,16 @@ impl Solver {
                 s[DRAW] += weight * sigma[DRAW];
             }
             if can_draw && rng.unit() < sigma[DRAW] {
-                let card = nth_deck_card(mask, rng.below(deck_count(mask)));
-                let mut drawn = env.clone();
-                drawn.draw_specific(card).unwrap();
-                self.traverse(&drawn, traverser, weight, lr, ls, rng)
+                self.traverse(
+                    &drawn_sampled(env, mask, rng),
+                    traverser,
+                    weight,
+                    lr,
+                    ls,
+                    rng,
+                )
             } else {
-                let mut stood = env.clone();
-                stood.stand().unwrap();
-                self.traverse(&stood, traverser, weight, lr, ls, rng)
+                self.traverse(&stood(env), traverser, weight, lr, ls, rng)
             }
         }
     }
@@ -828,14 +780,10 @@ impl Solver {
         let sigma = self.regret_matching_global(key, can_draw, dr);
 
         if player == traverser {
-            let mut stood = env.clone();
-            stood.stand().unwrap();
-            let v_stand = self.traverse_full(&stood, traverser, weight, dr, ds, rng);
+            let v_stand = self.traverse_full(&stood(env), traverser, weight, dr, ds, rng);
             let mut v_draw = 0.0;
             if can_draw {
-                let card = nth_deck_card(mask, rng.below(deck_count(mask)));
-                let mut drawn = env.clone();
-                drawn.draw_specific(card).unwrap();
+                let drawn = drawn_sampled(env, mask, rng);
                 v_draw = self.traverse_full(&drawn, traverser, weight, dr, ds, rng);
             }
             let node_v = sigma[STAND] * v_stand + sigma[DRAW] * v_draw;
@@ -852,14 +800,16 @@ impl Solver {
                 e[DRAW] += weight * sigma[DRAW];
             }
             if can_draw && rng.unit() < sigma[DRAW] {
-                let card = nth_deck_card(mask, rng.below(deck_count(mask)));
-                let mut drawn = env.clone();
-                drawn.draw_specific(card).unwrap();
-                self.traverse_full(&drawn, traverser, weight, dr, ds, rng)
+                self.traverse_full(
+                    &drawn_sampled(env, mask, rng),
+                    traverser,
+                    weight,
+                    dr,
+                    ds,
+                    rng,
+                )
             } else {
-                let mut stood = env.clone();
-                stood.stand().unwrap();
-                self.traverse_full(&stood, traverser, weight, dr, ds, rng)
+                self.traverse_full(&stood(env), traverser, weight, dr, ds, rng)
             }
         }
     }
