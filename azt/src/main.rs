@@ -93,7 +93,9 @@ fn run(args: &[String]) {
     let concurrent: usize = arg(args, "--concurrent", 512);
     let samples_per_iter: usize = arg(args, "--samples-per-iter", 16384);
     let temp_plies: u16 = arg(args, "--temp-plies", 24);
-    let resign_q: f64 = arg(args, "--resign-q", 0.95);
+    let value_mix: f32 = arg(args, "--value-mix", 0.3);
+    let resign_fp_target: f64 = arg(args, "--resign-fp-target", 0.05);
+    let resign_q: f64 = arg(args, "--resign-q", 0.99);
     let resign_min_ply: u16 = arg(args, "--resign-ply", 40);
     let resign_off: f64 = arg(args, "--resign-off", 0.1);
     let batch: usize = arg(args, "--batch", 1024);
@@ -131,7 +133,7 @@ fn run(args: &[String]) {
     }
 
     let dev = device();
-    let mut trainer = Trainer::new(dev, net_cfg, lr, weight_decay);
+    let mut trainer = Trainer::new(dev, net_cfg, lr, weight_decay, value_mix);
     let mut iter = 0u64;
     if latest.exists() {
         trainer.load(&latest).unwrap_or_else(|e| {
@@ -143,11 +145,16 @@ fn run(args: &[String]) {
     }
     let mut pool = SelfPlay::new(sp_cfg, 0xA12E_5EED);
     let mut replay = Replay::new(replay_cap);
+    // Rolling pool of control games' non-loser minimum Qs; the resignation
+    // threshold is the fp-target quantile of this distribution (AGZ-style
+    // auto-calibration), so no hand-tuned constant survives contact.
+    let mut calib_pool: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
+    let mut live_resign_q = resign_q;
 
     append_line(
         &metrics,
         &format!(
-            r#"{{"event":"start","time":{},"iter":{iter},"blocks":{blocks},"channels":{channels},"sims":{sims},"concurrent":{concurrent},"samples_per_iter":{samples_per_iter},"batch_size":{batch},"replay_capacity":{replay_cap},"lr":{lr},"eval_every":{eval_every},"eval_pairs":{eval_pairs},"eval_sims":{eval_sims},"threads":{}}}"#,
+            r#"{{"event":"start","time":{},"iter":{iter},"blocks":{blocks},"channels":{channels},"sims":{sims},"concurrent":{concurrent},"samples_per_iter":{samples_per_iter},"batch_size":{batch},"replay_capacity":{replay_cap},"lr":{lr},"eval_every":{eval_every},"eval_pairs":{eval_pairs},"eval_sims":{eval_sims},"value_mix":{value_mix},"resign_fp_target":{resign_fp_target},"threads":{}}}"#,
             epoch_secs(),
             rayon::current_num_threads(),
         ),
@@ -174,10 +181,22 @@ fn run(args: &[String]) {
         iter += 1;
         let infer = Infer::snapshot(&trainer.vs, net_cfg, Kind::Half);
         let sp_start = Instant::now();
-        let (samples, stats) = pool.collect(&infer, samples_per_iter);
+        let (samples, stats, calib) = pool.collect(&infer, samples_per_iter);
         let self_play_secs = sp_start.elapsed().as_secs_f32();
         let n_new = samples.len();
         replay.extend(samples);
+
+        calib_pool.extend(calib);
+        while calib_pool.len() > 1000 {
+            calib_pool.pop_front();
+        }
+        if calib_pool.len() >= 100 {
+            let mut sorted: Vec<f64> = calib_pool.iter().copied().collect();
+            sorted.sort_by(f64::total_cmp);
+            let t = sorted[(resign_fp_target * sorted.len() as f64) as usize];
+            live_resign_q = (-t).clamp(0.85, 0.995);
+            pool.set_resign_q(live_resign_q);
+        }
 
         let steps = ((n_new as f64 * reuse) / batch as f64).ceil() as usize;
         let train_start = Instant::now();
@@ -228,7 +247,7 @@ fn run(args: &[String]) {
         append_line(
             &metrics,
             &format!(
-                r#"{{"iter":{iter},"time":{},"elapsed_min":{elapsed_min:.2},"policy_loss":{policy_loss:.4},"value_loss":{value_loss:.4},"games":{},"decisive":{},"avg_plies":{:.1},"buffer":{},"self_play_secs":{self_play_secs:.1},"train_secs":{train_secs:.1},"resigned":{},"rep_draws":{},"capped":{},"would_resign":{},"resign_fp":{}{eval_json}}}"#,
+                r#"{{"iter":{iter},"time":{},"elapsed_min":{elapsed_min:.2},"policy_loss":{policy_loss:.4},"value_loss":{value_loss:.4},"games":{},"decisive":{},"avg_plies":{:.1},"buffer":{},"self_play_secs":{self_play_secs:.1},"train_secs":{train_secs:.1},"resigned":{},"rep_draws":{},"capped":{},"would_resign":{},"resign_fp":{},"resign_q":{live_resign_q:.3}{eval_json}}}"#,
                 epoch_secs(),
                 stats.games,
                 stats.decisive,
@@ -295,7 +314,7 @@ fn bench(args: &[String]) {
 
     let dev = device();
     let net_cfg = NetConfig { blocks, channels };
-    let trainer = Trainer::new(dev, net_cfg, 1e-3, 1e-4);
+    let trainer = Trainer::new(dev, net_cfg, 1e-3, 1e-4, 0.3);
     let infer = Infer::snapshot(&trainer.vs, net_cfg, Kind::Half);
     let sp_cfg = SelfPlayConfig {
         mcts: MctsConfig {
@@ -340,7 +359,7 @@ fn bench(args: &[String]) {
     }
 
     let t0 = Instant::now();
-    let (s, stats) = pool.collect(&infer, samples);
+    let (s, stats, _calib) = pool.collect(&infer, samples);
     let dt = t0.elapsed().as_secs_f64();
     let spg = stats.avg_plies().max(1.0) as f64;
     println!(

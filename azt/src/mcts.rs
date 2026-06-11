@@ -297,6 +297,15 @@ impl Search {
     }
 
     /// Mean value of the most-visited edge, from the root player's view.
+    /// Visit-weighted mean value of the root position (player to move):
+    /// the search's estimate of the position itself, for value targets.
+    pub fn root_value(&self) -> f64 {
+        let root = &self.tree.nodes[self.tree.root];
+        let n: u32 = root.n.iter().sum();
+        let w: f64 = root.w.iter().sum();
+        if n > 0 { w / f64::from(n) } else { 0.0 }
+    }
+
     pub fn root_q(&self) -> f64 {
         let root = &self.tree.nodes[self.tree.root];
         let mut best = (0u32, 0.0f64);

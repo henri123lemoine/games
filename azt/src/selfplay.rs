@@ -55,6 +55,9 @@ pub struct Sample {
     pub policy: Vec<(u16, f32)>,
     /// Game outcome from the perspective of the player to move.
     pub z: f32,
+    /// The search's root value at this position (player to move) — mixed
+    /// into the value target to de-noise the raw outcome.
+    pub q: f32,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -111,7 +114,7 @@ enum GameEnd {
     PlyCap,
 }
 
-type Record = (([u64; 17], u8), Vec<(u16, f32)>, chess::Color);
+type Record = (([u64; 17], u8), Vec<(u16, f32)>, chess::Color, f32);
 
 struct Worker {
     board: Board,
@@ -125,11 +128,14 @@ struct Worker {
     bad_streak: [u8; 2],
     /// First side that hit the resign bar while resignation was disabled.
     would_resign: Option<usize>,
+    /// Lowest searched best-edge Q seen by each side, for calibrating the
+    /// resignation threshold from no-resign control games.
+    min_q: [f64; 2],
 }
 
 enum WorkerStep {
     Requests(Vec<EvalRequest>),
-    Finished(Vec<Sample>, u16, f32, GameEnd, Option<bool>),
+    Finished(Vec<Sample>, u16, f32, GameEnd, Option<bool>, Vec<f64>),
 }
 
 impl Worker {
@@ -149,6 +155,7 @@ impl Worker {
             resign_enabled,
             bad_streak: [0, 0],
             would_resign: None,
+            min_q: [1.0, 1.0],
         }
     }
 
@@ -162,6 +169,7 @@ impl Worker {
         self.resign_enabled = cfg.resign_q > 0.0 && self.rng.unit() >= cfg.resign_off;
         self.bad_streak = [0, 0];
         self.would_resign = None;
+        self.min_q = [1.0, 1.0];
     }
 
     fn advance(&mut self, cfg: &SelfPlayConfig, mut results: Vec<EvalResult>) -> WorkerStep {
@@ -196,11 +204,20 @@ impl Worker {
                 .map(|(&m, &n)| (az_move_index(m, stm) as u16, n as f32 / total as f32))
                 .collect()
         };
-        self.records.push((compact_planes(&self.board), dist, stm));
+        self.records.push((
+            compact_planes(&self.board),
+            dist,
+            stm,
+            self.search.root_value() as f32,
+        ));
+        let side = stm.index();
+        let best_q = self.search.root_q();
+        if self.plies > cfg.resign_min_ply && best_q < self.min_q[side] {
+            self.min_q[side] = best_q;
+        }
 
         if cfg.resign_q > 0.0 && self.plies > cfg.resign_min_ply {
-            let side = stm.index();
-            if self.search.root_q() < -cfg.resign_q {
+            if best_q < -cfg.resign_q {
                 self.bad_streak[side] += 1;
                 if self.bad_streak[side] >= 2 {
                     if self.resign_enabled {
@@ -257,7 +274,7 @@ impl Worker {
         let samples = self
             .records
             .drain(..)
-            .map(|((planes, halfmove), policy, stm)| Sample {
+            .map(|((planes, halfmove), policy, stm, q)| Sample {
                 planes,
                 halfmove,
                 policy,
@@ -266,13 +283,25 @@ impl Worker {
                 } else {
                     -z_white
                 },
+                q,
             })
             .collect();
         let fp = self.would_resign.map(|side| {
             let z_side = if side == 0 { z_white } else { -z_white };
             z_side >= 0.0
         });
-        WorkerStep::Finished(samples, self.plies, z_white, end, fp)
+        // Non-losing sides' minimum Q from control games: the distribution
+        // the resignation threshold is calibrated against.
+        let mut calib = Vec::new();
+        if !self.resign_enabled {
+            for side in 0..2 {
+                let z_side = if side == 0 { z_white } else { -z_white };
+                if z_side >= 0.0 && self.min_q[side] < 1.0 {
+                    calib.push(self.min_q[side]);
+                }
+            }
+        }
+        WorkerStep::Finished(samples, self.plies, z_white, end, fp, calib)
     }
 }
 
@@ -299,31 +328,34 @@ impl SelfPlay {
     /// Runs cycles until at least `target_samples` new samples arrive from
     /// finished games. Unfinished games stay parked (with their pending
     /// leaf results delivered) for the next call.
+    /// Returns samples, stats, and the resignation-calibration pool: each
+    /// control game's non-losing sides' minimum searched Q.
     pub fn collect(
         &mut self,
         infer: &Infer,
         target_samples: usize,
-    ) -> (Vec<Sample>, SelfPlayStats) {
+    ) -> (Vec<Sample>, SelfPlayStats, Vec<f64>) {
         let mut samples = Vec::with_capacity(target_samples + 4096);
         let mut stats = SelfPlayStats::default();
+        let mut calib = Vec::new();
         while samples.len() < target_samples {
             let cfg = self.cfg;
             let cpu_start = std::time::Instant::now();
-            type Finished = (Vec<Sample>, u16, f32, GameEnd, Option<bool>);
+            type Finished = (Vec<Sample>, u16, f32, GameEnd, Option<bool>, Vec<f64>);
             let outcomes: Vec<(Option<Finished>, Vec<EvalRequest>)> = self
                 .workers
                 .par_iter_mut()
                 .zip(self.results.par_iter_mut())
                 .map(|(w, r)| match w.advance(&cfg, std::mem::take(r)) {
                     WorkerStep::Requests(reqs) => (None, reqs),
-                    WorkerStep::Finished(s, plies, z, end, fp) => {
+                    WorkerStep::Finished(s, plies, z, end, fp, calib) => {
                         // Deal the next game immediately so the batch keeps
                         // its width; a fresh game always needs a root eval.
                         w.reset(&cfg);
                         let WorkerStep::Requests(reqs) = w.advance(&cfg, Vec::new()) else {
                             unreachable!("fresh game cannot finish before any eval");
                         };
-                        (Some((s, plies, z, end, fp)), reqs)
+                        (Some((s, plies, z, end, fp, calib)), reqs)
                     }
                 })
                 .collect();
@@ -331,9 +363,10 @@ impl SelfPlay {
             let mut flat: Vec<EvalRequest> = Vec::new();
             let mut spans: Vec<(usize, usize)> = Vec::with_capacity(outcomes.len());
             for (fin, reqs) in outcomes {
-                if let Some((s, plies, z, end, fp)) = fin {
+                if let Some((s, plies, z, end, fp, cal)) = fin {
                     samples.extend(s);
                     stats.add_game(plies, z, end, fp);
+                    calib.extend(cal);
                 }
                 spans.push((flat.len(), reqs.len()));
                 flat.extend(reqs);
@@ -349,7 +382,12 @@ impl SelfPlay {
                 debug_assert_eq!(self.results[i].len(), len);
             }
         }
-        (samples, stats)
+        (samples, stats, calib)
+    }
+
+    /// Updates the resignation threshold (used as `Q < -resign_q`).
+    pub fn set_resign_q(&mut self, resign_q: f64) {
+        self.cfg.resign_q = resign_q;
     }
 }
 
