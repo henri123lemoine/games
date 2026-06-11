@@ -126,4 +126,9 @@ MCCFR runs a 200-deep ladder in milliseconds/iteration where external sampling
 would need ~1e41 nodes; CFR+ regret flooring provably stalls outcome sampling
 (documented in `solvers/src/os_mccfr.rs`); the azero loop's checkpoint beats
 random at chess within minutes of CPU self-play, while real chess *strength*
-remains a GPU-scale endeavor.
+remains a GPU-scale endeavor — which is what `azt/` is for: a deliberately
+*standalone* crate (not a workspace member, so libtorch never touches the
+main build) that trains an AlphaZero resnet on Apple-GPU via tch-rs, batching
+leaf evaluations across hundreds of concurrent games. It consumes the chess
+crate's `encode_planes`/`az_move_index` knowledge and the same run-dir
+contract (metrics.jsonl + dashboard + STOP) as the CPU harness.
