@@ -326,7 +326,7 @@ fn run(args: &[String]) {
         let mut line = serde_json::json!({
             "iter": iter, "time": epoch_secs(), "elapsed_min": elapsed_min,
             "policy_loss": policy_loss, "value_loss": value_loss,
-            "games": stats.games, "decisive": stats.decisive,
+            "n_new": n_new, "games": stats.games, "decisive": stats.decisive,
             "avg_plies": stats.avg_plies(), "buffer": replay.len(),
             "self_play_secs": self_play_secs, "train_secs": train_secs,
             "resigned": stats.resigned, "rep_draws": stats.repetition_draws,

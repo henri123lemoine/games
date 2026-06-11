@@ -123,7 +123,11 @@ def check(rows):
     if its:
         last = its[-1]
         starts = [r for r in rows if r.get("event") == "start"]
-        spi = starts[-1].get("samples_per_iter", 16384) if starts else 16384
+        # Prefer the measured fresh-sample count; fall back to the configured
+        # rate for metrics written before n_new was logged.
+        spi = last.get("n_new") or (
+            starts[-1].get("samples_per_iter", 16384) if starts else 16384
+        )
         if last.get("buffer", 0) > 0 and spi / last["buffer"] < 0.02:
             bad["stale"] = (
                 f"fresh data {100*spi/last['buffer']:.1f}% of replay buffer "
@@ -170,9 +174,11 @@ def main():
         rows = load_rows()
         bad, stopped = check(rows)
         for key, msg in bad.items():
-            if state.get(key) != msg:
+            # Dedupe on the *key*, not the message: messages embed live
+            # numbers, so text comparison re-warned every interval.
+            if key not in state:
                 print(f"WARN [{key}] {msg}", flush=True)
-                state[key] = msg
+            state[key] = msg
         for key in [k for k in state if k not in bad and k != "stopped"]:
             if state.pop(key, None):
                 print(f"ok [{key}] resolved", flush=True)
