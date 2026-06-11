@@ -116,6 +116,12 @@ impl<G: Game> OsMccfr<G> {
                 let key = self.game.infoset_key(state, p);
                 let sigma = {
                     let r = self.regret.entry(key).or_insert_with(|| vec![0.0; n]);
+                    debug_assert_eq!(
+                        r.len(),
+                        n,
+                        "action count changed for infoset {key:#x} — legal_actions must be \
+                         stable per information set"
+                    );
                     regret_match(r)
                 };
                 if p == traverser {
