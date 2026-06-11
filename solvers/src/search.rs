@@ -293,7 +293,7 @@ impl<G: Game, E: Eval<G>, S: SearchSpec<G>> AlphaBeta<G, E, S> {
                 (hint, tiebreak, i)
             })
             .collect();
-        keyed.sort_by(|a, b| (b.0, b.1).cmp(&(a.0, a.1)));
+        keyed.sort_by_key(|k| std::cmp::Reverse((k.0, k.1)));
         let mut order: Vec<usize> = keyed.into_iter().map(|(_, _, i)| i).collect();
         if let Some(b) = tt_best
             && let Some(pos) = order.iter().position(|&i| i == b as usize)
