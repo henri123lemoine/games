@@ -225,7 +225,12 @@ impl Agent<LiarsDice> for ProbabilisticAgent {
     fn act(&self, game: &LiarsDice, state: &LdState, player: usize, rng: &mut Rng) -> usize {
         let desired = self.choose(game, state, player, rng);
         let actions = game.legal_actions(state);
-        actions.iter().position(|&a| a == desired).unwrap_or(0)
+        let i = actions.iter().position(|&a| a == desired);
+        debug_assert!(
+            i.is_some(),
+            "ProbabilisticAgent chose {desired:?}, not legal among {actions:?}"
+        );
+        i.unwrap_or(0)
     }
 }
 
@@ -250,5 +255,65 @@ impl Default for BidConditioned {
 impl Determinizer<LiarsDice> for BidConditioned {
     fn determinize(&self, game: &LiarsDice, state: &mut LdState, observer: usize, rng: &mut Rng) {
         game.resample_hidden(state, observer, rng, self.bidder_bias, self.endorser_bias);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reference `P(Binomial(n, p) == k)` by direct evaluation of C(n,k).
+    fn pmf_ref(n: u32, p: f64, k: i64) -> f64 {
+        if k < 0 || k as u32 > n {
+            return 0.0;
+        }
+        let k = k as u32;
+        let mut c = 1.0;
+        for i in 0..k {
+            c *= (n - i) as f64 / (i + 1) as f64;
+        }
+        c * p.powi(k as i32) * (1.0 - p).powi((n - k) as i32)
+    }
+
+    fn sf_ref(n: u32, p: f64, k: i64) -> f64 {
+        (k.max(0)..=n as i64).map(|i| pmf_ref(n, p, i)).sum()
+    }
+
+    #[test]
+    fn binomials_match_direct_enumeration() {
+        for n in 0..=12u32 {
+            for &p in &[1.0 / 6.0, 1.0 / 3.0, 0.5, 0.9] {
+                for k in -2..=(n as i64 + 2) {
+                    let pmf = binom_pmf(n, p, k);
+                    let sf = binom_sf(n, p, k);
+                    assert!(
+                        (pmf - pmf_ref(n, p, k)).abs() < 1e-12,
+                        "pmf(n={n}, p={p}, k={k}) = {pmf}, want {}",
+                        pmf_ref(n, p, k)
+                    );
+                    assert!(
+                        (sf - sf_ref(n, p, k)).abs() < 1e-12,
+                        "sf(n={n}, p={p}, k={k}) = {sf}, want {}",
+                        sf_ref(n, p, k)
+                    );
+                    assert!(pmf.is_finite() && sf.is_finite());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn binomial_edge_cases() {
+        assert_eq!(binom_sf(0, 1.0 / 6.0, 0), 1.0);
+        assert_eq!(binom_sf(0, 1.0 / 6.0, 1), 0.0);
+        assert_eq!(binom_pmf(0, 1.0 / 6.0, 0), 1.0);
+        assert_eq!(binom_sf(10, 1.0 / 6.0, -3), 1.0);
+        assert_eq!(binom_pmf(10, 1.0 / 6.0, 11), 0.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "faces must be at least 2")]
+    fn one_faced_dice_are_rejected() {
+        LiarsDice::new(2, 5, 1);
     }
 }

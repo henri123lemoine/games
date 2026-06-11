@@ -66,6 +66,10 @@ impl LiarsDice {
     pub fn new(players: u8, dice: u8, faces: u8) -> Self {
         assert!(faces as usize <= MAX_FACES && players as usize <= MAX_PLAYERS && players >= 2);
         assert!(
+            faces >= 2,
+            "faces must be at least 2: the belief agents' binomials divide by 1 - 1/faces"
+        );
+        assert!(
             players as u16 * dice as u16 <= u8::MAX as u16,
             "dice counts are u8: players x dice must not exceed 255"
         );
