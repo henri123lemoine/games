@@ -3,7 +3,7 @@
 //! every value crossing the boundary is a JSON string, so the JS side stays
 //! game-schema-free.
 
-use lab::registry::{Opts, compare_entries, entries};
+use lab::registry::{Opts, entries};
 use lab::runner::{AnyMatch, MatchEvent};
 use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
@@ -27,7 +27,7 @@ fn opts_from_json(opts_json: &str) -> Result<Opts, String> {
             map.insert(k.clone(), s);
         }
     }
-    Ok(Opts(map))
+    Ok(Opts::new(map))
 }
 
 fn event_json(e: &MatchEvent) -> Value {
@@ -47,13 +47,17 @@ fn event_json(e: &MatchEvent) -> Value {
 /// available for bot-vs-bot comparison per game.
 #[wasm_bindgen]
 pub fn list_games() -> String {
-    let games: Vec<Value> = entries()
+    let all = entries();
+    let games: Vec<Value> = all
         .iter()
         .map(|e| json!({"id": e.id, "summary": e.summary, "opts": e.opts_help}))
         .collect();
-    let compare: Vec<Value> = compare_entries()
+    let compare: Vec<Value> = all
         .iter()
-        .map(|c| json!({"id": c.id, "bots": c.bots_help, "field": c.field.is_some()}))
+        .filter_map(|e| {
+            let ev = e.eval.as_ref()?;
+            Some(json!({"id": e.id, "bots": ev.bots_help, "field": ev.has_field}))
+        })
         .collect();
     json!({"games": games, "compare": compare}).to_string()
 }
@@ -81,6 +85,15 @@ pub fn create_match(game: &str, opts_json: &str) -> Result<WebMatch, JsError> {
         .find(|e| e.id == game)
         .ok_or_else(|| JsError::new(&format!("unknown game '{game}'")))?;
     let inner = (entry.make)(&opts).map_err(|e| JsError::new(&e))?;
+    let unused = opts.unused();
+    if !unused.is_empty() {
+        return Err(JsError::new(&format!(
+            "unused option(s): {} — opts for {}: {}",
+            unused.join(", "),
+            entry.id,
+            entry.opts_help
+        )));
+    }
     Ok(WebMatch { inner })
 }
 
@@ -158,11 +171,12 @@ pub fn play_pairs(
     hi: u32,
 ) -> Result<String, JsError> {
     let opts = opts_from_json(opts_json).map_err(|e| JsError::new(&e))?;
-    let entry = compare_entries()
+    let eval = entries()
         .into_iter()
         .find(|e| e.id == game)
+        .and_then(|e| e.eval)
         .ok_or_else(|| JsError::new(&format!("no compare support for '{game}'")))?;
-    let (w, d, l) = (entry.pairs)(&opts, a, b, seed as u64, lo as u64..hi as u64)
+    let (w, d, l) = (eval.pairs)(&opts, a, b, seed as u64, lo as u64..hi as u64)
         .map_err(|e| JsError::new(&e))?;
     Ok(json!({"w": w, "d": d, "l": l}).to_string())
 }
@@ -180,15 +194,18 @@ pub fn play_field(
     hi: u32,
 ) -> Result<String, JsError> {
     let opts = opts_from_json(opts_json).map_err(|e| JsError::new(&e))?;
-    let entry = compare_entries()
+    let eval = entries()
         .into_iter()
         .find(|e| e.id == game)
+        .and_then(|e| e.eval)
         .ok_or_else(|| JsError::new(&format!("no compare support for '{game}'")))?;
-    let field = entry
-        .field
-        .ok_or_else(|| JsError::new(&format!("'{game}' has no field (N-player) mode")))?;
-    let (wins, losses) =
-        field(&opts, a, b, seed as u64, lo as u64..hi as u64).map_err(|e| JsError::new(&e))?;
+    if !eval.has_field {
+        return Err(JsError::new(&format!(
+            "'{game}' has no field (N-player) mode"
+        )));
+    }
+    let (wins, losses) = (eval.field)(&opts, a, b, seed as u64, lo as u64..hi as u64)
+        .map_err(|e| JsError::new(&e))?;
     Ok(json!({"wins": wins, "losses": losses}).to_string())
 }
 

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 
 use lab::compare::{CompareArgs, TourneyArgs, split_specs};
-use lab::registry::{CompareEntry, Opts, compare_entries, entries};
+use lab::registry::{Entry, EvalEntry, Opts, entries};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -37,10 +37,9 @@ fn list() {
     for e in entries() {
         println!("  {:<12} {}", e.id, e.summary);
         println!("  {:<12}   opts: {}", "", e.opts_help);
-    }
-    println!("\ncompare/tourney bots:");
-    for c in compare_entries() {
-        println!("  {:<12} {}", c.id, c.bots_help);
+        if let Some(eval) = &e.eval {
+            println!("  {:<12}   bots: {}", "", eval.bots_help);
+        }
     }
 }
 
@@ -60,10 +59,10 @@ fn parse_kvs(kvs: &[String]) -> HashMap<String, String> {
     map
 }
 
-fn find_compare_entry(game_id: &str) -> CompareEntry {
-    match compare_entries().into_iter().find(|e| e.id == game_id) {
-        Some(e) => e,
-        None => {
+fn find_eval_entry(game_id: &str) -> EvalEntry {
+    match entries().into_iter().find(|e| e.id == game_id) {
+        Some(Entry { eval: Some(ev), .. }) => ev,
+        _ => {
             eprintln!("no compare support for '{game_id}' — try `lab list`");
             std::process::exit(2);
         }
@@ -84,7 +83,7 @@ fn take<T: std::str::FromStr>(map: &mut HashMap<String, String>, key: &str, defa
 }
 
 fn run_compare(game_id: &str, kvs: &[String]) {
-    let entry = find_compare_entry(game_id);
+    let entry = find_eval_entry(game_id);
     let mut map = parse_kvs(kvs);
     let (Some(a), Some(b)) = (map.remove("a"), map.remove("b")) else {
         eprintln!(
@@ -104,7 +103,7 @@ fn run_compare(game_id: &str, kvs: &[String]) {
         batch: take(&mut map, "batch", 16),
         delta: take(&mut map, "delta", 0.1),
         seed: take(&mut map, "seed", 0xC0FFEE),
-        opts: Opts(map),
+        opts: Opts::new(map),
     };
     if let Err(e) = (entry.compare)(&args) {
         eprintln!("error: {e}");
@@ -113,7 +112,7 @@ fn run_compare(game_id: &str, kvs: &[String]) {
 }
 
 fn run_tourney(game_id: &str, kvs: &[String]) {
-    let entry = find_compare_entry(game_id);
+    let entry = find_eval_entry(game_id);
     let mut map = parse_kvs(kvs);
     let Some(bots) = map.remove("bots") else {
         eprintln!(
@@ -126,7 +125,7 @@ fn run_tourney(game_id: &str, kvs: &[String]) {
         bots: split_specs(&bots),
         games: take(&mut map, "games", 20),
         seed: take(&mut map, "seed", 0xC0FFEE),
-        opts: Opts(map),
+        opts: Opts::new(map),
     };
     if let Err(e) = (entry.tourney)(&args) {
         eprintln!("error: {e}");
@@ -142,14 +141,24 @@ fn play(game_id: &str, kvs: &[String]) {
             std::process::exit(2);
         }
     };
-    let map = parse_kvs(kvs);
-    let mut m = match (entry.make)(&Opts(map)) {
+    let opts = Opts::new(parse_kvs(kvs));
+    let mut m = match (entry.make)(&opts) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(2);
         }
     };
+    let unused = opts.unused();
+    if !unused.is_empty() {
+        eprintln!(
+            "error: unused option(s): {} — opts for {}: {}",
+            unused.join(", "),
+            entry.id,
+            entry.opts_help
+        );
+        std::process::exit(2);
+    }
 
     loop {
         for e in m.advance() {

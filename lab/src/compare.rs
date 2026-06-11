@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use game_core::stats::{BinomialSprt, Sprt, Verdict, elo_estimate, fit_elo};
-use game_core::{Agent, Game, Rng, Turn, play_n, winner};
+use game_core::{Agent, Game, Rng, Turn, hash, play_n, winner};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
@@ -37,7 +37,7 @@ pub fn parse_spec(s: &str) -> Result<BotSpec, String> {
     }
     Ok(BotSpec {
         name: name.to_string(),
-        opts: Opts(map),
+        opts: Opts::new(map),
     })
 }
 
@@ -94,7 +94,7 @@ pub struct TourneyArgs {
 }
 
 fn mix(seed: u64, k: u64) -> u64 {
-    game_core::hash::combine(seed, k) | 1
+    hash::combine(seed, k) | 1
 }
 
 /// Plays one two-player game with `first` at seat 0 and returns seat 0's
@@ -236,7 +236,7 @@ pub fn run_pairs<G: Game + Sync>(
 ) -> Result<(u64, u64, u64), String> {
     let a = parse(&parse_spec(a)?, opts)?;
     let b = parse(&parse_spec(b)?, opts)?;
-    let open = opts.get("open", default_open);
+    let open = opts.get("open", default_open)?;
     Ok(play_pairs(game, &a, &b, open, seed, pairs))
 }
 
@@ -275,7 +275,7 @@ pub fn head_to_head<G: Game + Sync>(
 ) -> Result<(), String> {
     let a = parse(&parse_spec(&args.a)?, &args.opts)?;
     let b = parse(&parse_spec(&args.b)?, &args.opts)?;
-    let open = args.opts.get("open", default_open);
+    let open = args.opts.get("open", default_open)?;
     let mut sprt = Sprt::new(args.elo0, args.elo1, args.alpha, args.beta);
     let max_pairs = (args.max_games / 2).max(1);
     let batch_pairs = (args.batch / 2).max(1);
@@ -450,7 +450,7 @@ pub fn round_robin<G: Game + Sync>(
     if args.bots.len() < 2 {
         return Err("tourney needs at least two bots (bots=<spec1>,<spec2>,...)".into());
     }
-    let open = args.opts.get("open", default_open);
+    let open = args.opts.get("open", default_open)?;
     let builders: Vec<BotBuilder<G>> = args
         .bots
         .iter()
