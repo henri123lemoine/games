@@ -306,6 +306,13 @@ impl Game for Go {
     fn state_key(&self, state: &GoState) -> Option<u64> {
         Some(state.key())
     }
+
+    fn action_id(&self, action: &GoAction) -> u64 {
+        match action {
+            GoAction::Place(i) => u64::from(*i) + 1,
+            GoAction::Pass => 0,
+        }
+    }
 }
 
 /// Sets the stone, removes adjacent opponent groups left without liberties,

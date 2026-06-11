@@ -80,6 +80,10 @@ impl Game for Kuhn {
         if player == 0 { to_p0 } else { -to_p0 }
     }
 
+    fn max_return(&self) -> f64 {
+        2.0
+    }
+
     fn legal_actions(&self, _s: &KuhnState) -> Vec<u8> {
         vec![0, 1]
     }

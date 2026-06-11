@@ -71,4 +71,8 @@ impl Game for Chess {
     fn state_key(&self, state: &Board) -> Option<u64> {
         Some(state.key())
     }
+
+    fn action_id(&self, action: &Move) -> u64 {
+        encode::move_index(*action) as u64
+    }
 }

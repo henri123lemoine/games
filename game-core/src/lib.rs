@@ -65,8 +65,17 @@ pub trait Game: Sync {
     /// Whether `state` is terminal.
     fn is_terminal(&self, state: &Self::State) -> bool;
 
-    /// Utility to `player` at a terminal state, in `[-1, 1]` for a win/loss game.
+    /// Utility to `player` at a terminal state, within
+    /// `[-max_return, max_return]`.
     fn returns(&self, state: &Self::State, player: usize) -> f64;
+
+    /// Upper bound on `|returns|` over all terminal states (default 1.0 — the
+    /// win/loss convention). Algorithms that mix static evaluations with
+    /// returns or detect proven wins rely on this bound being tight enough
+    /// that no return exceeds it.
+    fn max_return(&self) -> f64 {
+        1.0
+    }
 
     /// Legal actions at a decision node, in a stable order for the information set.
     fn legal_actions(&self, state: &Self::State) -> Vec<Self::Action>;
@@ -87,6 +96,16 @@ pub trait Game: Sync {
     /// any game with revisited states.
     fn state_key(&self, _state: &Self::State) -> Option<u64> {
         None
+    }
+
+    /// A stable 64-bit identity for an action, used by algorithms to index
+    /// killer/history/RAVE tables across states. Two actions must collide only
+    /// if they are the same move. The default hashes the `Debug` rendering —
+    /// correct whenever `Debug` is injective, but it allocates on search's
+    /// hottest path; override with a cheap exact encoding for any game played
+    /// by alpha-beta or MCTS.
+    fn action_id(&self, action: &Self::Action) -> u64 {
+        hash::fnv1a(format!("{action:?}").as_bytes())
     }
 }
 

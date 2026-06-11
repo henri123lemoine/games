@@ -29,8 +29,8 @@
 //!   `Q + c·P·√N/(1+n)`, concentrating simulations on hinted moves.
 //! * **RAVE/AMAF** ([`Mcts::rave`], off by default): all-moves-as-first
 //!   statistics blended into UCB1 with the MC-RAVE schedule
-//!   `β = ñ/(n + ñ + n·ñ/k)`. Actions are matched across nodes by a hash of
-//!   their `Debug` form; a non-injective `Debug` only blurs the heuristic.
+//!   `β = ñ/(n + ñ + n·ñ/k)`. Actions are matched across nodes by
+//!   [`Game::action_id`].
 //! * **Transposition merging** ([`Mcts::transpositions`], off by default):
 //!   children that share [`Game::state_key`] *and* perspective are merged, so
 //!   statistics pool across move orders. The tree becomes a DAG; descent is
@@ -40,8 +40,6 @@
 //! the root state once per simulation and applies actions along the path.
 //! Single-threaded and deterministic given the arena's seed (randomness comes
 //! from the rng the [`Agent`] contract supplies).
-
-use std::fmt::Write as _;
 
 use game_core::{Agent, Eval, Game, Rng, SearchSpec, Turn};
 
@@ -186,7 +184,7 @@ impl<G: Game> Mcts<G> {
             }
             match nodes[id].mover {
                 None => {
-                    let k = pick_weighted(&nodes[id].probs, rng.unit());
+                    let k = rng.pick(&nodes[id].probs);
                     game.apply(&mut state, nodes[id].actions[k]);
                     if nodes[id].children[k] == UNEXPANDED {
                         let view = nodes[id].view;
@@ -205,16 +203,16 @@ impl<G: Game> Mcts<G> {
                             .map(|(i, _)| i)
                             .collect();
                         if untried.is_empty() {
-                            (self.select_ucb(nodes, id, p), false)
+                            (self.select_ucb(game, nodes, id, p), false)
                         } else {
-                            (untried[rand_below(untried.len(), rng)], true)
+                            (untried[rng.below(untried.len())], true)
                         }
                     } else {
-                        let k = self.select_puct(nodes, id, p);
+                        let k = self.select_puct(game, nodes, id, p);
                         (k, nodes[id].children[k] == UNEXPANDED)
                     };
                     if self.rave {
-                        moves.push((path.len() - 1, p, action_key(&nodes[id].actions[k])));
+                        moves.push((path.len() - 1, p, game.action_id(&nodes[id].actions[k])));
                     }
                     game.apply(&mut state, nodes[id].actions[k]);
                     if expanding {
@@ -245,15 +243,26 @@ impl<G: Game> Mcts<G> {
             }
             End::Aborted => vec![0.0; np],
         };
+        // Walk the path deepest-first, growing the set of (mover, action)
+        // pairs played at-or-below the current node, so each AMAF update is a
+        // set lookup instead of a trajectory scan (`moves` is sorted by path
+        // position: descent pushes in order, the playout appends at the tail).
+        let mut played: std::collections::HashSet<(usize, u64)> = std::collections::HashSet::new();
+        let mut moves_idx = moves.len();
         for i in (0..path.len()).rev() {
             let id = path[i];
             nodes[id].visits += 1;
             nodes[id].value += values[nodes[id].view];
             if self.rave {
-                update_amaf(&mut nodes[id], i, &moves, &values);
+                while moves_idx > 0 && moves[moves_idx - 1].0 >= i {
+                    moves_idx -= 1;
+                    let (_, mv, k) = moves[moves_idx];
+                    played.insert((mv, k));
+                }
+                update_amaf(&mut nodes[id], &played, &values);
             }
             if self.solver {
-                try_prove(nodes, id);
+                try_prove(nodes, id, game.max_return());
             }
         }
     }
@@ -262,7 +271,7 @@ impl<G: Game> Mcts<G> {
     /// exploration. Proven children use their exact value as the mean (still
     /// explored, so a proven draw is not starved of the visits the final
     /// most-visited pick compares); a proven win short-circuits.
-    fn select_ucb(&self, nodes: &[Node<G::Action>], id: usize, p: usize) -> usize {
+    fn select_ucb(&self, game: &G, nodes: &[Node<G::Action>], id: usize, p: usize) -> usize {
         let node = &nodes[id];
         let ln_n = f64::ln(node.visits.max(1) as f64);
         let mut best = 0;
@@ -271,7 +280,7 @@ impl<G: Game> Mcts<G> {
             let child = &nodes[ch];
             let n = child.visits as f64;
             let score = if let Some(v) = &child.proven {
-                if v[p] >= 1.0 {
+                if v[p] >= game.max_return() {
                     f64::INFINITY
                 } else {
                     v[p] + self.c * (ln_n / n.max(1.0)).sqrt()
@@ -298,7 +307,7 @@ impl<G: Game> Mcts<G> {
 
     /// PUCT over all children (unexpanded ones included at `Q = 0`), driven by
     /// the node's normalized order-hint priors.
-    fn select_puct(&self, nodes: &[Node<G::Action>], id: usize, p: usize) -> usize {
+    fn select_puct(&self, game: &G, nodes: &[Node<G::Action>], id: usize, p: usize) -> usize {
         let node = &nodes[id];
         let sqrt_n = (node.visits.max(1) as f64).sqrt();
         let mut best = 0;
@@ -307,7 +316,7 @@ impl<G: Game> Mcts<G> {
             let score = if ch == UNEXPANDED {
                 self.c * node.priors[i] * sqrt_n
             } else if let Some(v) = &nodes[ch].proven {
-                if v[p] >= 1.0 {
+                if v[p] >= game.max_return() {
                     f64::INFINITY
                 } else {
                     let n = nodes[ch].visits as f64;
@@ -375,7 +384,7 @@ impl<G: Game> Mcts<G> {
         let (amaf, amaf_keys) = if self.rave && mover.is_some() {
             (
                 vec![(0u32, 0.0); actions.len()],
-                actions.iter().map(action_key).collect(),
+                actions.iter().map(|a| game.action_id(a)).collect(),
             )
         } else {
             (Vec::new(), Vec::new())
@@ -435,9 +444,9 @@ impl<G: Game> Mcts<G> {
                 }
                 Turn::Player(p) => {
                     let actions = game.legal_actions(state);
-                    let a = actions[rand_below(actions.len(), rng)];
+                    let a = actions[rng.below(actions.len())];
                     if self.rave {
-                        moves.push((pos, p, action_key(&a)));
+                        moves.push((pos, p, game.action_id(&a)));
                     }
                     game.apply(state, a);
                 }
@@ -492,10 +501,10 @@ struct Node<A> {
 }
 
 /// Winands-style proof backup. A decision node is proven by one child that is
-/// a proven win for its mover (returns scale caps at 1.0), or by all children
-/// proven (take the mover's best); a chance node by all outcomes proven
-/// (probability-weighted expectation, which is exact).
-fn try_prove<A: Copy>(nodes: &mut [Node<A>], id: usize) {
+/// a proven win for its mover (a return at [`Game::max_return`] — nothing
+/// better exists), or by all children proven (take the mover's best); a chance
+/// node by all outcomes proven (probability-weighted expectation, exact).
+fn try_prove<A: Copy>(nodes: &mut [Node<A>], id: usize, max_return: f64) {
     if nodes[id].proven.is_some() || nodes[id].actions.is_empty() {
         return;
     }
@@ -511,7 +520,7 @@ fn try_prove<A: Copy>(nodes: &mut [Node<A>], id: usize) {
                     nodes[ch].proven.clone()
                 };
                 match pv {
-                    Some(v) if v[p] >= 1.0 => {
+                    Some(v) if v[p] >= max_return => {
                         nodes[id].proven = Some(v);
                         return;
                     }
@@ -550,15 +559,15 @@ fn try_prove<A: Copy>(nodes: &mut [Node<A>], id: usize) {
 }
 
 /// AMAF update: credit every of the node's actions that its mover played at or
-/// after this node during the simulation.
-fn update_amaf<A>(node: &mut Node<A>, pos: usize, moves: &[(usize, usize, u64)], values: &[f64]) {
+/// after this node during the simulation (`played` holds those pairs).
+fn update_amaf<A>(
+    node: &mut Node<A>,
+    played: &std::collections::HashSet<(usize, u64)>,
+    values: &[f64],
+) {
     let Some(p) = node.mover else { return };
     for j in 0..node.amaf_keys.len() {
-        let kj = node.amaf_keys[j];
-        if moves
-            .iter()
-            .any(|&(mp, mv, k)| mp >= pos && mv == p && k == kj)
-        {
+        if played.contains(&(p, node.amaf_keys[j])) {
             node.amaf[j].0 += 1;
             node.amaf[j].1 += values[p];
         }
@@ -578,37 +587,4 @@ fn normalized_hints(hints: &[i64]) -> Vec<f64> {
 
 fn merge_key(state_key: u64, view: usize) -> u64 {
     state_key ^ (view as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
-}
-
-struct FnvWrite(u64);
-impl std::fmt::Write for FnvWrite {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        for b in s.bytes() {
-            self.0 = (self.0 ^ b as u64).wrapping_mul(0x0100_0000_01b3);
-        }
-        Ok(())
-    }
-}
-
-/// Identity hash of an action's `Debug` form — the only equality available
-/// under `Game`'s action bounds.
-fn action_key<A: std::fmt::Debug>(a: &A) -> u64 {
-    let mut h = FnvWrite(0xcbf2_9ce4_8422_2325);
-    let _ = write!(h, "{a:?}");
-    h.0
-}
-
-fn pick_weighted(probs: &[f64], r: f64) -> usize {
-    let mut acc = 0.0;
-    for (i, p) in probs.iter().enumerate() {
-        acc += p;
-        if r < acc {
-            return i;
-        }
-    }
-    probs.len() - 1
-}
-
-fn rand_below(n: usize, rng: &mut Rng) -> usize {
-    ((rng.unit() * n as f64) as usize).min(n - 1)
 }

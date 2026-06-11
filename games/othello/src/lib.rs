@@ -218,4 +218,11 @@ impl Game for Othello {
     fn state_key(&self, state: &Board) -> Option<u64> {
         Some(state.key())
     }
+
+    fn action_id(&self, action: &Move) -> u64 {
+        match action {
+            Move::Place(sq) => u64::from(*sq) + 1,
+            Move::Pass => 0,
+        }
+    }
 }

@@ -132,6 +132,10 @@ impl Game for Connect4 {
     fn state_key(&self, state: &Connect4State) -> Option<u64> {
         Some(state.key())
     }
+
+    fn action_id(&self, action: &u8) -> u64 {
+        u64::from(*action)
+    }
 }
 
 const WINDOWS: usize = 69;

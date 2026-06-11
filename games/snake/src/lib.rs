@@ -295,6 +295,15 @@ impl Game for Snake {
     fn state_key(&self, state: &SnakeState) -> Option<u64> {
         Some(self.infoset_key(state, 0))
     }
+
+    fn action_id(&self, action: &SnakeAction) -> u64 {
+        match action {
+            SnakeAction::TurnLeft => 0,
+            SnakeAction::Straight => 1,
+            SnakeAction::TurnRight => 2,
+            SnakeAction::Food(i) => 3 + u64::from(*i),
+        }
+    }
 }
 
 /// Length plus a small food-proximity shaping term, on the [`Game::returns`]

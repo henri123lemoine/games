@@ -237,6 +237,13 @@ impl Game for G2048 {
     fn state_key(&self, state: &G2048State) -> Option<u64> {
         Some(state.key())
     }
+
+    fn action_id(&self, action: &G2048Action) -> u64 {
+        match action {
+            G2048Action::Shift(d) => *d as u64,
+            G2048Action::Spawn { cell, four } => 4 + 2 * u64::from(*cell) + u64::from(*four),
+        }
+    }
 }
 
 /// Static evaluation on the same `[0, 1]` scale as [`Game::returns`]: the

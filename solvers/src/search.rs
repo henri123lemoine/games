@@ -17,8 +17,7 @@
 //! * **Killer moves + history heuristic** ([`AlphaBeta::use_killers`]) — two
 //!   killer slots per ply and a cutoff-frequency history table, layered over
 //!   [`SearchSpec::order_hint`] as a tie-break for quiet (non-noisy) moves.
-//!   Actions carry no `Eq`/`Hash` bound, so moves are identified by a hash of
-//!   their `Debug` rendering.
+//!   Moves are identified across states by [`Game::action_id`].
 //! * **Aspiration windows** ([`AlphaBeta::use_aspiration`]) — root searches
 //!   after the first two deepening rounds open with a narrow window around the
 //!   previous score (sized from the score's drift between rounds, so it adapts
@@ -33,8 +32,6 @@
 //! Chance nodes are not supported (perfect information only); games need not
 //! strictly alternate turns — the sign flip follows whose turn it actually is.
 
-use std::fmt::{self, Write as _};
-use std::hash::Hasher;
 use std::marker::PhantomData;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -43,7 +40,7 @@ use web_time::Instant;
 
 use game_core::{Agent, Eval, Game, Rng, SearchSpec, Turn};
 
-use crate::{FastMap, FxHasher};
+use crate::FastMap;
 
 const INF: f64 = f64::INFINITY;
 /// Terminal utilities are scaled by (MATE - ply) so faster wins score higher.
@@ -129,23 +126,6 @@ impl Tables {
         let h = self.history.entry(sig).or_insert(0);
         *h = h.saturating_add((depth as i64) * (depth as i64));
     }
-}
-
-struct SigWriter(FxHasher);
-impl fmt::Write for SigWriter {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.0.write(s.as_bytes());
-        Ok(())
-    }
-}
-
-/// Identity hash of an action via its `Debug` rendering (actions carry no
-/// `Eq`/`Hash` bound, but `Debug` is required and derived renderings are
-/// faithful for the move types games use).
-fn action_sig<A: fmt::Debug>(a: &A) -> u64 {
-    let mut w = SigWriter(FxHasher::default());
-    let _ = write!(w, "{a:?}");
-    w.0.finish()
 }
 
 fn to_tt_score(score: f64, ply: u32) -> f64 {
@@ -281,7 +261,7 @@ impl<G: Game, E: Eval<G>, S: SearchSpec<G>> AlphaBeta<G, E, S> {
                 let hint = self.spec.order_hint(game, state, *a);
                 let mut tiebreak = 0i64;
                 if self.use_killers && !self.spec.is_noisy(game, state, *a) {
-                    let sig = action_sig(a);
+                    let sig = game.action_id(a);
                     tiebreak = if killers[0] == Some(sig) {
                         i64::MAX / 2
                     } else if killers[1] == Some(sig) {
@@ -370,7 +350,7 @@ impl<G: Game, E: Eval<G>, S: SearchSpec<G>> AlphaBeta<G, E, S> {
             }
             if alpha >= beta {
                 if self.use_killers && !self.spec.is_noisy(game, state, a) {
-                    tables.note_cutoff(ply, action_sig(&a), depth);
+                    tables.note_cutoff(ply, game.action_id(&a), depth);
                 }
                 break;
             }
