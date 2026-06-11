@@ -17,6 +17,9 @@
 //!   every game the same terminal client and, later, the same web service.
 
 mod arena;
+pub mod hash;
+pub mod json;
+pub mod rand;
 pub mod stats;
 mod ui;
 

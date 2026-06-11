@@ -22,13 +22,43 @@ impl Rng {
     pub fn new(seed: u64) -> Self {
         Self(seed | 1)
     }
-    pub fn unit(&mut self) -> f64 {
+
+    /// The next raw 64-bit draw — for deriving reproducible sub-seeds (e.g.
+    /// per-rollout streams in parallel simulations).
+    pub fn next_u64(&mut self) -> u64 {
         let mut x = self.0;
         x ^= x << 13;
         x ^= x >> 7;
         x ^= x << 17;
         self.0 = x;
-        (x >> 11) as f64 / (1u64 << 53) as f64
+        x
+    }
+
+    /// Uniform in `[0, 1)`.
+    pub fn unit(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// Uniform integer in `[0, n)`. `n` must be positive.
+    pub fn below(&mut self, n: usize) -> usize {
+        debug_assert!(n > 0);
+        ((self.unit() * n as f64) as usize).min(n - 1)
+    }
+
+    /// Samples an index proportionally to non-negative `weights` (a mixed
+    /// strategy, a chance distribution). Robust to weights that do not sum
+    /// to exactly 1; floating-point shortfall lands on the last index.
+    pub fn pick(&mut self, weights: &[f64]) -> usize {
+        debug_assert!(!weights.is_empty());
+        let total: f64 = weights.iter().sum();
+        let mut target = self.unit() * total;
+        for (i, w) in weights.iter().enumerate() {
+            target -= w;
+            if target < 0.0 {
+                return i;
+            }
+        }
+        weights.len() - 1
     }
 }
 
