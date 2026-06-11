@@ -183,15 +183,23 @@ impl Infer {
         if reqs.is_empty() {
             return Vec::new();
         }
-        let b = reqs.len() as i64;
-        let mut planes = Vec::with_capacity(reqs.len() * PLANE_COUNT * 64);
+        // Pad the batch to bucket sizes: libtorch's MPS backend caches a
+        // compiled graph per tensor shape, and self-play batch widths vary
+        // every cycle — unbucketed, the cache grows without bound until the
+        // OS kills the process.
+        let bucket = reqs.len().next_multiple_of(256);
+        let b = bucket as i64;
+        let mut planes = vec![0.0f32; bucket * PLANE_COUNT * 64];
         let mut gather: Vec<i64> = Vec::with_capacity(reqs.len() * 40);
         for (i, r) in reqs.iter().enumerate() {
             debug_assert_eq!(r.planes.len(), PLANE_COUNT * 64);
-            planes.extend_from_slice(&r.planes);
+            planes[i * PLANE_COUNT * 64..(i + 1) * PLANE_COUNT * 64].copy_from_slice(&r.planes);
             let base = i as i64 * POLICY;
             gather.extend(r.support.iter().map(|&s| base + i64::from(s)));
         }
+        // Same shape-bucketing for the index tensor; padding rows point at
+        // row 0 and their outputs are ignored.
+        gather.resize(gather.len().next_multiple_of(4096), 0);
         let (legal_logits, values) = tch::no_grad(|| {
             let x = Tensor::from_slice(&planes)
                 .reshape([b, PLANES, 8, 8])
