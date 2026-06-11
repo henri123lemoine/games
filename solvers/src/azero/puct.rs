@@ -7,27 +7,12 @@
 //! Chance nodes are sampled once at expansion (fine for deterministic games;
 //! a stochastic game would bake one outcome per edge into the tree).
 
+/// Re-exported from `game_core`, where the capability trait lives.
+pub use game_core::PolicyValueEncoder;
 use game_core::{Agent, Game, Rng, Turn};
 
 use super::mlp::{InferCache, Mlp};
 use super::rand::dirichlet;
-
-/// Game knowledge required by AlphaZero-style learning: a flat `f32`
-/// encoding of states and a dense index for actions in a fixed policy space.
-pub trait PolicyValueEncoder<G: Game>: Sync {
-    /// Length of [`PolicyValueEncoder::encode_state`]'s output.
-    fn input_len(&self) -> usize;
-
-    /// Size of the fixed action-encoding space (the policy head's width).
-    fn policy_len(&self) -> usize;
-
-    /// Flat features of `state`. Must encode the side to move.
-    fn encode_state(&self, game: &G, state: &G::State) -> Vec<f32>;
-
-    /// Index of `action` in the policy space, in `0..policy_len()`. Must be
-    /// injective over the legal actions of any one state.
-    fn action_index(&self, game: &G, state: &G::State, action: G::Action) -> usize;
-}
 
 pub struct Puct<'a, G: Game, E: PolicyValueEncoder<G>> {
     pub game: &'a G,

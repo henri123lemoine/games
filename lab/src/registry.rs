@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use game_core::{Agent, Game, NoSpec, hash};
 use liars_dice::{BidConditioned, LiarsDice, ProbabilisticAgent};
-use solvers::azero::{Mlp, PolicyValueEncoder, Puct, PuctAgent};
+use solvers::azero::{Mlp, Puct, PuctAgent};
 use solvers::mcts::Mcts;
 use solvers::{AlphaBeta, Rollout};
 use twentyone::game::{Action as T21Action, T21State, TwentyOne};
@@ -324,25 +324,6 @@ fn make_snake(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
     Ok(TypedMatch::new(game, vec![bot], human, seed).boxed())
 }
 
-/// Binds the chess crate's encoding to the azero trait (lab depends on both;
-/// the chess crate itself stays solver-free).
-struct ChessEnc;
-
-impl PolicyValueEncoder<chess::Chess> for ChessEnc {
-    fn input_len(&self) -> usize {
-        chess::encode::INPUT_LEN
-    }
-    fn policy_len(&self) -> usize {
-        chess::encode::POLICY_LEN
-    }
-    fn encode_state(&self, _g: &chess::Chess, s: &chess::Board) -> Vec<f32> {
-        chess::encode::encode_board(s)
-    }
-    fn action_index(&self, _g: &chess::Chess, _s: &chess::Board, m: chess::Move) -> usize {
-        chess::encode::move_index(m)
-    }
-}
-
 /// Shares the net (compare builders clone it per game) and runs a fresh PUCT
 /// search per move.
 struct AzeroBot {
@@ -365,7 +346,13 @@ impl Agent<chess::Chess> for AzeroBot {
         player: usize,
         rng: &mut game_core::Rng,
     ) -> usize {
-        PuctAgent(Puct::new(game, &ChessEnc, &self.net, self.sims)).act(game, state, player, rng)
+        PuctAgent(Puct::new(
+            game,
+            &chess::encode::FlatEncoder,
+            &self.net,
+            self.sims,
+        ))
+        .act(game, state, player, rng)
     }
 }
 

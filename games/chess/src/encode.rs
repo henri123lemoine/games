@@ -1,7 +1,8 @@
 //! Flat `f32` board features and dense move indices for policy/value
-//! networks (e.g. AlphaZero-style solvers). Solver crates adapt these
-//! functions to their own encoder traits, keeping this crate free of solver
-//! dependencies.
+//! networks (e.g. AlphaZero-style solvers). The flat encoding is bound to
+//! game-core's [`PolicyValueEncoder`] capability as [`FlatEncoder`]; the
+//! plane encoding is consumed directly by the conv-net stacks (azt,
+//! azinfer), which have their own batching shapes.
 //!
 //! Two encodings live here:
 //!
@@ -16,8 +17,10 @@
 //!
 //! All move indices are injective over the legal moves of any one position.
 
+use game_core::PolicyValueEncoder;
+
 use crate::board::{CASTLE_BK, CASTLE_BQ, CASTLE_WK, CASTLE_WQ};
-use crate::{Board, Color, Move, Piece};
+use crate::{Board, Chess, Color, Move, Piece};
 
 pub const INPUT_LEN: usize = 12 * 64 + 1 + 4 + 8;
 pub const POLICY_LEN: usize = 64 * 64 * 5;
@@ -56,6 +59,25 @@ pub fn move_index(m: Move) -> usize {
         Some(p) => unreachable!("illegal promotion piece {p:?}"),
     };
     m.from as usize * 320 + m.to as usize * 5 + promo
+}
+
+/// The flat encoding declared as the [`PolicyValueEncoder`] capability, so
+/// every consumer binds the same adapter instead of writing its own.
+pub struct FlatEncoder;
+
+impl PolicyValueEncoder<Chess> for FlatEncoder {
+    fn input_len(&self) -> usize {
+        INPUT_LEN
+    }
+    fn policy_len(&self) -> usize {
+        POLICY_LEN
+    }
+    fn encode_state(&self, _g: &Chess, s: &Board) -> Vec<f32> {
+        encode_board(s)
+    }
+    fn action_index(&self, _g: &Chess, _s: &Board, m: Move) -> usize {
+        move_index(m)
+    }
 }
 
 /// Number of 8×8 feature planes in [`encode_planes`].

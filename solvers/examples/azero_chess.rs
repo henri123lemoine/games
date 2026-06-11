@@ -25,11 +25,11 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime};
 
-use chess::{Board, Chess, ChessSpec, MaterialEval, Move};
+use chess::{Board, Chess, ChessSpec, MaterialEval};
 use game_core::{Agent, Game, Rng, Turn};
 use rayon::prelude::*;
 use solvers::AlphaBeta;
-use solvers::azero::{AzeroConfig, Mlp, PolicyValueEncoder, Puct, PuctAgent, SelfPlayTrainer};
+use solvers::azero::{AzeroConfig, Mlp, Puct, PuctAgent, SelfPlayTrainer};
 
 const DASHBOARD: &str = include_str!("../../assets/azero_dashboard.html");
 
@@ -37,26 +37,6 @@ const DASHBOARD: &str = include_str!("../../assets/azero_dashboard.html");
 const OPENING_PLIES: usize = 4;
 /// Eval games longer than this are scored as draws.
 const EVAL_PLY_CAP: usize = 300;
-
-struct Enc;
-
-impl PolicyValueEncoder<Chess> for Enc {
-    fn input_len(&self) -> usize {
-        chess::encode::INPUT_LEN
-    }
-
-    fn policy_len(&self) -> usize {
-        chess::encode::POLICY_LEN
-    }
-
-    fn encode_state(&self, _g: &Chess, s: &Board) -> Vec<f32> {
-        chess::encode::encode_board(s)
-    }
-
-    fn action_index(&self, _g: &Chess, _s: &Board, m: Move) -> usize {
-        chess::encode::move_index(m)
-    }
-}
 
 fn random_agent() -> impl Agent<Chess> {
     game_core::RandomAgent
@@ -134,7 +114,7 @@ fn eval_vs<A: Agent<Chess>>(
         .flat_map_iter(|i| {
             let mut rng = Rng::new(mix(seed, u64::from(i) + 1));
             let opening = random_opening(game, &mut rng);
-            let bot = PuctAgent(Puct::new(game, &Enc, net, sims));
+            let bot = PuctAgent(Puct::new(game, &chess::encode::FlatEncoder, net, sims));
             let opp = make_opponent();
             let as_white = play_from(game, opening.clone(), &bot, &opp, &mut rng);
             let as_black = -play_from(game, opening, &opp, &bot, &mut rng);
@@ -260,9 +240,15 @@ fn run(args: &[String]) {
             net.hidden_len(),
             net.policy_len()
         );
-        (SelfPlayTrainer::with_net(game, &Enc, cfg, net), resumed)
+        (
+            SelfPlayTrainer::with_net(game, &chess::encode::FlatEncoder, cfg, net),
+            resumed,
+        )
     } else {
-        (SelfPlayTrainer::new(game, &Enc, cfg, 0xA12E), 0)
+        (
+            SelfPlayTrainer::new(game, &chess::encode::FlatEncoder, cfg, 0xA12E),
+            0,
+        )
     };
 
     let hidden = trainer.net().hidden_len();
@@ -400,9 +386,9 @@ fn train(args: &[String]) {
             net.hidden_len(),
             net.policy_len()
         );
-        SelfPlayTrainer::with_net(game, &Enc, cfg, net)
+        SelfPlayTrainer::with_net(game, &chess::encode::FlatEncoder, cfg, net)
     } else {
-        SelfPlayTrainer::new(game, &Enc, cfg, 0xA12E)
+        SelfPlayTrainer::new(game, &chess::encode::FlatEncoder, cfg, 0xA12E)
     };
 
     println!(

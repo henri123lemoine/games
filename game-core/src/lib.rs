@@ -148,3 +148,22 @@ pub trait SearchSpec<G: Game>: Sync {
 /// A [`SearchSpec`] with no guidance — correct for any game.
 pub struct NoSpec;
 impl<G: Game> SearchSpec<G> for NoSpec {}
+
+/// Game knowledge required by policy-value learning (AlphaZero-style
+/// self-play, policy gradient): a flat `f32` encoding of states and a dense
+/// index for actions in a fixed policy space. Like every capability trait, a
+/// game declares it here and the algorithms in `solvers` consume it.
+pub trait PolicyValueEncoder<G: Game>: Sync {
+    /// Length of [`PolicyValueEncoder::encode_state`]'s output.
+    fn input_len(&self) -> usize;
+
+    /// Size of the fixed action-encoding space (the policy head's width).
+    fn policy_len(&self) -> usize;
+
+    /// Flat features of `state`. Must encode the side to move.
+    fn encode_state(&self, game: &G, state: &G::State) -> Vec<f32>;
+
+    /// Index of `action` in the policy space, in `0..policy_len()`. Must be
+    /// injective over the legal actions of any one state.
+    fn action_index(&self, game: &G, state: &G::State, action: G::Action) -> usize;
+}
