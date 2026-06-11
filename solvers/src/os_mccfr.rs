@@ -27,7 +27,7 @@
 //! relative regrets. Empirically that stalls Kuhn at NashConv ≈ 0.5 where
 //! plain accumulation reaches < 0.03.
 
-use game_core::{Game, Rng, Turn};
+use game_core::{Agent, Game, Rng, Turn};
 
 use crate::FastMap;
 use crate::tabular::{normalized_or_uniform, regret_match};
@@ -181,5 +181,11 @@ impl<G: Game> OsMccfr<G> {
     /// [`game_core::Agent`] for the arena.
     pub fn sample_action(&self, state: &G::State, player: usize, rng: &mut Rng) -> usize {
         rng.pick(&self.policy(state, player))
+    }
+}
+
+impl<G: Game> Agent<G> for OsMccfr<G> {
+    fn act(&self, _game: &G, state: &G::State, player: usize, rng: &mut Rng) -> usize {
+        self.sample_action(state, player, rng)
     }
 }

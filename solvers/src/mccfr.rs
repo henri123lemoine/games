@@ -10,7 +10,7 @@
 //! Regrets use the CFR+ floor (clipped at zero), which converges fast in
 //! practice. The stored average strategy is what you play.
 
-use game_core::{Game, Rng, Turn};
+use game_core::{Agent, Game, Rng, Turn};
 
 use crate::FastMap;
 use crate::tabular::{normalized_or_uniform, regret_match};
@@ -125,5 +125,11 @@ impl<G: Game> Mccfr<G> {
     /// [`game_core::Agent`] for the arena.
     pub fn sample_action(&self, state: &G::State, player: usize, rng: &mut Rng) -> usize {
         rng.pick(&self.policy(state, player))
+    }
+}
+
+impl<G: Game> Agent<G> for Mccfr<G> {
+    fn act(&self, _game: &G, state: &G::State, player: usize, rng: &mut Rng) -> usize {
+        self.sample_action(state, player, rng)
     }
 }

@@ -10,8 +10,8 @@
 
 use std::time::Instant;
 
-use game_core::{RandomAgent, Rng, win_rate};
-use liars_dice::{LdState, LiarsDice, ProbabilisticAgent};
+use game_core::{RandomAgent, win_rate};
+use liars_dice::{LiarsDice, ProbabilisticAgent};
 use solvers::os_mccfr::OsMccfr;
 
 const EVAL_GAMES: u32 = 1000;
@@ -35,12 +35,9 @@ fn main() {
             solver.run(iters - done);
             done = iters;
             let train_t = t.elapsed();
-            let agent = |_: &LiarsDice, s: &LdState, pl: usize, rng: &mut Rng| {
-                solver.sample_action(s, pl, rng)
-            };
-            let vs_random = win_rate(solver.game(), &agent, &RandomAgent, EVAL_GAMES, 0xA11CE);
+            let vs_random = win_rate(solver.game(), &solver, &RandomAgent, EVAL_GAMES, 0xA11CE);
             let belief = ProbabilisticAgent::default_agent();
-            let vs_belief = win_rate(solver.game(), &agent, &belief, EVAL_GAMES, 0xB0B);
+            let vs_belief = win_rate(solver.game(), &solver, &belief, EVAL_GAMES, 0xB0B);
             println!(
                 "{:>8} {:>9} {:>10.3} {:>10.3} {:>10} {:>8.1?}",
                 format!("{p}p{d}d{f}f"),

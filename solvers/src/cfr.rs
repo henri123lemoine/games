@@ -1,4 +1,4 @@
-use game_core::{Game, Rng, Turn};
+use game_core::{Agent, Game, Rng, Turn};
 
 use crate::FastMap;
 use crate::tabular::{argmax, normalized_or_uniform, regret_match};
@@ -349,5 +349,11 @@ impl<G: Game> Cfr<G> {
                 v
             }
         }
+    }
+}
+
+impl<G: Game> Agent<G> for Cfr<G> {
+    fn act(&self, _game: &G, state: &G::State, player: usize, rng: &mut Rng) -> usize {
+        self.sample_action(state, player, rng)
     }
 }
