@@ -695,6 +695,107 @@ fn play(args: &[String]) {
     }
 }
 
+
+/// Minimal UCI engine over stdin/stdout: enough for chess GUIs and the
+/// local web board (position startpos|fen [moves ...], go [movetime N]).
+fn uci_engine(args: &[String]) {
+    use chess::{Board, legal_moves};
+    use mcts::{Gather, MctsConfig, Search};
+    use selfplay::argmax;
+    use std::collections::HashMap;
+    use std::io::BufRead;
+
+    let net_path: PathBuf = arg(args, "--net", PathBuf::from("../data/azt/run2/latest.ot"));
+    let blocks: usize = arg(args, "--blocks", 8);
+    let channels: i64 = arg(args, "--ch", 96);
+    let sims: u32 = arg(args, "--sims", 2000);
+
+    let cfg = NetConfig { blocks, channels };
+    let infer = Infer::load(&net_path, cfg, device(), Kind::Half).unwrap_or_else(|e| {
+        eprintln!("failed to load {}: {e}", net_path.display());
+        std::process::exit(1);
+    });
+    let mut board = Board::start();
+    let mut keys: HashMap<u64, u8> = HashMap::new();
+    let mut rng = Rng::new(epoch_secs());
+
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else { break };
+        let line = line.trim();
+        let mut words = line.split_whitespace();
+        match words.next() {
+            Some("uci") => {
+                println!("id name azero-azt ({blocks}x{channels})");
+                println!("id author the games room");
+                println!("uciok");
+            }
+            Some("isready") => println!("readyok"),
+            Some("ucinewgame") => {
+                board = Board::start();
+                keys.clear();
+            }
+            Some("position") => {
+                let rest: Vec<&str> = words.collect();
+                let (start, move_idx) = if rest.first() == Some(&"startpos") {
+                    (Board::start(), 1)
+                } else if rest.first() == Some(&"fen") {
+                    let fen_end = rest
+                        .iter()
+                        .position(|&w| w == "moves")
+                        .unwrap_or(rest.len());
+                    match Board::from_fen(&rest[1..fen_end].join(" ")) {
+                        Ok(b) => (b, fen_end),
+                        Err(e) => {
+                            eprintln!("bad fen: {e}");
+                            continue;
+                        }
+                    }
+                } else {
+                    continue;
+                };
+                board = start;
+                keys.clear();
+                keys.insert(board.key(), 1);
+                if rest.get(move_idx) == Some(&"moves") {
+                    for m in &rest[move_idx + 1..] {
+                        if let Ok(m) = m.parse::<chess::Move>() {
+                            if legal_moves(&board).contains(&m) {
+                                board.apply(m);
+                                *keys.entry(board.key()).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            Some("go") => {
+                let mcts_cfg = MctsConfig {
+                    sims,
+                    root_noise: 0.0,
+                    ..MctsConfig::default()
+                };
+                let mut search = Search::new(None);
+                let mut results = Vec::new();
+                while let Gather::Requests(reqs) = search.advance(
+                    &board,
+                    &keys,
+                    &mcts_cfg,
+                    &mut rng,
+                    std::mem::take(&mut results),
+                ) {
+                    results = infer.forward_batch(&reqs);
+                }
+                let i = argmax(search.root_visits());
+                let q = search.root_q();
+                println!("info score cp {} string q {q:+.3}", (q * 600.0) as i64);
+                println!("bestmove {}", search.root_moves()[i]);
+            }
+            Some("quit") => break,
+            _ => {}
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -703,6 +804,7 @@ fn main() {
         Some("play") => play(&args[1..]),
         Some("elo") => elo_gauge(&args[1..]),
         Some("calibrate") => calibrate(&args[1..]),
+        Some("uci") => uci_engine(&args[1..]),
         _ => {
             eprintln!(
                 "usage: azt run   [--dir ../data/azt/run1] [--hours 24] [--blocks 6] [--ch 64] \
@@ -719,6 +821,7 @@ fn main() {
                 "       azt elo   [--net ../data/azt/run2/latest.ot] [--blocks 8] [--ch 96] \
                  [--sims 600] [--pairs 8] [--movetime 50] [--watch <minutes>]"
             );
+            eprintln!("       azt uci   [--net ...] [--blocks 8] [--ch 96] [--sims 2000]");
             std::process::exit(2);
         }
     }
