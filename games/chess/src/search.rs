@@ -177,18 +177,27 @@ fn move_order_score(board: &Board, m: &Move) -> i32 {
     s
 }
 
+/// Centipawns squashed onto the `(-1, 1)` returns scale the [`Eval`] contract
+/// requires: `(2/π)·atan(cp/400)`. Strictly monotone, so alpha-beta's move
+/// choice is unchanged; atan (rather than tanh) keeps f64 resolution even at
+/// absurd material edges instead of saturating to exactly ±1.
+fn centipawns_to_value(cp: f64) -> f64 {
+    (2.0 / std::f64::consts::PI) * (cp / 400.0).atan()
+}
+
 /// [`Eval`] for chess: material + piece-square tables (+ endgame king
-/// tables and a bare-king mop-up term), in centipawns.
+/// tables and a bare-king mop-up term). Computed in centipawns
+/// ([`evaluate`]), reported on the returns scale.
 pub struct MaterialEval;
 
 impl Eval<Chess> for MaterialEval {
     fn eval(&self, _game: &Chess, state: &Board, player: usize) -> f64 {
         let stm_score = evaluate(state) as f64;
-        if state.stm.index() == player {
+        centipawns_to_value(if state.stm.index() == player {
             stm_score
         } else {
             -stm_score
-        }
+        })
     }
 }
 
@@ -423,17 +432,18 @@ pub fn rich_evaluate(board: &Board) -> i32 {
 }
 
 /// [`Eval`] for chess: the tapered [`rich_evaluate`] (pawn structure, rook
-/// files, bishop pair, king shield, mobility), in centipawns.
+/// files, bishop pair, king shield, mobility). Computed in centipawns,
+/// reported on the returns scale.
 pub struct RichEval;
 
 impl Eval<Chess> for RichEval {
     fn eval(&self, _game: &Chess, state: &Board, player: usize) -> f64 {
         let stm_score = rich_evaluate(state) as f64;
-        if state.stm.index() == player {
+        centipawns_to_value(if state.stm.index() == player {
             stm_score
         } else {
             -stm_score
-        }
+        })
     }
 }
 

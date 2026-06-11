@@ -31,7 +31,10 @@ fn weighted_sum(mut discs: u64) -> i32 {
 }
 
 /// [`Eval`] for Othello: weighted-square table difference plus a mobility
-/// (legal-placement count) difference, from `player`'s perspective.
+/// (legal-placement count) difference, from `player`'s perspective, squashed
+/// onto the `(-1, 1)` returns scale the [`Eval`] contract requires
+/// (`(2/π)·atan(score/100)` — strictly monotone, so alpha-beta's move choice
+/// is unchanged).
 pub struct OthelloEval;
 
 impl Eval<Othello> for OthelloEval {
@@ -40,7 +43,8 @@ impl Eval<Othello> for OthelloEval {
         let squares = weighted_sum(mine) - weighted_sum(theirs);
         let mobility = placements(mine, theirs).count_ones() as i32
             - placements(theirs, mine).count_ones() as i32;
-        (squares + MOBILITY_WEIGHT * mobility) as f64
+        let score = (squares + MOBILITY_WEIGHT * mobility) as f64;
+        (2.0 / std::f64::consts::PI) * (score / 100.0).atan()
     }
 }
 
