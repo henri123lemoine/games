@@ -46,11 +46,12 @@ small enough), and exploitability. Every further power is unlocked by declaring
 | how to sample hidden info | `Determinizer` | `solvers::Rollout` (determinized Monte-Carlo with common random numbers) |
 | per-player view, action labels/parsing, transition narration | `GameUi` | the universal client in `lab` — no game writes a play loop |
 
-Concretely: chess ships piece-square tables (`MaterialEval`) and "captures are
-noisy, MVV-LVA first" (`ChessSpec`) — about 60 lines of knowledge — and receives
-a full tournament-shaped search engine. Liar's Dice ships "bidders plausibly
-hold the face they bid" (`BidConditioned`) and receives parallel determinized
-rollouts. Neither contains a line of search machinery.
+Concretely: chess ships piece-square tables (`MaterialEval`, plus the tapered
+`RichEval` it grew later) and "captures are noisy, MVV-LVA first"
+(`ChessSpec`) — a few hundred lines of evaluation knowledge and zero lines of
+search — and receives a full tournament-shaped engine. Liar's Dice ships
+"bidders plausibly hold the face they bid" (`BidConditioned`) and receives
+parallel determinized rollouts. Neither contains a line of search machinery.
 
 **Bespoke algorithms are allowed but live with their game.** Twenty-One's
 round-decomposed CFR+ solver exploits structure (rounds linked only by public
@@ -74,13 +75,23 @@ sane default — never reach into a specific game.
 - **Actions are indices.** Agents return an index into `legal_actions(state)`,
   which must be stably ordered per information set. This keeps `Action` types
   fully game-private, makes tabular methods line up, and gives serving a
-  wire-format for free (index + label).
+  wire-format for free (index + label). For cross-state identity
+  (killer/history/RAVE tables), `Game::action_id` gives every action a stable
+  u64 — defaulted via its `Debug` form, overridden cheaply by games search
+  cares about.
 - **Information sets are u64 keys** (hashes of sufficient statistics).
   Collision odds at tens of millions of infosets are negligible (~2⁻²⁵); the
   payoff is flat, fast tables.
-- **One human-quality randomness contract.** `Agent::act` receives a single
-  uniform `r` for mixed strategies; deterministic agents ignore it. Matches are
-  reproducible from a seed.
+- **One randomness contract.** `Agent::act` receives `&mut Rng` — a private,
+  seeded stream for mixed strategies and stochastic search; deterministic
+  agents ignore it. Matches are reproducible from the arena seed, and agents
+  stay `&self` so they can be shared across seats and parallel games.
+- **Draws are first-class.** `play` returns the actual utility, `win_rate`
+  scores draws ½, and N-player ties split `win_share` so an all-draw field
+  reads exactly the fair `1/players` — never a phantom win for seat 0.
+- **Returns are bounded by `Game::max_return`** (default 1.0). Anything that
+  mixes static evaluations with returns or detects proven wins (MCTS-Solver)
+  keys on that bound instead of assuming the win/loss convention.
 - **Measure one change at a time.** Evaluation is win share against a *field*
   with the hero rotated through seats (fair = 1/players); single runs can be
   ~2σ lucky (it happened — see `games/liars-dice/examples/ab.rs`).
