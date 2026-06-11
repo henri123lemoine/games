@@ -93,6 +93,19 @@ fn append_line(path: &Path, line: &str) {
         .expect("append metrics line");
 }
 
+/// The effective learning rate of the last completed iteration, if logged.
+fn last_lr(path: &Path) -> Option<f64> {
+    let text = std::fs::read_to_string(path).ok()?;
+    text.lines().rev().find_map(|l| {
+        let v: serde_json::Value = serde_json::from_str(l).ok()?;
+        if v.get("policy_loss").is_some() {
+            v.get("lr")?.as_f64()
+        } else {
+            None
+        }
+    })
+}
+
 fn last_iter(path: &Path) -> u64 {
     let Ok(text) = std::fs::read_to_string(path) else {
         return 0;
@@ -185,6 +198,21 @@ fn run(args: &[String]) {
         iter = last_iter(&metrics);
         println!("resumed {} at iter {iter}", latest.display());
     }
+    // LR continuity across legs: if a previous leg's schedule dropped the
+    // rate, resume there instead of re-shocking the run at the base lr.
+    // (Adam moments can't follow — tch-rs exposes no optimizer state-dict —
+    // so this is the piece of resume continuity we *can* keep.)
+    let mut current_lr = lr;
+    let mut lr_dropped = false;
+    if iter > 0
+        && let Some(prev) = last_lr(&metrics)
+        && prev < lr
+    {
+        trainer.set_lr(prev);
+        current_lr = prev;
+        lr_dropped = true;
+        println!("restored lr {prev} from the previous leg (base {lr})");
+    }
     let mut pool = SelfPlay::new(sp_cfg, 0xA12E_5EED);
     let mut replay = Replay::new(replay_cap);
     // Rolling pool of control games' non-loser minimum Qs; the resignation
@@ -217,7 +245,6 @@ fn run(args: &[String]) {
     // closing the laptop lid suspends the process and costs nothing.
     let budget_secs = hours * 3600.0;
     let mut work_secs = 0.0f64;
-    let mut lr_dropped = false;
     let start = Instant::now();
     let opponents = [
         Opponent::Random,
@@ -302,6 +329,7 @@ fn run(args: &[String]) {
             "resigned": stats.resigned, "rep_draws": stats.repetition_draws,
             "capped": stats.capped, "would_resign": stats.would_resign,
             "resign_fp": stats.resign_fp, "resign_q": live_resign_q,
+            "lr": current_lr,
         });
         if let Some((eval_secs, table)) = eval_fields {
             line["eval_secs"] = serde_json::json!(eval_secs);
@@ -322,9 +350,10 @@ fn run(args: &[String]) {
 
         work_secs += f64::from(self_play_secs) + f64::from(train_secs) + f64::from(eval_work);
         if !lr_dropped && work_secs > 0.6 * budget_secs {
-            trainer.set_lr(lr * 0.3);
+            current_lr = lr * 0.3;
+            trainer.set_lr(current_lr);
             lr_dropped = true;
-            println!("lr {} -> {} at 60% of work budget", lr, lr * 0.3);
+            println!("lr {lr} -> {current_lr} at 60% of work budget");
         }
 
         let reason = if stop.exists() {
@@ -630,7 +659,20 @@ fn elo_gauge(args: &[String]) {
         if watch_min <= 0.0 {
             break;
         }
-        std::thread::sleep(Duration::from_secs_f64(watch_min * 60.0));
+        // Honor the run dir's STOP contract like every other process: exit
+        // instead of gauging forever after the run ends.
+        let stop = net_path.parent().unwrap_or(Path::new(".")).join("STOP");
+        let deadline = Instant::now() + Duration::from_secs_f64(watch_min * 60.0);
+        loop {
+            if stop.exists() {
+                println!("STOP file present; elo watcher exiting");
+                return;
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(15));
+        }
     }
 }
 
