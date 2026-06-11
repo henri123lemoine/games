@@ -229,3 +229,96 @@ impl PolicyValueEncoder<Ttt> for TttEnc {
         a
     }
 }
+
+/// Exact NashConv of a Kuhn policy: for each player, the best pure
+/// infoset-strategy response (Kuhn has 6 infosets x 2 actions per player, so
+/// 64 pure strategies — small enough to enumerate exactly, with chance
+/// integrated). Zero exactly at a Nash equilibrium.
+pub fn kuhn_nashconv(policy: &dyn Fn(&KuhnState, usize) -> Vec<f64>) -> f64 {
+    (0..2).map(|br| kuhn_best_response(policy, br)).sum()
+}
+
+fn kuhn_best_response(policy: &dyn Fn(&KuhnState, usize) -> Vec<f64>, br: usize) -> f64 {
+    let g = Kuhn;
+    let mut keys = Vec::new();
+    collect_infosets(&g, &g.initial_state(), br, &mut keys);
+    let n = keys.len();
+    let mut best = f64::NEG_INFINITY;
+    for mask in 0..(1u32 << n) {
+        let choice: std::collections::HashMap<u64, usize> = keys
+            .iter()
+            .enumerate()
+            .map(|(i, &k)| (k, ((mask >> i) & 1) as usize))
+            .collect();
+        let v = pure_vs_policy(&g, policy, &g.initial_state(), br, &choice);
+        best = best.max(v);
+    }
+    best
+}
+
+fn collect_infosets(g: &Kuhn, s: &KuhnState, br: usize, keys: &mut Vec<u64>) {
+    if g.is_terminal(s) {
+        return;
+    }
+    if let Turn::Player(pl) = g.turn(s)
+        && pl == br
+    {
+        let k = g.infoset_key(s, br);
+        if !keys.contains(&k) {
+            keys.push(k);
+        }
+    }
+    let actions: Vec<u8> = match g.turn(s) {
+        Turn::Chance => g.chance_outcomes(s).iter().map(|&(a, _)| a).collect(),
+        Turn::Player(_) => g.legal_actions(s),
+    };
+    for a in actions {
+        let mut c = s.clone();
+        g.apply(&mut c, a);
+        collect_infosets(g, &c, br, keys);
+    }
+}
+
+fn pure_vs_policy(
+    g: &Kuhn,
+    policy: &dyn Fn(&KuhnState, usize) -> Vec<f64>,
+    s: &KuhnState,
+    br: usize,
+    choice: &std::collections::HashMap<u64, usize>,
+) -> f64 {
+    if g.is_terminal(s) {
+        return g.returns(s, br);
+    }
+    match g.turn(s) {
+        Turn::Chance => g
+            .chance_outcomes(s)
+            .iter()
+            .map(|&(a, p)| {
+                let mut c = s.clone();
+                g.apply(&mut c, a);
+                p * pure_vs_policy(g, policy, &c, br, choice)
+            })
+            .sum(),
+        Turn::Player(pl) if pl == br => {
+            let a = g.legal_actions(s)[choice[&g.infoset_key(s, br)]];
+            let mut c = s.clone();
+            g.apply(&mut c, a);
+            pure_vs_policy(g, policy, &c, br, choice)
+        }
+        Turn::Player(pl) => {
+            let sigma = policy(s, pl);
+            g.legal_actions(s)
+                .iter()
+                .enumerate()
+                .map(|(i, &a)| {
+                    if sigma[i] == 0.0 {
+                        return 0.0;
+                    }
+                    let mut c = s.clone();
+                    g.apply(&mut c, a);
+                    sigma[i] * pure_vs_policy(g, policy, &c, br, choice)
+                })
+                .sum()
+        }
+    }
+}
