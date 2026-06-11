@@ -123,8 +123,6 @@ fn device() -> Device {
 fn run(args: &[String]) {
     let hours: f64 = arg(args, "--hours", 24.0);
     let dir: PathBuf = arg(args, "--dir", PathBuf::from("../data/azt/run1"));
-    let blocks: usize = arg(args, "--blocks", 6);
-    let channels: i64 = arg(args, "--ch", 64);
     let sims: u32 = arg(args, "--sims", 320);
     let leaves: u32 = arg(args, "--leaves", 8);
     let concurrent: usize = arg(args, "--concurrent", 512);
@@ -145,7 +143,10 @@ fn run(args: &[String]) {
     let eval_sims: u32 = arg(args, "--eval-sims", 256);
     let snapshot_every: u64 = arg(args, "--snapshot-every", 40);
 
-    let net_cfg = NetConfig { blocks, channels };
+    // Resume reads the architecture recorded in the run's own metrics (flags
+    // override) — the same rule every other subcommand already follows.
+    let net_cfg = net_config_for(args, &dir.join("latest.ot"));
+    let (blocks, channels) = (net_cfg.blocks, net_cfg.channels);
     let sp_cfg = SelfPlayConfig {
         mcts: MctsConfig {
             sims,
