@@ -9,6 +9,7 @@ description = "AlphaZero chess on Metal: tch-rs resnet, batched self-play over t
 [workspace]
 
 [dependencies]
+azinfer = { path = "../azinfer" }
 chess = { path = "../games/chess" }
 game-core = { path = "../game-core" }
 solvers = { path = "../solvers" }

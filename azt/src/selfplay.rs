@@ -12,8 +12,8 @@ use chess::{Board, legal_moves};
 use game_core::Rng;
 use rayon::prelude::*;
 
-use crate::mcts::{Gather, MctsConfig, Search};
 use crate::net::{EvalRequest, EvalResult, Infer};
+use azinfer::mcts::{Gather, MctsConfig, Search};
 
 #[derive(Clone, Copy)]
 pub struct SelfPlayConfig {
@@ -435,13 +435,7 @@ fn sample_proportional(visits: &[u32], rng: &mut Rng) -> usize {
     visits.len() - 1
 }
 
-pub fn argmax(visits: &[u32]) -> usize {
-    visits
-        .iter()
-        .enumerate()
-        .max_by_key(|&(_, &n)| n)
-        .map_or(0, |(i, _)| i)
-}
+pub use azinfer::argmax;
 
 pub fn mix(a: u64, b: u64) -> u64 {
     game_core::hash::combine(a, b)

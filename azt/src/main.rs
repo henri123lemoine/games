@@ -11,7 +11,6 @@
 //! `STOP` file for graceful shutdown.
 
 mod eval;
-mod mcts;
 mod net;
 mod selfplay;
 mod train;
@@ -24,8 +23,8 @@ use std::time::{Duration, Instant, SystemTime};
 use game_core::Rng;
 use tch::{Device, Kind};
 
+use azinfer::mcts::MctsConfig;
 use eval::{Opponent, ladder};
-use mcts::MctsConfig;
 use net::{Infer, NetConfig};
 use selfplay::{SelfPlay, SelfPlayConfig, mix};
 use train::{Replay, Trainer};
@@ -590,8 +589,8 @@ fn elo_gauge(args: &[String]) {
 /// Play against a checkpoint from the terminal: moves in coordinate
 /// notation (e2e4, e7e8q), `quit` to leave.
 fn play(args: &[String]) {
+    use azinfer::mcts::{Gather, Search};
     use chess::{Board, Color, legal_moves};
-    use mcts::{Gather, Search};
     use selfplay::argmax;
     use std::collections::HashMap;
 
@@ -695,12 +694,11 @@ fn play(args: &[String]) {
     }
 }
 
-
 /// Minimal UCI engine over stdin/stdout: enough for chess GUIs and the
 /// local web board (position startpos|fen [moves ...], go [movetime N]).
 fn uci_engine(args: &[String]) {
     use chess::{Board, legal_moves};
-    use mcts::{Gather, MctsConfig, Search};
+    use azinfer::mcts::{Gather, MctsConfig, Search};
     use selfplay::argmax;
     use std::collections::HashMap;
     use std::io::BufRead;

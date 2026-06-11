@@ -113,18 +113,7 @@ impl Net {
     }
 }
 
-/// One evaluation request: encoded planes plus the legal policy indices.
-pub struct EvalRequest {
-    pub planes: Vec<f32>,
-    pub support: Vec<u16>,
-}
-
-/// Priors over `support` (softmax restricted to the legal subset) and the
-/// value, both from the side to move's perspective.
-pub struct EvalResult {
-    pub priors: Vec<f32>,
-    pub value: f32,
-}
+pub use azinfer::{EvalRequest, EvalResult};
 
 /// A frozen inference copy of the net, optionally fp16.
 pub struct Infer {

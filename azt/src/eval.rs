@@ -10,10 +10,10 @@ use game_core::{Agent, Game, Rng};
 use rayon::prelude::*;
 use solvers::AlphaBeta;
 
-use crate::mcts::{Gather, MctsConfig, Search};
 use crate::net::{EvalRequest, EvalResult, Infer};
 use crate::selfplay::{argmax, mix};
 use crate::uci::Uci;
+use azinfer::mcts::{Gather, MctsConfig, Search};
 
 const OPENING_PLIES: usize = 4;
 const PLY_CAP: u16 = 300;
