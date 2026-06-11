@@ -1,10 +1,19 @@
 // The worker protocol: a thin promise-RPC mirror of the wasm engine API.
 // Everything game-specific stays inside opaque JSON (view data, event data).
 
+export interface GameOpt {
+  key: string;
+  value: string;
+  note: string;
+}
+
 export interface GameInfo {
   id: string;
   summary: string;
+  /** Human-readable help line (derived from the schema engine-side). */
   opts: string;
+  /** The structured option schema — what the settings drawer renders. */
+  optsSchema: GameOpt[];
 }
 
 export interface CompareInfo {

@@ -4,7 +4,7 @@
 // and narration, frontends own the board.
 
 import { EngineHost } from '../engine/host';
-import type { GameInfo, Manifest, MatchEventData, ViewState } from '../engine/protocol';
+import type { GameInfo, GameOpt, Manifest, MatchEventData, ViewState } from '../engine/protocol';
 import { frontendFor } from '../frontends';
 import type { FrontendCtx, GameFrontend } from '../frontends/types';
 import { TournamentScreen } from './tournament';
@@ -57,17 +57,15 @@ interface OptField {
   value: string;
 }
 
-function parseOptFields(help: string, current: Record<string, string>): OptField[] {
-  const fields: OptField[] = [];
-  const seen = new Set<string>();
-  for (const m of help.matchAll(/([A-Za-z0-9_-]+)=([^\s]+)/g)) {
-    const key = m[1];
-    if (key === 'seed' || key === 'seat' || /^\d+$/.test(key) || seen.has(key)) continue;
-    seen.add(key);
-    const value = current[key] ?? m[2].split('|')[0].replace(/\.{3}$/, '');
-    fields.push({ key, value });
-  }
-  return fields;
+/** The drawer's fields come from the engine's structured option schema;
+ * seed and seat get dedicated rows, so they are filtered out here. */
+function optFields(schema: GameOpt[], current: Record<string, string>): OptField[] {
+  return schema
+    .filter((o) => o.key !== 'seed' && o.key !== 'seat')
+    .map((o) => ({
+      key: o.key,
+      value: current[o.key] ?? o.value.split('|')[0].replace(/\.{3}$/, ''),
+    }));
 }
 
 function randomSeed(): number {
@@ -301,7 +299,7 @@ export class App {
     const drawer = this.root.querySelector<HTMLElement>('.drawer')!;
     const fieldsEl = drawer.querySelector<HTMLElement>('.drawer-fields')!;
     const open = () => {
-      const fields = parseOptFields(game.opts, opts);
+      const fields = optFields(game.optsSchema, opts);
       const seatRow = SINGLE_PLAYER.has(game.id)
         ? ''
         : `<label class="opt-row"><span>seat</span>

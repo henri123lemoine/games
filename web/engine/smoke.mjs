@@ -20,6 +20,13 @@ assert(
   manifest.compare.some((c) => c.field),
   'expected at least one field-capable compare entry',
 );
+for (const g of manifest.games) {
+  assert(Array.isArray(g.optsSchema) && g.optsSchema.length > 0, `${g.id} has no optsSchema`);
+  assert(
+    g.optsSchema.every((o) => o.key && o.value !== undefined),
+    `${g.id} schema entries need key+value`,
+  );
+}
 console.log('games:', manifest.games.map((g) => g.id).join(','));
 
 let m = engine.create_match('connect4', JSON.stringify({ seat: 'watch', depth: 3, seed: 42 }));

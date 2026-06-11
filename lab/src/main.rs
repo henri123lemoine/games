@@ -36,7 +36,7 @@ fn list() {
     println!("games:");
     for e in entries() {
         println!("  {:<12} {}", e.id, e.summary);
-        println!("  {:<12}   opts: {}", "", e.opts_help);
+        println!("  {:<12}   opts: {}", "", e.opts_help());
         if let Some(eval) = &e.eval {
             println!("  {:<12}   bots: {}", "", eval.bots_help);
         }
@@ -155,7 +155,7 @@ fn play(game_id: &str, kvs: &[String]) {
             "error: unused option(s): {} — opts for {}: {}",
             unused.join(", "),
             entry.id,
-            entry.opts_help
+            entry.opts_help()
         );
         std::process::exit(2);
     }

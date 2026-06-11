@@ -87,14 +87,45 @@ pub type PairsFn =
 pub type FieldFn =
     Box<dyn Fn(&Opts, &str, &str, u64, std::ops::Range<u64>) -> Result<(u64, u64), String>>;
 
+/// One declared game option: key, default (as shown to users), and an
+/// optional clarifying note. The single source for both the CLI help line
+/// and the web manifest's structured schema — so a wording tweak can never
+/// silently change what the web settings drawer offers.
+pub struct OptSpec {
+    pub key: &'static str,
+    pub value: &'static str,
+    pub note: &'static str,
+}
+
+const fn opt(key: &'static str, value: &'static str, note: &'static str) -> OptSpec {
+    OptSpec { key, value, note }
+}
+
 /// A registered game: how to play it, and (when it has a bot parser) how to
 /// evaluate its bots against each other.
 pub struct Entry {
     pub id: &'static str,
     pub summary: &'static str,
-    pub opts_help: &'static str,
+    pub opts: &'static [OptSpec],
     pub make: MakeFn,
     pub eval: Option<EvalEntry>,
+}
+
+impl Entry {
+    /// The human-readable option help, derived from [`Entry::opts`].
+    pub fn opts_help(&self) -> String {
+        self.opts
+            .iter()
+            .map(|o| {
+                if o.note.is_empty() {
+                    format!("{}={}", o.key, o.value)
+                } else {
+                    format!("{}={} {}", o.key, o.value, o.note)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("  ")
+    }
 }
 
 /// Bot-vs-bot evaluation surface, built once per game by [`eval_entry`]:
@@ -175,13 +206,76 @@ fn make_versus<G: game_core::GameUi + Sync + 'static>(
     Ok(TypedMatch::new(game, bots, seat, seed).boxed())
 }
 
+const CHESS_OPTS: &[OptSpec] = &[
+    opt("depth", "5", ""),
+    opt("seat", "0|1|watch", "(0=White)"),
+    opt("bot", "alphabeta|alphabeta-rich|azero", ""),
+    opt("net", "data/azero/chess.bin", ""),
+    opt("sims", "256", ""),
+    opt("seed", "...", ""),
+];
+
+const LIARS_DICE_OPTS: &[OptSpec] = &[
+    opt("players", "5", ""),
+    opt("dice", "5", ""),
+    opt("faces", "6", ""),
+    opt("rollouts", "1000", ""),
+    opt("bot", "rollout|belief|random", ""),
+    opt("seat", "0|..|watch", ""),
+    opt("seed", "...", ""),
+];
+
+const TWENTYONE_OPTS: &[OptSpec] = &[
+    opt("hearts", "6", ""),
+    opt("iters", "50000", "(training iters/subgame)"),
+    opt("seat", "0|1|watch", ""),
+    opt("seed", "...", ""),
+];
+
+const OTHELLO_OPTS: &[OptSpec] = &[
+    opt("depth", "6", ""),
+    opt("seat", "0|1|watch", "(0=Black)"),
+    opt("bot", "alphabeta|mcts", ""),
+    opt("seed", "...", ""),
+];
+
+const CONNECT4_OPTS: &[OptSpec] = &[
+    opt("depth", "9", ""),
+    opt("seat", "0|1|watch", ""),
+    opt("bot", "alphabeta|mcts", ""),
+    opt("seed", "...", ""),
+];
+
+const GO_OPTS: &[OptSpec] = &[
+    opt("size", "9", ""),
+    opt("sims", "6000", ""),
+    opt("bot", "mcts|mcts-eval|mcts-spec", ""),
+    opt("seat", "0|1|watch", "(0=Black)"),
+    opt("seed", "...", ""),
+];
+
+const G2048_OPTS: &[OptSpec] = &[
+    opt("bot", "mcts|mcts-eval", "(omit to play yourself)"),
+    opt("sims", "200", ""),
+    opt("depth", "8", ""),
+    opt("seed", "...", ""),
+];
+
+const SNAKE_OPTS: &[OptSpec] = &[
+    opt("width", "10", ""),
+    opt("height", "10", ""),
+    opt("bot", "mcts|mcts-eval", "(omit to play yourself)"),
+    opt("sims", "200", ""),
+    opt("depth", "12", ""),
+    opt("seed", "...", ""),
+];
+
 pub fn entries() -> Vec<Entry> {
     vec![
         Entry {
             id: "chess",
             summary: "chess vs alpha-beta (perft-validated rules)",
-            opts_help: "depth=5  seat=0|1|watch (0=White)  bot=alphabeta|alphabeta-rich|azero  \
-                        net=data/azero/chess.bin  sims=256  seed=...",
+            opts: CHESS_OPTS,
             make: Box::new(|o| make_versus(o, chess::Chess, "alphabeta", chess_bot)),
             eval: Some(eval_entry(
                 "alphabeta[:depth=5] | alphabeta-rich[:depth=5] (rich eval) | \
@@ -195,8 +289,7 @@ pub fn entries() -> Vec<Entry> {
         Entry {
             id: "liars-dice",
             summary: "N-player Liar's Dice vs determinized-rollout bots",
-            opts_help: "players=5 dice=5 faces=6 rollouts=1000 bot=rollout|belief|random \
-                        seat=0|..|watch seed=...",
+            opts: LIARS_DICE_OPTS,
             make: Box::new(|o| make_versus(o, liars_dice_game(o)?, "rollout", liars_dice_bot)),
             eval: Some(eval_entry(
                 "rollout[:rollouts=1000] | belief | random",
@@ -209,14 +302,14 @@ pub fn entries() -> Vec<Entry> {
         Entry {
             id: "twentyone",
             summary: "Twenty-One vs the decomposed CFR+ solver (artifact or train-at-startup)",
-            opts_help: "hearts=6 iters=50000 (training iters/subgame)  seat=0|1|watch  seed=...",
+            opts: TWENTYONE_OPTS,
             make: Box::new(make_twentyone),
             eval: None,
         },
         Entry {
             id: "othello",
             summary: "Othello vs alpha-beta (weighted squares + mobility)",
-            opts_help: "depth=6  seat=0|1|watch (0=Black)  bot=alphabeta|mcts  seed=...",
+            opts: OTHELLO_OPTS,
             make: Box::new(|o| make_versus(o, othello::Othello, "alphabeta", othello_bot)),
             eval: Some(eval_entry(
                 "alphabeta[:depth=6] | mcts[:sims=2000]",
@@ -229,7 +322,7 @@ pub fn entries() -> Vec<Entry> {
         Entry {
             id: "connect4",
             summary: "Connect-4 vs alpha-beta",
-            opts_help: "depth=9  seat=0|1|watch  bot=alphabeta|mcts  seed=...",
+            opts: CONNECT4_OPTS,
             make: Box::new(|o| make_versus(o, connect4::Connect4, "alphabeta", connect4_bot)),
             eval: Some(eval_entry(
                 "alphabeta[:depth=9] | mcts[:sims=2000]",
@@ -242,8 +335,7 @@ pub fn entries() -> Vec<Entry> {
         Entry {
             id: "go",
             summary: "Go (area scoring, komi 7.5) vs MCTS",
-            opts_help: "size=9  sims=6000  bot=mcts|mcts-eval|mcts-spec  seat=0|1|watch (0=Black)  \
-                        seed=...",
+            opts: GO_OPTS,
             make: Box::new(|o| {
                 // Play wants a stronger default than compare's quick 2000.
                 let sims: u32 = o.get("sims", 6000)?;
@@ -262,15 +354,14 @@ pub fn entries() -> Vec<Entry> {
         Entry {
             id: "2048",
             summary: "2048 (single-player) — play it, or watch an MCTS bot",
-            opts_help: "bot=mcts|mcts-eval (omit to play yourself)  sims=200  depth=8  seed=...",
+            opts: G2048_OPTS,
             make: Box::new(|o| make_solo(o, g2048::G2048, g2048_bot)),
             eval: None,
         },
         Entry {
             id: "snake",
             summary: "Snake (single-player) — play it, or watch an MCTS bot",
-            opts_help: "width=10 height=10  bot=mcts|mcts-eval (omit to play yourself)  sims=200  \
-                        depth=12  seed=...",
+            opts: SNAKE_OPTS,
             make: Box::new(|o| {
                 let game = snake::Snake::new(o.get("width", 10)?, o.get("height", 10)?);
                 make_solo(o, game, snake_bot)

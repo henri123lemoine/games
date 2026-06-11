@@ -50,7 +50,14 @@ pub fn list_games() -> String {
     let all = entries();
     let games: Vec<Value> = all
         .iter()
-        .map(|e| json!({"id": e.id, "summary": e.summary, "opts": e.opts_help}))
+        .map(|e| {
+            let schema: Vec<Value> = e
+                .opts
+                .iter()
+                .map(|o| json!({"key": o.key, "value": o.value, "note": o.note}))
+                .collect();
+            json!({"id": e.id, "summary": e.summary, "opts": e.opts_help(), "optsSchema": schema})
+        })
         .collect();
     let compare: Vec<Value> = all
         .iter()
@@ -91,7 +98,7 @@ pub fn create_match(game: &str, opts_json: &str) -> Result<WebMatch, JsError> {
             "unused option(s): {} — opts for {}: {}",
             unused.join(", "),
             entry.id,
-            entry.opts_help
+            entry.opts_help()
         )));
     }
     Ok(WebMatch { inner })
