@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Games Room — vs azero</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<style>
+  :root {
+    --felt: #20392b; --well: #15271d; --ink: #e9e2d0; --ink-dim: #9fb09a;
+    --brass: #c9a25c; --brass-dim: rgba(201,162,92,.28); --copper: #c97b4f;
+    --light: #d8c8a4; --dark: #8a6f4d;
+    --serif: "Iowan Old Style", "Palatino", Georgia, serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    min-height: 100vh; display: grid; place-items: center;
+    font-family: var(--serif); color: var(--ink);
+    background: radial-gradient(120% 90% at 50% 0%, rgba(255,244,214,.05), transparent 60%), var(--felt);
+    padding: 16px;
+  }
+  .table { display: flex; gap: 28px; flex-wrap: wrap; justify-content: center; align-items: flex-start; }
+  .label { font-variant: all-small-caps; letter-spacing: .14em; color: var(--ink-dim); font-size: 15px; }
+  .label.brass { color: var(--brass); }
+
+  #board {
+    display: grid; grid-template-columns: repeat(8, 64px); grid-template-rows: repeat(8, 64px);
+    border: 6px solid #5d4a33; border-radius: 4px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.45), inset 0 0 0 1px rgba(0,0,0,.3);
+  }
+  .sq { display: grid; place-items: center; font-size: 44px; cursor: pointer; user-select: none;
+        line-height: 1; position: relative; }
+  .sq.light { background: var(--light); } .sq.dark { background: var(--dark); }
+  .sq.sel { outline: 3px solid var(--brass); outline-offset: -3px; }
+  .sq.tgt::after { content: ""; position: absolute; width: 16px; height: 16px;
+                   border-radius: 50%; background: rgba(201,162,92,.65); }
+  .sq.cap::after { width: 52px; height: 52px; background: none; border: 4px solid rgba(201,123,79,.7);
+                   border-radius: 50%; }
+  .sq.last { box-shadow: inset 0 0 0 64px rgba(201,162,92,.18); }
+  .sq .w { color: #f5efdf; text-shadow: 0 1px 2px rgba(0,0,0,.7); }
+  .sq .b { color: #1f1a14; text-shadow: 0 1px 1px rgba(255,255,255,.15); }
+
+  .side { width: 230px; display: flex; flex-direction: column; gap: 16px; }
+  h1 { font-size: 26px; font-weight: 500; line-height: 1.1; }
+  .figure { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  #eval { font-size: 30px; color: var(--brass); }
+  #status { font-style: italic; color: var(--ink-dim); min-height: 40px; }
+  #moves { font-family: var(--mono); font-size: 12.5px; color: var(--ink-dim);
+           max-height: 220px; overflow-y: auto; line-height: 1.7; }
+  button {
+    font: inherit; font-variant: all-small-caps; letter-spacing: .1em;
+    background: none; border: 1px solid var(--brass-dim); border-radius: 3px;
+    color: var(--ink); padding: 7px 14px; cursor: pointer;
+  }
+  button:hover { border-color: var(--brass); color: var(--brass); }
+</style>
+</head>
+<body>
+<div class="table">
+  <div id="board"></div>
+  <div class="side">
+    <div>
+      <span class="label brass">The Games Room</span>
+      <h1>vs azero</h1>
+      <span class="label" id="subtitle">run2 · 2000 sims/move</span>
+    </div>
+    <div><span class="figure" id="eval">+0.00</span><br>
+         <span class="label">engine's view (its side)</span></div>
+    <div id="status">Your move.</div>
+    <div id="moves"></div>
+    <div style="display:flex; gap:10px">
+      <button id="new">new game</button>
+      <button id="swap">play black</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+const GLYPH = { p:'♟', n:'♞', b:'♝', r:'♜', q:'♛', k:'♚',
+                P:'♙', N:'♘', B:'♗', R:'♖', Q:'♕', K:'♔' };
+const game = new Chess();
+let humanWhite = true, sel = null, lastMove = null, thinking = false;
+const board = document.getElementById('board');
+const $ = id => document.getElementById(id);
+
+function squares() {
+  const files = 'abcdefgh'.split(''), out = [];
+  const ranks = humanWhite ? [8,7,6,5,4,3,2,1] : [1,2,3,4,5,6,7,8];
+  const fs = humanWhite ? files : [...files].reverse();
+  for (const r of ranks) for (const f of fs) out.push(f + r);
+  return out;
+}
+
+function render() {
+  board.innerHTML = '';
+  const legal = sel ? game.moves({ square: sel, verbose: true }) : [];
+  squares().forEach((sq, i) => {
+    const d = document.createElement('div');
+    const dark = (Math.floor(i / 8) + i) % 2 === 1;
+    d.className = 'sq ' + (dark ? 'dark' : 'light');
+    if (sq === sel) d.classList.add('sel');
+    const mv = legal.find(m => m.to === sq);
+    if (mv) d.classList.add(mv.captured ? 'cap' : 'tgt');
+    if (lastMove && (sq === lastMove.from || sq === lastMove.to)) d.classList.add('last');
+    const p = game.get(sq);
+    if (p) {
+      const s = document.createElement('span');
+      s.textContent = GLYPH[p.color === 'w' ? p.type.toUpperCase() : p.type];
+      s.className = p.color;
+      d.appendChild(s);
+    }
+    d.onclick = () => click(sq);
+    board.appendChild(d);
+  });
+  $('moves').textContent = game.history().join('  ');
+}
+
+function gameOverText() {
+  if (game.in_checkmate())
+    return (game.turn() === 'w') === humanWhite ? 'Checkmate — azero wins.' : 'Checkmate — you win!';
+  if (game.in_stalemate()) return 'Stalemate — draw.';
+  if (game.in_threefold_repetition()) return 'Draw by repetition.';
+  if (game.insufficient_material() || game.in_draw()) return 'Draw.';
+  return null;
+}
+
+async function engineMove() {
+  thinking = true;
+  $('status').textContent = 'azero is thinking…';
+  const moves = game.history({ verbose: true }).map(m => m.from + m.to + (m.promotion || ''));
+  try {
+    const res = await fetch('/engine', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ moves: moves.join(' ') }),
+    });
+    const { move, q } = await res.json();
+    const mv = game.move({ from: move.slice(0,2), to: move.slice(2,4), promotion: move[4] || 'q' });
+    lastMove = mv;
+    if (q !== null) $('eval').textContent = (q >= 0 ? '+' : '') + q.toFixed(2);
+    $('status').textContent = gameOverText() || 'Your move.';
+  } catch (e) {
+    $('status').textContent = 'engine unreachable — is board_server.py running?';
+  }
+  thinking = false;
+  render();
+}
+
+function click(sq) {
+  if (thinking || gameOverText()) return;
+  if ((game.turn() === 'w') !== humanWhite) return;
+  const p = game.get(sq);
+  if (sel) {
+    const legal = game.moves({ square: sel, verbose: true }).find(m => m.to === sq);
+    if (legal) {
+      lastMove = game.move({ from: sel, to: sq, promotion: 'q' });
+      sel = null;
+      render();
+      const over = gameOverText();
+      $('status').textContent = over || '';
+      if (!over) engineMove();
+      return;
+    }
+  }
+  sel = p && (p.color === 'w') === humanWhite ? sq : null;
+  render();
+}
+
+$('new').onclick = () => { game.reset(); sel = null; lastMove = null;
+  $('status').textContent = humanWhite ? 'Your move.' : ''; render();
+  if (!humanWhite) engineMove(); };
+$('swap').onclick = () => { humanWhite = !humanWhite;
+  $('swap').textContent = humanWhite ? 'play black' : 'play white'; $('new').onclick(); };
+
+render();
+</script>
+</body>
+</html>
