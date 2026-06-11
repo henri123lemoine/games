@@ -1,0 +1,9 @@
+[package]
+name = "azinfer"
+version = "0.1.0"
+edition = "2024"
+description = "Torch-free azero chess inference: batched park/resume PUCT and a pure-Rust forward for exported nets (wasm-safe; the browser's WebGPU path validates against it)"
+
+[dependencies]
+chess = { path = "../games/chess" }
+game-core = { path = "../game-core" }
