@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Training Ledger — azero · chess</title>
+<style>
+  :root {
+    --felt: #20392b;
+    --felt-deep: #1a2f23;
+    --well: #15271d;
+    --ink: #e9e2d0;
+    --ink-dim: #9fb09a;
+    --brass: #c9a25c;
+    --brass-dim: rgba(201, 162, 92, .28);
+    --copper: #c97b4f;
+    --ivory: #efe9d6;
+    --sage: #8da588;
+    --serif: "Iowan Old Style", "Palatino", "Palatino Linotype", Georgia, serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { height: 100%; }
+  body {
+    min-height: 100%;
+    font-family: var(--serif);
+    color: var(--ink);
+    background:
+      radial-gradient(120% 90% at 50% 0%, rgba(255, 244, 214, .05), transparent 60%),
+      radial-gradient(130% 100% at 50% 110%, rgba(0, 0, 0, .35), transparent 55%),
+      var(--felt);
+    padding: clamp(14px, 2.5vw, 36px);
+  }
+  .ledger { max-width: 1240px; margin: 0 auto; }
+
+  .label {
+    font-variant: all-small-caps;
+    letter-spacing: .14em;
+    color: var(--ink-dim);
+    font-size: 15px;
+  }
+  .figure { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  /* ── masthead ───────────────────────────────────────────── */
+  header {
+    display: flex; flex-wrap: wrap; gap: 12px 32px;
+    align-items: flex-end; justify-content: space-between;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--brass-dim);
+  }
+  .masthead .label { color: var(--brass); }
+  .masthead h1 {
+    font-size: clamp(28px, 4vw, 42px);
+    font-weight: 500; line-height: 1.05; letter-spacing: .01em;
+  }
+  .masthead p { margin-top: 6px; }
+  .vitals { display: flex; gap: 28px; text-align: right; }
+  .vitals .figure { font-size: clamp(18px, 2.2vw, 24px); color: var(--ivory); }
+  .vitals .label { display: block; margin-top: 2px; }
+  #v-elo { color: var(--brass); }
+  #status { display: inline-flex; align-items: center; gap: 7px; }
+  #dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--sage); box-shadow: 0 0 0 0 rgba(141, 165, 136, .6);
+  }
+  #dot.live { animation: pulse 2.4s ease-out infinite; }
+  #dot.ended { background: var(--copper); }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(141, 165, 136, .55); }
+    70% { box-shadow: 0 0 0 9px rgba(141, 165, 136, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(141, 165, 136, 0); }
+  }
+
+  /* ── panels ─────────────────────────────────────────────── */
+  .panel { padding: 18px 0 6px; }
+  .panel-head {
+    display: flex; flex-wrap: wrap; gap: 6px 18px;
+    align-items: baseline; justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .panel-head .note { font-size: 14px; color: var(--ink-dim); font-style: italic; }
+  .board {
+    position: relative;
+    background: var(--well);
+    border: 1px solid var(--brass-dim);
+    border-radius: 3px;
+    box-shadow: inset 0 1px 8px rgba(0, 0, 0, .35);
+  }
+  .board svg { display: block; width: 100%; }
+  .yaxis span, .xaxis span {
+    position: absolute; font-family: var(--mono); font-size: 11px;
+    color: var(--ink-dim);
+  }
+  .yaxis span { left: 8px; transform: translateY(-50%); }
+  .yaxis span.right { left: auto; right: 8px; }
+  .yaxis span.accent { color: var(--copper); font-size: 12px; letter-spacing: .06em; }
+  .xaxis span { bottom: 5px; transform: translateX(-50%); }
+  .empty {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    color: var(--ink-dim); font-style: italic; font-size: 15px;
+    text-align: center; padding: 0 24px;
+  }
+
+  #elo-board { height: clamp(280px, 46vh, 440px); }
+
+  .row {
+    display: grid; gap: 0 28px;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    border-top: 1px solid var(--brass-dim);
+    margin-top: 16px;
+  }
+  .row .board { height: 180px; }
+  .chip { display: inline-flex; align-items: baseline; gap: 6px; margin-left: 14px; }
+  .swatch { width: 14px; height: 3px; background: var(--c); display: inline-block; vertical-align: middle; }
+  .panel-head .figure { font-size: 13px; color: var(--ivory); }
+
+  footer {
+    margin-top: 22px; padding-top: 12px;
+    border-top: 1px solid var(--brass-dim);
+    display: flex; flex-wrap: wrap; gap: 6px 24px; justify-content: space-between;
+    font-size: 14px; color: var(--ink-dim);
+  }
+  footer code { font-family: var(--mono); font-size: 12.5px; color: var(--ink); }
+
+  @media (prefers-reduced-motion: reduce) {
+    #dot.live { animation: none; }
+  }
+</style>
+</head>
+<body>
+<div class="ledger">
+  <header>
+    <div class="masthead">
+      <span class="label">The Games Room · self-play training</span>
+      <h1>Training Ledger</h1>
+      <p class="label" id="subtitle">azero · chess</p>
+    </div>
+    <div class="vitals">
+      <div><span class="figure" id="v-elo">—</span><span class="label">elo vs stockfish</span></div>
+      <div><span class="figure" id="v-iter">—</span><span class="label">iteration</span></div>
+      <div><span class="figure" id="v-games">—</span><span class="label">games played</span></div>
+      <div><span class="figure" id="v-rate">—</span><span class="label">games / min</span></div>
+      <div><span class="figure" id="status"><span id="dot"></span><span id="v-state">waiting</span></span>
+           <span class="label">state</span></div>
+    </div>
+  </header>
+
+  <section class="panel">
+    <div class="panel-head">
+      <span class="label">Rating — paired games vs calibrated stockfish</span>
+      <span class="note" id="elo-note">anchored panel: random → mixed → alpha-beta → stockfish · gauged every ~20 min</span>
+    </div>
+    <div class="board" id="elo-board"></div>
+  </section>
+
+  <div class="row">
+    <section class="panel">
+      <div class="panel-head">
+        <span class="label">Ladder
+          <span class="chip" style="--c:#8da588"><span class="swatch"></span><span class="label">rnd</span></span>
+          <span class="chip" style="--c:#efe9d6"><span class="swatch"></span><span class="label">d1</span></span>
+          <span class="chip" style="--c:#c9a25c"><span class="swatch"></span><span class="label">d2</span></span>
+          <span class="chip" style="--c:#c97b4f"><span class="swatch"></span><span class="label">d3</span></span>
+        </span>
+        <span class="figure" id="ladder-now"></span>
+      </div>
+      <div class="board" id="ladder-board"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <span class="label">Loss
+          <span class="chip" style="--c:#efe9d6"><span class="swatch"></span><span class="label">policy</span></span>
+          <span class="chip" style="--c:#c9a25c"><span class="swatch"></span><span class="label">value</span></span>
+        </span>
+        <span class="figure" id="loss-now"></span>
+      </div>
+      <div class="board" id="loss-board"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <span class="label">Self-play
+          <span class="chip" style="--c:#efe9d6"><span class="swatch"></span><span class="label">decisive</span></span>
+          <span class="chip" style="--c:#8da588"><span class="swatch"></span><span class="label">plies</span></span>
+        </span>
+        <span class="figure" id="char-now"></span>
+      </div>
+      <div class="board" id="char-board"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <span class="label">Iteration time
+          <span class="chip" style="--c:#8da588"><span class="swatch"></span><span class="label">play</span></span>
+          <span class="chip" style="--c:#c9a25c"><span class="swatch"></span><span class="label">train</span></span>
+          <span class="chip" style="--c:#c97b4f"><span class="swatch"></span><span class="label">eval</span></span>
+        </span>
+        <span class="figure" id="time-now"></span>
+      </div>
+      <div class="board" id="time-board"></div>
+    </section>
+  </div>
+
+  <footer>
+    <span>reading <code>metrics.jsonl</code> beside this file · refreshes every 5 s</span>
+    <span>to halt the run: <code>touch STOP</code> in the run directory</span>
+  </footer>
+</div>
+
+<script>
+'use strict';
+const OPPONENTS = [
+  { key: 'random',    color: '#8da588' },
+  { key: 'ab-mat-d1', color: '#efe9d6' },
+  { key: 'ab-mat-d2', color: '#c9a25c' },
+  { key: 'ab-mat-d3', color: '#c97b4f' },
+];
+const HUMAN_ELO = 1900;
+const W = 1000, H = 380;
+const $ = id => document.getElementById(id);
+
+function decimate(pts, max) {
+  if (pts.length <= max) return pts;
+  const k = Math.ceil(pts.length / max);
+  return pts.filter((_, i) => i % k === 0 || i === pts.length - 1);
+}
+
+// series: [{pts: [[fx, fy] 0..1], color, width?, dash?, dots?, hollow?, area?, base?}]
+function drawBoard(el, series, opts = {}) {
+  const grid = opts.grid || [0, .25, .5, .75, 1];
+  let s = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">`;
+  for (const g of grid) {
+    const at = typeof g === 'number' ? g : g.at;
+    const y = (1 - at) * H;
+    const color = g.color || 'rgba(201,162,92,.16)';
+    const width = g.width || 1;
+    s += `<line x1="0" y1="${y}" x2="${W}" y2="${y}" stroke="${color}" stroke-width="${width}"
+          stroke-dasharray="${g.solid ? 'none' : '3 7'}" vector-effect="non-scaling-stroke"/>`;
+  }
+  for (const sr of series) {
+    const pts = sr.pts.filter(p => isFinite(p[0]) && isFinite(p[1]));
+    if (!pts.length) continue;
+    const coords = pts.map(p => `${(p[0] * W).toFixed(1)},${((1 - p[1]) * H).toFixed(1)}`);
+    if (sr.area) {
+      const lower = (sr.base || pts.map(p => [p[0], 0])).slice().reverse()
+        .map(p => `${(p[0] * W).toFixed(1)},${((1 - p[1]) * H).toFixed(1)}`);
+      s += `<polygon points="${coords.join(' ')} ${lower.join(' ')}" fill="${sr.color}"
+            opacity="${sr.opacity ?? .55}"/>`;
+      continue;
+    }
+    if (pts.length > 1 && !sr.dotsOnly) {
+      s += `<polyline points="${coords.join(' ')}" fill="none" stroke="${sr.color}"
+            stroke-width="${sr.width || 1.6}" ${sr.dash ? `stroke-dasharray="${sr.dash}"` : ''}
+            vector-effect="non-scaling-stroke" stroke-linejoin="round"/>`;
+    }
+    if ((sr.dots || sr.dotsOnly) && pts.length < 260) {
+      const ry = el.clientWidth ? 0.0042 * W * (el.clientHeight / el.clientWidth) * (W / H) : 4;
+      for (const c of coords) {
+        const [x, y] = c.split(',');
+        s += sr.hollow
+          ? `<ellipse cx="${x}" cy="${y}" rx="${0.0042 * W}" ry="${ry}" fill="none"
+             stroke="${sr.color}" stroke-width="1.4" vector-effect="non-scaling-stroke" opacity=".7"/>`
+          : `<ellipse cx="${x}" cy="${y}" rx="${0.0042 * W}" ry="${ry}" fill="${sr.color}"/>`;
+      }
+    }
+  }
+  s += '</svg>';
+  s += `<div class="yaxis">${(opts.yLabels || []).map(l =>
+        `<span class="${l.right ? 'right' : ''} ${l.accent ? 'accent' : ''}"
+         style="top:${(1 - l.at) * 100}%">${l.text}</span>`).join('')}</div>`;
+  s += `<div class="xaxis">${(opts.xLabels || []).map(l =>
+        `<span style="left:${l.at * 100}%">${l.text}</span>`).join('')}</div>`;
+  if (opts.empty) s += `<div class="empty">${opts.empty}</div>`;
+  el.innerHTML = s;
+}
+
+function fmt(n, d = 0) {
+  return n.toLocaleString('en-US', { maximumFractionDigits: d, minimumFractionDigits: d });
+}
+
+let lastCount = -1, lastGrowth = Date.now();
+
+function render(text) {
+  const rows = text.split('\n').map(l => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(Boolean);
+  const its = rows.filter(r => r.iter !== undefined && r.event === undefined);
+  const starts = rows.filter(r => r.event === 'start');
+  const cfg = starts[starts.length - 1] || {};
+  const stopped = rows.length && rows[rows.length - 1].event === 'stop';
+  const elos = rows.filter(r => r.event === 'elo');
+
+  if (rows.length !== lastCount) { lastCount = rows.length; lastGrowth = Date.now(); }
+  const fresh = Date.now() - lastGrowth < 240000;
+  $('dot').className = stopped ? 'ended' : (fresh ? 'live' : '');
+  $('v-state').textContent = stopped ? 'ended' : (fresh ? 'live' : 'stalled');
+
+  $('subtitle').textContent = 'azero · chess · ' +
+    [cfg.blocks && `${cfg.blocks}×${cfg.channels} resnet`, cfg.hidden && `${cfg.hidden}×2 hidden`,
+     cfg.sims && `${cfg.sims} sims/move`, cfg.concurrent && `${cfg.concurrent} concurrent`,
+     cfg.threads && `${cfg.threads} threads`]
+    .filter(Boolean).join(' · ');
+
+  // ── hero: elo trajectory ──────────────────────────────────
+  const lastElo = elos[elos.length - 1];
+  $('v-elo').textContent = lastElo ? (lastElo.floor ? '<' : '') + fmt(lastElo.est) : '—';
+  if (elos.length) {
+    const t0 = Math.min(elos[0].time, its.length ? its[0].time : Infinity);
+    const t1 = Math.max(elos[elos.length - 1].time, its.length ? its[its.length - 1].time : 0);
+    const fx = t => t1 > t0 ? (t - t0) / (t1 - t0) : 0.5;
+    const ests = elos.map(e => e.est);
+    // Track the trajectory; the 1900 line enters the frame as it climbs.
+    const lo = Math.min(...ests) - 120;
+    const hi = Math.max(Math.max(...ests) + 350, lo + 600);
+    const fy = e => (e - lo) / (hi - lo);
+    const solid = elos.filter(e => !e.floor).map(e => [fx(e.time), fy(e.est)]);
+    const hollow = elos.filter(e => e.floor).map(e => [fx(e.time), fy(e.est)]);
+    const gridLines = [];
+    const yLabels = [];
+    const step = hi - lo > 1600 ? 400 : 200;
+    for (let g = Math.ceil(lo / step) * step; g < hi; g += step) {
+      if (Math.abs(g - HUMAN_ELO) > step * 0.3 || HUMAN_ELO > hi) {
+        gridLines.push(fy(g));
+        yLabels.push({ at: fy(g), text: fmt(g) });
+      }
+    }
+    if (HUMAN_ELO <= hi) {
+      gridLines.push({ at: fy(HUMAN_ELO), color: 'rgba(201,123,79,.75)', width: 1.4, solid: true });
+      yLabels.push({ at: fy(HUMAN_ELO), text: `you · ${fmt(HUMAN_ELO)}`, accent: true, right: true });
+    } else {
+      yLabels.push({ at: .96, text: `you · ${fmt(HUMAN_ELO)} ↑`, accent: true, right: true });
+    }
+    const hrs = (t1 - t0) / 3600;
+    drawBoard($('elo-board'), [
+      { pts: solid, color: '#c9a25c', width: 2.2, dots: true },
+      { pts: hollow, color: '#9fb09a', dotsOnly: true, hollow: true },
+    ], {
+      grid: gridLines,
+      yLabels,
+      xLabels: [{ at: .02, text: 'start' }, { at: .98, text: `${hrs.toFixed(1)}h` }],
+      empty: solid.length || hollow.length ? '' : 'First stockfish gauge pending.',
+    });
+  } else {
+    drawBoard($('elo-board'), [], {
+      empty: 'First stockfish gauge pending — the watcher reports every ~25 minutes.',
+    });
+  }
+
+  if (!its.length) return;
+
+  const last = its[its.length - 1];
+  const totalGames = its.reduce((a, r) => a + (r.games || 0), 0);
+  const lastSecs = (last.self_play_secs || 0) + (last.train_secs || 0) + (last.eval_secs || 0);
+  $('v-iter').textContent = fmt(last.iter);
+  $('v-games').textContent = fmt(totalGames);
+  $('v-rate').textContent = lastSecs ? fmt(last.games * 60 / lastSecs, 1) : '—';
+
+  const i0 = its[0].iter, i1 = Math.max(last.iter, i0 + 1);
+  const fxi = i => (i - i0) / (i1 - i0);
+  const xLabels = [{ at: .02, text: 'iter ' + fmt(i0) }, { at: .98, text: fmt(i1) }];
+
+  // ── ladder ────────────────────────────────────────────────
+  const evals = its.filter(r => r.eval);
+  const ladderSeries = [];
+  const lasts = [];
+  for (const o of OPPONENTS) {
+    const pts = evals.filter(r => r.eval[o.key]).map(r => [fxi(r.iter), r.eval[o.key].score]);
+    if (!pts.length) continue;
+    ladderSeries.push({ pts, color: o.color, dots: true, width: 1.6 });
+    lasts.push(pts[pts.length - 1][1].toFixed(2).replace('0.', '.'));
+  }
+  drawBoard($('ladder-board'), ladderSeries, {
+    yLabels: [{ at: 1, text: '1.0' }, { at: 0, text: '0' }], xLabels,
+    empty: ladderSeries.length ? '' : 'First ladder eval pending.',
+  });
+  $('ladder-now').textContent = lasts.join(' · ');
+
+  // ── losses ────────────────────────────────────────────────
+  const lmax = Math.max(...its.map(r => Math.max(r.policy_loss, r.value_loss)), .001);
+  drawBoard($('loss-board'), [
+    { pts: decimate(its.map(r => [fxi(r.iter), r.policy_loss / lmax]), 600), color: '#efe9d6' },
+    { pts: decimate(its.map(r => [fxi(r.iter), r.value_loss / lmax]), 600), color: '#c9a25c' },
+  ], {
+    yLabels: [{ at: 1, text: lmax.toFixed(1) }, { at: 0, text: '0' }], xLabels,
+  });
+  $('loss-now').textContent =
+    `p ${last.policy_loss.toFixed(2)} · v ${last.value_loss.toFixed(2)}`;
+
+  // ── self-play character ───────────────────────────────────
+  const pcap = 260;
+  drawBoard($('char-board'), [
+    { pts: decimate(its.map(r => [fxi(r.iter), r.decisive / Math.max(r.games, 1)]), 600), color: '#efe9d6' },
+    { pts: decimate(its.map(r => [fxi(r.iter), Math.min(r.avg_plies / pcap, 1)]), 600), color: '#8da588' },
+  ], {
+    yLabels: [{ at: 1, text: '100%' }, { at: 0, text: '0' },
+              { at: 1, text: pcap + 'pl', right: true }],
+    xLabels,
+  });
+  $('char-now').textContent =
+    `${fmt(100 * last.decisive / Math.max(last.games, 1))}% · ${fmt(last.avg_plies)} plies`;
+
+  // ── iteration time ────────────────────────────────────────
+  const tmax = Math.max(...its.map(r =>
+    (r.self_play_secs || 0) + (r.train_secs || 0) + (r.eval_secs || 0)), 1);
+  const sp = its.map(r => [fxi(r.iter), (r.self_play_secs || 0) / tmax]);
+  const tr = its.map((r, i) => [fxi(r.iter), sp[i][1] + (r.train_secs || 0) / tmax]);
+  const ev = its.map((r, i) => [fxi(r.iter), tr[i][1] + (r.eval_secs || 0) / tmax]);
+  const zero = its.map(r => [fxi(r.iter), 0]);
+  drawBoard($('time-board'), [
+    { pts: decimate(ev, 600), base: decimate(tr, 600), color: '#c97b4f', area: true, opacity: .5 },
+    { pts: decimate(tr, 600), base: decimate(sp, 600), color: '#c9a25c', area: true, opacity: .5 },
+    { pts: decimate(sp, 600), base: decimate(zero, 600), color: '#8da588', area: true, opacity: .5 },
+  ], {
+    yLabels: [{ at: 1, text: fmt(tmax) + 's' }, { at: 0, text: '0' }], xLabels,
+  });
+  $('time-now').textContent = `sp ${fmt(last.self_play_secs)}s · tr ${fmt(last.train_secs)}s` +
+    (last.eval_secs ? ` · ev ${fmt(last.eval_secs)}s` : '');
+}
+
+async function tick() {
+  try {
+    const res = await fetch('metrics.jsonl', { cache: 'no-store' });
+    if (!res.ok) throw new Error(res.status);
+    render(await res.text());
+  } catch (e) {
+    $('v-state').textContent = 'no data';
+    drawBoard($('elo-board'), [], {
+      empty: 'Could not read metrics.jsonl — serve the run directory, e.g. ' +
+             '<code>python3 -m http.server -d data/azt/run2 8642</code>',
+    });
+  }
+}
+tick();
+setInterval(tick, 5000);
+addEventListener('resize', () => { lastCount = -1; tick(); });
+</script>
+</body>
+</html>
