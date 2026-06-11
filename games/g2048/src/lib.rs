@@ -384,9 +384,8 @@ mod tests {
     #[test]
     fn chance_distribution_sums_to_one() {
         let game = G2048;
-        let mut s = game.initial_state();
-        for expected_empties in [16usize, 15, 14] {
-            let outs = game.chance_outcomes(&s);
+        let assert_dist = |s: &G2048State, expected_empties: usize| {
+            let outs = game.chance_outcomes(s);
             assert_eq!(outs.len(), 2 * expected_empties);
             let total: f64 = outs.iter().map(|(_, p)| p).sum();
             assert!((total - 1.0).abs() < 1e-12, "total {total}");
@@ -396,10 +395,17 @@ mod tests {
                 .map(|(_, p)| p)
                 .sum();
             assert!((twos - 0.9).abs() < 1e-12, "P(spawn 2) = {twos}");
-            if expected_empties > 14 {
-                game.apply(&mut s, outs[0].0);
-            }
+        };
+        let mut s = game.initial_state();
+        for expected_empties in [16usize, 15] {
+            assert_dist(&s, expected_empties);
+            let first = game.chance_outcomes(&s)[0].0;
+            game.apply(&mut s, first);
         }
+        // Both opening spawns are consumed now (it is the player's move), so
+        // a third board size needs a hand-built chance node.
+        s.pending_spawns = 1;
+        assert_dist(&s, 14);
     }
 
     #[test]
