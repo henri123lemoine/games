@@ -27,7 +27,7 @@ const LINES: [[usize; 3]; 8] = [
 fn winner(cells: &[u8; 9]) -> Option<usize> {
     LINES.iter().find_map(|l| {
         let v = cells[l[0]];
-        (v != 0 && cells[l[1]] == v && cells[l[2]] == v).then_some(v as usize - 1)
+        (v != 0 && cells[l[1]] == v && cells[l[2]] == v).then(|| v as usize - 1)
     })
 }
 
