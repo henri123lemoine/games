@@ -48,6 +48,11 @@ impl Default for TwentyOne {
 
 impl TwentyOne {
     pub fn new(start_hearts: u8) -> Self {
+        assert!(
+            (1..=crate::env::MAX_HEARTS).contains(&start_hearts),
+            "starting hearts must be in 1..={}: the packed keys allocate 3 bits",
+            crate::env::MAX_HEARTS
+        );
         Self { start_hearts }
     }
 }

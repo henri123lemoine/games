@@ -129,6 +129,18 @@ pub struct Env {
     game_over: bool,
 }
 
+/// Heart counts above this alias in the packed state/infoset keys, which
+/// allocate 3 bits per player's hearts.
+pub const MAX_HEARTS: u8 = 7;
+
+fn assert_hearts(starting_hearts: u8) {
+    assert!(
+        (1..=MAX_HEARTS).contains(&starting_hearts),
+        "starting hearts must be in 1..={MAX_HEARTS}: the packed state keys \
+         allocate 3 bits per heart count"
+    );
+}
+
 impl Env {
     /// Create a new environment with a random seed.
     pub fn new(seed: u64) -> Self {
@@ -148,6 +160,7 @@ impl Env {
 
     /// Create a new environment with a chosen seed and starting heart count.
     pub fn with_hearts(seed: u64, starting_hearts: u8) -> Self {
+        assert_hearts(starting_hearts);
         Self {
             hearts: [starting_hearts, starting_hearts],
             ..Self::new(seed)
@@ -161,12 +174,12 @@ impl Env {
     }
 
     /// Create a new environment using predetermined deck orders and starting hearts.
-    /// Create a new environment using predetermined deck orders and starting hearts.
     /// Intended for deterministic tests.
     pub fn new_with_preset_decks_and_hearts(
         preset_decks: Vec<[u8; NUM_CARDS]>,
         starting_hearts: u8,
     ) -> Self {
+        assert_hearts(starting_hearts);
         Self {
             hearts: [starting_hearts, starting_hearts],
             round: 1,
@@ -185,6 +198,10 @@ impl Env {
     /// state (no active round, RNG seeded deterministically). Used by the solver
     /// to evaluate round subgames independently.
     pub fn from_state(hearts: [u8; 2], round: u8) -> Self {
+        assert!(
+            hearts[0] <= MAX_HEARTS && hearts[1] <= MAX_HEARTS,
+            "heart counts above {MAX_HEARTS} alias in the packed state keys"
+        );
         Self {
             hearts,
             round,
