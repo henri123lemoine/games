@@ -29,8 +29,11 @@ impl<G: Game> Agent<G> for RandomAgent {
 /// A minimal reproducible PRNG so matches are deterministic given a seed.
 pub struct Rng(u64);
 impl Rng {
+    /// The seed is splitmix-finalized so that nearby seeds (1, 2, 3…) still
+    /// start the xorshift from well-separated states; `.max(1)` guards the
+    /// all-zero fixed point.
     pub fn new(seed: u64) -> Self {
-        Self(seed | 1)
+        Self(crate::hash::splitmix64(seed).max(1))
     }
 
     /// The next raw 64-bit draw — for deriving reproducible sub-seeds (e.g.
@@ -248,6 +251,46 @@ mod tests {
         fn infoset_key(&self, s: &bool, _player: usize) -> u64 {
             *s as u64
         }
+    }
+
+    #[test]
+    fn adjacent_seeds_give_distinct_streams() {
+        for seed in [0u64, 1, 2, 6, 7, 41, 42] {
+            let mut a = Rng::new(seed);
+            let mut b = Rng::new(seed + 1);
+            assert!(
+                (0..4).any(|_| a.next_u64() != b.next_u64()),
+                "seeds {seed} and {} produce identical streams",
+                seed + 1
+            );
+        }
+        let mut x = Rng::new(9);
+        let mut y = Rng::new(9);
+        assert_eq!(x.next_u64(), y.next_u64(), "same seed must reproduce");
+    }
+
+    #[test]
+    fn rng_draws_stay_in_bounds() {
+        let mut rng = Rng::new(0);
+        for _ in 0..10_000 {
+            let u = rng.unit();
+            assert!((0.0..1.0).contains(&u));
+            assert!(rng.below(3) < 3);
+            assert_eq!(rng.below(1), 0);
+        }
+    }
+
+    #[test]
+    fn pick_follows_the_weights() {
+        let mut rng = Rng::new(7);
+        let weights = [1.0, 0.0, 3.0];
+        let mut counts = [0u32; 3];
+        for _ in 0..40_000 {
+            counts[rng.pick(&weights)] += 1;
+        }
+        assert_eq!(counts[1], 0, "zero-weight index must never be picked");
+        let frac = counts[2] as f64 / 40_000.0;
+        assert!((frac - 0.75).abs() < 0.02, "weight-3/4 index drew {frac}");
     }
 
     #[test]
