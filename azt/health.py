@@ -84,20 +84,26 @@ def check(rows):
     recent_its = its[-10:]
     if len(recent_its) >= 5:
         games = sum(r.get("games", 0) for r in recent_its)
+        would = sum(r.get("would_resign", 0) for r in recent_its)
+        fps = sum(r.get("resign_fp", 0) for r in recent_its)
         if games > 0:
             resign_rate = sum(r.get("resigned", 0) for r in recent_its) / games
-            if resign_rate > 0.30:
-                bad["resign"] = f"resign rate {100*resign_rate:.0f}% of games"
+            # A high rate with clean control games is resignation working;
+            # alert only when false positives corroborate a spiral, or at
+            # degenerate rates before any control evidence exists.
+            if would >= 5 and fps / would > 0.15:
+                bad["resign"] = (
+                    f"resignation false-positive rate {100*fps/would:.0f}% "
+                    f"({fps}/{would} no-resign games salvaged) — tighten resign-q"
+                )
+            elif resign_rate > 0.60 and would < 5:
+                bad["resign"] = (
+                    f"resign rate {100*resign_rate:.0f}% with no control-game "
+                    "evidence yet — watch for a spiral"
+                )
             decisive = sum(r.get("decisive", 0) for r in recent_its) / games
             if decisive < 0.30:
                 bad["draws"] = f"only {100*decisive:.0f}% decisive games (draw death)"
-        would = sum(r.get("would_resign", 0) for r in recent_its)
-        fps = sum(r.get("resign_fp", 0) for r in recent_its)
-        if would >= 5 and fps / would > 0.20:
-            bad["resign"] = (
-                f"resignation false-positive rate {100*fps/would:.0f}% "
-                f"({fps}/{would} no-resign games salvaged) — threshold too loose"
-            )
         plies = sum(r.get("avg_plies", 0) for r in recent_its) / len(recent_its)
         if plies < 40:
             bad["short"] = f"games averaging {plies:.0f} plies (degenerate play)"
