@@ -30,26 +30,17 @@
 use game_core::{Game, Rng, Turn};
 
 use crate::FastMap;
+use crate::tabular::{normalized_or_uniform, regret_match};
 
 /// Uniform-exploration weight in the traverser's sampling policy.
 const EPSILON: f64 = 0.6;
-
-fn regret_match(regret: &[f64]) -> Vec<f64> {
-    let sum: f64 = regret.iter().map(|r| r.max(0.0)).sum();
-    let n = regret.len();
-    if sum > 0.0 {
-        regret.iter().map(|r| r.max(0.0) / sum).collect()
-    } else {
-        vec![1.0 / n as f64; n]
-    }
-}
 
 /// Outcome-sampling MCCFR+ trainer for an N-player [`Game`].
 pub struct OsMccfr<G: Game> {
     game: G,
     regret: FastMap<u64, Vec<f64>>,
     strategy: FastMap<u64, Vec<f64>>,
-    rng: u64,
+    rng: Rng,
     iterations: u64,
 }
 
@@ -59,7 +50,7 @@ impl<G: Game> OsMccfr<G> {
             game,
             regret: FastMap::default(),
             strategy: FastMap::default(),
-            rng: seed | 1,
+            rng: Rng::new(seed),
             iterations: 0,
         }
     }
@@ -72,27 +63,6 @@ impl<G: Game> OsMccfr<G> {
     }
     pub fn iterations(&self) -> u64 {
         self.iterations
-    }
-
-    fn rand(&mut self) -> f64 {
-        let mut x = self.rng;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.rng = x;
-        (x >> 11) as f64 / (1u64 << 53) as f64
-    }
-
-    fn sample(&mut self, dist: &[f64]) -> usize {
-        let r = self.rand();
-        let mut acc = 0.0;
-        for (i, p) in dist.iter().enumerate() {
-            acc += p;
-            if r < acc {
-                return i;
-            }
-        }
-        dist.len() - 1
     }
 
     /// Run `iters` iterations; each samples one trajectory per player as
@@ -129,7 +99,7 @@ impl<G: Game> OsMccfr<G> {
             Turn::Chance => {
                 let outs = self.game.chance_outcomes(state);
                 let probs: Vec<f64> = outs.iter().map(|(_, p)| *p).collect();
-                let i = self.sample(&probs);
+                let i = self.rng.pick(&probs);
                 let mut child = state.clone();
                 self.game.apply(&mut child, outs[i].0);
                 self.traverse(
@@ -160,7 +130,7 @@ impl<G: Game> OsMccfr<G> {
                         .iter()
                         .map(|&pr| EPSILON / n as f64 + (1.0 - EPSILON) * pr)
                         .collect();
-                    let i = self.sample(&explore);
+                    let i = self.rng.pick(&explore);
                     let mut child = state.clone();
                     self.game.apply(&mut child, actions[i]);
                     let (u, tail) = self.traverse(
@@ -185,7 +155,7 @@ impl<G: Game> OsMccfr<G> {
                     }
                     (u, tail * sigma[i])
                 } else {
-                    let i = self.sample(&sigma);
+                    let i = self.rng.pick(&sigma);
                     let mut child = state.clone();
                     self.game.apply(&mut child, actions[i]);
                     self.traverse(
@@ -204,17 +174,7 @@ impl<G: Game> OsMccfr<G> {
     pub fn policy(&self, state: &G::State, player: usize) -> Vec<f64> {
         let n = self.game.legal_actions(state).len();
         let key = self.game.infoset_key(state, player);
-        match self.strategy.get(&key) {
-            Some(s) => {
-                let sum: f64 = s.iter().sum();
-                if sum > 0.0 {
-                    s.iter().map(|x| x / sum).collect()
-                } else {
-                    vec![1.0 / n as f64; n]
-                }
-            }
-            None => vec![1.0 / n as f64; n],
-        }
+        normalized_or_uniform(self.strategy.get(&key), n)
     }
 
     /// Sample an action index from the average strategy. Usable as an

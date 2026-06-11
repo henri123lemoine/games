@@ -9,7 +9,7 @@ use common::Kuhn;
 
 #[test]
 fn kuhn_converges_to_nash() {
-    let mut solver = Cfr::new(Kuhn, 1);
+    let mut solver = Cfr::new(Kuhn);
     solver.solve(50_000);
     assert_eq!(solver.num_infosets(), 12, "Kuhn has 12 information sets");
 

@@ -21,6 +21,7 @@ pub mod pg;
 pub mod qlearn;
 mod rollout;
 pub mod search;
+mod tabular;
 
 pub use cfr::Cfr;
 pub use mccfr::Mccfr;
