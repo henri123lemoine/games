@@ -1,0 +1,21 @@
+[package]
+name = "azt"
+version = "0.1.0"
+edition = "2024"
+description = "AlphaZero chess on Metal: tch-rs resnet, batched self-play over the lab's chess crate"
+
+# Standalone on purpose: keeps libtorch out of the main workspace, so
+# `cargo test` at the repo root stays light. Build from this directory.
+[workspace]
+
+[dependencies]
+chess = { path = "../games/chess" }
+game-core = { path = "../game-core" }
+solvers = { path = "../solvers" }
+rayon = "1"
+tch = { version = "0.23", features = ["download-libtorch"] }
+
+[profile.release-dbg]
+inherits = "release"
+debug-assertions = true
+debug = true
