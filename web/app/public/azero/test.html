@@ -223,7 +223,7 @@ function softmaxOver(logits, support) {
 (async () => {
   try {
     const [bin, fixtures] = await Promise.all([
-      fetch('azero-chess.bin').then(r => r.arrayBuffer()),
+      fetch('azero-chess.azweb').then(r => r.arrayBuffer()),
       fetch('fixtures.json').then(r => r.json()),
     ]);
     const gpu = await AzGpu.init(bin);

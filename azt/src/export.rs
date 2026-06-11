@@ -21,7 +21,7 @@ pub fn export(args: &[String]) {
     let out: PathBuf = arg(
         args,
         "--out",
-        PathBuf::from("../data/azt/run2/azero-chess.bin"),
+        PathBuf::from("../data/azt/run2/azero-chess.azweb"),
     );
     let cfg = net_config_for(args, &net_path);
 
@@ -106,7 +106,7 @@ pub fn verify_export(args: &[String]) {
     let export_path: PathBuf = arg(
         args,
         "--export",
-        PathBuf::from("../data/azt/run2/azero-chess.bin"),
+        PathBuf::from("../data/azt/run2/azero-chess.azweb"),
     );
     let cfg = net_config_for(args, &net_path);
     let infer = Infer::load(&net_path, cfg, Device::Cpu, Kind::Float).expect("load checkpoint");

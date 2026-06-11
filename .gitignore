@@ -23,5 +23,5 @@ web/engine/pkg/
 web/app/node_modules/
 web/app/dist/
 web/app/public/artifacts/
-web/app/public/azero/azero-chess.bin
+web/app/public/azero/*.azweb
 web/app/public/azero/fixtures.json
