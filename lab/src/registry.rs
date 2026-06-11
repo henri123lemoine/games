@@ -263,7 +263,7 @@ pub fn entries() -> Vec<Entry> {
             id: "2048",
             summary: "2048 (single-player) — play it, or watch an MCTS bot",
             opts_help: "bot=mcts|mcts-eval (omit to play yourself)  sims=200  depth=8  seed=...",
-            make: Box::new(make_2048),
+            make: Box::new(|o| make_solo(o, g2048::G2048, g2048_bot)),
             eval: None,
         },
         Entry {
@@ -271,7 +271,10 @@ pub fn entries() -> Vec<Entry> {
             summary: "Snake (single-player) — play it, or watch an MCTS bot",
             opts_help: "width=10 height=10  bot=mcts|mcts-eval (omit to play yourself)  sims=200  \
                         depth=12  seed=...",
-            make: Box::new(make_snake),
+            make: Box::new(|o| {
+                let game = snake::Snake::new(o.get("width", 10)?, o.get("height", 10)?);
+                make_solo(o, game, snake_bot)
+            }),
             eval: None,
         },
     ]
@@ -289,39 +292,57 @@ fn go_game(o: &Opts) -> Result<go::Go, String> {
     Ok(go::Go::new(o.get("size", 9)?))
 }
 
-fn make_2048(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
+/// Single-player entry: with `bot=` set, that bot plays and you watch;
+/// without it, you play. Bots come through the same [`BotParser`] convention
+/// as the versus games, so the next single-player game (or a future solo
+/// compare mode) adds a parser instead of copying this scaffold.
+fn make_solo<G: game_core::GameUi + Sync + 'static>(
+    o: &Opts,
+    game: G,
+    parse: BotParser<G>,
+) -> Result<Box<dyn AnyMatch>, String> {
     let seed = o.get("seed", default_seed())?;
-    let sims: u32 = o.get("sims", 200)?;
-    let bot: Option<Box<dyn Agent<g2048::G2048>>> = match o.str("bot", "").as_str() {
-        "" => None,
-        "mcts" => Some(Box::new(Mcts::new(sims))),
-        "mcts-eval" => Some(Box::new(Mcts::with_eval(
-            sims,
-            g2048::Heuristic2048,
-            o.get("depth", 8)?,
-        ))),
-        other => return Err(format!("unknown bot '{other}' (mcts|mcts-eval)")),
-    };
-    let human = if bot.is_some() { usize::MAX } else { 0 };
-    Ok(TypedMatch::new(g2048::G2048, vec![bot], human, seed).boxed())
-}
-
-fn make_snake(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
-    let game = snake::Snake::new(o.get("width", 10)?, o.get("height", 10)?);
-    let seed = o.get("seed", default_seed())?;
-    let sims: u32 = o.get("sims", 200)?;
-    let bot: Option<Box<dyn Agent<snake::Snake>>> = match o.str("bot", "").as_str() {
-        "" => None,
-        "mcts" => Some(Box::new(Mcts::new(sims))),
-        "mcts-eval" => Some(Box::new(Mcts::with_eval(
-            sims,
-            snake::SnakeEval,
-            o.get("depth", 12)?,
-        ))),
-        other => return Err(format!("unknown bot '{other}' (mcts|mcts-eval)")),
+    let name = o.str("bot", "");
+    let bot = if name.is_empty() {
+        None
+    } else {
+        let spec = BotSpec {
+            name,
+            opts: o.clone(),
+        };
+        Some(parse(&spec, o)?(seed))
     };
     let human = if bot.is_some() { usize::MAX } else { 0 };
     Ok(TypedMatch::new(game, vec![bot], human, seed).boxed())
+}
+
+fn g2048_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<g2048::G2048>, String> {
+    let sims: u32 = spec.opts.get("sims", 200)?;
+    Ok(match spec.name.as_str() {
+        "mcts" => Box::new(move |_| Box::new(Mcts::new(sims)) as BoxedAgent<g2048::G2048>),
+        "mcts-eval" => {
+            let depth: u32 = spec.opts.get("depth", 8)?;
+            Box::new(move |_| {
+                Box::new(Mcts::with_eval(sims, g2048::Heuristic2048, depth))
+                    as BoxedAgent<g2048::G2048>
+            })
+        }
+        other => return Err(format!("unknown 2048 bot '{other}' (mcts|mcts-eval)")),
+    })
+}
+
+fn snake_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<snake::Snake>, String> {
+    let sims: u32 = spec.opts.get("sims", 200)?;
+    Ok(match spec.name.as_str() {
+        "mcts" => Box::new(move |_| Box::new(Mcts::new(sims)) as BoxedAgent<snake::Snake>),
+        "mcts-eval" => {
+            let depth: u32 = spec.opts.get("depth", 12)?;
+            Box::new(move |_| {
+                Box::new(Mcts::with_eval(sims, snake::SnakeEval, depth)) as BoxedAgent<snake::Snake>
+            })
+        }
+        other => return Err(format!("unknown snake bot '{other}' (mcts|mcts-eval)")),
+    })
 }
 
 /// Shares the net (compare builders clone it per game) and runs a fresh PUCT
