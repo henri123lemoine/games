@@ -65,8 +65,7 @@ impl<G: Game> Mccfr<G> {
         match self.game.turn(state) {
             Turn::Chance => {
                 let outs = self.game.chance_outcomes(state);
-                let probs: Vec<f64> = outs.iter().map(|(_, p)| *p).collect();
-                let i = self.rng.pick(&probs);
+                let i = game_core::rand::sample_outcome(&outs, &mut self.rng);
                 let mut child = state.clone();
                 self.game.apply(&mut child, outs[i].0);
                 self.traverse(&child, traverser)

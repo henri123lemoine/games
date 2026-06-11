@@ -192,16 +192,8 @@ fn select_edge<S, A>(node: &Node<S, A>, c_puct: f32) -> usize {
 pub(crate) fn sample_chance<G: Game>(game: &G, s: &mut G::State, rng: &mut Rng) {
     while !game.is_terminal(s) && matches!(game.turn(s), Turn::Chance) {
         let outs = game.chance_outcomes(s);
-        let mut r = rng.unit();
-        let mut chosen = outs[outs.len() - 1].0;
-        for &(a, p) in &outs {
-            if r < p {
-                chosen = a;
-                break;
-            }
-            r -= p;
-        }
-        game.apply(s, chosen);
+        let i = game_core::rand::sample_outcome(&outs, rng);
+        game.apply(s, outs[i].0);
     }
 }
 

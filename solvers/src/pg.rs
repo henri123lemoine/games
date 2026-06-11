@@ -174,16 +174,8 @@ impl<'a, G: Game, E: PolicyValueEncoder<G>> Reinforce<'a, G, E> {
             match g.turn(&s) {
                 Turn::Chance => {
                     let outs = g.chance_outcomes(&s);
-                    let mut r = self.rng.unit();
-                    let mut chosen = outs[outs.len() - 1].0;
-                    for &(a, p) in &outs {
-                        if r < p {
-                            chosen = a;
-                            break;
-                        }
-                        r -= p;
-                    }
-                    g.apply(&mut s, chosen);
+                    let i = game_core::rand::sample_outcome(&outs, &mut self.rng);
+                    g.apply(&mut s, outs[i].0);
                 }
                 Turn::Player(player) => {
                     let actions = g.legal_actions(&s);

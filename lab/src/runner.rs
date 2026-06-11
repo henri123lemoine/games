@@ -119,17 +119,8 @@ impl<G: GameUi + 'static> AnyMatch for TypedMatch<G> {
             match self.game.turn(&self.state) {
                 Turn::Chance => {
                     let outs = self.game.chance_outcomes(&self.state);
-                    let r = self.rng.unit();
-                    let mut acc = 0.0;
-                    let mut chosen = outs[outs.len() - 1].0;
-                    for (a, p) in &outs {
-                        acc += *p;
-                        if r < acc {
-                            chosen = *a;
-                            break;
-                        }
-                    }
-                    self.game.apply(&mut self.state, chosen);
+                    let i = game_core::rand::sample_outcome(&outs, &mut self.rng);
+                    self.game.apply(&mut self.state, outs[i].0);
                 }
                 Turn::Player(p) if p == self.human => return None,
                 Turn::Player(p) => {

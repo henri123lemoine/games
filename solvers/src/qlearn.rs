@@ -126,8 +126,8 @@ impl<G: Game> QLearner<G> {
             match self.game.turn(&state) {
                 Turn::Chance => {
                     let outs = self.game.chance_outcomes(&state);
-                    let chosen = sample_outcome(&outs, self.rng.unit());
-                    self.game.apply(&mut state, chosen);
+                    let i = game_core::rand::sample_outcome(&outs, &mut self.rng);
+                    self.game.apply(&mut state, outs[i].0);
                 }
                 Turn::Player(p) => {
                     let key = self.game.infoset_key(&state, p);
@@ -172,17 +172,6 @@ impl<G: Game> Agent<G> for GreedyQ<'_, G> {
             None => rng.below(game.legal_actions(state).len()),
         }
     }
-}
-
-fn sample_outcome<A: Copy>(outs: &[(A, f64)], r: f64) -> A {
-    let mut acc = 0.0;
-    for &(a, p) in outs {
-        acc += p;
-        if r < acc {
-            return a;
-        }
-    }
-    outs[outs.len() - 1].0
 }
 
 /// Argmax with uniform tie-breaking (reservoir sampling over the maxima), so

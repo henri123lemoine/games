@@ -430,17 +430,8 @@ impl<G: Game> Mcts<G> {
             match game.turn(state) {
                 Turn::Chance => {
                     let outs = game.chance_outcomes(state);
-                    let r = rng.unit();
-                    let mut acc = 0.0;
-                    let mut chosen = outs[outs.len() - 1].0;
-                    for &(a, p) in &outs {
-                        acc += p;
-                        if r < acc {
-                            chosen = a;
-                            break;
-                        }
-                    }
-                    game.apply(state, chosen);
+                    let i = game_core::rand::sample_outcome(&outs, rng);
+                    game.apply(state, outs[i].0);
                 }
                 Turn::Player(p) => {
                     let actions = game.legal_actions(state);

@@ -4,6 +4,23 @@
 
 use crate::Rng;
 
+/// Samples an index from `(outcome, probability)` pairs — the shape of
+/// [`Game::chance_outcomes`](crate::Game::chance_outcomes). Normalizes by the
+/// total weight, so distributions need not sum to exactly 1; floating-point
+/// shortfall lands on the last index.
+pub fn sample_outcome<A>(outs: &[(A, f64)], rng: &mut Rng) -> usize {
+    debug_assert!(!outs.is_empty());
+    let total: f64 = outs.iter().map(|(_, p)| *p).sum();
+    let mut target = rng.unit() * total;
+    for (i, (_, p)) in outs.iter().enumerate() {
+        target -= p;
+        if target < 0.0 {
+            return i;
+        }
+    }
+    outs.len() - 1
+}
+
 /// Standard normal via Box-Muller.
 pub fn normal(rng: &mut Rng) -> f64 {
     let u1 = rng.unit().max(1e-12);

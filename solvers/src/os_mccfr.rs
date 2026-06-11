@@ -98,17 +98,11 @@ impl<G: Game> OsMccfr<G> {
         match self.game.turn(state) {
             Turn::Chance => {
                 let outs = self.game.chance_outcomes(state);
-                let probs: Vec<f64> = outs.iter().map(|(_, p)| *p).collect();
-                let i = self.rng.pick(&probs);
+                let i = game_core::rand::sample_outcome(&outs, &mut self.rng);
+                let p = outs[i].1;
                 let mut child = state.clone();
                 self.game.apply(&mut child, outs[i].0);
-                self.traverse(
-                    &child,
-                    traverser,
-                    my_reach,
-                    opp_reach * probs[i],
-                    sample_reach * probs[i],
-                )
+                self.traverse(&child, traverser, my_reach, opp_reach * p, sample_reach * p)
             }
             Turn::Player(p) => {
                 let actions = self.game.legal_actions(state);
