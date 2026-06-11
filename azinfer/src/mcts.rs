@@ -296,7 +296,6 @@ impl Search {
         &self.tree.nodes[self.tree.root].moves
     }
 
-    /// Mean value of the most-visited edge, from the root player's view.
     /// Visit-weighted mean value of the root position (player to move):
     /// the search's estimate of the position itself, for value targets.
     pub fn root_value(&self) -> f64 {
@@ -415,44 +414,7 @@ fn add_dirichlet(node: &mut Node, cfg: &MctsConfig, rng: &mut Rng) {
     }
 }
 
-/// Gamma(alpha) samples normalized to a Dirichlet draw.
-fn dirichlet(alpha: f64, k: usize, rng: &mut Rng) -> Vec<f64> {
-    let mut g: Vec<f64> = (0..k).map(|_| gamma(alpha, rng)).collect();
-    let sum: f64 = g.iter().sum();
-    if sum <= 0.0 {
-        return vec![1.0 / k as f64; k];
-    }
-    for v in &mut g {
-        *v /= sum;
-    }
-    g
-}
-
-fn gamma(alpha: f64, rng: &mut Rng) -> f64 {
-    if alpha < 1.0 {
-        let u: f64 = rng.unit().max(1e-12);
-        return gamma(alpha + 1.0, rng) * u.powf(1.0 / alpha);
-    }
-    let d = alpha - 1.0 / 3.0;
-    let c = 1.0 / (9.0 * d).sqrt();
-    loop {
-        let x = normal(rng);
-        let v = (1.0 + c * x).powi(3);
-        if v <= 0.0 {
-            continue;
-        }
-        let u: f64 = rng.unit().max(1e-12);
-        if u.ln() < 0.5 * x * x + d - d * v + d * v.ln() {
-            return d * v;
-        }
-    }
-}
-
-fn normal(rng: &mut Rng) -> f64 {
-    let u1: f64 = rng.unit().max(1e-12);
-    let u2: f64 = rng.unit();
-    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
-}
+use game_core::rand::dirichlet;
 
 #[cfg(test)]
 mod tests {
@@ -516,19 +478,16 @@ mod tests {
         }
         let mut search = Search::new(None);
         let mut results: Vec<EvalResult> = Vec::new();
-        loop {
-            match search.advance(&b, &history, &cfg, &mut rng, std::mem::take(&mut results)) {
-                Gather::Requests(reqs) => {
-                    results = reqs
-                        .iter()
-                        .map(|r| EvalResult {
-                            priors: vec![1.0 / r.support.len() as f32; r.support.len()],
-                            value: 0.0,
-                        })
-                        .collect();
-                }
-                Gather::Done => break,
-            }
+        while let Gather::Requests(reqs) =
+            search.advance(&b, &history, &cfg, &mut rng, std::mem::take(&mut results))
+        {
+            results = reqs
+                .iter()
+                .map(|r| EvalResult {
+                    priors: vec![1.0 / r.support.len() as f32; r.support.len()],
+                    value: 0.0,
+                })
+                .collect();
         }
         let best = search.root_moves()[argmax(search.root_visits())];
         assert_eq!(best, "e1e8".parse().unwrap());

@@ -164,10 +164,6 @@ impl Default for Snake {
     }
 }
 
-fn fnv(h: u64, b: u64) -> u64 {
-    (h ^ b).wrapping_mul(0x100_0000_01b3)
-}
-
 impl Game for Snake {
     type State = SnakeState;
     type Action = SnakeAction;
@@ -283,16 +279,17 @@ impl Game for Snake {
     }
 
     fn infoset_key(&self, state: &SnakeState, _player: usize) -> u64 {
+        use game_core::hash::combine;
         let pack = |(x, y): (u8, u8)| 1 + y as u64 * 256 + x as u64;
-        let mut h = fnv(0xcbf2_9ce4_8422_2325, state.heading as u64);
-        h = fnv(h, state.status as u64);
-        h = fnv(h, state.hunger as u64);
-        h = fnv(h, state.food.map_or(0, pack));
-        h = fnv(h, state.body.len() as u64);
+        let mut h = combine(0, state.heading as u64);
+        h = combine(h, state.status as u64);
+        h = combine(h, state.hunger as u64);
+        h = combine(h, state.food.map_or(0, pack));
+        h = combine(h, state.body.len() as u64);
         for &c in &state.body {
-            h = fnv(h, pack(c));
+            h = combine(h, pack(c));
         }
-        h ^ (h >> 31)
+        h
     }
 
     fn state_key(&self, state: &SnakeState) -> Option<u64> {

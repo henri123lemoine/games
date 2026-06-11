@@ -42,11 +42,9 @@ impl Connect4State {
 
     fn key(&self) -> u64 {
         let side = (self.moves & 1) as u64;
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for chunk in [self.stones[0], self.stones[1], side] {
-            h = (h ^ chunk).wrapping_mul(0x100_0000_01b3);
-        }
-        h ^ (h >> 31)
+        [self.stones[0], self.stones[1], side]
+            .into_iter()
+            .fold(0, game_core::hash::combine)
     }
 }
 

@@ -91,11 +91,10 @@ impl G2048State {
     }
 
     fn key(&self) -> u64 {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in self.cells.iter().chain([self.pending_spawns].iter()) {
-            h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
-        }
-        h ^ (h >> 31)
+        self.cells
+            .iter()
+            .chain([self.pending_spawns].iter())
+            .fold(0, |h, &b| game_core::hash::combine(h, b as u64))
     }
 }
 

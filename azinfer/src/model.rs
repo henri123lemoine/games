@@ -64,8 +64,7 @@ impl Model {
         if data.len() < 16 || &data[..8] != b"AZWEB001" {
             return Err("not an AZWEB001 export".into());
         }
-        let u32_at =
-            |i: usize| u32::from_le_bytes(data[i..i + 4].try_into().unwrap()) as usize;
+        let u32_at = |i: usize| u32::from_le_bytes(data[i..i + 4].try_into().unwrap()) as usize;
         let (blocks, c) = (u32_at(8), u32_at(12));
         let mut r = Reader { data, pos: 16 };
         let mut conv = |c_in: usize, c_out: usize, k: usize| -> Result<Conv, String> {
@@ -145,11 +144,8 @@ impl Model {
         reqs.iter()
             .map(|r| {
                 let (logits, value) = self.forward(&r.planes);
-                let mut priors: Vec<f32> = r
-                    .support
-                    .iter()
-                    .map(|&s| logits[usize::from(s)])
-                    .collect();
+                let mut priors: Vec<f32> =
+                    r.support.iter().map(|&s| logits[usize::from(s)]).collect();
                 let max = priors.iter().copied().fold(f32::NEG_INFINITY, f32::max);
                 let mut sum = 0.0;
                 for q in &mut priors {
@@ -186,8 +182,7 @@ fn conv_fwd(conv: &Conv, x: &[f32], relu: bool) -> Vec<f32> {
                             if !(0..8).contains(&sx) {
                                 continue;
                             }
-                            let w = conv.w
-                                [(wbase + (dy + half) * k + (dx + half)) as usize];
+                            let w = conv.w[(wbase + (dy + half) * k + (dx + half)) as usize];
                             acc += w * x[ci * 64 + (sy * 8 + sx) as usize];
                         }
                     }

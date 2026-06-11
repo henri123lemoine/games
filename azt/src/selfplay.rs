@@ -444,8 +444,5 @@ pub fn argmax(visits: &[u32]) -> usize {
 }
 
 pub fn mix(a: u64, b: u64) -> u64 {
-    let mut x = a ^ b.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    x ^= x >> 30;
-    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    x ^ (x >> 27)
+    game_core::hash::combine(a, b)
 }

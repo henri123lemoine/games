@@ -14,8 +14,12 @@ use game_core::Rng;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let export = args.first().expect("usage: gen_fixtures <export.bin> <out.json> [n]");
-    let out = args.get(1).expect("usage: gen_fixtures <export.bin> <out.json> [n]");
+    let export = args
+        .first()
+        .expect("usage: gen_fixtures <export.bin> <out.json> [n]");
+    let out = args
+        .get(1)
+        .expect("usage: gen_fixtures <export.bin> <out.json> [n]");
     let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(6);
 
     let data = std::fs::read(export).expect("read export");

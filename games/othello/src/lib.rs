@@ -64,15 +64,6 @@ fn flips(own: u64, opp: u64, sq: u8) -> u64 {
     flipped
 }
 
-fn mix(mut x: u64) -> u64 {
-    x ^= x >> 33;
-    x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
-    x ^= x >> 33;
-    x = x.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
-    x ^= x >> 33;
-    x
-}
-
 /// A move: place a disc on square `row * 8 + col`, or pass (only legal when
 /// no placement is).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,7 +143,11 @@ impl Board {
 
     /// Canonical position hash (discs + side to move).
     pub fn key(&self) -> u64 {
-        mix(self.black ^ mix(self.white ^ mix(self.to_move as u64 + 0x9e37_79b9_7f4a_7c15)))
+        use game_core::hash::combine;
+        combine(
+            combine(combine(0, self.to_move as u64), self.white),
+            self.black,
+        )
     }
 
     pub(crate) fn bb(&self, player: usize) -> u64 {
