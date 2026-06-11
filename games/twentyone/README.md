@@ -51,6 +51,6 @@ was not competitive on CPU).
 ```bash
 cargo run --release -p twentyone --example solve 1 100000          # train + exact exploitability
 cargo run --release -p twentyone --example solve 6 400000 s.bin    # train the full game, save
-cargo run --release -p twentyone --example play 6 s.bin            # play against it
-cargo run --release -p twentyone --example play 6                  # quick-train then play
+cargo run --release -p lab -- play twentyone model=s.bin           # play against it
+cargo run --release -p lab -- play twentyone                       # quick-train then play
 ```

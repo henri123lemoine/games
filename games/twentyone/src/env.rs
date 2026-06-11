@@ -6,9 +6,11 @@ const TARGET: u8 = 21;
 
 /// Action available to the current player: draw a card or stand.
 ///
-/// Example
+/// ```
+/// use twentyone::Action;
 /// let a = Action::Draw;
 /// assert!(matches!(a, Action::Draw));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Draw,
@@ -105,7 +107,8 @@ impl RoundState {
 /// with [`Action::Draw`] or [`Action::Stand`]. When a round ends, the returned
 /// [`StepResult`] contains the outcome and whether the game is over.
 ///
-/// Example
+/// ```
+/// use twentyone::{Action, Env};
 /// let mut env = Env::new(42);
 /// env.start_new_round().unwrap();
 /// loop {
@@ -115,6 +118,7 @@ impl RoundState {
 ///     let res = env.step(act).unwrap();
 ///     if res.round_over { break; }
 /// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct Env {
     hearts: [u8; 2],
@@ -404,7 +408,9 @@ impl Env {
         self.round_state.is_some()
     }
 
-    /// Terminal utility for `player`: +1 if they are the surviving winner, else -1.
+    /// Terminal utility for `player`: +1 if they are the surviving winner,
+    /// else -1. Only meaningful once [`Env::is_game_over`] — mid-game it
+    /// reports +1 for every living player.
     pub fn utility(&self, player: usize) -> f64 {
         if self.hearts[player] > 0 { 1.0 } else { -1.0 }
     }

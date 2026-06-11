@@ -117,6 +117,8 @@ pub fn winner<G: Game>(game: &G, terminal: &G::State) -> Option<usize> {
 /// `player`'s share of the win at a terminal state: 1 for a sole win, `1/k`
 /// for a k-way tie at the top, 0 otherwise. Sums to 1 across players, so a
 /// field where everyone always draws scores everyone at the fair share.
+/// Ties are detected by exact float equality — safe for the usual integer-ish
+/// returns; a game computing returns with float arithmetic should round them.
 pub fn win_share<G: Game>(game: &G, terminal: &G::State, player: usize) -> f64 {
     let (_, best_v, count) = top_return(game, terminal);
     if game.returns(terminal, player) == best_v {
@@ -181,7 +183,9 @@ pub fn win_rate<G: Game>(
 
 /// `hero`'s win share against a field of `baseline` opponents, rotating the
 /// hero through every seat so position is unbiased. Ties at the top split
-/// credit, so "fair" is exactly `1/players` even in drawish games.
+/// credit, so "fair" is exactly `1/players` even in drawish games. For an
+/// exactly balanced rotation make `games` a multiple of `num_players`;
+/// otherwise early seats get one extra game.
 pub fn winrate_vs_field<G: Game>(
     game: &G,
     hero: &dyn Agent<G>,

@@ -162,7 +162,10 @@ impl Go {
     }
 
     /// Area (Chinese) scores before komi: stones plus empty regions bordered
-    /// exclusively by one color, as `(black, white)`.
+    /// exclusively by one color, as `(black, white)`. No dead-stone
+    /// adjudication: a two-pass ending with dead stones on the board scores
+    /// them as alive. Bot playouts capture before passing, so this only
+    /// surprises humans who pass early in the lab client.
     pub fn area_scores(&self, s: &GoState) -> (u64, u64) {
         let mut score = [0u64; 2];
         let mut seen = vec![false; s.cells.len()];

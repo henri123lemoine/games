@@ -499,7 +499,9 @@ impl Mlp {
     }
 }
 
-/// SGD with classical momentum and decoupled L2 weight decay.
+/// SGD with classical momentum and classical (coupled) L2 weight decay:
+/// `l2 * w` is folded into the gradient *before* the momentum update, not
+/// applied decoupled-AdamW-style.
 pub struct SgdMomentum {
     pub lr: f32,
     pub momentum: f32,

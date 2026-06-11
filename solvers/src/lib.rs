@@ -6,7 +6,12 @@
 //! |-----------|----------|-----|
 //! | [`Cfr`] (vanilla CFR+, exact exploitability) | `Game` (2p zero-sum, small) | tiny imperfect-info games, correctness yardsticks |
 //! | [`Mccfr`] (external-sampling MCCFR+) | `Game` (2p+) | mid-size imperfect-info games with shallow action ladders |
+//! | [`OsMccfr`](os_mccfr::OsMccfr) (outcome-sampling MCCFR) | `Game` (2p+) | deep action ladders external sampling can't afford |
 //! | [`AlphaBeta`] | `Game + Eval` (+ optional [`SearchSpec`]) | perfect-information games |
+//! | [`Mcts`](mcts::Mcts) (UCT, solver, RAVE) | `Game` (+ optional `Eval`/[`SearchSpec`]) | perfect-information games without a sharp eval |
+//! | [`azero`] (PUCT + self-play training) | `Game + PolicyValueEncoder` | perfect-information games, learned eval |
+//! | [`Reinforce`](pg::Reinforce) (policy gradient) | `Game + PolicyValueEncoder` | small games, baseline learning curves |
+//! | [`QLearner`](qlearn::QLearner) (tabular Q) | `Game` | tiny games, baseline learning curves |
 //! | [`Rollout`] | `Game + Determinizer` + a base [`Agent`] | large imperfect-info games |
 //!
 //! Game-*specific* algorithms (e.g. Twenty-One's round-decomposed solver) live

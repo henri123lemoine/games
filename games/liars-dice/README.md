@@ -10,6 +10,9 @@ from 2-player toy games up to the 5-player, 5-dice, 6-face target.
 - 1s are **not** wild. A raise is exactly **+1 quantity** (same face) or **+1
   face** (same quantity, wrapping `faces`→1 with +1 quantity). The first round
   opens at a forced `1×1`; later rounds open freely.
+- The forced `1×1` opener is *owned by the last seat* (a fixed convention):
+  calling Liar on it when no 1s are out costs the last seat a die for a bid it
+  never chose. A deliberate, known seat asymmetry.
 - On your turn: raise, **Call Liar**, or **Call Exact**.
   - *Call Liar*: if the true count of the bid face across all live dice is below
     the bid, the bidder loses a die, else the caller does.
@@ -67,7 +70,7 @@ rollout-picking the opening face (noisier than the heuristic).
 
 ```bash
 # play against the bots (you are player 0)
-cargo run --release -p liars-dice --example play 5 5 6
+cargo run --release -p lab -- play liars-dice players=5 dice=5
 
 # evaluate / tune / search
 cargo run --release -p liars-dice --example evaluate          # vs random, all configs
