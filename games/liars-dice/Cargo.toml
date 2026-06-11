@@ -10,7 +10,6 @@ path = "src/lib.rs"
 
 [dependencies]
 game-core = { workspace = true }
-rayon = { workspace = true }
 
 [dev-dependencies]
 solvers = { path = "../../solvers" }

@@ -148,7 +148,6 @@ impl ProbabilisticAgent {
     }
 
     fn choose(&self, game: &LiarsDice, s: &LdState, player: usize, rng: &mut Rng) -> Action {
-        let r = rng.unit();
         let actions = game.legal_actions(s);
         let (q, face) = s.current_bid();
 
@@ -169,7 +168,7 @@ impl ProbabilisticAgent {
             let expected_extra = unknown / game.faces as f64;
             let mut q0 = (best_count as f64 + expected_extra * self.cfg.open_frac).round() as u8;
             q0 = q0.clamp(1, total);
-            if r < self.cfg.bluff && q0 < total {
+            if rng.unit() < self.cfg.bluff && q0 < total {
                 q0 += 1; // a light bluff
             }
             return Action::Open(q0, best_face);
@@ -194,7 +193,10 @@ impl ProbabilisticAgent {
             } else {
                 0.0
             };
-            if r < call_p {
+            // A fresh draw per stochastic decision: reusing one sample across
+            // the bluff/call/raise thresholds correlates them and distorts
+            // the tuned marginal probabilities.
+            if rng.unit() < call_p {
                 return Action::CallLiar;
             }
         }
@@ -210,7 +212,7 @@ impl ProbabilisticAgent {
             }
         }
         match best {
-            Some((a, pt)) if pt >= self.cfg.safety || r < self.cfg.bluff => a,
+            Some((a, pt)) if pt >= self.cfg.safety || rng.unit() < self.cfg.bluff => a,
             // No safe raise and not bluffing: prefer to call the current bid.
             _ if can_liar => Action::CallLiar,
             Some((a, _)) => a,

@@ -48,7 +48,7 @@ pub struct LdState {
     turn: u8,        // current actor (a live player)
     last_bidder: u8, // who owns the current bid (for call resolution)
     first_round: bool,
-    hist: [u8; HIST_K],
+    hist: [u16; HIST_K],
     endorsed: [u8; MAX_PLAYERS], // face each player last bid this round (0 = none)
     rounds: u8,
     done: bool,
@@ -65,6 +65,10 @@ pub struct LiarsDice {
 impl LiarsDice {
     pub fn new(players: u8, dice: u8, faces: u8) -> Self {
         assert!(faces as usize <= MAX_FACES && players as usize <= MAX_PLAYERS && players >= 2);
+        assert!(
+            players as u16 * dice as u16 <= u8::MAX as u16,
+            "dice counts are u8: players x dice must not exceed 255"
+        );
         Self {
             players,
             dice,
@@ -109,7 +113,7 @@ impl LiarsDice {
             .sum()
     }
 
-    fn push_hist(&self, s: &mut LdState, code: u8) {
+    fn push_hist(&self, s: &mut LdState, code: u16) {
         s.hist.copy_within(1..HIST_K, 0);
         s.hist[HIST_K - 1] = code;
     }
@@ -124,6 +128,9 @@ impl LiarsDice {
         }
         s.rounds += 1;
         if s.rounds > self.max_rounds {
+            // Round-cap adjudication: most dice wins, ties broken toward the
+            // highest seat (an arbitrary but fixed convention; the cap exists
+            // only to bound pathological stalls, not as a real rule).
             s.done = true;
             s.winner = (0..self.players)
                 .max_by_key(|&p| s.dice_left[p as usize])
@@ -167,8 +174,7 @@ impl LiarsDice {
             }
             let mut counts = [0u8; MAX_FACES];
             for _ in 0..s.dice_left[p] {
-                let face = ((rng.unit() * self.faces as f64) as usize).min(self.faces as usize - 1);
-                counts[face] += 1;
+                counts[rng.below(self.faces as usize)] += 1;
             }
             let endorsed = s.endorsed[p];
             if endorsed > 0 && s.dice_left[p] > 0 {
@@ -179,12 +185,14 @@ impl LiarsDice {
                     endorser_bias
                 };
                 if counts[f] == 0 && rng.unit() < strength {
-                    // Convert one random die into the endorsed face.
+                    // Convert one uniformly chosen die into the endorsed face.
+                    let mut k = rng.below(s.dice_left[p] as usize);
                     for c in counts.iter_mut() {
-                        if *c > 0 {
+                        if (*c as usize) > k {
                             *c -= 1;
                             break;
                         }
+                        k -= *c as usize;
                     }
                     counts[f] += 1;
                 }
@@ -271,13 +279,16 @@ fn hand_distribution(dice: u8, faces: u8) -> Vec<([u8; MAX_FACES], f64)> {
     out
 }
 
-fn encode(a: Action, faces: u8) -> u8 {
+/// History code for the infoset key. `u16` because the `Open` range scales
+/// with the total dice in play (`5 + (q-1)*faces + (f-1)`), which overflows
+/// `u8` on large-but-legal configurations like 8 players x 6 dice.
+fn encode(a: Action, faces: u8) -> u16 {
     match a {
         Action::RaiseQuantity => 1,
         Action::RaiseFace => 2,
         Action::CallLiar => 3,
         Action::CallExact => 4,
-        Action::Open(q, f) => 5 + (q - 1) * faces + (f - 1),
+        Action::Open(q, f) => 5 + u16::from(q - 1) * u16::from(faces) + u16::from(f - 1),
         Action::Roll(_) => unreachable!(),
     }
 }
@@ -418,6 +429,12 @@ impl Game for LiarsDice {
         }
     }
 
+    /// Own hand plus the public bidding context. Deliberately lossy
+    /// abstractions, so distinct histories can share a key: the bid history is
+    /// truncated to the last `HIST_K` actions, and the round number is
+    /// excluded (near `max_rounds` the dice-count adjudication makes
+    /// continuation values round-dependent; the cap is an anti-stall guard,
+    /// not a rule worth spending key entropy on).
     fn infoset_key(&self, s: &LdState, player: usize) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         player.hash(&mut h);
