@@ -29,13 +29,54 @@ use net::{Infer, NetConfig};
 use selfplay::{SelfPlay, SelfPlayConfig, mix};
 use train::{Replay, Trainer};
 
-const DASHBOARD: &str = include_str!("../../solvers/examples/azero_dashboard.html");
+const DASHBOARD: &str = include_str!("../../assets/azero_dashboard.html");
 
 fn arg<T: FromStr>(args: &[String], name: &str, default: T) -> T {
+    arg_opt(args, name).unwrap_or(default)
+}
+
+fn arg_opt<T: FromStr>(args: &[String], name: &str) -> Option<T> {
     args.windows(2)
         .find(|w| w[0] == name)
         .and_then(|w| w[1].parse().ok())
-        .unwrap_or(default)
+}
+
+/// Net architecture for a checkpoint: explicit `--blocks`/`--ch` flags win;
+/// otherwise the latest `start` event in the metrics.jsonl beside the
+/// checkpoint names the architecture it was trained with. Ends the silent
+/// failure mode where a default-config run gauged with different defaults
+/// died on an opaque tensor-shape error.
+fn net_config_for(args: &[String], net_path: &Path) -> NetConfig {
+    let recorded = net_path
+        .parent()
+        .map(|d| d.join("metrics.jsonl"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|text| {
+            text.lines().rev().find_map(|l| {
+                let v: serde_json::Value = serde_json::from_str(l).ok()?;
+                if v["event"] != "start" {
+                    return None;
+                }
+                Some((
+                    v["blocks"].as_u64()? as usize,
+                    v["channels"].as_u64()? as i64,
+                ))
+            })
+        });
+    let blocks = arg_opt(args, "--blocks")
+        .or(recorded.map(|r| r.0))
+        .unwrap_or(8);
+    let channels = arg_opt(args, "--ch")
+        .or(recorded.map(|r| r.1))
+        .unwrap_or(96);
+    if let Some((rb, rc)) = recorded
+        && (rb != blocks || rc != channels)
+    {
+        eprintln!(
+            "note: run metrics say {rb}x{rc}, flags say {blocks}x{channels} — using the flags"
+        );
+    }
+    NetConfig { blocks, channels }
 }
 
 fn append_line(path: &Path, line: &str) {
@@ -55,13 +96,10 @@ fn last_iter(path: &Path) -> u64 {
     text.lines()
         .rev()
         .find_map(|l| {
-            let i = l.find("\"iter\":")? + 7;
-            l[i..]
-                .chars()
-                .take_while(char::is_ascii_digit)
-                .collect::<String>()
-                .parse()
-                .ok()
+            serde_json::from_str::<serde_json::Value>(l)
+                .ok()?
+                .get("iter")?
+                .as_u64()
         })
         .unwrap_or(0)
 }
@@ -152,11 +190,17 @@ fn run(args: &[String]) {
 
     append_line(
         &metrics,
-        &format!(
-            r#"{{"event":"start","time":{},"iter":{iter},"blocks":{blocks},"channels":{channels},"sims":{sims},"concurrent":{concurrent},"samples_per_iter":{samples_per_iter},"batch_size":{batch},"replay_capacity":{replay_cap},"lr":{lr},"eval_every":{eval_every},"eval_pairs":{eval_pairs},"eval_sims":{eval_sims},"value_mix":{value_mix},"resign_fp_target":{resign_fp_target},"threads":{}}}"#,
-            epoch_secs(),
-            rayon::current_num_threads(),
-        ),
+        &serde_json::json!({
+            "event": "start", "time": epoch_secs(), "iter": iter,
+            "blocks": blocks, "channels": channels, "sims": sims,
+            "concurrent": concurrent, "samples_per_iter": samples_per_iter,
+            "batch_size": batch, "replay_capacity": replay_cap, "lr": lr,
+            "eval_every": eval_every, "eval_pairs": eval_pairs,
+            "eval_sims": eval_sims, "value_mix": value_mix,
+            "resign_fp_target": resign_fp_target,
+            "threads": rayon::current_num_threads(),
+        })
+        .to_string(),
     );
     println!(
         "run: {hours:.1}h budget, {blocks}x{channels} resnet on {dev:?}, {sims} sims/move, \
@@ -193,7 +237,9 @@ fn run(args: &[String]) {
             let mut sorted: Vec<f64> = calib_pool.iter().copied().collect();
             sorted.sort_by(f64::total_cmp);
             let t = sorted[(resign_fp_target * sorted.len() as f64) as usize];
-            live_resign_q = (-t).clamp(0.85, 0.995);
+            // Wide sanity bounds only — a tight floor here silently overrode
+            // the measured fp-target quantile in the conservative direction.
+            live_resign_q = (-t).clamp(0.5, 0.995);
             pool.set_resign_q(live_resign_q);
         }
 
@@ -210,7 +256,7 @@ fn run(args: &[String]) {
                 .expect("write snapshot");
         }
 
-        let mut eval_json = String::new();
+        let mut eval_fields: Option<(f32, serde_json::Value)> = None;
         let mut eval_human = String::new();
         let mut eval_work = 0.0f32;
         if iter == 1 || iter.is_multiple_of(eval_every) {
@@ -219,19 +265,18 @@ fn run(args: &[String]) {
             let entries = ladder(&infer, &opponents, eval_pairs, eval_sims, mix(0xE7A1, iter));
             let eval_secs = t.elapsed().as_secs_f32();
             eval_work = eval_secs;
-            let parts: Vec<String> = entries
+            let table: serde_json::Map<String, serde_json::Value> = entries
                 .iter()
                 .map(|e| {
-                    format!(
-                        r#""{}":{{"score":{:.4},"w":{},"d":{},"l":{}}}"#,
-                        e.name, e.score, e.wins, e.draws, e.losses
+                    (
+                        e.name.clone(),
+                        serde_json::json!({
+                            "score": e.score, "w": e.wins, "d": e.draws, "l": e.losses
+                        }),
                     )
                 })
                 .collect();
-            eval_json = format!(
-                r#","eval_secs":{eval_secs:.1},"eval":{{{}}}"#,
-                parts.join(",")
-            );
+            eval_fields = Some((eval_secs, serde_json::Value::Object(table)));
             eval_human = format!(
                 " | eval [{eval_secs:.0}s] {}",
                 entries
@@ -243,22 +288,21 @@ fn run(args: &[String]) {
         }
 
         let elapsed_min = start.elapsed().as_secs_f64() / 60.0;
-        append_line(
-            &metrics,
-            &format!(
-                r#"{{"iter":{iter},"time":{},"elapsed_min":{elapsed_min:.2},"policy_loss":{policy_loss:.4},"value_loss":{value_loss:.4},"games":{},"decisive":{},"avg_plies":{:.1},"buffer":{},"self_play_secs":{self_play_secs:.1},"train_secs":{train_secs:.1},"resigned":{},"rep_draws":{},"capped":{},"would_resign":{},"resign_fp":{},"resign_q":{live_resign_q:.3}{eval_json}}}"#,
-                epoch_secs(),
-                stats.games,
-                stats.decisive,
-                stats.avg_plies(),
-                replay.len(),
-                stats.resigned,
-                stats.repetition_draws,
-                stats.capped,
-                stats.would_resign,
-                stats.resign_fp,
-            ),
-        );
+        let mut line = serde_json::json!({
+            "iter": iter, "time": epoch_secs(), "elapsed_min": elapsed_min,
+            "policy_loss": policy_loss, "value_loss": value_loss,
+            "games": stats.games, "decisive": stats.decisive,
+            "avg_plies": stats.avg_plies(), "buffer": replay.len(),
+            "self_play_secs": self_play_secs, "train_secs": train_secs,
+            "resigned": stats.resigned, "rep_draws": stats.repetition_draws,
+            "capped": stats.capped, "would_resign": stats.would_resign,
+            "resign_fp": stats.resign_fp, "resign_q": live_resign_q,
+        });
+        if let Some((eval_secs, table)) = eval_fields {
+            line["eval_secs"] = serde_json::json!(eval_secs);
+            line["eval"] = table;
+        }
+        append_line(&metrics, &line.to_string());
         println!(
             "iter {iter:>4} [{elapsed_min:>6.1}m] loss {:.3} (p {policy_loss:.3} + v {value_loss:.3}) | \
              {} games, {} decisive ({} resign), avg {:>3.0} plies, buffer {:>7} | \
@@ -288,10 +332,10 @@ fn run(args: &[String]) {
         if let Some(reason) = reason {
             append_line(
                 &metrics,
-                &format!(
-                    r#"{{"event":"stop","time":{},"iter":{iter},"reason":"{reason}"}}"#,
-                    epoch_secs()
-                ),
+                &serde_json::json!({
+                    "event": "stop", "time": epoch_secs(), "iter": iter, "reason": reason,
+                })
+                .to_string(),
             );
             println!(
                 "stopping ({reason}) after iter {iter}; checkpoint at {}",
@@ -513,15 +557,13 @@ fn calibrate(args: &[String]) {
 /// `--watch N` re-gauges the latest checkpoint every N minutes.
 fn elo_gauge(args: &[String]) {
     let net_path: PathBuf = arg(args, "--net", PathBuf::from("../data/azt/run2/latest.ot"));
-    let blocks: usize = arg(args, "--blocks", 8);
-    let channels: i64 = arg(args, "--ch", 96);
     let sims: u32 = arg(args, "--sims", 600);
     let pairs: u32 = arg(args, "--pairs", 8);
     let movetime: u32 = arg(args, "--movetime", 50);
     let watch_min: f64 = arg(args, "--watch", 0.0);
 
     let dev = device();
-    let cfg = NetConfig { blocks, channels };
+    let cfg = net_config_for(args, &net_path);
     let metrics = net_path
         .parent()
         .unwrap_or(Path::new("."))
@@ -573,11 +615,12 @@ fn elo_gauge(args: &[String]) {
         );
         append_line(
             &metrics,
-            &format!(
-                r#"{{"event":"elo","time":{},"est":{est:.0},"floor":{floor},"games":{games},"sims":{sims},"detail":"{}"}}"#,
-                epoch_secs(),
-                detail.join(" ")
-            ),
+            &serde_json::json!({
+                "event": "elo", "time": epoch_secs(), "est": est.round(),
+                "floor": floor, "games": games, "sims": sims,
+                "detail": detail.join(" "),
+            })
+            .to_string(),
         );
         if watch_min <= 0.0 {
             break;
@@ -595,17 +638,17 @@ fn play(args: &[String]) {
     use std::collections::HashMap;
 
     let net_path: PathBuf = arg(args, "--net", PathBuf::from("../data/azt/run2/latest.ot"));
-    let blocks: usize = arg(args, "--blocks", 8);
-    let channels: i64 = arg(args, "--ch", 96);
     let sims: u32 = arg(args, "--sims", 800);
     let human_is_white = arg(args, "--human", "w".to_string()) != "b";
 
     let dev = device();
-    let cfg = NetConfig { blocks, channels };
+    let cfg = net_config_for(args, &net_path);
     let infer = Infer::load(&net_path, cfg, dev, Kind::Half).unwrap_or_else(|e| {
         eprintln!(
-            "failed to load {} as a {blocks}x{channels} net: {e}",
-            net_path.display()
+            "failed to load {} as a {}x{} net: {e}",
+            net_path.display(),
+            cfg.blocks,
+            cfg.channels
         );
         std::process::exit(1);
     });
@@ -615,8 +658,10 @@ fn play(args: &[String]) {
         ..MctsConfig::default()
     };
     println!(
-        "playing {} ({blocks}x{channels}, {sims} sims/move); you are {}",
+        "playing {} ({}x{}, {sims} sims/move); you are {}",
         net_path.display(),
+        cfg.blocks,
+        cfg.channels,
         if human_is_white { "White" } else { "Black" }
     );
 
@@ -697,18 +742,16 @@ fn play(args: &[String]) {
 /// Minimal UCI engine over stdin/stdout: enough for chess GUIs and the
 /// local web board (position startpos|fen [moves ...], go [movetime N]).
 fn uci_engine(args: &[String]) {
-    use chess::{Board, legal_moves};
+    use azinfer::argmax;
     use azinfer::mcts::{Gather, MctsConfig, Search};
-    use selfplay::argmax;
+    use chess::{Board, legal_moves};
     use std::collections::HashMap;
     use std::io::BufRead;
 
     let net_path: PathBuf = arg(args, "--net", PathBuf::from("../data/azt/run2/latest.ot"));
-    let blocks: usize = arg(args, "--blocks", 8);
-    let channels: i64 = arg(args, "--ch", 96);
     let sims: u32 = arg(args, "--sims", 2000);
 
-    let cfg = NetConfig { blocks, channels };
+    let cfg = net_config_for(args, &net_path);
     let infer = Infer::load(&net_path, cfg, device(), Kind::Half).unwrap_or_else(|e| {
         eprintln!("failed to load {}: {e}", net_path.display());
         std::process::exit(1);
@@ -724,7 +767,7 @@ fn uci_engine(args: &[String]) {
         let mut words = line.split_whitespace();
         match words.next() {
             Some("uci") => {
-                println!("id name azero-azt ({blocks}x{channels})");
+                println!("id name azero-azt ({}x{})", cfg.blocks, cfg.channels);
                 println!("id author the games room");
                 println!("uciok");
             }
@@ -757,11 +800,11 @@ fn uci_engine(args: &[String]) {
                 keys.insert(board.key(), 1);
                 if rest.get(move_idx) == Some(&"moves") {
                     for m in &rest[move_idx + 1..] {
-                        if let Ok(m) = m.parse::<chess::Move>() {
-                            if legal_moves(&board).contains(&m) {
-                                board.apply(m);
-                                *keys.entry(board.key()).or_insert(0) += 1;
-                            }
+                        if let Ok(m) = m.parse::<chess::Move>()
+                            && legal_moves(&board).contains(&m)
+                        {
+                            board.apply(m);
+                            *keys.entry(board.key()).or_insert(0) += 1;
                         }
                     }
                 }
@@ -794,6 +837,140 @@ fn uci_engine(args: &[String]) {
     }
 }
 
+/// Exports a checkpoint as the portable browser format: magic, dims, then
+/// fp32 tensors in fixed order with every BatchNorm folded into its conv
+/// (`w' = w·γ/√(σ²+ε)`, `b' = β − μ·γ/√(σ²+ε)`), so a runtime needs only
+/// conv+bias, linear, relu, tanh.
+fn export(args: &[String]) {
+    use tch::Tensor;
+
+    let net_path: PathBuf = arg(args, "--net", PathBuf::from("../data/azt/run2/latest.ot"));
+    let out: PathBuf = arg(
+        args,
+        "--out",
+        PathBuf::from("../data/azt/run2/azero-chess.bin"),
+    );
+    let cfg = net_config_for(args, &net_path);
+
+    let mut vs = tch::nn::VarStore::new(Device::Cpu);
+    let _net = net::Net::new(&vs.root(), cfg);
+    vs.load(&net_path).unwrap_or_else(|e| {
+        eprintln!("failed to load {}: {e}", net_path.display());
+        std::process::exit(1);
+    });
+    let vars = vs.variables();
+    let get = |name: &str| -> Tensor {
+        vars.get(name)
+            .unwrap_or_else(|| panic!("missing tensor {name}"))
+            .to_kind(Kind::Float)
+            .to_device(Device::Cpu)
+    };
+    let folded = |conv: &str, bn: &str| -> (Vec<f32>, Vec<f32>) {
+        let w = get(&format!("{conv}.weight"));
+        let gamma = get(&format!("{bn}.weight"));
+        let beta = get(&format!("{bn}.bias"));
+        let mean = get(&format!("{bn}.running_mean"));
+        let var = get(&format!("{bn}.running_var"));
+        let scale = &gamma / (&var + 1e-5).sqrt();
+        let wf = &w * &scale.reshape([-1, 1, 1, 1]);
+        let bf = &beta - &mean * &scale;
+        (
+            Vec::<f32>::try_from(wf.flatten(0, -1)).unwrap(),
+            Vec::<f32>::try_from(bf.flatten(0, -1)).unwrap(),
+        )
+    };
+    let plain =
+        |name: &str| -> Vec<f32> { Vec::<f32>::try_from(get(name).flatten(0, -1)).unwrap() };
+
+    let mut buf: Vec<u8> = Vec::new();
+    buf.extend_from_slice(b"AZWEB001");
+    buf.extend_from_slice(&(cfg.blocks as u32).to_le_bytes());
+    buf.extend_from_slice(&(cfg.channels as u32).to_le_bytes());
+    let mut push = |v: &[f32]| {
+        for x in v {
+            buf.extend_from_slice(&x.to_le_bytes());
+        }
+    };
+    let (w, b) = folded("stem_c", "stem_b");
+    push(&w);
+    push(&b);
+    for i in 0..cfg.blocks {
+        for half in ["c1", "c2"] {
+            let bn = if half == "c1" { "b1" } else { "b2" };
+            let (w, b) = folded(&format!("block{i}.{half}"), &format!("block{i}.{bn}"));
+            push(&w);
+            push(&b);
+        }
+    }
+    let (w, b) = folded("p1", "pb");
+    push(&w);
+    push(&b);
+    push(&plain("p2.weight"));
+    push(&vec![0.0; 73]);
+    let (w, b) = folded("v1", "vb");
+    push(&w);
+    push(&b);
+    push(&plain("vf1.weight"));
+    push(&plain("vf1.bias"));
+    push(&plain("vf2.weight"));
+    push(&plain("vf2.bias"));
+
+    std::fs::write(&out, &buf).expect("write export");
+    println!(
+        "exported {}x{} net: {} ({:.1} MB) from {}",
+        cfg.blocks,
+        cfg.channels,
+        out.display(),
+        buf.len() as f64 / 1e6,
+        net_path.display()
+    );
+}
+
+/// Compares the tch forward pass with azinfer's reference forward on the
+/// exported file over random positions — guards the BN folding and layout.
+fn verify_export(args: &[String]) {
+    let net_path: PathBuf = arg(args, "--net", PathBuf::from("../data/azt/run2/latest.ot"));
+    let export_path: PathBuf = arg(
+        args,
+        "--export",
+        PathBuf::from("../data/azt/run2/azero-chess.bin"),
+    );
+    let cfg = net_config_for(args, &net_path);
+    let infer = Infer::load(&net_path, cfg, Device::Cpu, Kind::Float).expect("load checkpoint");
+    let data = std::fs::read(&export_path).expect("read export");
+    let model = azinfer::model::Model::parse(&data).expect("parse export");
+
+    let mut rng = Rng::new(7);
+    let mut board = chess::Board::start();
+    let (mut max_dp, mut max_dv) = (0.0f32, 0.0f32);
+    for ply in 0..120 {
+        let moves = chess::legal_moves(&board);
+        if moves.is_empty() || board.halfmove >= 100 {
+            board = chess::Board::start();
+            continue;
+        }
+        let req = azinfer::EvalRequest {
+            planes: chess::encode::encode_planes(&board),
+            support: moves
+                .iter()
+                .map(|&m| chess::encode::az_move_index(m, board.stm) as u16)
+                .collect(),
+        };
+        let a = &infer.forward_batch(std::slice::from_ref(&req))[0];
+        let b = &model.eval(std::slice::from_ref(&req))[0];
+        for (pa, pb) in a.priors.iter().zip(&b.priors) {
+            max_dp = max_dp.max((pa - pb).abs());
+        }
+        max_dv = max_dv.max((a.value - b.value).abs());
+        let i = ((rng.unit() * moves.len() as f64) as usize).min(moves.len() - 1);
+        board.apply(moves[i]);
+        let _ = ply;
+    }
+    println!("max |prior diff| {max_dp:.2e}, max |value diff| {max_dv:.2e} over 120 positions");
+    assert!(max_dp < 1e-3 && max_dv < 1e-3, "export does not match tch");
+    println!("export verified");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -803,6 +980,8 @@ fn main() {
         Some("elo") => elo_gauge(&args[1..]),
         Some("calibrate") => calibrate(&args[1..]),
         Some("uci") => uci_engine(&args[1..]),
+        Some("export") => export(&args[1..]),
+        Some("verify-export") => verify_export(&args[1..]),
         _ => {
             eprintln!(
                 "usage: azt run   [--dir ../data/azt/run1] [--hours 24] [--blocks 6] [--ch 64] \
@@ -820,6 +999,9 @@ fn main() {
                  [--sims 600] [--pairs 8] [--movetime 50] [--watch <minutes>]"
             );
             eprintln!("       azt uci   [--net ...] [--blocks 8] [--ch 96] [--sims 2000]");
+            eprintln!(
+                "       azt export [--net ...] [--out azero-chess.bin] [--blocks 8] [--ch 96]"
+            );
             std::process::exit(2);
         }
     }

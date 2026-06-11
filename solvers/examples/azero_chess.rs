@@ -31,7 +31,7 @@ use rayon::prelude::*;
 use solvers::AlphaBeta;
 use solvers::azero::{AzeroConfig, Mlp, PolicyValueEncoder, Puct, PuctAgent, SelfPlayTrainer};
 
-const DASHBOARD: &str = include_str!("azero_dashboard.html");
+const DASHBOARD: &str = include_str!("../../assets/azero_dashboard.html");
 
 /// Plies of uniform-random opening shared by both games of an eval pair.
 const OPENING_PLIES: usize = 4;
