@@ -532,7 +532,11 @@ impl Board {
     }
 
     /// 64-bit hash of the full position: placement, side to move, castling
-    /// rights, and en-passant square.
+    /// rights, en-passant square, and the halfmove clock. The clock must be
+    /// in the key because terminality (the 50-move rule) depends on it — the
+    /// same placement one ply from the draw and at clock zero have different
+    /// game values, and the search's transposition table keys on this hash.
+    /// (The cost is fewer TT hits across lines that differ only in clock.)
     pub fn key(&self) -> u64 {
         let mut h = 0u64;
         for (sq, cell) in self.squares.iter().enumerate() {
@@ -547,6 +551,7 @@ impl Board {
         if let Some(ep) = self.ep {
             h ^= splitmix64(0x3000 + ep as u64);
         }
+        h ^= splitmix64(0x4000 + self.halfmove as u64);
         h
     }
 }
