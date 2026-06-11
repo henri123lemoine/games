@@ -9,7 +9,7 @@
 
 use game_core::{Agent, Game, Rng, Turn};
 
-use super::mlp::Mlp;
+use super::mlp::{InferCache, Mlp};
 use super::rand::dirichlet;
 
 /// Game knowledge required by AlphaZero-style learning: a flat `f32`
@@ -38,6 +38,9 @@ pub struct Puct<'a, G: Game, E: PolicyValueEncoder<G>> {
     pub dirichlet_alpha: f32,
     /// Weight of Dirichlet noise mixed into the root prior; 0 disables it.
     pub root_noise: f32,
+    /// Sparse-input fast path for `net`, snapshotted at construction (sound:
+    /// the shared borrow keeps the net frozen for this `Puct`'s lifetime).
+    cache: InferCache,
 }
 
 struct Node<S, A> {
@@ -65,6 +68,7 @@ impl<'a, G: Game, E: PolicyValueEncoder<G>> Puct<'a, G, E> {
             c_puct: 1.5,
             dirichlet_alpha: 0.3,
             root_noise: 0.0,
+            cache: net.infer_cache(),
         }
     }
 
@@ -151,7 +155,7 @@ impl<'a, G: Game, E: PolicyValueEncoder<G>> Puct<'a, G, E> {
             .iter()
             .map(|&a| self.enc.action_index(self.game, &s, a))
             .collect();
-        let (prior, v) = self.net.policy_value(&x, &support);
+        let (prior, v) = self.net.policy_value_cached(&self.cache, &x, &support);
         let k = actions.len();
         Node {
             state: s,

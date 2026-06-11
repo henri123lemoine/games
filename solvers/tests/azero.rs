@@ -168,6 +168,50 @@ fn save_load_roundtrip() {
 }
 
 #[test]
+fn cached_inference_matches_dense() {
+    let net = Mlp::new(19, 12, 9, 21);
+    let mut x = vec![0.0f32; 19];
+    for (i, v) in [(0usize, 1.0f32), (4, 1.0), (7, 0.5), (18, -2.0)] {
+        x[i] = v;
+    }
+    let cache = net.infer_cache();
+    let support = [0usize, 2, 5, 8];
+    let (p_dense, v_dense) = net.policy_value(&x, &support);
+    let (p_cached, v_cached) = net.policy_value_cached(&cache, &x, &support);
+    assert_eq!(p_dense, p_cached);
+    assert_eq!(v_dense, v_cached);
+}
+
+#[cfg(feature = "parallel")]
+#[test]
+fn parallel_grad_matches_serial() {
+    let net = Mlp::new(4, 6, 5, 7);
+    let samples = [
+        Sample {
+            x: vec![0.3, 0.0, 1.2, 0.05],
+            policy: vec![(0, 0.2), (2, 0.5), (4, 0.3)],
+            z: 0.6,
+        },
+        Sample {
+            x: vec![-1.0, 0.4, 0.0, 0.9],
+            policy: vec![(1, 0.7), (3, 0.3)],
+            z: -0.4,
+        },
+        Sample {
+            x: vec![0.0, 0.0, -0.5, 1.0],
+            policy: vec![(0, 1.0)],
+            z: 0.1,
+        },
+    ];
+    let batch: Vec<&Sample> = samples.iter().collect();
+    let (mut serial, mut parallel) = (Vec::new(), Vec::new());
+    let losses_serial = net.grad(&batch, &mut serial);
+    let losses_parallel = net.grad_par(&batch, &mut parallel);
+    assert_eq!(serial, parallel);
+    assert_eq!(losses_serial, losses_parallel);
+}
+
+#[test]
 fn puct_with_untrained_net_returns_legal_indices() {
     let net = Mlp::new(19, 16, 9, 5);
     let game = &Ttt;

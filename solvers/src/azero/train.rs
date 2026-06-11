@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 
 use game_core::{Game, Rng, Turn};
 use rayon::prelude::*;
+use web_time::Instant;
 
 use super::mlp::{Mlp, Sample, SgdMomentum};
 use super::puct::{PolicyValueEncoder, Puct, argmax, sample_chance};
@@ -59,6 +60,8 @@ pub struct IterStats {
     pub samples: usize,
     pub policy_loss: f32,
     pub value_loss: f32,
+    pub self_play_secs: f32,
+    pub train_secs: f32,
 }
 
 impl IterStats {
@@ -110,6 +113,7 @@ impl<'a, G: Game, E: PolicyValueEncoder<G>> SelfPlayTrainer<'a, G, E> {
     /// One iteration: `games_per_iter` self-play games in parallel, then
     /// `batches_per_iter` SGD steps on minibatches from the replay buffer.
     pub fn iterate(&mut self, seed: u64) -> IterStats {
+        let sp_start = Instant::now();
         let games = {
             let this: &Self = self;
             (0..this.cfg.games_per_iter)
@@ -117,6 +121,7 @@ impl<'a, G: Game, E: PolicyValueEncoder<G>> SelfPlayTrainer<'a, G, E> {
                 .map(|g| this.self_play(mix(seed, g as u64 + 1)))
                 .collect::<Vec<_>>()
         };
+        let self_play_secs = sp_start.elapsed().as_secs_f32();
 
         let n_games = games.len();
         let mut decisive = 0;
@@ -130,6 +135,7 @@ impl<'a, G: Game, E: PolicyValueEncoder<G>> SelfPlayTrainer<'a, G, E> {
             self.buffer.pop_front();
         }
 
+        let train_start = Instant::now();
         let mut policy_loss = 0.0f64;
         let mut value_loss = 0.0f64;
         let mut batches = 0usize;
@@ -143,7 +149,7 @@ impl<'a, G: Game, E: PolicyValueEncoder<G>> SelfPlayTrainer<'a, G, E> {
                         &self.buffer[i.min(self.buffer.len() - 1)]
                     })
                     .collect();
-                let (pl, vl) = self.net.grad(&batch, &mut grad);
+                let (pl, vl) = self.net.grad_par(&batch, &mut grad);
                 self.opt.step(&mut self.net, &grad);
                 policy_loss += f64::from(pl);
                 value_loss += f64::from(vl);
@@ -163,6 +169,8 @@ impl<'a, G: Game, E: PolicyValueEncoder<G>> SelfPlayTrainer<'a, G, E> {
             samples: self.buffer.len(),
             policy_loss: (policy_loss / nb) as f32,
             value_loss: (value_loss / nb) as f32,
+            self_play_secs,
+            train_secs: train_start.elapsed().as_secs_f32(),
         }
     }
 
