@@ -52,10 +52,20 @@ pub struct Trainer {
     pub vs: nn::VarStore,
     net: Net,
     opt: nn::Optimizer,
+    /// Weight of the search's root value in the value target:
+    /// `target = (1-mix)·z + mix·q`. De-noises the raw game outcome and
+    /// softens the self-labeling loop resignation introduces.
+    value_mix: f32,
 }
 
 impl Trainer {
-    pub fn new(device: Device, cfg: NetConfig, lr: f64, weight_decay: f64) -> Trainer {
+    pub fn new(
+        device: Device,
+        cfg: NetConfig,
+        lr: f64,
+        weight_decay: f64,
+        value_mix: f32,
+    ) -> Trainer {
         let vs = nn::VarStore::new(device);
         let net = Net::new(&vs.root(), cfg);
         let opt = nn::Adam {
@@ -64,7 +74,12 @@ impl Trainer {
         }
         .build(&vs, lr)
         .expect("build optimizer");
-        Trainer { vs, net, opt }
+        Trainer {
+            vs,
+            net,
+            opt,
+            value_mix,
+        }
     }
 
     /// `steps` minibatch updates; returns mean (policy loss, value loss).
@@ -97,7 +112,7 @@ impl Trainer {
                 for &(idx, p) in &s.policy {
                     targets[i * POLICY as usize + usize::from(idx)] = p;
                 }
-                zs[i] = s.z;
+                zs[i] = (1.0 - self.value_mix) * s.z + self.value_mix * s.q;
             }
             let x = Tensor::from_slice(&planes)
                 .reshape([batch as i64, PLANE_COUNT as i64, 8, 8])
