@@ -109,10 +109,15 @@ def check(rows):
             bad["short"] = f"games averaging {plies:.0f} plies (degenerate play)"
 
     if len(its) >= 20:
-        window = [r["value_loss"] for r in its[-20:]]
+        recent20 = its[-20:]
+        window = [r["value_loss"] for r in recent20]
+        buffers = [r.get("buffer", 0) for r in recent20]
+        # While the replay buffer refills after a restart, measured loss
+        # climbs from an artificially fresh-data floor — not drift.
+        refilling = min(buffers) < 0.8 * max(buffers)
         rise = window[-1] - window[0]
         halves = sum(window[10:]) / 10 - sum(window[:10]) / 10
-        if rise > 0.03 and halves > 0.02:
+        if not refilling and rise > 0.03 and halves > 0.02:
             bad["vloss"] = f"value loss rising ({window[0]:.3f} -> {window[-1]:.3f} over 20 iters)"
 
     if its:
