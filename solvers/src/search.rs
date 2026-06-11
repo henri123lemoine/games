@@ -43,7 +43,8 @@ use game_core::{Agent, Eval, Game, Rng, SearchSpec, Turn};
 use crate::FastMap;
 
 const INF: f64 = f64::INFINITY;
-/// Terminal utilities are scaled by (MATE - ply) so faster wins score higher.
+/// Terminal utilities are scaled to `return * MATE` with an additive ply
+/// penalty (see [`terminal_score`]) so faster wins score higher.
 const MATE: f64 = 1.0e9;
 /// Scores beyond this are mate-like and stored ply-adjusted in the TT.
 const MATE_THRESHOLD: f64 = MATE * 0.5;
@@ -126,6 +127,22 @@ impl Tables {
         let h = self.history.entry(sig).or_insert(0);
         *h = h.saturating_add((depth as i64) * (depth as i64));
     }
+}
+
+/// Score of a terminal worth `r` reached `ply` plies below the root. The ply
+/// penalty is additive, not a factor on `r`: that keeps the preference for
+/// faster wins while making the TT's ±ply adjustment roundtrip exactly for
+/// any return magnitude. (Multiplying as `r * (MATE - ply)` is only
+/// ply-consistent for `|r| = 1`; margin returns would leave ply-dependent
+/// scores in the ply-independent table.) Sub-threshold margins (|r| ≤ ~0.5)
+/// are stored unadjusted and carry at most `TIME_MAX_DEPTH` of absolute ply
+/// noise — negligible against the `MATE`-scaled gap between distinct returns.
+fn terminal_score(r: f64, ply: u32) -> f64 {
+    if r == 0.0 {
+        // f64::signum(0.0) is 1.0, which would give draws a spurious -ply.
+        return 0.0;
+    }
+    r * MATE - r.signum() * ply as f64
 }
 
 fn to_tt_score(score: f64, ply: u32) -> f64 {
@@ -217,7 +234,7 @@ impl<G: Game, E: Eval<G>, S: SearchSpec<G>> AlphaBeta<G, E, S> {
         ply: u32,
     ) -> f64 {
         if game.is_terminal(child) {
-            return game.returns(child, parent_mover) * (MATE - ply as f64);
+            return terminal_score(game.returns(child, parent_mover), ply);
         }
         let child_mover = self.mover(game, child);
         if child_mover == parent_mover {
@@ -407,7 +424,9 @@ impl<G: Game, E: Eval<G>, S: SearchSpec<G>> AlphaBeta<G, E, S> {
             let mut child = state.clone();
             game.apply(&mut child, a);
             let score = if game.is_terminal(&child) {
-                game.returns(&child, mover) * (MATE - ply as f64)
+                // The child sits one ply deeper — same convention as negamax,
+                // which scores terminals through child_value at ply + 1.
+                terminal_score(game.returns(&child, mover), ply + 1)
             } else if self.mover(game, &child) == mover {
                 self.quiesce(game, &child, tables, alpha, beta, ply + 1)
             } else {
