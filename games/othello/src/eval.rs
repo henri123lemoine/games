@@ -60,3 +60,75 @@ impl SearchSpec<Othello> for OthelloSpec {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Board;
+
+    fn board(black: u64, white: u64) -> Board {
+        Board {
+            black,
+            white,
+            to_move: 0,
+        }
+    }
+
+    #[test]
+    fn weights_have_the_full_square_symmetry() {
+        for r in 0..8usize {
+            for c in 0..8usize {
+                let w = WEIGHTS[r * 8 + c];
+                assert_eq!(w, WEIGHTS[r * 8 + (7 - c)], "mirror at ({r},{c})");
+                assert_eq!(w, WEIGHTS[(7 - r) * 8 + c], "flip at ({r},{c})");
+                assert_eq!(w, WEIGHTS[c * 8 + r], "transpose at ({r},{c})");
+            }
+        }
+    }
+
+    #[test]
+    fn eval_is_antisymmetric_between_the_players() {
+        let positions = [
+            Board::start(),
+            board(1 | (1 << 9), (1 << 27) | (1 << 36)),
+            board(0xFF, 0xFF00),
+            board((1 << 63) | (1 << 7), (1 << 28) | (1 << 35) | (1 << 42)),
+        ];
+        for (i, s) in positions.iter().enumerate() {
+            let e0 = OthelloEval.eval(&Othello, s, 0);
+            let e1 = OthelloEval.eval(&Othello, s, 1);
+            assert!(
+                (e0 + e1).abs() < 1e-12,
+                "position {i}: eval(p0)={e0}, eval(p1)={e1}"
+            );
+        }
+    }
+
+    #[test]
+    fn corners_outvalue_x_squares() {
+        let neutral_white = 1 << 27;
+        let corner = OthelloEval.eval(&Othello, &board(1, neutral_white), 0);
+        let x_square = OthelloEval.eval(&Othello, &board(1 << 9, neutral_white), 0);
+        assert!(
+            corner > x_square,
+            "corner ({corner}) must beat X-square ({x_square})"
+        );
+        assert!(x_square < 0.0, "an X-square next to nothing is a liability");
+    }
+
+    #[test]
+    fn eval_stays_strictly_inside_the_returns_scale() {
+        let extremes = [
+            board(u64::MAX, 0),
+            board(0, u64::MAX),
+            board(0x8100_0000_0000_0081, 0), // all four corners
+            Board::start(),
+        ];
+        for s in &extremes {
+            for p in 0..2 {
+                let e = OthelloEval.eval(&Othello, s, p);
+                assert!(e.abs() < 1.0, "eval {e} escaped (-1, 1)");
+            }
+        }
+    }
+}
