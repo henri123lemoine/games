@@ -34,8 +34,8 @@ fn main() {
                     }
                     for swap in 0..2u64 {
                         let seed = 1_000 + u64::from(i) * 4 + swap * 2;
-                        let hero = Mcts::with_eval(sims, GoEval, cap, seed);
-                        let base = Mcts::new(sims, seed + 1);
+                        let hero = Mcts::with_eval(sims, GoEval, cap);
+                        let base = Mcts::new(sims);
                         let mut rng = Rng::new(seed ^ 0x5EED);
                         let hero_won = if swap == 0 {
                             play(&game, &hero, &base, &mut rng) > 0.0

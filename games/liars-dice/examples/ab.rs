@@ -37,7 +37,7 @@ fn main() {
             bidder_bias: bb,
             endorser_bias: eb,
         };
-        let hero = Rollout::new(rollouts, ProbabilisticAgent::default_agent(), det, 0x5151);
+        let hero = Rollout::new(rollouts, ProbabilisticAgent::default_agent(), det);
         let wr = winrate_vs_field(&game, &hero, &field, games, 0x2024);
         println!("  {name:<32} {wr:.3}");
     }

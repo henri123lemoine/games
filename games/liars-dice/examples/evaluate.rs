@@ -3,8 +3,8 @@
 //!
 //!     cargo run --release -p liars-dice --example evaluate
 
-use game_core::winrate_vs_field;
-use liars_dice::{LiarsDice, ProbabilisticAgent, RandomAgent};
+use game_core::{RandomAgent, winrate_vs_field};
+use liars_dice::{LiarsDice, ProbabilisticAgent};
 
 fn main() {
     let configs = [(2u8, 2u8, 6u8), (2, 5, 6), (3, 3, 6), (3, 5, 6), (5, 5, 6)];

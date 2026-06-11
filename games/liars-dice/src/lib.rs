@@ -19,7 +19,7 @@ use game_core::{Game, Turn};
 
 mod agents;
 mod ui;
-pub use agents::{BidConditioned, ProbConfig, ProbabilisticAgent, RandomAgent};
+pub use agents::{BidConditioned, ProbConfig, ProbabilisticAgent};
 
 pub const MAX_FACES: usize = 6;
 pub const MAX_PLAYERS: usize = 8;

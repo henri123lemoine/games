@@ -136,7 +136,7 @@ fn play_game(game: &Chess, white: &dyn Agent<Chess>, black: &dyn Agent<Chess>, o
         }
         let p = s.stm.index();
         let mover = if p == 0 { white } else { black };
-        let i = mover.act(game, &s, p, 0.0);
+        let i = mover.act(game, &s, p, &mut Rng::new(1));
         let a = game.legal_actions(&s)[i];
         game.apply(&mut s, a);
     }
@@ -152,7 +152,7 @@ fn random_opening(game: &Chess, rng: &mut Rng, plies: usize) -> Board {
                 break;
             }
             let acts = game.legal_actions(&s);
-            let i = ((rng.unit() * acts.len() as f64) as usize).min(acts.len() - 1);
+            let i = rng.below(acts.len());
             game.apply(&mut s, acts[i]);
         }
         if !game.is_terminal(&s) && evaluate(&s).abs() <= 150 {

@@ -38,9 +38,9 @@
 //!
 //! The tree is an arena (`Vec` of nodes, child links by index); descent clones
 //! the root state once per simulation and applies actions along the path.
-//! Single-threaded and deterministic given the seed.
+//! Single-threaded and deterministic given the arena's seed (randomness comes
+//! from the rng the [`Agent`] contract supplies).
 
-use std::cell::Cell;
 use std::fmt::Write as _;
 
 use game_core::{Agent, Eval, Game, Rng, SearchSpec, Turn};
@@ -69,7 +69,6 @@ pub struct Mcts<G: Game> {
     eval: Option<Box<dyn Eval<G>>>,
     spec: Option<Box<dyn SearchSpec<G>>>,
     max_playout_depth: u32,
-    rng: Cell<u64>,
 }
 
 enum End {
@@ -80,7 +79,7 @@ enum End {
 }
 
 impl<G: Game> Mcts<G> {
-    fn base(sims: u32, seed: u64) -> Self {
+    fn base(sims: u32) -> Self {
         Self {
             sims,
             c: std::f64::consts::SQRT_2,
@@ -91,24 +90,18 @@ impl<G: Game> Mcts<G> {
             eval: None,
             spec: None,
             max_playout_depth: u32::MAX,
-            rng: Cell::new(seed | 1),
         }
     }
 
     /// MCTS with full random playouts to terminal states.
-    pub fn new(sims: u32, seed: u64) -> Self {
-        Self::base(sims, seed)
+    pub fn new(sims: u32) -> Self {
+        Self::base(sims)
     }
 
     /// MCTS with playouts truncated after `max_playout_depth` moves and scored
     /// by `eval` — useful where random playouts are too long or too noisy.
-    pub fn with_eval(
-        sims: u32,
-        eval: impl Eval<G> + 'static,
-        max_playout_depth: u32,
-        seed: u64,
-    ) -> Self {
-        let mut m = Self::base(sims, seed);
+    pub fn with_eval(sims: u32, eval: impl Eval<G> + 'static, max_playout_depth: u32) -> Self {
+        let mut m = Self::base(sims);
         m.eval = Some(Box::new(eval));
         m.max_playout_depth = max_playout_depth;
         m
@@ -116,16 +109,22 @@ impl<G: Game> Mcts<G> {
 
     /// MCTS whose selection is biased by `spec`'s [`SearchSpec::order_hint`]s,
     /// normalized into per-node priors and applied PUCT-style.
-    pub fn with_spec(sims: u32, spec: impl SearchSpec<G> + 'static, seed: u64) -> Self {
-        let mut m = Self::base(sims, seed);
+    pub fn with_spec(sims: u32, spec: impl SearchSpec<G> + 'static) -> Self {
+        let mut m = Self::base(sims);
         m.spec = Some(Box::new(spec));
         m
     }
 
     /// Per-root-action visit counts after a fresh search, aligned with
     /// [`Game::legal_actions`]. Diagnostic companion to [`Agent::act`].
-    pub fn root_visits(&self, game: &G, state: &G::State, player: usize) -> Vec<u32> {
-        let nodes = self.run(game, state, player);
+    pub fn root_visits(
+        &self,
+        game: &G,
+        state: &G::State,
+        player: usize,
+        rng: &mut Rng,
+    ) -> Vec<u32> {
+        let nodes = self.run(game, state, player, rng);
         nodes[0]
             .children
             .iter()
@@ -139,17 +138,13 @@ impl<G: Game> Mcts<G> {
             .collect()
     }
 
-    fn next_seed(&self) -> u64 {
-        let s = self.rng.get();
-        self.rng.set(
-            s.wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407),
-        );
-        s
-    }
-
-    fn run(&self, game: &G, state: &G::State, player: usize) -> Vec<Node<G::Action>> {
-        let mut rng = Rng::new(self.next_seed());
+    fn run(
+        &self,
+        game: &G,
+        state: &G::State,
+        player: usize,
+        rng: &mut Rng,
+    ) -> Vec<Node<G::Action>> {
         let mut nodes = Vec::with_capacity((self.sims as usize).min(1 << 20) + 1);
         let mut tt = FastMap::default();
         nodes.push(self.make_node(game, state, player));
@@ -162,7 +157,7 @@ impl<G: Game> Mcts<G> {
             if nodes[0].proven.is_some() {
                 break;
             }
-            self.simulate(game, state, &mut nodes, &mut tt, &mut rng);
+            self.simulate(game, state, &mut nodes, &mut tt, rng);
         }
         nodes
     }
@@ -453,11 +448,11 @@ impl<G: Game> Mcts<G> {
 }
 
 impl<G: Game> Agent<G> for Mcts<G> {
-    fn act(&self, game: &G, state: &G::State, player: usize, _r: f64) -> usize {
+    fn act(&self, game: &G, state: &G::State, player: usize, rng: &mut Rng) -> usize {
         if game.legal_actions(state).len() <= 1 {
             return 0;
         }
-        let nodes = self.run(game, state, player);
+        let nodes = self.run(game, state, player, rng);
         let mut best = 0;
         let mut best_score = f64::NEG_INFINITY;
         for (i, &ch) in nodes[0].children.iter().enumerate() {

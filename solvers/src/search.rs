@@ -41,7 +41,7 @@ use std::time::Duration;
 
 use web_time::Instant;
 
-use game_core::{Agent, Eval, Game, SearchSpec, Turn};
+use game_core::{Agent, Eval, Game, Rng, SearchSpec, Turn};
 
 use crate::{FastMap, FxHasher};
 
@@ -169,7 +169,7 @@ fn from_tt_score(score: f64, ply: u32) -> f64 {
 }
 
 /// Iterative-deepening negamax with alpha-beta over any `Game + Eval`.
-/// Deterministic: the arena's tie-break `r` is ignored.
+/// Deterministic: the arena's randomness is ignored.
 pub struct AlphaBeta<G: Game, E: Eval<G>, S: SearchSpec<G>> {
     pub depth: u32,
     pub eval: E,
@@ -570,7 +570,7 @@ impl<G: Game, E: Eval<G>, S: SearchSpec<G>> AlphaBeta<G, E, S> {
 }
 
 impl<G: Game, E: Eval<G>, S: SearchSpec<G>> Agent<G> for AlphaBeta<G, E, S> {
-    fn act(&self, game: &G, state: &G::State, _player: usize, _r: f64) -> usize {
+    fn act(&self, game: &G, state: &G::State, _player: usize, _rng: &mut Rng) -> usize {
         self.best_action(game, state)
     }
 }

@@ -23,7 +23,10 @@ pub mod rand;
 pub mod stats;
 mod ui;
 
-pub use arena::{Agent, Rng, play, play_n, playout_from, win_rate, winrate_vs_field};
+pub use arena::{
+    Agent, RandomAgent, Rng, play, play_n, playout_from, win_rate, win_share, winner,
+    winrate_vs_field,
+};
 pub use ui::GameUi;
 
 /// Whose turn it is at a node.

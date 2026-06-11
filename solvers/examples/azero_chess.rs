@@ -59,10 +59,7 @@ impl PolicyValueEncoder<Chess> for Enc {
 }
 
 fn random_agent() -> impl Agent<Chess> {
-    |g: &Chess, s: &Board, _p: usize, r: f64| {
-        let n = g.legal_actions(s).len();
-        ((r * n as f64) as usize).min(n - 1)
-    }
+    game_core::RandomAgent
 }
 
 fn mix(a: u64, b: u64) -> u64 {
@@ -95,7 +92,7 @@ fn play_from(
         };
         let actions = game.legal_actions(&s);
         let agent: &dyn Agent<Chess> = if p == 0 { white } else { black };
-        let i = agent.act(game, &s, p, rng.unit());
+        let i = agent.act(game, &s, p, rng);
         game.apply(&mut s, actions[i]);
     }
     if game.is_terminal(&s) {

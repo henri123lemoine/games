@@ -4,8 +4,8 @@
 //!
 //!     cargo run --release -p liars-dice --example tune [players] [dice] [faces] [steps] [games]
 
-use game_core::winrate_vs_field;
-use liars_dice::{LiarsDice, ProbConfig, ProbabilisticAgent, RandomAgent};
+use game_core::{RandomAgent, winrate_vs_field};
+use liars_dice::{LiarsDice, ProbConfig, ProbabilisticAgent};
 
 fn arg<T: std::str::FromStr>(i: usize, d: T) -> T {
     std::env::args()

@@ -3,8 +3,8 @@
 //!
 //!     cargo run --release -p liars-dice --example rollout_eval [players] [dice] [faces] [rollouts] [games]
 
-use game_core::winrate_vs_field;
-use liars_dice::{BidConditioned, LiarsDice, ProbabilisticAgent, RandomAgent};
+use game_core::{RandomAgent, winrate_vs_field};
+use liars_dice::{BidConditioned, LiarsDice, ProbabilisticAgent};
 use solvers::Rollout;
 
 fn arg<T: std::str::FromStr>(i: usize, d: T) -> T {
@@ -27,7 +27,6 @@ fn main() {
         rollouts,
         ProbabilisticAgent::default_agent(),
         BidConditioned::default(),
-        0x5151,
     );
     let prob = ProbabilisticAgent::default_agent();
     let rand = RandomAgent;

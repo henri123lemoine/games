@@ -194,7 +194,8 @@ impl<'a, G: Game, E: PolicyValueEncoder<G>> Reinforce<'a, G, E> {
                         .collect();
                     let (q, _) = self.net.policy_value(&x, &support);
                     entropy_sum += f64::from(entropy(&q));
-                    let chosen = sample_index(&q, self.rng.unit());
+                    let probs: Vec<f64> = q.iter().map(|&p| f64::from(p)).collect();
+                    let chosen = self.rng.pick(&probs);
                     g.apply(&mut s, actions[chosen]);
                     steps.push(Step {
                         x,
@@ -266,19 +267,8 @@ fn entropy(q: &[f32]) -> f32 {
         .sum()
 }
 
-fn sample_index(q: &[f32], r: f64) -> usize {
-    let mut acc = 0.0f64;
-    for (i, &p) in q.iter().enumerate() {
-        acc += f64::from(p);
-        if r < acc {
-            return i;
-        }
-    }
-    q.len() - 1
-}
-
 /// A policy net as an arena [`Agent`]: softmax over the legal actions, either
-/// sampled with the arena's `r` or played greedily (argmax).
+/// sampled with the arena's randomness or played greedily (argmax).
 pub struct PgAgent<'a, E> {
     enc: &'a E,
     net: &'a Mlp,
@@ -292,7 +282,7 @@ impl<'a, E> PgAgent<'a, E> {
 }
 
 impl<G: Game, E: PolicyValueEncoder<G>> Agent<G> for PgAgent<'_, E> {
-    fn act(&self, game: &G, state: &G::State, _player: usize, r: f64) -> usize {
+    fn act(&self, game: &G, state: &G::State, _player: usize, rng: &mut Rng) -> usize {
         let actions = game.legal_actions(state);
         let x = self.enc.encode_state(game, state);
         let support: Vec<usize> = actions
@@ -306,7 +296,8 @@ impl<G: Game, E: PolicyValueEncoder<G>> Agent<G> for PgAgent<'_, E> {
                 .max_by(|a, b| a.1.total_cmp(b.1))
                 .map_or(0, |(i, _)| i)
         } else {
-            sample_index(&q, r)
+            let probs: Vec<f64> = q.iter().map(|&p| f64::from(p)).collect();
+            rng.pick(&probs)
         }
     }
 }

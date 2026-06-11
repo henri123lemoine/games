@@ -25,7 +25,7 @@ fn play_score(game: &G2048, agent: &dyn Agent<G2048>, seed: u64) -> (u64, u32) {
             }
             Turn::Player(p) => {
                 let acts = game.legal_actions(&s);
-                let i = agent.act(game, &s, p, rng.unit());
+                let i = agent.act(game, &s, p, &mut rng);
                 game.apply(&mut s, acts[i]);
             }
         }
@@ -47,13 +47,9 @@ fn mean_score(game: &G2048, agent: &dyn Agent<G2048>, games: u64) -> (f64, u32) 
 #[test]
 fn mcts_with_eval_beats_random() {
     let game = G2048;
-    let random = |g: &G2048, s: &G2048State, _p: usize, r: f64| -> usize {
-        let n = g.legal_actions(s).len();
-        ((r * n as f64) as usize).min(n - 1)
-    };
-    let mcts = Mcts::with_eval(100, Heuristic2048, 8, 42);
+    let mcts = Mcts::with_eval(100, Heuristic2048, 8);
 
-    let (rand_avg, rand_best) = mean_score(&game, &random, 10);
+    let (rand_avg, rand_best) = mean_score(&game, &game_core::RandomAgent, 10);
     let (mcts_avg, mcts_best) = mean_score(&game, &mcts, 10);
     println!(
         "random: avg score {rand_avg:.0} best tile {rand_best} | \

@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use game_core::stats::{BinomialSprt, Sprt, Verdict, elo_estimate, fit_elo};
-use game_core::{Agent, Game, Rng, Turn, play_n};
+use game_core::{Agent, Game, Rng, Turn, play_n, winner};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
@@ -129,12 +129,11 @@ fn play_scored<G: Game>(
             }
             Turn::Player(p) => {
                 let actions = game.legal_actions(&s);
-                let r = rng.unit();
                 let i = if plies < open_plies {
-                    ((r * actions.len() as f64) as usize).min(actions.len() - 1)
+                    rng.below(actions.len())
                 } else {
                     let agent = if p == 0 { first } else { second };
-                    agent.act(game, &s, p, r)
+                    agent.act(game, &s, p, &mut rng)
                 };
                 game.apply(&mut s, actions[i]);
                 plies += 1;
@@ -190,7 +189,9 @@ fn play_pairs<G: Game + Sync>(
 }
 
 /// One N-player field game: hero (A) rotated to seat `g % n` against a field
-/// of B; `true` when the hero wins. Seeds derive from `mix(seed, g)`.
+/// of B; `true` only when the hero is the *strict* winner. A tie at the top is
+/// a non-win for every seat — uniform across the rotation, unlike crediting
+/// the lowest seat. Seeds derive from `mix(seed, g)`.
 pub fn play_one_field_game<G: Game>(
     game: &G,
     a: &BotBuilder<G>,
@@ -216,7 +217,8 @@ pub fn play_one_field_game<G: Game>(
             }
         })
         .collect();
-    play_n(game, &agents, &mut Rng::new(s)) == hero_seat
+    let terminal = play_n(game, &agents, &mut Rng::new(s));
+    winner(game, &terminal) == Some(hero_seat)
 }
 
 /// Non-printing pair runner for external drivers (the web engine): parses the

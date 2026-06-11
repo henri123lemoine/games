@@ -214,12 +214,11 @@ pub(crate) fn argmax(visits: &[u32]) -> usize {
 }
 
 /// [`Puct`] as an arena [`Agent`]: deterministic argmax over visit counts,
-/// with the search's internal randomness seeded from the arena's `r`.
+/// searching with the arena-supplied randomness.
 pub struct PuctAgent<'a, G: Game, E: PolicyValueEncoder<G>>(pub Puct<'a, G, E>);
 
 impl<G: Game, E: PolicyValueEncoder<G>> Agent<G> for PuctAgent<'_, G, E> {
-    fn act(&self, _game: &G, state: &G::State, _player: usize, r: f64) -> usize {
-        let mut rng = Rng::new(r.to_bits().rotate_left(17) ^ 0x9E37_79B9_7F4A_7C15);
-        argmax(&self.0.search(state, &mut rng))
+    fn act(&self, _game: &G, state: &G::State, _player: usize, rng: &mut Rng) -> usize {
+        argmax(&self.0.search(state, rng))
     }
 }

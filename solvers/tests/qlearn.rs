@@ -2,86 +2,11 @@
 //! tic-tac-toe produces near-perfect greedy play against random, and a
 //! single-player chain MDP with chance converges to the known optimal value.
 
-use game_core::{Agent, Game, Rng, Turn};
+use game_core::{Agent, Game, RandomAgent, Rng, Turn};
+
+mod common;
+use common::Ttt;
 use solvers::qlearn::{QConfig, QLearner};
-
-#[derive(Clone)]
-struct Board {
-    cells: [u8; 9],
-    to_move: usize,
-}
-
-struct Ttt;
-
-const LINES: [[usize; 3]; 8] = [
-    [0, 1, 2],
-    [3, 4, 5],
-    [6, 7, 8],
-    [0, 3, 6],
-    [1, 4, 7],
-    [2, 5, 8],
-    [0, 4, 8],
-    [2, 4, 6],
-];
-
-fn winner(b: &Board) -> Option<usize> {
-    LINES.iter().find_map(|l| {
-        let v = b.cells[l[0]];
-        (v != 0 && b.cells[l[1]] == v && b.cells[l[2]] == v).then(|| (v - 1) as usize)
-    })
-}
-
-impl Game for Ttt {
-    type State = Board;
-    type Action = usize;
-
-    fn initial_state(&self) -> Board {
-        Board {
-            cells: [0; 9],
-            to_move: 0,
-        }
-    }
-
-    fn turn(&self, s: &Board) -> Turn {
-        Turn::Player(s.to_move)
-    }
-
-    fn is_terminal(&self, s: &Board) -> bool {
-        winner(s).is_some() || s.cells.iter().all(|&c| c != 0)
-    }
-
-    fn returns(&self, s: &Board, player: usize) -> f64 {
-        match winner(s) {
-            Some(w) if w == player => 1.0,
-            Some(_) => -1.0,
-            None => 0.0,
-        }
-    }
-
-    fn legal_actions(&self, s: &Board) -> Vec<usize> {
-        (0..9).filter(|&i| s.cells[i] == 0).collect()
-    }
-
-    fn chance_outcomes(&self, _s: &Board) -> Vec<(usize, f64)> {
-        Vec::new()
-    }
-
-    fn apply(&self, s: &mut Board, a: usize) {
-        s.cells[a] = s.to_move as u8 + 1;
-        s.to_move ^= 1;
-    }
-
-    fn infoset_key(&self, s: &Board, _player: usize) -> u64 {
-        s.cells
-            .iter()
-            .fold(s.to_move as u64, |k, &c| k * 4 + c as u64)
-    }
-}
-
-fn random_agent(game: &Ttt, state: &Board, _p: usize, r: f64) -> usize {
-    let n = game.legal_actions(state).len();
-    ((r * n as f64) as usize).min(n - 1)
-}
 
 fn play_pair(game: &Ttt, agents: [&dyn Agent<Ttt>; 2], rng: &mut Rng) -> f64 {
     let mut s = game.initial_state();
@@ -90,7 +15,7 @@ fn play_pair(game: &Ttt, agents: [&dyn Agent<Ttt>; 2], rng: &mut Rng) -> f64 {
             unreachable!("tic-tac-toe has no chance nodes")
         };
         let actions = game.legal_actions(&s);
-        let i = agents[p].act(game, &s, p, rng.unit());
+        let i = agents[p].act(game, &s, p, rng);
         game.apply(&mut s, actions[i]);
     }
     game.returns(&s, 0)
@@ -106,9 +31,9 @@ fn score_vs_random(learner: &QLearner<Ttt>, games: u32, seed: u64) -> f64 {
     for g in 0..games {
         let hero_seat = (g % 2) as usize;
         let agents: [&dyn Agent<Ttt>; 2] = if hero_seat == 0 {
-            [&greedy, &random_agent]
+            [&greedy, &RandomAgent]
         } else {
-            [&random_agent, &greedy]
+            [&RandomAgent, &greedy]
         };
         let r0 = play_pair(&game, agents, &mut rng);
         let hero = if hero_seat == 0 { r0 } else { -r0 };
@@ -261,7 +186,7 @@ fn assert_chain_converges(sarsa: bool, seed: u64) {
 
     let greedy = learner.greedy();
     for pos in 0..CHAIN_LEN {
-        let i = greedy.act(&ChainMdp, &Chain::Decide(pos), 0, 0.5);
+        let i = greedy.act(&ChainMdp, &Chain::Decide(pos), 0, &mut Rng::new(1));
         assert_eq!(i, 1, "greedy stops at position {pos} instead of continuing");
     }
 

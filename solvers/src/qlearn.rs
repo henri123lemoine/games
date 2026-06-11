@@ -136,7 +136,7 @@ impl<G: Game> QLearner<G> {
                     let (a, bootstrap) = {
                         let row = self.tables[p].entry(key).or_insert_with(|| vec![0.0; n]);
                         let a = if self.rng.unit() < eps {
-                            rand_below(n, &mut self.rng)
+                            self.rng.below(n)
                         } else {
                             argmax_tiebreak(row, &mut self.rng)
                         };
@@ -165,14 +165,11 @@ pub struct GreedyQ<'a, G: Game> {
 }
 
 impl<G: Game> Agent<G> for GreedyQ<'_, G> {
-    fn act(&self, game: &G, state: &G::State, player: usize, r: f64) -> usize {
+    fn act(&self, game: &G, state: &G::State, player: usize, rng: &mut Rng) -> usize {
         let key = game.infoset_key(state, player);
         match self.learner.tables[player].get(&key) {
             Some(row) => argmax_first(row),
-            None => {
-                let n = game.legal_actions(state).len();
-                ((r * n as f64) as usize).min(n - 1)
-            }
+            None => rng.below(game.legal_actions(state).len()),
         }
     }
 }
@@ -186,10 +183,6 @@ fn sample_outcome<A: Copy>(outs: &[(A, f64)], r: f64) -> A {
         }
     }
     outs[outs.len() - 1].0
-}
-
-fn rand_below(n: usize, rng: &mut Rng) -> usize {
-    ((rng.unit() * n as f64) as usize).min(n - 1)
 }
 
 /// Argmax with uniform tie-breaking (reservoir sampling over the maxima), so

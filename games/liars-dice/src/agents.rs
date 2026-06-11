@@ -147,7 +147,8 @@ impl ProbabilisticAgent {
         }
     }
 
-    fn choose(&self, game: &LiarsDice, s: &LdState, player: usize, r: f64) -> Action {
+    fn choose(&self, game: &LiarsDice, s: &LdState, player: usize, rng: &mut Rng) -> Action {
+        let r = rng.unit();
         let actions = game.legal_actions(s);
         let (q, face) = s.current_bid();
 
@@ -219,8 +220,8 @@ impl ProbabilisticAgent {
 }
 
 impl Agent<LiarsDice> for ProbabilisticAgent {
-    fn act(&self, game: &LiarsDice, state: &LdState, player: usize, r: f64) -> usize {
-        let desired = self.choose(game, state, player, r);
+    fn act(&self, game: &LiarsDice, state: &LdState, player: usize, rng: &mut Rng) -> usize {
+        let desired = self.choose(game, state, player, rng);
         let actions = game.legal_actions(state);
         actions.iter().position(|&a| a == desired).unwrap_or(0)
     }
@@ -247,14 +248,5 @@ impl Default for BidConditioned {
 impl Determinizer<LiarsDice> for BidConditioned {
     fn determinize(&self, game: &LiarsDice, state: &mut LdState, observer: usize, rng: &mut Rng) {
         game.resample_hidden(state, observer, rng, self.bidder_bias, self.endorser_bias);
-    }
-}
-
-/// A baseline that bids/looks-up at random among legal actions (for evaluation).
-pub struct RandomAgent;
-impl Agent<LiarsDice> for RandomAgent {
-    fn act(&self, game: &LiarsDice, state: &LdState, _player: usize, r: f64) -> usize {
-        let n = game.legal_actions(state).len();
-        ((r * n as f64) as usize).min(n - 1)
     }
 }

@@ -133,11 +133,9 @@ impl<G: GameUi + 'static> AnyMatch for TypedMatch<G> {
                 }
                 Turn::Player(p) if p == self.human => return None,
                 Turn::Player(p) => {
-                    let r = self.rng.unit();
-                    let i = self.bots[p]
-                        .as_ref()
-                        .expect("non-human seat has a bot")
-                        .act(&self.game, &self.state, p, r);
+                    let bot = self.bots[p].take().expect("non-human seat has a bot");
+                    let i = bot.act(&self.game, &self.state, p, &mut self.rng);
+                    self.bots[p] = Some(bot);
                     return Some(self.apply_event(p, i));
                 }
             }

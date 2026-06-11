@@ -3,8 +3,8 @@
 //!
 //!     cargo run --release -p liars-dice --example gauntlet [players] [dice] [faces] [iters]
 
-use game_core::{Agent, winrate_vs_field};
-use liars_dice::{LdState, LiarsDice, ProbabilisticAgent, RandomAgent};
+use game_core::{Agent, RandomAgent, winrate_vs_field};
+use liars_dice::{LdState, LiarsDice, ProbabilisticAgent};
 use solvers::Mccfr;
 
 fn arg<T: std::str::FromStr>(i: usize, d: T) -> T {
@@ -34,7 +34,9 @@ fn main() {
 
     let prob = ProbabilisticAgent::default_agent();
     let rand = RandomAgent;
-    let mc = |_g: &LiarsDice, s: &LdState, p: usize, r: f64| mccfr.sample_action(s, p, r);
+    let mc = |_g: &LiarsDice, s: &LdState, p: usize, rng: &mut game_core::Rng| {
+        mccfr.sample_action(s, p, rng)
+    };
 
     let named: [(&str, &dyn Agent<LiarsDice>); 3] =
         [("mccfr", &mc), ("prob", &prob), ("random", &rand)];

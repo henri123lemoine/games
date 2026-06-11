@@ -47,10 +47,7 @@ impl Opponent {
 
     fn agent(self) -> Box<dyn Agent<Chess> + Send> {
         match self {
-            Opponent::Random => Box::new(|g: &Chess, s: &Board, _p: usize, r: f64| {
-                let n = g.legal_actions(s).len();
-                ((r * n as f64) as usize).min(n - 1)
-            }),
+            Opponent::Random => Box::new(game_core::RandomAgent),
             Opponent::AbMaterial(d) => Box::new(AlphaBeta::new(d, MaterialEval, ChessSpec)),
             Opponent::Diluted { pct_random } => Box::new(Diluted {
                 ab: AlphaBeta::new(1, MaterialEval, ChessSpec),
@@ -72,13 +69,11 @@ struct Diluted {
 }
 
 impl Agent<Chess> for Diluted {
-    fn act(&self, g: &Chess, s: &Board, p: usize, r: f64) -> usize {
-        if r < self.p_random {
-            let n = g.legal_actions(s).len();
-            (((r / self.p_random) * n as f64) as usize).min(n - 1)
+    fn act(&self, g: &Chess, s: &Board, p: usize, rng: &mut Rng) -> usize {
+        if rng.unit() < self.p_random {
+            rng.below(g.legal_actions(s).len())
         } else {
-            let r = (r - self.p_random) / (1.0 - self.p_random);
-            self.ab.act(g, s, p, r)
+            self.ab.act(g, s, p, rng)
         }
     }
 }
@@ -89,7 +84,7 @@ struct SfAgent {
 }
 
 impl Agent<Chess> for SfAgent {
-    fn act(&self, _g: &Chess, s: &Board, _p: usize, _r: f64) -> usize {
+    fn act(&self, _g: &Chess, s: &Board, _p: usize, _rng: &mut Rng) -> usize {
         let text = self
             .uci
             .borrow_mut()
@@ -143,7 +138,7 @@ impl EvalGame {
                 return;
             }
             let actions = legal_moves(&self.board);
-            let i = self.agent.act(game, &self.board, stm, self.rng.unit());
+            let i = self.agent.act(game, &self.board, stm, &mut self.rng);
             self.apply(actions[i]);
         }
     }
@@ -335,7 +330,7 @@ fn fixed_game(
         }
         let stm = board.stm.index();
         let agent = if stm == 0 { white } else { black };
-        let i = agent.act(game, &board, stm, rng.unit());
+        let i = agent.act(game, &board, stm, rng);
         board.apply(moves[i]);
         *keys.entry(board.key()).or_insert(0) += 1;
     }

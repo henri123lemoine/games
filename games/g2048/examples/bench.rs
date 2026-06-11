@@ -28,7 +28,7 @@ fn episode(game: &G2048, agent: &dyn Agent<G2048>, seed: u64) -> (u64, u32) {
             }
             Turn::Player(_) => {
                 let actions = game.legal_actions(&s);
-                let i = agent.act(game, &s, 0, rng.unit());
+                let i = agent.act(game, &s, 0, &mut rng);
                 game.apply(&mut s, actions[i]);
             }
         }
@@ -47,12 +47,7 @@ fn main() {
     let mut scores = Vec::new();
     let mut tiles = Vec::new();
     for e in 0..episodes {
-        let agent = Mcts::with_eval(
-            sims,
-            Heuristic2048,
-            depth,
-            seed.wrapping_add(2 * e) ^ 0x2048,
-        );
+        let agent = Mcts::with_eval(sims, Heuristic2048, depth);
         let (score, tile) = episode(&game, &agent, seed.wrapping_add(2 * e));
         scores.push(score);
         tiles.push(tile);

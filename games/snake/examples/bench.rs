@@ -28,7 +28,7 @@ fn episode(game: &Snake, agent: &dyn Agent<Snake>, seed: u64) -> SnakeState {
             }
             Turn::Player(_) => {
                 let actions = game.legal_actions(&s);
-                let i = agent.act(game, &s, 0, rng.unit());
+                let i = agent.act(game, &s, 0, &mut rng);
                 game.apply(&mut s, actions[i]);
             }
         }
@@ -46,7 +46,7 @@ fn main() {
     let game = Snake::new(10, 10);
     let mut lengths = Vec::new();
     for e in 0..episodes {
-        let agent = Mcts::with_eval(sims, SnakeEval, depth, seed.wrapping_add(2 * e) ^ 0x57AE);
+        let agent = Mcts::with_eval(sims, SnakeEval, depth);
         let end = episode(&game, &agent, seed.wrapping_add(2 * e));
         lengths.push(end.len() as u64);
         println!(

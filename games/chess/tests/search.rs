@@ -1,19 +1,12 @@
 use chess::{Board, Chess, ChessSpec, MaterialEval};
-use game_core::{Agent, Game, win_rate};
+use game_core::{Agent, Game, RandomAgent, Rng, win_rate};
 use solvers::AlphaBeta;
-
-fn random_agent() -> impl Agent<Chess> {
-    |game: &Chess, state: &Board, _player: usize, r: f64| -> usize {
-        let n = game.legal_actions(state).len();
-        ((r * n as f64) as usize).min(n - 1)
-    }
-}
 
 #[test]
 fn crushes_random() {
     let game = Chess;
     let engine = AlphaBeta::new(3, MaterialEval, ChessSpec);
-    let rate = win_rate(&game, &engine, &random_agent(), 30, 0xC0FFEE);
+    let rate = win_rate(&game, &engine, &RandomAgent, 30, 0xC0FFEE);
     assert!(rate >= 0.9, "win rate vs random was only {rate}");
 }
 
@@ -24,7 +17,7 @@ fn plays_mate_in_one() {
     let engine = AlphaBeta::new(3, MaterialEval, ChessSpec);
 
     let actions = game.legal_actions(&board);
-    let chosen = actions[engine.act(&game, &board, 0, 0.0)];
+    let chosen = actions[engine.act(&game, &board, 0, &mut Rng::new(1))];
     assert_eq!(chosen.to_string(), "a1a8");
 
     let mut next = board.clone();

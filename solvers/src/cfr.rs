@@ -1,4 +1,4 @@
-use game_core::{Game, Turn};
+use game_core::{Game, Rng, Turn};
 
 use crate::FastMap;
 
@@ -307,18 +307,10 @@ impl<G: Game> Cfr<G> {
         self.average_strategy(self.game.infoset_key(state, player), n)
     }
 
-    /// Sample an action index from the average strategy, given a uniform `r` in
-    /// `[0, 1)`. Suitable as an [`crate::Agent`] for the arena.
-    pub fn sample_action(&self, state: &G::State, player: usize, r: f64) -> usize {
-        let policy = self.policy(state, player);
-        let mut acc = 0.0;
-        for (i, p) in policy.iter().enumerate() {
-            acc += p;
-            if r < acc {
-                return i;
-            }
-        }
-        policy.len() - 1
+    /// Sample an action index from the average strategy. Suitable as an
+    /// [`game_core::Agent`] for the arena.
+    pub fn sample_action(&self, state: &G::State, player: usize, rng: &mut Rng) -> usize {
+        rng.pick(&self.policy(state, player))
     }
 
     /// Expected value to player 0 of the root when *both* players play their

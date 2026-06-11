@@ -2,86 +2,11 @@
 //! games outright, and blocks immediate threats (with and without an eval
 //! cutoff).
 
-use game_core::{Agent, Eval, Game, Rng, Turn};
+use game_core::{Agent, Eval, Game, RandomAgent, Rng, Turn};
 use solvers::mcts::Mcts;
 
-#[derive(Clone)]
-struct Board {
-    cells: [u8; 9],
-    to_move: usize,
-}
-
-struct Ttt;
-
-const LINES: [[usize; 3]; 8] = [
-    [0, 1, 2],
-    [3, 4, 5],
-    [6, 7, 8],
-    [0, 3, 6],
-    [1, 4, 7],
-    [2, 5, 8],
-    [0, 4, 8],
-    [2, 4, 6],
-];
-
-fn winner(b: &Board) -> Option<usize> {
-    LINES.iter().find_map(|l| {
-        let v = b.cells[l[0]];
-        (v != 0 && b.cells[l[1]] == v && b.cells[l[2]] == v).then(|| (v - 1) as usize)
-    })
-}
-
-impl Game for Ttt {
-    type State = Board;
-    type Action = usize;
-
-    fn initial_state(&self) -> Board {
-        Board {
-            cells: [0; 9],
-            to_move: 0,
-        }
-    }
-
-    fn turn(&self, s: &Board) -> Turn {
-        Turn::Player(s.to_move)
-    }
-
-    fn is_terminal(&self, s: &Board) -> bool {
-        winner(s).is_some() || s.cells.iter().all(|&c| c != 0)
-    }
-
-    fn returns(&self, s: &Board, player: usize) -> f64 {
-        match winner(s) {
-            Some(w) if w == player => 1.0,
-            Some(_) => -1.0,
-            None => 0.0,
-        }
-    }
-
-    fn legal_actions(&self, s: &Board) -> Vec<usize> {
-        (0..9).filter(|&i| s.cells[i] == 0).collect()
-    }
-
-    fn chance_outcomes(&self, _s: &Board) -> Vec<(usize, f64)> {
-        Vec::new()
-    }
-
-    fn apply(&self, s: &mut Board, a: usize) {
-        s.cells[a] = s.to_move as u8 + 1;
-        s.to_move ^= 1;
-    }
-
-    fn infoset_key(&self, s: &Board, _player: usize) -> u64 {
-        s.cells
-            .iter()
-            .fold(s.to_move as u64, |k, &c| k * 4 + c as u64)
-    }
-}
-
-fn random_agent(game: &Ttt, state: &Board, _p: usize, r: f64) -> usize {
-    let n = game.legal_actions(state).len();
-    ((r * n as f64) as usize).min(n - 1)
-}
+mod common;
+use common::{Ttt, TttState as Board};
 
 fn play_pair(game: &Ttt, agents: [&dyn Agent<Ttt>; 2], rng: &mut Rng) -> f64 {
     let mut s = game.initial_state();
@@ -90,7 +15,7 @@ fn play_pair(game: &Ttt, agents: [&dyn Agent<Ttt>; 2], rng: &mut Rng) -> f64 {
             unreachable!("tic-tac-toe has no chance nodes")
         };
         let actions = game.legal_actions(&s);
-        let i = agents[p].act(game, &s, p, rng.unit());
+        let i = agents[p].act(game, &s, p, rng);
         game.apply(&mut s, actions[i]);
     }
     game.returns(&s, 0)
@@ -99,15 +24,15 @@ fn play_pair(game: &Ttt, agents: [&dyn Agent<Ttt>; 2], rng: &mut Rng) -> f64 {
 #[test]
 fn never_loses_to_random_and_mostly_wins() {
     let game = Ttt;
-    let mcts: Mcts<Ttt> = Mcts::new(2000, 42);
+    let mcts: Mcts<Ttt> = Mcts::new(2000);
     let mut rng = Rng::new(7);
     let (mut wins, mut losses) = (0u32, 0u32);
     for g in 0..50 {
         let mcts_seat = g % 2;
         let agents: [&dyn Agent<Ttt>; 2] = if mcts_seat == 0 {
-            [&mcts, &random_agent]
+            [&mcts, &RandomAgent]
         } else {
-            [&random_agent, &mcts]
+            [&RandomAgent, &mcts]
         };
         let r0 = play_pair(&game, agents, &mut rng);
         let m = if mcts_seat == 0 { r0 } else { -r0 };
@@ -137,8 +62,8 @@ fn blocks_immediate_losing_threat() {
     let s = threat_position();
     let actions = game.legal_actions(&s);
     for seed in 1..=5 {
-        let mcts: Mcts<Ttt> = Mcts::new(2000, seed);
-        let i = mcts.act(&game, &s, 1, 0.5);
+        let mcts: Mcts<Ttt> = Mcts::new(2000);
+        let i = mcts.act(&game, &s, 1, &mut Rng::new(seed));
         assert_eq!(
             actions[i], 6,
             "seed {seed}: played {} instead of 6",
@@ -159,8 +84,8 @@ fn eval_cutoff_still_blocks_immediate_threat() {
     let game = Ttt;
     let s = threat_position();
     let actions = game.legal_actions(&s);
-    let mcts = Mcts::with_eval(2000, ZeroEval, 2, 9);
-    let i = mcts.act(&game, &s, 1, 0.5);
+    let mcts = Mcts::with_eval(2000, ZeroEval, 2);
+    let i = mcts.act(&game, &s, 1, &mut Rng::new(9));
     assert_eq!(actions[i], 6, "played {} instead of 6", actions[i]);
 }
 
@@ -180,8 +105,8 @@ fn solver_proves_mate_in_two_at_tiny_sims() {
     let s = mate_in_two_position();
     let actions = game.legal_actions(&s);
     for seed in 1..=5 {
-        let mcts: Mcts<Ttt> = Mcts::new(100, seed);
-        let i = mcts.act(&game, &s, 0, 0.5);
+        let mcts: Mcts<Ttt> = Mcts::new(100);
+        let i = mcts.act(&game, &s, 0, &mut Rng::new(seed));
         assert_eq!(
             actions[i], 4,
             "seed {seed}: played {} instead of 4",
@@ -206,8 +131,8 @@ fn solver_finds_quiet_fork_win() {
     let s = quiet_fork_position();
     let actions = game.legal_actions(&s);
     for seed in 1..=5 {
-        let mcts: Mcts<Ttt> = Mcts::new(200, seed);
-        let i = mcts.act(&game, &s, 0, 0.5);
+        let mcts: Mcts<Ttt> = Mcts::new(200);
+        let i = mcts.act(&game, &s, 0, &mut Rng::new(seed));
         assert_eq!(
             actions[i], 0,
             "seed {seed}: played {} instead of 0",
@@ -221,17 +146,17 @@ fn rave_enabled_still_blocks_immediate_threat() {
     let game = Ttt;
     let s = threat_position();
     let actions = game.legal_actions(&s);
-    let mut mcts: Mcts<Ttt> = Mcts::new(2000, 11);
+    let mut mcts: Mcts<Ttt> = Mcts::new(2000);
     mcts.rave = true;
-    let i = mcts.act(&game, &s, 1, 0.5);
+    let i = mcts.act(&game, &s, 1, &mut Rng::new(11));
     assert_eq!(actions[i], 6, "played {} instead of 6", actions[i]);
 }
 
 #[test]
 fn solver_on_beats_solver_off_head_to_head() {
     let game = Ttt;
-    let on: Mcts<Ttt> = Mcts::new(32, 3);
-    let mut off: Mcts<Ttt> = Mcts::new(32, 4);
+    let on: Mcts<Ttt> = Mcts::new(32);
+    let mut off: Mcts<Ttt> = Mcts::new(32);
     off.solver = false;
     let mut rng = Rng::new(99);
     let (mut on_wins, mut off_wins, mut draws) = (0u32, 0u32, 0u32);

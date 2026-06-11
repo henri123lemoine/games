@@ -2,7 +2,7 @@
 //! without solver backup), prior-guided PUCT selection, and transposition
 //! merging.
 
-use game_core::{Agent, Game, SearchSpec, Turn};
+use game_core::{Agent, Game, Rng, SearchSpec, Turn};
 use solvers::mcts::Mcts;
 
 /// Decision-then-chance toy: SAFE banks a guaranteed 0.2, GAMBLE flips a
@@ -77,13 +77,13 @@ fn chance_nodes_valued_correctly() {
         let game = Gamble { p_win };
         let actions = game.legal_actions(&GState::Pick);
         for seed in 1..=3 {
-            let mcts: Mcts<Gamble> = Mcts::new(2000, seed);
-            let i = mcts.act(&game, &GState::Pick, 0, 0.5);
+            let mcts: Mcts<Gamble> = Mcts::new(2000);
+            let i = mcts.act(&game, &GState::Pick, 0, &mut Rng::new(seed));
             assert_eq!(actions[i], want, "solver-on p_win {p_win} seed {seed}");
 
-            let mut plain: Mcts<Gamble> = Mcts::new(2000, seed);
+            let mut plain: Mcts<Gamble> = Mcts::new(2000);
             plain.solver = false;
-            let i = plain.act(&game, &GState::Pick, 0, 0.5);
+            let i = plain.act(&game, &GState::Pick, 0, &mut Rng::new(seed));
             assert_eq!(actions[i], want, "solver-off p_win {p_win} seed {seed}");
         }
     }
@@ -139,16 +139,16 @@ impl SearchSpec<Bandit> for HintThird {
 #[test]
 fn prior_spec_concentrates_root_visits_on_hinted_move() {
     let game = Bandit;
-    let mut mcts = Mcts::with_spec(500, HintThird, 9);
+    let mut mcts = Mcts::with_spec(500, HintThird);
     mcts.solver = false;
-    let visits = mcts.root_visits(&game, &None, 0);
+    let visits = mcts.root_visits(&game, &None, 0, &mut Rng::new(9));
     let total: u32 = visits.iter().sum();
     assert!(
         visits[3] * 2 > total,
         "hinted arm got {} of {total} visits: {visits:?}",
         visits[3]
     );
-    assert_eq!(mcts.act(&game, &None, 0, 0.5), 3);
+    assert_eq!(mcts.act(&game, &None, 0, &mut Rng::new(10)), 3);
 }
 
 /// Subtraction Nim: take 1–3 from the pile, taking the last stone wins. The
@@ -217,9 +217,9 @@ fn transposition_merging_stays_correct() {
         let actions = game.legal_actions(&s);
         let want = start % 4;
         for seed in [2u64, 8] {
-            let mut mcts: Mcts<Nim> = Mcts::new(2000, seed);
+            let mut mcts: Mcts<Nim> = Mcts::new(2000);
             mcts.transpositions = true;
-            let i = mcts.act(&game, &s, 0, 0.5);
+            let i = mcts.act(&game, &s, 0, &mut Rng::new(seed));
             assert_eq!(actions[i], want, "start {start} seed {seed}");
         }
     }
