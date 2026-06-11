@@ -86,7 +86,11 @@ fn append_line(path: &Path, line: &str) {
         .append(true)
         .open(path)
         .expect("open metrics file");
-    writeln!(f, "{line}").expect("append metrics line");
+    // One write_all per line: the trainer and `elo --watch` append to the
+    // same file, and O_APPEND only makes a *single* write atomic — writeln!
+    // issues the payload and the newline as two syscalls, which can tear.
+    f.write_all(format!("{line}\n").as_bytes())
+        .expect("append metrics line");
 }
 
 fn last_iter(path: &Path) -> u64 {
