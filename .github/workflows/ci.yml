@@ -1,0 +1,42 @@
+# Workspace CI: format, lint, test, and the wasm/web typecheck.
+# azt/ is deliberately not covered — it is a standalone crate that needs
+# libtorch (and trains on Apple-GPU), so it builds only on dev machines.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --release --all-targets -- -D warnings
+      - run: cargo test --release
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - run: wasm-pack build web/engine --target web --out-dir pkg
+      - run: node web/engine/smoke.mjs
+      - run: npm ci
+        working-directory: web/app
+      - run: npx tsc --noEmit
+        working-directory: web/app
