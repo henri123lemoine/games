@@ -129,6 +129,32 @@ def check(rows):
                 f"fresh data {100*spi/last['buffer']:.1f}% of replay buffer "
                 f"({last['buffer']}) — shrink --replay"
             )
+
+    # Memory-leak signature: iteration time creeping up within one process
+    # lifetime (the MPS allocator grows until the OS kills the trainer —
+    # observed as a silent 6x slowdown then SIGKILL). Compare this leg's
+    # recent self-play time against its own early baseline.
+    last_start_idx = max(
+        (i for i, r in enumerate(rows) if r.get("event") == "start"), default=0
+    )
+    leg = [r for r in rows[last_start_idx:] if "policy_loss" in r]
+    if len(leg) >= 12:
+        sp = [r.get("self_play_secs", 0) for r in leg]
+        baseline = sorted(sp[:8])[len(sp[:8]) // 2]
+        recent = sorted(sp[-4:])[2]
+        if baseline > 0 and recent > 3.0 * baseline:
+            bad["slowdown"] = (
+                f"self-play {recent:.0f}s vs {baseline:.0f}s early in this "
+                "leg — memory leak suspect; restart the trainer soon"
+            )
+    rss = subprocess.run(
+        ["bash", "-c", "ps -axo rss,command | grep 'azt run' | grep -v grep | awk '{print $1}' | head -1"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if rss.isdigit() and int(rss) > 40 * 1024 * 1024:
+        bad["memory"] = f"trainer RSS {int(rss)/1048576:.0f} GB — restart before the OS does"
     return bad, stopped
 
 
