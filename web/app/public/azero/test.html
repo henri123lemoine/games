@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>azero WebGPU — kernel validation</title>
+<style>
+  body { font-family: ui-monospace, Menlo, monospace; background: #15271d; color: #e9e2d0;
+         padding: 32px; font-size: 14px; line-height: 1.7; }
+  .ok { color: #8da588; } .bad { color: #c97b4f; } .brass { color: #c9a25c; }
+  h1 { font-size: 18px; color: #c9a25c; }
+</style>
+</head>
+<body>
+<h1>azero WebGPU — kernel validation</h1>
+<div id="log">loading…</div>
+<script type="module">
+const log = (html) => { document.getElementById('log').innerHTML += '<br>' + html; };
+document.getElementById('log').innerHTML = '';
+
+const CONV_WGSL = `
+struct Params { c_in: u32, c_out: u32, k: u32, relu: u32, residual: u32, batch: u32 }
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read> w: array<f32>;
+@group(0) @binding(2) var<storage, read> bias: array<f32>;
+@group(0) @binding(3) var<storage, read> res: array<f32>;
+@group(0) @binding(4) var<storage, read_write> y: array<f32>;
+@group(0) @binding(5) var<uniform> P: Params;
+
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) li: vec3<u32>) {
+  let co = wg.x; let b = wg.y; let sq = li.x;
+  if (b >= P.batch) { return; }
+  let yy = i32(sq / 8u); let xx = i32(sq % 8u);
+  var acc = bias[co];
+  let half = i32(P.k) / 2;
+  for (var ci = 0u; ci < P.c_in; ci++) {
+    let xbase = (b * P.c_in + ci) * 64u;
+    let wbase = (co * P.c_in + ci) * P.k * P.k;
+    for (var dy = -half; dy <= half; dy++) {
+      let sy = yy + dy;
+      if (sy < 0 || sy > 7) { continue; }
+      for (var dx = -half; dx <= half; dx++) {
+        let sx = xx + dx;
+        if (sx < 0 || sx > 7) { continue; }
+        let wi = wbase + u32(dy + half) * P.k + u32(dx + half);
+        acc += w[wi] * x[xbase + u32(sy * 8 + sx)];
+      }
+    }
+  }
+  let oi = (b * P.c_out + co) * 64u + sq;
+  if (P.residual == 1u) { acc += res[oi]; }
+  if (P.relu == 1u) { acc = max(acc, 0.0); }
+  y[oi] = acc;
+}`;
+
+const LINEAR_WGSL = `
+struct Params { n_in: u32, n_out: u32, act: u32, batch: u32 }
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read> w: array<f32>;
+@group(0) @binding(2) var<storage, read> bias: array<f32>;
+@group(0) @binding(3) var<storage, read_write> y: array<f32>;
+@group(0) @binding(4) var<uniform> P: Params;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gi: vec3<u32>) {
+  let idx = gi.x;
+  if (idx >= P.n_out * P.batch) { return; }
+  let b = idx / P.n_out; let o = idx % P.n_out;
+  var acc = bias[o];
+  let xb = b * P.n_in; let wb = o * P.n_in;
+  for (var i = 0u; i < P.n_in; i++) { acc += w[wb + i] * x[xb + i]; }
+  if (P.act == 1u) { acc = max(acc, 0.0); }
+  if (P.act == 2u) { acc = tanh(clamp(acc, -15.0, 15.0)); }
+  y[(b * P.n_out) + o] = acc;
+}`;
+
+const PLANES = 18, MAXB = 32;
+
+function parseModel(buf) {
+  const dv = new DataView(buf);
+  const magic = new TextDecoder().decode(buf.slice(0, 8));
+  if (magic !== 'AZWEB001') throw new Error('bad magic: ' + magic);
+  const blocks = dv.getUint32(8, true), C = dv.getUint32(12, true);
+  let pos = 16;
+  const floats = (n) => {
+    const v = new Float32Array(buf, pos, n); pos += n * 4; return v;
+  };
+  const conv = (ci, co, k) => ({ w: floats(co * ci * k * k), b: floats(co), ci, co, k });
+  const m = { blocks, C, stem: conv(PLANES, C, 3), tower: [] };
+  for (let i = 0; i < blocks; i++) m.tower.push([conv(C, C, 3), conv(C, C, 3)]);
+  m.p1 = conv(C, C, 1); m.p2 = conv(C, 73, 1); m.v1 = conv(C, 8, 1);
+  m.vf1 = { w: floats(256 * 512), b: floats(256), ni: 512, no: 256 };
+  m.vf2 = { w: floats(256), b: floats(1), ni: 256, no: 1 };
+  if (pos !== buf.byteLength) throw new Error('trailing bytes: ' + (buf.byteLength - pos));
+  return m;
+}
+
+class AzGpu {
+  static async init(modelBuf) {
+    const g = new AzGpu();
+    const adapter = await navigator.gpu?.requestAdapter();
+    if (!adapter) throw new Error('WebGPU unavailable');
+    g.dev = await adapter.requestDevice();
+    g.model = parseModel(modelBuf);
+    const d = g.dev, C = g.model.C;
+
+    g.convPipe = d.createComputePipeline({ layout: 'auto',
+      compute: { module: d.createShaderModule({ code: CONV_WGSL }), entryPoint: 'main' } });
+    g.linPipe = d.createComputePipeline({ layout: 'auto',
+      compute: { module: d.createShaderModule({ code: LINEAR_WGSL }), entryPoint: 'main' } });
+
+    const sbuf = (arr) => {
+      const b = d.createBuffer({ size: arr.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      d.queue.writeBuffer(b, 0, arr); return b;
+    };
+    const abuf = (n) => d.createBuffer({
+      size: n * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+
+    g.actX = abuf(MAXB * C * 64); g.actY = abuf(MAXB * C * 64); g.actT = abuf(MAXB * C * 64);
+    g.dummy = abuf(16);
+    g.inBuf = abuf(MAXB * PLANES * 64);
+    g.polBuf = abuf(MAXB * 73 * 64);
+    g.v64 = abuf(MAXB * 8 * 64); g.v256 = abuf(MAXB * 256); g.v1out = abuf(MAXB);
+    g.stagePol = d.createBuffer({ size: MAXB * 73 * 64 * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    g.stageVal = d.createBuffer({ size: MAXB * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+
+    g.layers = [];
+    const convLayer = (cv, xb, yb, relu, resBuf) => {
+      const u = d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const bg = d.createBindGroup({ layout: g.convPipe.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: xb } }, { binding: 1, resource: { buffer: sbuf(cv.w) } },
+        { binding: 2, resource: { buffer: sbuf(cv.b) } },
+        { binding: 3, resource: { buffer: resBuf ?? g.dummy } },
+        { binding: 4, resource: { buffer: yb } }, { binding: 5, resource: { buffer: u } },
+      ]});
+      return { kind: 'conv', u, bg, cv, relu, residual: !!resBuf };
+    };
+    const linLayer = (l, xb, yb, act) => {
+      const u = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const bg = d.createBindGroup({ layout: g.linPipe.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: xb } }, { binding: 1, resource: { buffer: sbuf(l.w) } },
+        { binding: 2, resource: { buffer: sbuf(l.b) } },
+        { binding: 3, resource: { buffer: yb } }, { binding: 4, resource: { buffer: u } },
+      ]});
+      return { kind: 'lin', u, bg, l, act };
+    };
+
+    // stem: in -> X
+    g.layers.push(convLayer(g.model.stem, g.inBuf, g.actX, 1, null));
+    // tower: X -> T (relu), T + res(X) -> Y, swap X<->Y
+    let X = g.actX, Y = g.actY;
+    for (const [c1, c2] of g.model.tower) {
+      g.layers.push(convLayer(c1, X, g.actT, 1, null));
+      g.layers.push(convLayer(c2, g.actT, Y, 1, X));
+      [X, Y] = [Y, X];
+    }
+    g.finalAct = X;
+    g.layers.push(convLayer(g.model.p1, X, g.actT, 1, null));
+    g.layers.push(convLayer(g.model.p2, g.actT, g.polBuf, 0, null));
+    g.layers.push(convLayer(g.model.v1, X, g.v64, 1, null));
+    g.layers.push(linLayer(g.model.vf1, g.v64, g.v256, 1));
+    g.layers.push(linLayer(g.model.vf2, g.v256, g.v1out, 2));
+    g.batch = 0;
+    return g;
+  }
+
+  setBatch(B) {
+    if (B === this.batch) return;
+    this.batch = B;
+    for (const L of this.layers) {
+      if (L.kind === 'conv') {
+        this.dev.queue.writeBuffer(L.u, 0, new Uint32Array(
+          [L.cv.ci, L.cv.co, L.cv.k, L.relu, L.residual ? 1 : 0, B]));
+      } else {
+        this.dev.queue.writeBuffer(L.u, 0, new Uint32Array([L.l.ni, L.l.no, L.act, B]));
+      }
+    }
+  }
+
+  /// planes: Float32Array [B * 18 * 64] -> { logits: Float32Array[B*4672] sq-major, values: Float32Array[B] }
+  async forward(planes, B) {
+    this.setBatch(B);
+    this.dev.queue.writeBuffer(this.inBuf, 0, planes);
+    const enc = this.dev.createCommandEncoder();
+    for (const L of this.layers) {
+      const pass = enc.beginComputePass();
+      if (L.kind === 'conv') {
+        pass.setPipeline(this.convPipe); pass.setBindGroup(0, L.bg);
+        pass.dispatchWorkgroups(L.cv.co, B);
+      } else {
+        pass.setPipeline(this.linPipe); pass.setBindGroup(0, L.bg);
+        pass.dispatchWorkgroups(Math.ceil(L.l.no * B / 64));
+      }
+      pass.end();
+    }
+    enc.copyBufferToBuffer(this.polBuf, 0, this.stagePol, 0, B * 73 * 64 * 4);
+    enc.copyBufferToBuffer(this.v1out, 0, this.stageVal, 0, B * 4);
+    this.dev.queue.submit([enc.finish()]);
+
+    await this.stagePol.mapAsync(GPUMapMode.READ, 0, B * 73 * 64 * 4);
+    await this.stageVal.mapAsync(GPUMapMode.READ, 0, B * 4);
+    const polCM = new Float32Array(this.stagePol.getMappedRange(0, B * 73 * 64 * 4).slice(0));
+    const values = new Float32Array(this.stageVal.getMappedRange(0, B * 4).slice(0));
+    this.stagePol.unmap(); this.stageVal.unmap();
+
+    const logits = new Float32Array(B * 4672);
+    for (let b = 0; b < B; b++)
+      for (let p = 0; p < 73; p++)
+        for (let sq = 0; sq < 64; sq++)
+          logits[b * 4672 + sq * 73 + p] = polCM[(b * 73 + p) * 64 + sq];
+    return { logits, values };
+  }
+}
+
+function softmaxOver(logits, support) {
+  const raw = support.map(s => logits[s]);
+  const mx = Math.max(...raw);
+  const ex = raw.map(v => Math.exp(v - mx));
+  const sum = ex.reduce((a, v) => a + v, 0);
+  return ex.map(v => v / sum);
+}
+
+(async () => {
+  try {
+    const [bin, fixtures] = await Promise.all([
+      fetch('azero-chess.bin').then(r => r.arrayBuffer()),
+      fetch('fixtures.json').then(r => r.json()),
+    ]);
+    const gpu = await AzGpu.init(bin);
+    log(`model: ${gpu.model.blocks}x${gpu.model.C}, ${(bin.byteLength / 1e6).toFixed(1)} MB · WebGPU ready`);
+
+    let maxDp = 0, maxDv = 0;
+    for (const fx of fixtures) {
+      const { logits, values } = await gpu.forward(new Float32Array(fx.planes), 1);
+      const priors = softmaxOver(logits, fx.support);
+      fx.priors.forEach((p, i) => { maxDp = Math.max(maxDp, Math.abs(p - priors[i])); });
+      maxDv = Math.max(maxDv, Math.abs(values[0] - fx.value));
+      log(`fixture ${fx.fen.split(' ')[0].slice(0, 24)}…  v=${values[0].toFixed(4)} (exp ${fx.value.toFixed(4)})`);
+    }
+    const pass = maxDp < 1e-3 && maxDv < 1e-3;
+    log(`max |Δprior| = <span class="brass">${maxDp.toExponential(2)}</span>, ` +
+        `max |Δvalue| = <span class="brass">${maxDv.toExponential(2)}</span> → ` +
+        (pass ? '<span class="ok">PASS — kernels agree with the reference forward</span>'
+              : '<span class="bad">FAIL</span>'));
+
+    // throughput at MCTS-ish batch
+    const B = 8, planes = new Float32Array(B * PLANES * 64);
+    for (let b = 0; b < B; b++) planes.set(fixtures[b % fixtures.length].planes, b * PLANES * 64);
+    await gpu.forward(planes, B);
+    const t0 = performance.now();
+    const iters = 100;
+    for (let i = 0; i < iters; i++) await gpu.forward(planes, B);
+    const dt = (performance.now() - t0) / 1000;
+    log(`throughput: <span class="brass">${Math.round(B * iters / dt)}</span> evals/s ` +
+        `at batch ${B} (${(dt / iters * 1000).toFixed(1)} ms/forward)`);
+  } catch (e) {
+    log(`<span class="bad">ERROR: ${e.message}</span>`);
+    throw e;
+  }
+})();
+</script>
+</body>
+</html>
