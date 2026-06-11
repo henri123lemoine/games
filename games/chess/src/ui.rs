@@ -11,13 +11,6 @@ fn sq_name(sq: u8) -> String {
     format!("{}{}", (b'a' + sq % 8) as char, (b'1' + sq / 8) as char)
 }
 
-fn json_str(v: Option<String>) -> String {
-    match v {
-        Some(s) => format!("\"{s}\""),
-        None => "null".into(),
-    }
-}
-
 fn piece_char(c: Color, p: Piece) -> char {
     let ch = match p {
         Piece::Pawn => 'p',
@@ -173,11 +166,11 @@ impl GameUi for Chess {
             sq_name(action.from),
             sq_name(action.to),
             piece_char(color, piece),
-            json_str(captured),
-            json_str(captured_sq.map(sq_name)),
-            json_str(action.promo.map(|p| piece_char(color, p).to_string())),
-            json_str(rook_from.map(sq_name)),
-            json_str(rook_to.map(sq_name)),
+            game_core::json::string_or_null(captured),
+            game_core::json::string_or_null(captured_sq.map(sq_name)),
+            game_core::json::string_or_null(action.promo.map(|p| piece_char(color, p).to_string())),
+            game_core::json::string_or_null(rook_from.map(sq_name)),
+            game_core::json::string_or_null(rook_to.map(sq_name)),
             check = check,
             mate = mate,
         ))
