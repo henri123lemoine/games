@@ -1,7 +1,8 @@
-//! Type-erased matches: one human seat (or none — spectating) against bot
-//! seats in any [`GameUi`] game. `AnyMatch` is the uniform surface every
-//! client drives — the terminal binary and the wasm web engine alike — and it
-//! never knows which game it is running.
+//! Type-erased matches: driven seats (the human, plus any seat whose moves
+//! the client computes — e.g. the browser's WebGPU bot) against bot seats in
+//! any [`GameUi`] game. `AnyMatch` is the uniform surface every client
+//! drives — the terminal binary and the wasm web engine alike — and it never
+//! knows which game it is running.
 
 use game_core::{Agent, GameUi, Rng, Turn};
 
@@ -21,12 +22,12 @@ pub struct MatchEvent {
 }
 
 pub trait AnyMatch {
-    /// Apply chance moves and then a single bot move; `None` once it is the
-    /// human's turn or the game is over. One event per call lets clients
-    /// animate move by move.
+    /// Apply chance moves and then a single bot move; `None` once it is a
+    /// driven seat's turn or the game is over. One event per call lets
+    /// clients animate move by move.
     fn step(&mut self) -> Option<MatchEvent>;
-    /// Apply chance and bot moves until it is the human's turn or the game
-    /// ends.
+    /// Apply chance and bot moves until it is a driven seat's turn or the
+    /// game ends.
     fn advance(&mut self) -> Vec<MatchEvent> {
         let mut events = Vec::new();
         while let Some(e) = self.step() {
@@ -41,8 +42,9 @@ pub trait AnyMatch {
     fn view_data(&self) -> Option<String>;
     /// Labels of the human's legal actions, menu-ordered.
     fn legal_labels(&self) -> Vec<String>;
-    /// Apply human input — a menu index or game-specific text (e.g. `e2e4`).
-    /// Returns the applied move's event, or an error to re-prompt.
+    /// Apply input at the driven seat to act — a menu index or game-specific
+    /// text (e.g. `e2e4`). Returns the applied move's event, or an error to
+    /// re-prompt.
     fn apply_human(&mut self, input: &str) -> Result<MatchEvent, String>;
     /// Result line for the human once `is_over`.
     fn result_text(&self) -> String;
@@ -53,9 +55,11 @@ pub trait AnyMatch {
     fn human_seat(&self) -> Option<usize>;
 }
 
-/// An `AnyMatch` over a concrete game: the human at `human` seat, a bot
-/// everywhere else. A `human` seat beyond the seat count means every seat is
-/// a bot and the match plays itself to the end (spectator mode).
+/// An `AnyMatch` over a concrete game: the human at `human` seat, and a bot
+/// at every seat that has one — a `None` bot elsewhere marks an externally
+/// driven seat, whose moves arrive through [`AnyMatch::apply_human`]. A
+/// `human` seat beyond the seat count means no seat is the human's; with all
+/// seats botted that is spectator mode.
 pub struct TypedMatch<G: GameUi> {
     game: G,
     state: G::State,
@@ -122,9 +126,9 @@ impl<G: GameUi + 'static> AnyMatch for TypedMatch<G> {
                     let i = game_core::rand::sample_outcome(&outs, &mut self.rng);
                     self.game.apply(&mut self.state, outs[i].0);
                 }
-                Turn::Player(p) if p == self.human => return None,
+                Turn::Player(p) if self.bots[p].is_none() => return None,
                 Turn::Player(p) => {
-                    let bot = self.bots[p].take().expect("non-human seat has a bot");
+                    let bot = self.bots[p].take().expect("checked above");
                     let i = bot.act(&self.game, &self.state, p, &mut self.rng);
                     self.bots[p] = Some(bot);
                     return Some(self.apply_event(p, i));
@@ -154,6 +158,10 @@ impl<G: GameUi + 'static> AnyMatch for TypedMatch<G> {
     }
 
     fn apply_human(&mut self, input: &str) -> Result<MatchEvent, String> {
+        let actor = match self.to_act() {
+            Some(p) if self.bots[p].is_none() => p,
+            _ => return Err("no driven seat to act".to_string()),
+        };
         let actions = self.game.legal_actions(&self.state);
         let index = if let Ok(i) = input.trim().parse::<usize>() {
             if i >= actions.len() {
@@ -169,7 +177,7 @@ impl<G: GameUi + 'static> AnyMatch for TypedMatch<G> {
         } else {
             return Err(format!("could not understand '{}'", input.trim()));
         };
-        Ok(self.apply_event(self.human, index))
+        Ok(self.apply_event(actor, index))
     }
 
     fn result_text(&self) -> String {
