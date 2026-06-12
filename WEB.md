@@ -90,7 +90,10 @@ runPairs(spec): string           // paired bot-vs-bot games + Elo/SPRT verdicts 
 
 Seeds come from JS; matches stay reproducible (shareable replays for free).
 Trained artifacts (`data/azero/chess.bin`, Twenty-One tables) ship as static
-files and load via `loadArtifact` — no train-at-startup in the browser.
+files and load via `loadArtifact` — no train-at-startup in the browser. The
+WebGPU azero net is the exception that proves the rule: its weights never
+enter the wasm engine at all (the page evaluates leaves), so they ship as
+`public/azero/azero-chess.azweb` and stay page-side.
 
 Two portability fixes, both mechanical:
 
@@ -165,6 +168,17 @@ into the same wasm.
 Nothing else changes — not the shell, not the engine crate, not other games.
 Adding an *algorithm* still touches only `solvers` + registry bot specs, and
 every game's web page picks it up as a selectable bot.
+
+The one exception is a bot whose evaluation cannot live inside the sync wasm
+engine — the WebGPU azero net. Those register an *externally driven* match
+seat (a registry entry whose seats have no engine-side agent) plus a
+client-side driver in `web/app/src/bots/`, keyed by `game/bot`. The shell
+drives such seats through the same loop: when one is to act it asks the
+driver for a move and feeds it back through `applyHuman`; the driver mirrors
+every event. `chess/azero-gpu` is the reference: the wasm `AzChessBot` runs
+the park/resume PUCT search and the page answers its leaf batches with the
+WebGPU net (`frontends/chess/azgpu.ts`, validated by `/azero-test.html`
+against `azinfer`'s reference forward).
 
 ## Build phases
 
