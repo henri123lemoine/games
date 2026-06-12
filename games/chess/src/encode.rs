@@ -1,8 +1,8 @@
 //! Flat `f32` board features and dense move indices for policy/value
 //! networks (e.g. AlphaZero-style solvers). The flat encoding is bound to
-//! game-core's [`PolicyValueEncoder`] capability as [`FlatEncoder`]; the
-//! plane encoding is consumed directly by the conv-net stacks (azt,
-//! azinfer), which have their own batching shapes.
+//! game-core's [`PolicyValueEncoder`] capability as [`FlatEncoder`] (MLPs)
+//! and [`PlanesEncoder`] (conv nets — azt, azinfer and the browser bind
+//! this one).
 //!
 //! Two encodings live here:
 //!
@@ -84,6 +84,26 @@ impl PolicyValueEncoder<Chess> for FlatEncoder {
 pub const PLANE_COUNT: usize = 18;
 /// AlphaZero-style move-plane policy space: 64 from-squares × 73 planes.
 pub const AZ_POLICY_LEN: usize = 64 * 73;
+
+/// The plane encoding as a [`PolicyValueEncoder`]: [`encode_planes`]
+/// features (flat `[plane · 64 + square]`, consumers reshape) and
+/// [`az_move_index`] policy indices. This is what conv-net stacks bind.
+pub struct PlanesEncoder;
+
+impl PolicyValueEncoder<Chess> for PlanesEncoder {
+    fn input_len(&self) -> usize {
+        PLANE_COUNT * 64
+    }
+    fn policy_len(&self) -> usize {
+        AZ_POLICY_LEN
+    }
+    fn encode_state(&self, _g: &Chess, s: &Board) -> Vec<f32> {
+        encode_planes(s)
+    }
+    fn action_index(&self, _g: &Chess, s: &Board, m: Move) -> usize {
+        az_move_index(m, s.stm)
+    }
+}
 
 /// Clockwise from "forward" (the side to move's +1 rank direction).
 const DIRS: [(isize, isize); 8] = [
