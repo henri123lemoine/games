@@ -58,10 +58,10 @@ jobs:
           name: arcade-dist
           path: web/app/dist
 
-  # Publishes the built arcade to the `arcade-dist` branch and asks the
-  # personal-website repo to redeploy (it mounts that branch at /arcade/).
-  # The dispatch needs an ARCADE_PAT secret: a fine-grained PAT with
-  # Actions:write on henri123lemoine/personal-website.
+  # Publishes the built arcade to the `arcade-dist` branch. The (private)
+  # personal-website repo mounts that branch at henrilemoine.com/arcade/
+  # on its own deploys — every site push plus a daily freshness cron —
+  # tokenlessly, since this repo is public.
   deploy-arcade:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [rust, web]
@@ -82,12 +82,3 @@ jobs:
           force_orphan: true
           user_name: "github-actions[bot]"
           user_email: "github-actions[bot]@users.noreply.github.com"
-      - name: Trigger website deploy
-        env:
-          GH_TOKEN: ${{ secrets.ARCADE_PAT }}
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::warning::ARCADE_PAT not set; website not redeployed"
-            exit 0
-          fi
-          gh workflow run deploy.yml -R henri123lemoine/personal-website --ref main
