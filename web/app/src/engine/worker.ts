@@ -2,6 +2,7 @@
 // Bot search can take seconds; running here keeps the page responsive.
 
 import init, {
+  AzChessBot,
   WebMatch,
   create_match,
   elo,
@@ -15,6 +16,7 @@ import wasmUrl from 'web-engine/web_engine_bg.wasm?url';
 import type { EngineRequest, EngineResponse, ViewState } from './protocol';
 
 let match: WebMatch | null = null;
+let azBot: AzChessBot | null = null;
 const ready = init({ module_or_path: wasmUrl });
 
 function state(): ViewState {
@@ -74,6 +76,29 @@ function handle(req: EngineRequest): unknown {
       return JSON.parse(elo(req.w, req.d, req.l));
     case 'fitElo':
       return JSON.parse(fit_elo_table(JSON.stringify(req.records)));
+    case 'azNew':
+      azBot?.free();
+      azBot = new AzChessBot(req.sims, req.leaves, req.seed);
+      return null;
+    case 'azPush': {
+      if (!azBot) throw new Error('no az bot');
+      azBot.push(req.uci);
+      return null;
+    }
+    case 'azAdvance': {
+      if (!azBot) throw new Error('no az bot');
+      const n = azBot.advance(req.priors, req.values);
+      return {
+        n,
+        features: n > 0 ? azBot.batch_features() : new Float32Array(0),
+        support: n > 0 ? azBot.batch_support() : new Uint16Array(0),
+        offsets: n > 0 ? azBot.batch_offsets() : new Uint32Array(0),
+      };
+    }
+    case 'azBest': {
+      if (!azBot) throw new Error('no az bot');
+      return { uci: azBot.best(), stats: JSON.parse(azBot.stats()) };
+    }
   }
 }
 

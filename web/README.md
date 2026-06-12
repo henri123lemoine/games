@@ -33,10 +33,18 @@ static assets, fetched only when a bot needs them. After retraining:
 
 ```bash
 cp data/azero/chess.bin web/app/public/artifacts/azero-chess.bin   # chess bot=azero (~22 MB)
+# chess bot=azero-gpu (WebGPU; ~6 MB):
+DYLD_LIBRARY_PATH=... azt/target/release/azt export --net data/azt/<run>/latest.ot \
+    --out web/app/public/azero/azero-chess.azweb
+cargo run --release -p azinfer --example gen_fixtures -- \
+    web/app/public/azero/azero-chess.azweb web/app/public/azero/fixtures.json
 ```
 
-Without a model file, every other bot works; selecting `bot=azero` reports
-the missing artifact.
+Without a model file, every other bot works; selecting a net bot reports the
+missing artifact. `/azero-test.html` (also served in the built site)
+validates the WebGPU kernels against `azinfer`'s reference forward over the
+committed fixtures and prints eval throughput — open it after publishing a
+new export.
 
 ## Deploying / embedding
 

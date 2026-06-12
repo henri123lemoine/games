@@ -3,10 +3,14 @@
 //! every value crossing the boundary is a JSON string, so the JS side stays
 //! game-schema-free.
 
+mod az;
+
 use lab::registry::{Opts, entries};
 use lab::runner::{AnyMatch, MatchEvent};
 use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
+
+pub use az::AzChessBot;
 
 #[wasm_bindgen(start)]
 pub fn start() {

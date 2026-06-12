@@ -3,6 +3,7 @@
 // you and the board. One engine worker drives play; the shell owns the loop
 // and narration, frontends own the board.
 
+import { type ClientBot, clientBotFor } from '../bots';
 import { EngineHost } from '../engine/host';
 import type { GameInfo, GameOpt, Manifest, MatchEventData, ViewState } from '../engine/protocol';
 import { frontendFor } from '../frontends';
@@ -106,6 +107,7 @@ export class App {
   private host = new EngineHost();
   private manifest!: Manifest;
   private frontend: GameFrontend | null = null;
+  private clientBot: ClientBot | null = null;
   private tourney: TournamentScreen | null = null;
   private gen = 0;
   private speedScale = 1;
@@ -209,6 +211,9 @@ export class App {
     try {
       await this.loadArtifacts(opts);
       const st = await this.host.create(game.id, opts);
+      if (gen !== this.gen) return;
+      const makeBot = clientBotFor(game.id, opts.bot);
+      this.clientBot = makeBot ? await makeBot(this.host, opts) : null;
       if (gen !== this.gen) return;
       const boardEl = this.root.querySelector<HTMLElement>('.board')!;
       this.frontend = frontendFor(game.id);
@@ -346,6 +351,7 @@ export class App {
       if (gen !== this.gen) return;
       if (ev) {
         this.log(ev);
+        await this.clientBot?.onMove(ev);
         const st = await this.host.state();
         if (gen !== this.gen) return;
         await this.frontend!.animate(ev, st);
@@ -359,6 +365,24 @@ export class App {
         this.logText(`— ${st.result ?? 'game over'}`);
         return;
       }
+      if (this.clientBot && st.toAct >= 0 && st.toAct !== st.humanSeat) {
+        this.setStatus('Thinking…');
+        try {
+          const input = await this.clientBot.chooseMove(st);
+          if (gen !== this.gen) return;
+          const mev = await this.host.apply(input);
+          if (gen !== this.gen) return;
+          this.log(mev);
+          await this.clientBot.onMove(mev);
+          const after = await this.host.state();
+          if (gen !== this.gen) return;
+          await this.frontend!.animate(mev, after);
+        } catch (e) {
+          this.setStatus(message(e), 'error');
+          return;
+        }
+        continue;
+      }
       this.setStatus('Your turn');
       this.frontend!.promptAction(st.labels);
       const input = await new Promise<string>((res) => (this.submitResolve = res));
@@ -368,6 +392,7 @@ export class App {
         const mev = await this.host.apply(input);
         if (gen !== this.gen) return;
         this.log(mev);
+        await this.clientBot?.onMove(mev);
         const after = await this.host.state();
         if (gen !== this.gen) return;
         await this.frontend!.animate(mev, after);
@@ -422,6 +447,7 @@ export class App {
     this.gen++;
     this.tourney?.destroy();
     this.tourney = null;
+    this.clientBot = null;
     this.frontend?.unmount();
     this.frontend = null;
     this.submitResolve = null;

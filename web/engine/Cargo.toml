@@ -8,6 +8,8 @@ description = "wasm-bindgen bindings over the lab's registry and matches: the br
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+azinfer = { path = "../../azinfer" }
+chess = { path = "../../games/chess" }
 game-core = { workspace = true }
 lab = { path = "../../lab", default-features = false }
 serde_json = "1"
