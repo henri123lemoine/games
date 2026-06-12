@@ -44,7 +44,7 @@ impl Eval<Othello> for OthelloEval {
         let mobility = placements(mine, theirs).count_ones() as i32
             - placements(theirs, mine).count_ones() as i32;
         let score = (squares + MOBILITY_WEIGHT * mobility) as f64;
-        (2.0 / std::f64::consts::PI) * (score / 100.0).atan()
+        game_core::eval_squash(score, 100.0)
     }
 }
 

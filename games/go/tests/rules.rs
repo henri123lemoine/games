@@ -188,7 +188,7 @@ fn random_playthroughs_terminate() {
                 assert!(plies < cap, "draw-guard cap exceeded on {size}x{size}");
                 let actions = g.legal_actions(&s);
                 assert!(!actions.is_empty());
-                let i = ((rng.unit() * actions.len() as f64) as usize).min(actions.len() - 1);
+                let i = rng.below(actions.len());
                 g.apply(&mut s, actions[i]);
                 plies += 1;
             }

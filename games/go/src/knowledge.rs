@@ -5,12 +5,12 @@ use game_core::{Eval, SearchSpec};
 
 use crate::{EMPTY, Go, GoAction, GoState, KOMI, group, neighbors, place};
 
-/// `tanh((player's area − opponent's area, komi-adjusted) / size)`.
+/// the komi-adjusted area lead, squashed by [`game_core::eval_squash`].
 ///
 /// Area is current Chinese score (stones + exclusively-bordered empty
 /// regions), the same quantity [`Go::returns`] thresholds at the end, so the
 /// eval and the true outcome agree in sign once territory is settled. Komi is
-/// included for the same reason. Dividing by the board size before `tanh`
+/// included for the same reason. Dividing by the board size before squashing
 /// keeps mid-game leads of a few points informative instead of saturating.
 pub struct GoEval;
 
@@ -19,7 +19,7 @@ impl Eval<Go> for GoEval {
         let (black, white) = game.area_scores(state);
         let black_lead = black as f64 - white as f64 - KOMI;
         let lead = if player == 0 { black_lead } else { -black_lead };
-        (lead / game.size() as f64).tanh()
+        game_core::eval_squash(lead, game.size() as f64)
     }
 }
 
