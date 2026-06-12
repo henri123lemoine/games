@@ -24,7 +24,10 @@ pub const MAX_FACES: usize = 6;
 pub const MAX_PLAYERS: usize = 8;
 /// Bid-history actions retained in the information-set key (an abstraction).
 const HIST_K: usize = 6;
-const DEFAULT_MAX_ROUNDS: u8 = 24;
+/// Floor for the default round cap. The cap itself scales as
+/// `2 x players x dice`: a natural game needs up to `players x dice - 1`
+/// die-loss rounds, so a fixed cap would truncate legitimate large games.
+const MIN_MAX_ROUNDS: u8 = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -72,11 +75,14 @@ impl LiarsDice {
             players as u16 * dice as u16 <= u8::MAX as u16,
             "dice counts are u8: players x dice must not exceed 255"
         );
+        let max_rounds = (u16::from(players) * u16::from(dice) * 2)
+            .clamp(u16::from(MIN_MAX_ROUNDS), u16::from(u8::MAX) - 1)
+            as u8;
         Self {
             players,
             dice,
             faces,
-            max_rounds: DEFAULT_MAX_ROUNDS,
+            max_rounds,
         }
     }
 
@@ -86,6 +92,7 @@ impl LiarsDice {
     }
 
     pub fn with_max_rounds(mut self, m: u8) -> Self {
+        assert!(m < u8::MAX, "the round counter must fit max_rounds + 1");
         self.max_rounds = m;
         self
     }
@@ -114,6 +121,12 @@ impl LiarsDice {
         (0..self.players as usize)
             .map(|p| s.hands[p][face as usize - 1])
             .sum()
+    }
+
+    /// Terminal because the round cap forced a dice-count adjudication rather
+    /// than elimination down to one player.
+    fn adjudicated(&self, s: &LdState) -> bool {
+        s.done && self.num_alive(s) > 1
     }
 
     fn push_hist(&self, s: &mut LdState, code: u16) {
@@ -557,6 +570,48 @@ mod tests {
         game.apply(&mut s, Action::CallExact);
         assert!(game.is_terminal(&s), "two 1s != qty 1: the caller loses");
         assert_eq!(game.returns(&s, 1), 1.0);
+    }
+
+    #[test]
+    fn round_cap_scales_with_the_dice_in_play() {
+        assert_eq!(LiarsDice::new(2, 2, 6).max_rounds, MIN_MAX_ROUNDS);
+        assert_eq!(LiarsDice::new(5, 5, 6).max_rounds, 50);
+        assert_eq!(LiarsDice::new(8, 6, 6).max_rounds, 96);
+    }
+
+    /// A 5p5d game played to the natural end — one die lost per round plus a
+    /// few no-loss exact rounds — must finish by elimination, not round-cap
+    /// adjudication. Under the old fixed cap of 24 this game was cut off with
+    /// several players still alive.
+    #[test]
+    fn natural_5p5d_games_outlive_a_fixed_round_cap() {
+        let game = LiarsDice::new(5, 5, 6);
+        let mut s = game.initial_state();
+        let mut rounds_played = 0u32;
+        while !game.is_terminal(&s) {
+            while matches!(game.turn(&s), Turn::Chance) {
+                // First outcome: every die on the top face.
+                let a = game.chance_outcomes(&s)[0].0;
+                game.apply(&mut s, a);
+            }
+            rounds_played += 1;
+            if s.qty == 0 {
+                if rounds_played <= 7 {
+                    // True exact: bid the full count of 6s, next player calls it.
+                    let total = game.total_dice(&s);
+                    game.apply(&mut s, Action::Open(total, 6));
+                    game.apply(&mut s, Action::CallExact);
+                    continue;
+                }
+                game.apply(&mut s, Action::Open(1, 6));
+            }
+            // True bid (or the false forced 1x1): the call costs one die.
+            game.apply(&mut s, Action::CallLiar);
+        }
+        assert!(rounds_played > 24, "the scenario must exceed the old cap");
+        assert_eq!(game.num_alive(&s), 1, "must end by elimination");
+        assert!(game.alive(&s, s.winner));
+        assert_eq!(game.returns(&s, s.winner as usize), 1.0);
     }
 
     #[test]

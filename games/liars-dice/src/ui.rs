@@ -121,6 +121,12 @@ impl GameUi for LiarsDice {
             )),
             None => out.push_str(" Exact! Nobody loses a die."),
         }
+        if self.adjudicated(after) {
+            out.push_str(&format!(
+                "\n→ round cap ({}) reached: adjudicated by dice count — Player {} wins with {}.",
+                self.max_rounds, after.winner, after.dice_left[after.winner as usize]
+            ));
+        }
         Some(out)
     }
 
@@ -228,7 +234,7 @@ impl GameUi for LiarsDice {
                 r#"{{"kind":"{kind}","caller":{caller},"bidder":{bidder},"#,
                 r#""bid":{{"qty":{q},"face":{f}}},"actual":{actual},"hands":[{hands}],"#,
                 r#""loser":{loser},"diceLeft":{dice_left},"gameOver":{over},"#,
-                r#""winner":{winner},"nextRound":{next_round}}}"#
+                r#""winner":{winner},"nextRound":{next_round},"adjudicated":{adjudicated}}}"#
             ),
             kind = kind,
             caller = before.turn,
@@ -242,6 +248,7 @@ impl GameUi for LiarsDice {
             over = after.done,
             winner = winner,
             next_round = after.rounds,
+            adjudicated = self.adjudicated(after),
         ))
     }
 }
@@ -394,5 +401,29 @@ mod tests {
             game.transition_data(&before, Action::RaiseQuantity, &s, 0)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn round_cap_adjudication_is_announced() {
+        let game = LiarsDice::new(2, 2, 6).with_max_rounds(1);
+        let mut s = rolled_state(&game);
+        let before = s.clone();
+        // Forced 1x1 with no 1s out: P1 (phantom owner) loses a die, both stay
+        // alive, and the one-round cap adjudicates toward P0's two dice.
+        game.apply(&mut s, Action::CallLiar);
+        assert!(game.is_terminal(&s));
+
+        let text = game
+            .describe_transition(&before, Action::CallLiar, &s, 0)
+            .unwrap();
+        assert!(text.contains("round cap (1) reached"), "{text}");
+        assert!(text.contains("Player 0 wins with 2"), "{text}");
+
+        let t = game
+            .transition_data(&before, Action::CallLiar, &s, 0)
+            .unwrap();
+        assert_valid_json(&t);
+        assert!(t.contains(r#""gameOver":true,"winner":0"#), "{t}");
+        assert!(t.contains(r#""adjudicated":true"#), "{t}");
     }
 }
