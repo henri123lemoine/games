@@ -26,16 +26,17 @@ npm run preview    # serve the built site
 Rebuild the engine whenever Rust changes; Vite picks up the new pkg on the
 next dev reload / build.
 
-## Optional artifacts
+## Trained artifacts
 
-Trained models ship as static assets, fetched only when a bot needs them:
+Published models are committed under `web/app/public/artifacts/` and ship as
+static assets, fetched only when a bot needs them. After retraining:
 
 ```bash
 cp data/azero/chess.bin web/app/public/artifacts/azero-chess.bin   # chess bot=azero (~22 MB)
 ```
 
-Without the file, every other bot works; selecting `bot=azero` reports the
-missing artifact.
+Without a model file, every other bot works; selecting `bot=azero` reports
+the missing artifact.
 
 ## Deploying / embedding
 
@@ -54,9 +55,7 @@ and publishes `dist/` to the `arcade-dist` branch (single orphan commit). The
 personal-website repo mounts that branch at `henrilemoine.com/arcade/` on its
 own deploys — every site push plus a daily freshness cron — with no tokens,
 since this repo is public (`gh workflow run deploy.yml -R
-henri123lemoine/personal-website` forces an immediate refresh). Trained models
-come from the `web-artifacts` GitHub release (`gh release create web-artifacts
-<files>`), since they are gitignored.
+henri123lemoine/personal-website` forces an immediate refresh).
 
 ## Performance notes
 
