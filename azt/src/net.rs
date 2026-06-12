@@ -213,15 +213,7 @@ impl Infer {
             .map(|(i, r)| {
                 let mut priors = legal[offset..offset + r.support.len()].to_vec();
                 offset += r.support.len();
-                let max = priors.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                let mut sum = 0.0;
-                for q in &mut priors {
-                    *q = (*q - max).exp();
-                    sum += *q;
-                }
-                for q in &mut priors {
-                    *q /= sum;
-                }
+                azinfer::softmax(&mut priors);
                 EvalResult {
                     priors,
                     value: values[i],

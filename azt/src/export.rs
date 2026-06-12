@@ -116,7 +116,7 @@ pub fn verify_export(args: &[String]) {
     let mut rng = Rng::new(7);
     let mut board = chess::Board::start();
     let (mut max_dp, mut max_dv) = (0.0f32, 0.0f32);
-    for ply in 0..120 {
+    for _ in 0..120 {
         let moves = chess::legal_moves(&board);
         if moves.is_empty() || board.halfmove >= 100 {
             board = chess::Board::start();
@@ -135,9 +135,7 @@ pub fn verify_export(args: &[String]) {
             max_dp = max_dp.max((pa - pb).abs());
         }
         max_dv = max_dv.max((a.value - b.value).abs());
-        let i = ((rng.unit() * moves.len() as f64) as usize).min(moves.len() - 1);
-        board.apply(moves[i]);
-        let _ = ply;
+        board.apply(moves[rng.below(moves.len())]);
     }
     println!("max |prior diff| {max_dp:.2e}, max |value diff| {max_dv:.2e} over 120 positions");
     assert!(max_dp < 1e-3 && max_dv < 1e-3, "export does not match tch");
