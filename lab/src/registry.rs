@@ -206,10 +206,33 @@ fn make_versus<G: game_core::GameUi + Sync + 'static>(
     Ok(TypedMatch::new(game, bots, seat, seed).boxed())
 }
 
+/// Builds a match where every non-human seat is externally driven — the
+/// client computes those moves and feeds them through `apply_human` (the
+/// browser does this for the WebGPU azero bot). `client_opts` names options
+/// the client reads, so the unused-option check accepts them.
+fn make_external_versus<G: game_core::GameUi + Sync + 'static>(
+    o: &Opts,
+    game: G,
+    client_opts: &[&str],
+) -> Result<Box<dyn AnyMatch>, String> {
+    let seats = game.num_players();
+    let seat = parse_seat(o, seats)?;
+    let seed = o.get("seed", default_seed())?;
+    for key in client_opts {
+        let _ = o.str(key, "");
+    }
+    let bots = (0..seats).map(|_| None).collect();
+    Ok(TypedMatch::new(game, bots, seat, seed).boxed())
+}
+
 const CHESS_OPTS: &[OptSpec] = &[
     opt("depth", "5", ""),
     opt("seat", "0|1|watch", "(0=White)"),
-    opt("bot", "alphabeta|alphabeta-rich|azero", ""),
+    opt(
+        "bot",
+        "alphabeta|alphabeta-rich|azero|azero-gpu",
+        "(azero-gpu: browser only)",
+    ),
     opt("net", "data/azero/chess.bin", ""),
     opt("sims", "256", ""),
     opt("seed", "...", ""),
@@ -276,7 +299,12 @@ pub fn entries() -> Vec<Entry> {
             id: "chess",
             summary: "chess vs alpha-beta (perft-validated rules)",
             opts: CHESS_OPTS,
-            make: Box::new(|o| make_versus(o, chess::Chess, "alphabeta", chess_bot)),
+            make: Box::new(|o| {
+                if o.str("bot", "alphabeta") == "azero-gpu" {
+                    return make_external_versus(o, chess::Chess, &["sims"]);
+                }
+                make_versus(o, chess::Chess, "alphabeta", chess_bot)
+            }),
             eval: Some(eval_entry(
                 "alphabeta[:depth=5] | alphabeta-rich[:depth=5] (rich eval) | \
                  azero[:net=data/azero/chess.bin,sims=256]",
@@ -569,7 +597,8 @@ fn chess_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<chess::Chess>, Stri
         }
         other => {
             return Err(format!(
-                "unknown chess bot '{other}' (alphabeta|alphabeta-rich|azero)"
+                "unknown chess bot '{other}' (alphabeta|alphabeta-rich|azero; \
+                 azero-gpu plays only in the browser)"
             ));
         }
     })
