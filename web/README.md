@@ -68,7 +68,7 @@ henri123lemoine/personal-website` forces an immediate refresh).
 ## Performance notes
 
 - The engine runs single-threaded inside a Web Worker (the UI never blocks).
-  Browser-tuned defaults live in the shell (`WEB_DEFAULTS`); raise rollouts /
+  Browser-tuned defaults live in the shell (`DEFAULT_OPTS`); raise rollouts /
   sims / depth in the setup screen on fast machines.
 - Tournaments parallelize across a pool of workers (one wasm instance per
   core) — that is where multi-core shows up today.

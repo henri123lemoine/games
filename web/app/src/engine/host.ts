@@ -31,6 +31,14 @@ export class EngineHost {
       if (e.data.ok) p.resolve(e.data.data);
       else p.reject(new Error(e.data.error));
     };
+    // Without these, a failed wasm init leaves every caller awaiting forever.
+    this.worker.onerror = (e) => this.rejectAll(`engine worker error: ${e.message || 'unknown'}`);
+    this.worker.onmessageerror = () => this.rejectAll('engine worker message error');
+  }
+
+  private rejectAll(reason: string): void {
+    for (const p of this.pending.values()) p.reject(new Error(reason));
+    this.pending.clear();
   }
 
   private call(req: DistributiveOmit<EngineRequest, 'id'>): Promise<unknown> {
@@ -119,7 +127,6 @@ export class EngineHost {
 
   terminate(): void {
     this.worker.terminate();
-    for (const p of this.pending.values()) p.reject(new Error('engine terminated'));
-    this.pending.clear();
+    this.rejectAll('engine terminated');
   }
 }

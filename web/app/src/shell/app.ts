@@ -10,17 +10,6 @@ import { frontendFor } from '../frontends';
 import type { FrontendCtx, GameFrontend } from '../frontends/types';
 import { TournamentScreen } from './tournament';
 
-const GAME_NAMES: Record<string, string> = {
-  chess: 'Chess',
-  'liars-dice': "Liar's Dice",
-  twentyone: 'Twenty-One',
-  othello: 'Othello',
-  connect4: 'Connect Four',
-  go: 'Go',
-  '2048': '2048',
-  snake: 'Snake',
-};
-
 const GAME_TAGLINES: Record<string, string> = {
   chess: 'alpha-beta search, perft-validated rules',
   'liars-dice': 'belief-tracking bots that bluff back',
@@ -31,9 +20,6 @@ const GAME_TAGLINES: Record<string, string> = {
   '2048': 'an MCTS bot, or your own arrows',
   snake: 'the classic, with a watchful bot',
 };
-
-/** Single-player games spectate via a bot option, not a seat. */
-const SINGLE_PLAYER = new Set(['2048', 'snake']);
 
 /** What clicking a card starts: browser-tuned, no questions asked. */
 const DEFAULT_OPTS: Record<string, Record<string, string>> = {
@@ -71,6 +57,11 @@ function optFields(schema: GameOpt[], current: Record<string, string>): OptField
 
 function randomSeed(): number {
   return (Math.floor(Math.random() * 0x7fff_ffff) | 1) >>> 0;
+}
+
+/** For interpolating user-editable values into markup (drawer fields). */
+function esc(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
 /** Static mini-board previews on the home cards — each game introduces
@@ -133,8 +124,8 @@ export class App {
         <div class="card" data-game="${g.id}" role="button" tabindex="0">
           ${miniFor(g.id)}
           <div class="card-text">
-            <span class="card-name">${GAME_NAMES[g.id] ?? g.id}</span>
-            <span class="card-summary">${GAME_TAGLINES[g.id] ?? g.summary}</span>
+            <span class="card-name">${esc(g.name || g.id)}</span>
+            <span class="card-summary">${esc(GAME_TAGLINES[g.id] ?? g.summary)}</span>
           </div>
           <button type="button" class="card-watch" title="Watch bots play">watch</button>
         </div>`,
@@ -186,9 +177,9 @@ export class App {
   private buildOpts(game: GameInfo, mode: Mode, overrides: Record<string, string>): Record<string, string> {
     const opts: Record<string, string> = { ...DEFAULT_OPTS[game.id], ...overrides };
     if (mode === 'watch') {
-      if (SINGLE_PLAYER.has(game.id)) opts.bot ||= 'mcts-eval';
+      if (game.solo) opts.bot ||= game.watchBot;
       else opts.seat = 'watch';
-    } else if (SINGLE_PLAYER.has(game.id)) {
+    } else if (game.solo) {
       delete opts.bot;
     } else if (opts.seat === 'watch') {
       opts.seat = '0';
@@ -203,8 +194,15 @@ export class App {
     overrides: Record<string, string> = {},
   ): Promise<void> {
     const gen = ++this.gen;
+    this.teardownMatch();
     const opts = this.buildOpts(game, mode, overrides);
+    let gpuNote = '';
+    if (opts.bot === 'azero-gpu' && !('gpu' in navigator)) {
+      opts.bot = 'azero';
+      gpuNote = 'WebGPU unavailable — playing the CPU azero net instead.';
+    }
     this.renderMatchSkeleton(game, mode, opts);
+    if (gpuNote) this.logText(gpuNote, true);
     if (game.id === 'twentyone') {
       this.setStatus('Training the CFR+ solver in your browser…');
     }
@@ -240,7 +238,7 @@ export class App {
       <div class="match">
         <header class="match-bar">
           <button type="button" class="link back">&larr; games</button>
-          <span class="match-title">${GAME_NAMES[game.id] ?? game.id}</span>
+          <span class="match-title">${esc(game.name || game.id)}</span>
           <span class="spacer"></span>
           <label class="speed-label">speed
             <select class="speed">
@@ -305,20 +303,20 @@ export class App {
     const fieldsEl = drawer.querySelector<HTMLElement>('.drawer-fields')!;
     const open = () => {
       const fields = optFields(game.optsSchema, opts);
-      const seatRow = SINGLE_PLAYER.has(game.id)
+      const seatRow = game.solo
         ? ''
         : `<label class="opt-row"><span>seat</span>
-             <input name="d-seat" value="${opts.seat ?? '0'}" autocomplete="off" /></label>`;
+             <input name="d-seat" value="${esc(opts.seat ?? '0')}" autocomplete="off" /></label>`;
       fieldsEl.innerHTML = `
         ${seatRow}
         ${fields
           .map(
-            (f) => `<label class="opt-row"><span>${f.key}</span>
-              <input name="d-${f.key}" value="${f.value}" autocomplete="off" /></label>`,
+            (f) => `<label class="opt-row"><span>${esc(f.key)}</span>
+              <input name="d-${esc(f.key)}" value="${esc(f.value)}" autocomplete="off" /></label>`,
           )
           .join('')}
         <label class="opt-row"><span>seed</span>
-          <input name="d-seed" value="${opts.seed ?? randomSeed()}" autocomplete="off" /></label>`;
+          <input name="d-seed" value="${esc(String(opts.seed ?? randomSeed()))}" autocomplete="off" /></label>`;
       drawer.hidden = false;
     };
     this.root.querySelector<HTMLButtonElement>('.gear')!.onclick = open;
@@ -340,21 +338,29 @@ export class App {
   }
 
   private async runLoop(gen: number): Promise<void> {
+    const fail = (e: unknown) => {
+      if (gen === this.gen) this.setStatus(message(e), 'error');
+    };
     while (gen === this.gen) {
       let ev: MatchEventData | null;
       try {
         ev = await this.host.step();
       } catch (e) {
-        this.setStatus(message(e), 'error');
+        fail(e);
         return;
       }
       if (gen !== this.gen) return;
       if (ev) {
-        this.log(ev);
-        await this.clientBot?.onMove(ev);
-        const st = await this.host.state();
-        if (gen !== this.gen) return;
-        await this.frontend!.animate(ev, st);
+        try {
+          this.log(ev);
+          await this.clientBot?.onMove(ev);
+          const st = await this.host.state();
+          if (gen !== this.gen) return;
+          await this.frontend!.animate(ev, st);
+        } catch (e) {
+          fail(e);
+          return;
+        }
         continue;
       }
       const st = await this.host.state();
@@ -378,7 +384,7 @@ export class App {
           if (gen !== this.gen) return;
           await this.frontend!.animate(mev, after);
         } catch (e) {
-          this.setStatus(message(e), 'error');
+          fail(e);
           return;
         }
         continue;
@@ -397,7 +403,7 @@ export class App {
         if (gen !== this.gen) return;
         await this.frontend!.animate(mev, after);
       } catch (e) {
-        this.setStatus(message(e), 'error');
+        fail(e);
       }
     }
   }
@@ -443,14 +449,23 @@ export class App {
     this.statusEl.className = `status status-${kind}`;
   }
 
-  private teardown(): void {
-    this.gen++;
-    this.tourney?.destroy();
-    this.tourney = null;
+  /** Stops the live match's machinery: the client bot's in-flight search,
+   * the frontend's listeners/timers, and any pending human prompt. Runs at
+   * the top of every startMatch — a rematch must never leave the previous
+   * match's chooseMove loop driving the worker's search. */
+  private teardownMatch(): void {
+    this.clientBot?.cancel();
     this.clientBot = null;
     this.frontend?.unmount();
     this.frontend = null;
     this.submitResolve = null;
+  }
+
+  private teardown(): void {
+    this.gen++;
+    this.tourney?.destroy();
+    this.tourney = null;
+    this.teardownMatch();
     this.logEl = null;
     this.statusEl = null;
   }

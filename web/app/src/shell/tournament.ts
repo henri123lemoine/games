@@ -158,6 +158,9 @@ export class TournamentScreen {
           if (this.gen !== gen) return;
           this.progress(`error: ${e instanceof Error ? e.message : e}`);
           this.gen++;
+          this.running = false;
+          const btn = this.root.querySelector('.t-run');
+          if (btn) btn.textContent = 'Run tournament';
           return;
         }
       }

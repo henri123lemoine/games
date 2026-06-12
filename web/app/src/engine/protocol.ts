@@ -9,7 +9,13 @@ export interface GameOpt {
 
 export interface GameInfo {
   id: string;
+  /** Display name from the registry. */
+  name: string;
   summary: string;
+  /** Single-player: no seat option; `bot=` decides play vs watch. */
+  solo: boolean;
+  /** Bot spec watch mode uses on solo games (empty for versus games). */
+  watchBot: string;
   /** Human-readable help line (derived from the schema engine-side). */
   opts: string;
   /** The structured option schema — what the settings drawer renders. */

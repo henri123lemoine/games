@@ -13,6 +13,9 @@ export interface ClientBot {
   onMove(ev: MatchEventData): Promise<void>;
   /** Compute the move for the external seat to act (a submit-able input). */
   chooseMove(st: ViewState): Promise<string>;
+  /** Abandon any in-flight work; the bot will not be called again. A stale
+   * chooseMove loop left running would corrupt the next match's search. */
+  cancel(): void;
 }
 
 export type ClientBotFactory = (
