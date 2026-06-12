@@ -143,7 +143,7 @@ impl Model {
     pub fn eval(&self, reqs: &[EvalRequest]) -> Vec<EvalResult> {
         reqs.iter()
             .map(|r| {
-                let (logits, value) = self.forward(&r.planes);
+                let (logits, value) = self.forward(&r.features);
                 let mut priors: Vec<f32> =
                     r.support.iter().map(|&s| logits[usize::from(s)]).collect();
                 let max = priors.iter().copied().fold(f32::NEG_INFINITY, f32::max);

@@ -414,7 +414,7 @@ fn bench(args: &[String]) {
         let moves = chess::legal_moves(&board);
         (0..n)
             .map(|_| net::EvalRequest {
-                planes: chess::encode::encode_planes(&board),
+                features: chess::encode::encode_planes(&board),
                 support: moves
                     .iter()
                     .map(|&m| chess::encode::az_move_index(m, board.stm) as u16)
