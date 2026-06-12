@@ -40,7 +40,6 @@ jobs:
         working-directory: web/app
       - run: npm run build
         working-directory: web/app
-      - run: rm -rf web/app/dist/azero # wasm test fixtures, not part of the site
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'push'
         with:

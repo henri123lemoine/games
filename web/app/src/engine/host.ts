@@ -2,6 +2,8 @@
 // screen spawns several hosts to use multiple cores.
 
 import type {
+  AzBatch,
+  AzBest,
   EngineRequest,
   EngineResponse,
   Manifest,
@@ -97,6 +99,22 @@ export class EngineHost {
 
   fitElo(records: [number, number, number][][]): Promise<number[]> {
     return this.call({ op: 'fitElo', records }) as Promise<number[]>;
+  }
+
+  azNew(sims: number, leaves: number, seed: number): Promise<void> {
+    return this.call({ op: 'azNew', sims, leaves, seed }) as Promise<void>;
+  }
+
+  azPush(uci: string): Promise<void> {
+    return this.call({ op: 'azPush', uci }) as Promise<void>;
+  }
+
+  azAdvance(priors: Float32Array, values: Float32Array): Promise<AzBatch> {
+    return this.call({ op: 'azAdvance', priors, values }) as Promise<AzBatch>;
+  }
+
+  azBest(): Promise<AzBest> {
+    return this.call({ op: 'azBest' }) as Promise<AzBest>;
   }
 
   terminate(): void {

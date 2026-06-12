@@ -83,7 +83,26 @@ export type EngineRequest =
       hi: number;
     }
   | { id: number; op: 'elo'; w: number; d: number; l: number }
-  | { id: number; op: 'fitElo'; records: [number, number, number][][] };
+  | { id: number; op: 'fitElo'; records: [number, number, number][][] }
+  | { id: number; op: 'azNew'; sims: number; leaves: number; seed: number }
+  | { id: number; op: 'azPush'; uci: string }
+  | { id: number; op: 'azAdvance'; priors: Float32Array; values: Float32Array }
+  | { id: number; op: 'azBest' };
+
+/** One gathered leaf batch from the wasm AZ search (empty when done). */
+export interface AzBatch {
+  n: number;
+  /** Flat board planes, `[n × 18·64]`. */
+  features: Float32Array<ArrayBuffer>;
+  /** Flat legal policy indices; `offsets` delimits the per-leaf runs. */
+  support: Uint16Array<ArrayBuffer>;
+  offsets: Uint32Array<ArrayBuffer>;
+}
+
+export interface AzBest {
+  uci: string;
+  stats: { value: number; sims: number };
+}
 
 export type EngineResponse =
   | { id: number; ok: true; data: unknown }

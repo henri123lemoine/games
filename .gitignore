@@ -16,11 +16,10 @@ data/
 .claude/
 .worktrees/
 
-# wasm build outputs (public/artifacts/ is NOT ignored: published nets are
-# committed so CI and clones get them with no side channel)
+# wasm build outputs (public/artifacts/ and public/azero/ are NOT ignored:
+# published nets and their validation fixtures are committed so CI and
+# clones get them with no side channel)
 target-wasm/
 web/engine/pkg/
 web/app/node_modules/
 web/app/dist/
-web/app/public/azero/*.azweb
-web/app/public/azero/fixtures.json
