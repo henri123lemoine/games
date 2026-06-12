@@ -60,6 +60,20 @@ impl Opts {
         self.map.get(key).cloned().unwrap_or_else(|| default.into())
     }
 
+    /// Errors unless every option was looked up — the typo guard every
+    /// entry point runs once its reads are done.
+    pub fn ensure_consumed(&self, what: &str) -> Result<(), String> {
+        let unused = self.unused();
+        if unused.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "unused option(s) for {what}: {}",
+                unused.join(", ")
+            ))
+        }
+    }
+
     /// Options that were never looked up — typos, or keys the chosen
     /// bot/config does not use. Empty when everything was consumed.
     pub fn unused(&self) -> Vec<String> {
@@ -105,7 +119,13 @@ const fn opt(key: &'static str, value: &'static str, note: &'static str) -> OptS
 /// evaluate its bots against each other.
 pub struct Entry {
     pub id: &'static str,
+    /// Display name for rich clients.
+    pub name: &'static str,
     pub summary: &'static str,
+    /// Single-player game: no `seat` option; `bot=` decides play vs watch.
+    pub solo: bool,
+    /// Bot spec for watch mode on solo games (versus games use `seat=watch`).
+    pub watch_bot: &'static str,
     pub opts: &'static [OptSpec],
     pub make: MakeFn,
     pub eval: Option<EvalEntry>,
@@ -170,15 +190,15 @@ fn eval_entry<G: Game + Sync + 'static>(
     }
 }
 
-/// Parses `seat=` — the human's seat index, or `watch` to make every seat a
-/// bot and spectate.
-fn parse_seat(o: &Opts, seats: usize) -> Result<usize, String> {
+/// Parses `seat=` — the human's seat index, or `watch` (`None`) to make
+/// every seat a bot and spectate.
+fn parse_seat(o: &Opts, seats: usize) -> Result<Option<usize>, String> {
     let s = o.str("seat", "0");
     if s == "watch" {
-        return Ok(usize::MAX);
+        return Ok(None);
     }
     match s.parse::<usize>() {
-        Ok(i) if i < seats => Ok(i),
+        Ok(i) if i < seats => Ok(Some(i)),
         _ => Err(format!("seat must be 0..={} or 'watch'", seats - 1)),
     }
 }
@@ -201,7 +221,7 @@ fn make_versus<G: game_core::GameUi + Sync + 'static>(
     };
     let builder = parse(&spec, o)?;
     let bots = (0..seats)
-        .map(|p| (p != seat).then(|| builder(hash::combine(seed, p as u64))))
+        .map(|p| (Some(p) != seat).then(|| builder(hash::combine(seed, p as u64))))
         .collect();
     Ok(TypedMatch::new(game, bots, seat, seed).boxed())
 }
@@ -297,6 +317,9 @@ pub fn entries() -> Vec<Entry> {
     vec![
         Entry {
             id: "chess",
+            name: "Chess",
+            solo: false,
+            watch_bot: "",
             summary: "chess vs alpha-beta (perft-validated rules)",
             opts: CHESS_OPTS,
             make: Box::new(|o| {
@@ -316,6 +339,9 @@ pub fn entries() -> Vec<Entry> {
         },
         Entry {
             id: "liars-dice",
+            name: "Liar's Dice",
+            solo: false,
+            watch_bot: "",
             summary: "N-player Liar's Dice vs determinized-rollout bots",
             opts: LIARS_DICE_OPTS,
             make: Box::new(|o| make_versus(o, liars_dice_game(o)?, "rollout", liars_dice_bot)),
@@ -329,6 +355,9 @@ pub fn entries() -> Vec<Entry> {
         },
         Entry {
             id: "twentyone",
+            name: "Twenty-One",
+            solo: false,
+            watch_bot: "",
             summary: "Twenty-One vs the decomposed CFR+ solver (artifact or train-at-startup)",
             opts: TWENTYONE_OPTS,
             make: Box::new(make_twentyone),
@@ -336,6 +365,9 @@ pub fn entries() -> Vec<Entry> {
         },
         Entry {
             id: "othello",
+            name: "Othello",
+            solo: false,
+            watch_bot: "",
             summary: "Othello vs alpha-beta (weighted squares + mobility)",
             opts: OTHELLO_OPTS,
             make: Box::new(|o| make_versus(o, othello::Othello, "alphabeta", othello_bot)),
@@ -349,6 +381,9 @@ pub fn entries() -> Vec<Entry> {
         },
         Entry {
             id: "connect4",
+            name: "Connect 4",
+            solo: false,
+            watch_bot: "",
             summary: "Connect-4 vs alpha-beta",
             opts: CONNECT4_OPTS,
             make: Box::new(|o| make_versus(o, connect4::Connect4, "alphabeta", connect4_bot)),
@@ -362,6 +397,9 @@ pub fn entries() -> Vec<Entry> {
         },
         Entry {
             id: "go",
+            name: "Go",
+            solo: false,
+            watch_bot: "",
             summary: "Go (area scoring, komi 7.5) vs MCTS",
             opts: GO_OPTS,
             make: Box::new(|o| {
@@ -381,6 +419,9 @@ pub fn entries() -> Vec<Entry> {
         },
         Entry {
             id: "2048",
+            name: "2048",
+            solo: true,
+            watch_bot: "mcts-eval",
             summary: "2048 (single-player) — play it, or watch an MCTS bot",
             opts: G2048_OPTS,
             make: Box::new(|o| make_solo(o, g2048::G2048, g2048_bot)),
@@ -388,6 +429,9 @@ pub fn entries() -> Vec<Entry> {
         },
         Entry {
             id: "snake",
+            name: "Snake",
+            solo: true,
+            watch_bot: "mcts-eval",
             summary: "Snake (single-player) — play it, or watch an MCTS bot",
             opts: SNAKE_OPTS,
             make: Box::new(|o| {
@@ -431,37 +475,49 @@ fn make_solo<G: game_core::GameUi + Sync + 'static>(
         };
         Some(parse(&spec, o)?(seed))
     };
-    let human = if bot.is_some() { usize::MAX } else { 0 };
+    let human = if bot.is_some() { None } else { Some(0) };
     Ok(TypedMatch::new(game, vec![bot], human, seed).boxed())
 }
 
-fn g2048_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<g2048::G2048>, String> {
+/// The `mcts|mcts-eval` parser the single-player games share; `with_eval`
+/// builds the eval-guided variant from `(sims, depth)`.
+fn mcts_solo_bot<G: Game + 'static>(
+    spec: &BotSpec,
+    default_depth: u32,
+    with_eval: fn(u32, u32) -> BoxedAgent<G>,
+    game_name: &str,
+) -> Result<BotBuilder<G>, String> {
     let sims: u32 = spec.opts.get("sims", 200)?;
     Ok(match spec.name.as_str() {
-        "mcts" => Box::new(move |_| Box::new(Mcts::new(sims)) as BoxedAgent<g2048::G2048>),
+        "mcts" => Box::new(move |_| Box::new(Mcts::new(sims)) as BoxedAgent<G>),
         "mcts-eval" => {
-            let depth: u32 = spec.opts.get("depth", 8)?;
-            Box::new(move |_| {
-                Box::new(Mcts::with_eval(sims, g2048::Heuristic2048, depth))
-                    as BoxedAgent<g2048::G2048>
-            })
+            let depth: u32 = spec.opts.get("depth", default_depth)?;
+            Box::new(move |_| with_eval(sims, depth))
         }
-        other => return Err(format!("unknown 2048 bot '{other}' (mcts|mcts-eval)")),
+        other => {
+            return Err(format!(
+                "unknown {game_name} bot '{other}' (mcts|mcts-eval)"
+            ));
+        }
     })
 }
 
+fn g2048_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<g2048::G2048>, String> {
+    mcts_solo_bot(
+        spec,
+        8,
+        |sims, depth| Box::new(Mcts::with_eval(sims, g2048::Heuristic2048, depth)),
+        "2048",
+    )
+}
+
 fn snake_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<snake::Snake>, String> {
-    let sims: u32 = spec.opts.get("sims", 200)?;
-    Ok(match spec.name.as_str() {
-        "mcts" => Box::new(move |_| Box::new(Mcts::new(sims)) as BoxedAgent<snake::Snake>),
-        "mcts-eval" => {
-            let depth: u32 = spec.opts.get("depth", 12)?;
-            Box::new(move |_| {
-                Box::new(Mcts::with_eval(sims, snake::SnakeEval, depth)) as BoxedAgent<snake::Snake>
-            })
-        }
-        other => return Err(format!("unknown snake bot '{other}' (mcts|mcts-eval)")),
-    })
+    mcts_solo_bot(
+        spec,
+        12,
+        |sims, depth| Box::new(Mcts::with_eval(sims, snake::SnakeEval, depth)),
+        "snake",
+    )
 }
 
 /// Shares the net (compare builders clone it per game) and runs a fresh PUCT
@@ -546,7 +602,7 @@ fn make_twentyone(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
     let game = TwentyOne::new(hearts);
     let bots: Vec<Option<Box<dyn Agent<TwentyOne>>>> = (0..2)
         .map(|p| {
-            if p == seat {
+            if Some(p) == seat {
                 None
             } else {
                 Some(Box::new(SolverBot(solver.clone())) as Box<dyn Agent<TwentyOne>>)
@@ -604,41 +660,53 @@ fn chess_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<chess::Chess>, Stri
     })
 }
 
-fn othello_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<othello::Othello>, String> {
+/// The `alphabeta|mcts` parser the perfect-information games share; `ab`
+/// builds the game's alpha-beta from a depth.
+fn ab_or_mcts_bot<G: Game + 'static>(
+    spec: &BotSpec,
+    default_depth: u32,
+    ab: fn(u32) -> BoxedAgent<G>,
+    game_name: &str,
+) -> Result<BotBuilder<G>, String> {
     Ok(match spec.name.as_str() {
         "alphabeta" => {
-            let depth: u32 = spec.opts.get("depth", 6)?;
-            Box::new(move |_| {
-                Box::new(AlphaBeta::new(
-                    depth,
-                    othello::OthelloEval,
-                    othello::OthelloSpec,
-                )) as BoxedAgent<othello::Othello>
-            })
+            let depth: u32 = spec.opts.get("depth", default_depth)?;
+            Box::new(move |_| ab(depth))
         }
         "mcts" => {
             let sims: u32 = spec.opts.get("sims", 2000)?;
-            Box::new(move |_| Box::new(Mcts::new(sims)) as BoxedAgent<othello::Othello>)
+            Box::new(move |_| Box::new(Mcts::new(sims)) as BoxedAgent<G>)
         }
-        other => return Err(format!("unknown othello bot '{other}' (alphabeta|mcts)")),
+        other => {
+            return Err(format!(
+                "unknown {game_name} bot '{other}' (alphabeta|mcts)"
+            ));
+        }
     })
 }
 
+fn othello_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<othello::Othello>, String> {
+    ab_or_mcts_bot(
+        spec,
+        6,
+        |d| {
+            Box::new(AlphaBeta::new(
+                d,
+                othello::OthelloEval,
+                othello::OthelloSpec,
+            ))
+        },
+        "othello",
+    )
+}
+
 fn connect4_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<connect4::Connect4>, String> {
-    Ok(match spec.name.as_str() {
-        "alphabeta" => {
-            let depth: u32 = spec.opts.get("depth", 9)?;
-            Box::new(move |_| {
-                Box::new(AlphaBeta::new(depth, connect4::Connect4Eval, NoSpec))
-                    as BoxedAgent<connect4::Connect4>
-            })
-        }
-        "mcts" => {
-            let sims: u32 = spec.opts.get("sims", 2000)?;
-            Box::new(move |_| Box::new(Mcts::new(sims)) as BoxedAgent<connect4::Connect4>)
-        }
-        other => return Err(format!("unknown connect4 bot '{other}' (alphabeta|mcts)")),
-    })
+    ab_or_mcts_bot(
+        spec,
+        9,
+        |d| Box::new(AlphaBeta::new(d, connect4::Connect4Eval, NoSpec)),
+        "connect4",
+    )
 }
 
 fn go_bot(spec: &BotSpec, o: &Opts) -> Result<BotBuilder<go::Go>, String> {
@@ -692,7 +760,7 @@ fn default_seed() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .subsec_nanos() as u64
+        .as_nanos() as u64
         | 1
 }
 

@@ -21,6 +21,19 @@ pub struct BotSpec {
     pub opts: Opts,
 }
 
+/// Parses a spec, builds its bot, and rejects spec options the parser never
+/// read — `alphabeta:depht=7` must error, not silently run the default.
+fn parse_bot<G: Game>(
+    text: &str,
+    parse: BotParser<G>,
+    opts: &Opts,
+) -> Result<BotBuilder<G>, String> {
+    let spec = parse_spec(text)?;
+    let builder = parse(&spec, opts)?;
+    spec.opts.ensure_consumed(&format!("bot '{text}'"))?;
+    Ok(builder)
+}
+
 pub fn parse_spec(s: &str) -> Result<BotSpec, String> {
     let (name, rest) = match s.split_once(':') {
         Some((n, r)) => (n, Some(r)),
@@ -225,9 +238,10 @@ pub fn run_pairs<G: Game + Sync>(
     seed: u64,
     pairs: std::ops::Range<u64>,
 ) -> Result<(u64, u64, u64), String> {
-    let a = parse(&parse_spec(a)?, opts)?;
-    let b = parse(&parse_spec(b)?, opts)?;
+    let a = parse_bot(a, parse, opts)?;
+    let b = parse_bot(b, parse, opts)?;
     let open = opts.get("open", default_open)?;
+    opts.ensure_consumed("pairs")?;
     Ok(play_pairs(game, &a, &b, open, seed, pairs))
 }
 
@@ -242,8 +256,9 @@ pub fn run_field<G: Game + Sync>(
     seed: u64,
     games: std::ops::Range<u64>,
 ) -> Result<(u64, u64), String> {
-    let a = parse(&parse_spec(a)?, opts)?;
-    let b = parse(&parse_spec(b)?, opts)?;
+    let a = parse_bot(a, parse, opts)?;
+    let b = parse_bot(b, parse, opts)?;
+    opts.ensure_consumed("field games")?;
     let mut wins = 0u64;
     let mut losses = 0u64;
     for g in games {
@@ -264,9 +279,10 @@ pub fn head_to_head<G: Game + Sync>(
     default_open: u64,
     parse: BotParser<G>,
 ) -> Result<(), String> {
-    let a = parse(&parse_spec(&args.a)?, &args.opts)?;
-    let b = parse(&parse_spec(&args.b)?, &args.opts)?;
+    let a = parse_bot(&args.a, parse, &args.opts)?;
+    let b = parse_bot(&args.b, parse, &args.opts)?;
     let open = args.opts.get("open", default_open)?;
+    args.opts.ensure_consumed("compare")?;
     let mut sprt = Sprt::new(args.elo0, args.elo1, args.alpha, args.beta);
     let max_pairs = (args.max_games / 2).max(1);
     let batch_pairs = (args.batch / 2).max(1);
@@ -340,8 +356,9 @@ pub fn vs_field<G: Game + Sync>(
     args: &CompareArgs,
     parse: BotParser<G>,
 ) -> Result<(), String> {
-    let a = parse(&parse_spec(&args.a)?, &args.opts)?;
-    let b = parse(&parse_spec(&args.b)?, &args.opts)?;
+    let a = parse_bot(&args.a, parse, &args.opts)?;
+    let b = parse_bot(&args.b, parse, &args.opts)?;
+    args.opts.ensure_consumed("compare")?;
     let n = game.num_players();
     let p0 = 1.0 / n as f64;
     let p1 = (p0 + args.delta).min(1.0 - 1e-6);
@@ -445,8 +462,9 @@ pub fn round_robin<G: Game + Sync>(
     let builders: Vec<BotBuilder<G>> = args
         .bots
         .iter()
-        .map(|s| parse(&parse_spec(s)?, &args.opts))
+        .map(|s| parse_bot(s, parse, &args.opts))
         .collect::<Result<_, _>>()?;
+    args.opts.ensure_consumed("tourney")?;
     let n = builders.len();
     let pairs_per = (args.games / 2).max(1);
     let mut records = vec![vec![(0u64, 0u64, 0u64); n]; n];
