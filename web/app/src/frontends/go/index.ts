@@ -20,6 +20,17 @@ interface GoView {
   komi: number;
 }
 
+function parseView(data: unknown): GoView | null {
+  if (!data || typeof data !== 'object') return null;
+  const v = data as GoView;
+  return typeof v.size === 'number' &&
+    typeof v.cells === 'string' &&
+    v.cells.length === v.size * v.size &&
+    Array.isArray(v.captures)
+    ? v
+    : null;
+}
+
 interface GoMoveData {
   move: string;
   seat: number;
@@ -363,7 +374,7 @@ class GoFrontend implements GameFrontend {
   }
 
   render(state: ViewState): void {
-    const v = state.viewData as GoView | null;
+    const v = parseView(state.viewData);
     if (!v) return;
     if (v.size !== this.size) this.buildBoard(v.size);
     this.view = v;
@@ -390,7 +401,7 @@ class GoFrontend implements GameFrontend {
   async animate(event: MatchEventData, after: ViewState): Promise<void> {
     const d = (event.data ?? null) as GoMoveData | null;
     const scale = this.ctx.animationScale();
-    const v = after.viewData as GoView | null;
+    const v = parseView(after.viewData);
     if (v && v.size !== this.size) this.buildBoard(v.size);
     if (d && typeof d.point === 'number') {
       this.lastMove = d.point;

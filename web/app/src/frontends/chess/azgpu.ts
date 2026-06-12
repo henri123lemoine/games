@@ -147,6 +147,17 @@ export class AzGpu {
   private stagePol!: GPUBuffer;
   private stageVal!: GPUBuffer;
   private batch = 0;
+  /** Serializes `forward`: the uniform and staging buffers are shared. */
+  private queue: Promise<unknown> = Promise.resolve();
+
+  /** The device's loss signal — callers drop cached instances on it. */
+  get lost(): Promise<GPUDeviceLostInfo> {
+    return this.dev.lost;
+  }
+
+  destroy(): void {
+    this.dev.destroy();
+  }
 
   static async init(modelBuf: ArrayBuffer): Promise<AzGpu> {
     const g = new AzGpu();
@@ -273,7 +284,16 @@ export class AzGpu {
   }
 
   /** planes `[B × 18·64]` → square-major logits `[B × 4672]` and values `[B]`. */
-  async forward(
+  forward(
+    planes: Float32Array<ArrayBuffer>,
+    B: number,
+  ): Promise<{ logits: Float32Array; values: Float32Array }> {
+    const run = this.queue.then(() => this.forwardNow(planes, B));
+    this.queue = run.catch(() => {});
+    return run;
+  }
+
+  private async forwardNow(
     planes: Float32Array<ArrayBuffer>,
     B: number,
   ): Promise<{ logits: Float32Array; values: Float32Array }> {
@@ -298,12 +318,26 @@ export class AzGpu {
     enc.copyBufferToBuffer(this.v1out, 0, this.stageVal, 0, B * 4);
     this.dev.queue.submit([enc.finish()]);
 
-    await this.stagePol.mapAsync(GPUMapMode.READ, 0, B * 73 * 64 * 4);
-    await this.stageVal.mapAsync(GPUMapMode.READ, 0, B * 4);
-    const polCM = new Float32Array(this.stagePol.getMappedRange(0, B * 73 * 64 * 4).slice(0));
-    const values = new Float32Array(this.stageVal.getMappedRange(0, B * 4).slice(0));
-    this.stagePol.unmap();
-    this.stageVal.unmap();
+    try {
+      await Promise.all([
+        this.stagePol.mapAsync(GPUMapMode.READ, 0, B * 73 * 64 * 4),
+        this.stageVal.mapAsync(GPUMapMode.READ, 0, B * 4),
+      ]);
+    } catch (e) {
+      // unmap aborts a pending map, so a failed pair never bricks the buffers.
+      this.stagePol.unmap();
+      this.stageVal.unmap();
+      throw e;
+    }
+    let polCM: Float32Array;
+    let values: Float32Array;
+    try {
+      polCM = new Float32Array(this.stagePol.getMappedRange(0, B * 73 * 64 * 4).slice(0));
+      values = new Float32Array(this.stageVal.getMappedRange(0, B * 4).slice(0));
+    } finally {
+      this.stagePol.unmap();
+      this.stageVal.unmap();
+    }
 
     // Channel-major [73, 64] → square-major policy logits.
     const logits = new Float32Array(B * POLICY_LEN);
