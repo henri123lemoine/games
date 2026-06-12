@@ -8,6 +8,13 @@
 //
 // The game's actions are RELATIVE (left / straight / right); absolute arrow
 // keys are translated using the current heading from the view.
+//
+// Play mode is REAL-TIME: the engine stays turn-based, but once the player
+// makes their first move this frontend auto-submits `straight` on a fixed
+// clock (quickening as the snake eats), so stalling is impossible. Steering
+// inputs queue two deep — classic snake — and are consumed one per tick;
+// the clock starts on the first input and pauses while the tab is hidden.
+// Watch mode is untouched: bot moves pace themselves through `animate`.
 
 import type { MatchEventData, ViewState } from '../../engine/protocol';
 import type { FrontendCtx, GameFrontend } from '../types';
@@ -51,6 +58,7 @@ const ABS_KEYS: Record<string, Abs> = {
 };
 
 const LEFT_OF: Record<Abs, Abs> = { n: 'w', w: 's', s: 'e', e: 'n' };
+const RIGHT_OF: Record<Abs, Abs> = { n: 'e', e: 's', s: 'w', w: 'n' };
 
 const DELTA: Record<Abs, [number, number]> = {
   n: [0, -1],
@@ -76,6 +84,10 @@ const PAD: { rel: Rel; glyph: string }[] = [
 
 const MOVE_MS = 120;
 const FLASH_MS = 560;
+const TICK_BASE_MS = 180;
+const TICK_FLOOR_MS = 90;
+const TICK_RAMP_MS = 3; // shaved off the tick per food eaten
+const QUEUE_MAX = 2;
 
 const STYLE = `
 .snake {
@@ -177,6 +189,11 @@ class SnakeFrontend implements GameFrontend {
   private flash: { start: number; dur: number } | null = null;
   private overState: 'dead' | 'win' | null = null;
   private pending: string[] | null = null;
+  private live = false;
+  private armed = false;
+  private queue: Rel[] = [];
+  private tickTimer = 0;
+  private nextTickAt = 0;
   private canvas!: HTMLCanvasElement;
   private c2d!: CanvasRenderingContext2D;
   private frameEl!: HTMLElement;
@@ -197,6 +214,7 @@ class SnakeFrontend implements GameFrontend {
 
   mount(host: HTMLElement, ctx: FrontendCtx): void {
     this.ctx = ctx;
+    this.live = ctx.humanSeat >= 0;
     injectStyle();
     host.innerHTML = `
       <div class="snake">
@@ -231,7 +249,7 @@ class SnakeFrontend implements GameFrontend {
         b.className = 'snake-btn';
         b.textContent = `${glyph} ${rel}`;
         b.disabled = true;
-        b.onclick = () => this.trySubmit(rel);
+        b.onclick = () => this.onInput(rel);
         pad.append(b);
         this.padBtns.set(rel, b);
       }
@@ -240,6 +258,7 @@ class SnakeFrontend implements GameFrontend {
     this.resizeObs = new ResizeObserver(() => this.layout());
     this.resizeObs.observe(this.frameEl);
     window.addEventListener('keydown', this.onKey);
+    document.addEventListener('visibilitychange', this.onVisibility);
     this.rafId = requestAnimationFrame(this.loop);
   }
 
@@ -250,8 +269,11 @@ class SnakeFrontend implements GameFrontend {
     this.tween = null;
     this.layout();
     this.updateStats(v);
+    if (state.isOver) {
+      this.overState = v.status === 'won' ? 'win' : 'dead';
+      clearTimeout(this.tickTimer);
+    }
     if (state.toAct !== state.humanSeat) this.setPending(null);
-    if (state.isOver) this.overState = v.status === 'won' ? 'win' : 'dead';
   }
 
   async animate(event: MatchEventData, after: ViewState): Promise<void> {
@@ -263,9 +285,10 @@ class SnakeFrontend implements GameFrontend {
     this.layout();
     this.updateStats(v);
     const scale = this.ctx.animationScale();
-    if (scale > 0 && prev) {
-      this.tween = { from: prev, start: performance.now(), dur: MOVE_MS * scale };
-      await sleep(MOVE_MS * scale);
+    const dur = this.live ? Math.min(MOVE_MS * scale, this.tickMs() * 0.8) : MOVE_MS * scale;
+    if (dur > 0 && prev) {
+      this.tween = { from: prev, start: performance.now(), dur };
+      await sleep(dur);
     }
     if (after.isOver) {
       this.overState = v.status === 'won' ? 'win' : 'dead';
@@ -278,11 +301,14 @@ class SnakeFrontend implements GameFrontend {
 
   promptAction(labels: string[]): void {
     this.setPending(labels);
+    if (this.live && this.armed) this.scheduleTick();
   }
 
   unmount(): void {
     cancelAnimationFrame(this.rafId);
+    clearTimeout(this.tickTimer);
     window.removeEventListener('keydown', this.onKey);
+    document.removeEventListener('visibilitychange', this.onVisibility);
     this.resizeObs?.disconnect();
     this.resizeObs = null;
   }
@@ -295,11 +321,54 @@ class SnakeFrontend implements GameFrontend {
     if (!abs) return;
     e.preventDefault();
     if (!this.view) return;
-    const rel = relativeOf(this.view.dir, abs);
-    if (rel) this.trySubmit(rel);
+    const rel = relativeOf(this.predictedDir(), abs);
+    if (rel) this.onInput(rel);
   };
 
-  private trySubmit(rel: Rel): void {
+  /** Heading the snake will have once the queued turns are consumed —
+   * arrow keys pressed mid-queue must resolve against it, not the view. */
+  private predictedDir(): Abs {
+    let d = this.view!.dir;
+    for (const r of this.queue) d = r === 'left' ? LEFT_OF[d] : r === 'right' ? RIGHT_OF[d] : d;
+    return d;
+  }
+
+  private onInput(rel: Rel): void {
+    if (!this.live || this.overState) return;
+    if (!this.armed) {
+      if (!this.pending) return;
+      this.armed = true;
+      this.nextTickAt = performance.now() + this.tickMs();
+      this.submitRel(rel);
+      return;
+    }
+    if (rel !== 'straight' && this.queue.length < QUEUE_MAX) this.queue.push(rel);
+  }
+
+  private scheduleTick(): void {
+    clearTimeout(this.tickTimer);
+    const delay = Math.max(0, this.nextTickAt - performance.now());
+    this.tickTimer = window.setTimeout(() => this.tick(), delay);
+  }
+
+  private tick(): void {
+    if (!this.pending || document.hidden) return;
+    this.nextTickAt = performance.now() + this.tickMs();
+    this.submitRel(this.queue.shift() ?? 'straight');
+  }
+
+  private tickMs(): number {
+    const eaten = Math.max(0, (this.view?.score ?? 3) - 3);
+    return Math.max(TICK_FLOOR_MS, TICK_BASE_MS - TICK_RAMP_MS * eaten);
+  }
+
+  private onVisibility = (): void => {
+    if (document.hidden || !this.live || !this.armed || !this.pending) return;
+    this.nextTickAt = performance.now() + this.tickMs();
+    this.scheduleTick();
+  };
+
+  private submitRel(rel: Rel): void {
     if (!this.pending) return;
     const i = this.pending.indexOf(rel);
     if (i < 0) return;
@@ -309,7 +378,9 @@ class SnakeFrontend implements GameFrontend {
 
   private setPending(labels: string[] | null): void {
     this.pending = labels;
-    for (const [rel, btn] of this.padBtns) btn.disabled = !labels || !labels.includes(rel);
+    const running = this.armed && !this.overState;
+    for (const [rel, btn] of this.padBtns)
+      btn.disabled = running ? false : !labels || !labels.includes(rel);
   }
 
   private updateStats(v: SnakeView): void {
@@ -445,6 +516,21 @@ class SnakeFrontend implements GameFrontend {
       g.fill();
     }
     g.restore();
+
+    if (this.live && !this.armed && !this.overState) {
+      g.save();
+      g.fillStyle = 'rgba(1, 4, 9, 0.55)';
+      g.fillRect(0, 0, W, H);
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillStyle = 'rgba(230, 237, 243, 0.92)';
+      g.font = `600 ${Math.round(cell * 0.5)}px system-ui, sans-serif`;
+      g.fillText('press an arrow to start', W / 2, H / 2 - cell * 1.6);
+      g.fillStyle = 'rgba(230, 237, 243, 0.55)';
+      g.font = `${Math.round(cell * 0.36)}px system-ui, sans-serif`;
+      g.fillText("it won't wait for you", W / 2, H / 2 - cell * 0.85);
+      g.restore();
+    }
 
     const flash = this.flash;
     if (flash) {
