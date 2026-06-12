@@ -3,7 +3,8 @@
 //! policy head (logits ordered `square·73 + plane`, matching
 //! [`chess::encode::az_move_index`]) and the tanh value head. Plain fp32
 //! loops — built for correctness and wasm portability, not speed; the
-//! browser's WebGPU path must agree with this to ~1e-4.
+//! browser's WebGPU path and the tch export check (`azt verify-export`)
+//! must agree with this to 1e-3.
 
 use chess::encode::{AZ_POLICY_LEN, PLANE_COUNT};
 
@@ -46,10 +47,10 @@ struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     fn floats(&mut self, n: usize) -> Result<Vec<f32>, String> {
-        let bytes = n * 4;
-        if self.pos + bytes > self.data.len() {
-            return Err(format!("truncated export at offset {}", self.pos));
-        }
+        let bytes = n
+            .checked_mul(4)
+            .filter(|b| self.data.len() - self.pos >= *b)
+            .ok_or_else(|| format!("truncated export at offset {}", self.pos))?;
         let out = self.data[self.pos..self.pos + bytes]
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
@@ -66,6 +67,9 @@ impl Model {
         }
         let u32_at = |i: usize| u32::from_le_bytes(data[i..i + 4].try_into().unwrap()) as usize;
         let (blocks, c) = (u32_at(8), u32_at(12));
+        if blocks == 0 || blocks > 64 || c == 0 || c > 1024 {
+            return Err(format!("implausible architecture {blocks}x{c}"));
+        }
         let mut r = Reader { data, pos: 16 };
         let mut conv = |c_in: usize, c_out: usize, k: usize| -> Result<Conv, String> {
             Ok(Conv {
@@ -146,15 +150,7 @@ impl Model {
                 let (logits, value) = self.forward(&r.features);
                 let mut priors: Vec<f32> =
                     r.support.iter().map(|&s| logits[usize::from(s)]).collect();
-                let max = priors.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                let mut sum = 0.0;
-                for q in &mut priors {
-                    *q = (*q - max).exp();
-                    sum += *q;
-                }
-                for q in &mut priors {
-                    *q /= sum;
-                }
+                crate::softmax(&mut priors);
                 EvalResult { priors, value }
             })
             .collect()

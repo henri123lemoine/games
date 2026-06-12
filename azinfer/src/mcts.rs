@@ -102,30 +102,43 @@ impl Search {
     }
 }
 
+/// Drives `search` to its visit budget against a synchronous evaluator —
+/// the advance/evaluate loop every non-batched caller writes.
+pub fn run_to_done(
+    search: &mut Search,
+    board: &Board,
+    history: &HashMap<u64, u8>,
+    cfg: &MctsConfig,
+    rng: &mut Rng,
+    mut eval: impl FnMut(&[crate::EvalRequest]) -> Vec<crate::EvalResult>,
+) {
+    let mut results = Vec::new();
+    while let Gather::Requests(reqs) =
+        search.advance(board, history, cfg, rng, std::mem::take(&mut results))
+    {
+        results = eval(&reqs);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{EvalResult, argmax};
     use chess::legal_moves;
 
+    fn uniform_net(reqs: &[crate::EvalRequest]) -> Vec<EvalResult> {
+        reqs.iter()
+            .map(|r| EvalResult {
+                priors: vec![1.0 / r.support.len() as f32; r.support.len()],
+                value: 0.0,
+            })
+            .collect()
+    }
+
     fn drive_with_uniform_net(board: &Board, cfg: &MctsConfig, rng: &mut Rng) -> Search {
         let mut search = Search::new(None);
-        let history = HashMap::new();
-        let mut results: Vec<EvalResult> = Vec::new();
-        loop {
-            match search.advance(board, &history, cfg, rng, std::mem::take(&mut results)) {
-                Gather::Requests(reqs) => {
-                    results = reqs
-                        .iter()
-                        .map(|r| EvalResult {
-                            priors: vec![1.0 / r.support.len() as f32; r.support.len()],
-                            value: 0.0,
-                        })
-                        .collect();
-                }
-                Gather::Done => return search,
-            }
-        }
+        run_to_done(&mut search, board, &HashMap::new(), cfg, rng, uniform_net);
+        search
     }
 
     #[test]
@@ -164,20 +177,29 @@ mod tests {
             }
         }
         let mut search = Search::new(None);
-        let mut results: Vec<EvalResult> = Vec::new();
-        while let Gather::Requests(reqs) =
-            search.advance(&b, &history, &cfg, &mut rng, std::mem::take(&mut results))
-        {
-            results = reqs
-                .iter()
-                .map(|r| EvalResult {
-                    priors: vec![1.0 / r.support.len() as f32; r.support.len()],
-                    value: 0.0,
-                })
-                .collect();
-        }
+        run_to_done(&mut search, &b, &history, &cfg, &mut rng, uniform_net);
         let best = search.root_moves()[argmax(search.root_visits())];
         assert_eq!(best, "e1e8".parse().unwrap());
+    }
+
+    #[test]
+    fn threefold_seen_through_realistic_halfmove_clocks() {
+        // A real repetition recurs at ever-higher halfmove clocks. Shuffle
+        // knights out and back: the position must count as repeated even
+        // though the clock differs, or threefold detection never fires.
+        let mut b = Board::start();
+        let mut history: HashMap<u64, u8> = HashMap::new();
+        history.insert(b.key(), 1);
+        for uci in ["g1f3", "g8f6", "f3g1", "f6g8"] {
+            b.apply(uci.parse().unwrap());
+            *history.entry(b.key()).or_insert(0) += 1;
+        }
+        assert_eq!(
+            history.get(&Board::start().key()),
+            Some(&2),
+            "the start position recurred despite a higher clock"
+        );
+        assert_eq!(b.halfmove, 4, "the shuffle advanced the clock");
     }
 
     #[test]

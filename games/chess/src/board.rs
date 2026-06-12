@@ -124,7 +124,7 @@ impl FromStr for Move {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.len() != 4 && s.len() != 5 {
+        if !s.is_ascii() || (s.len() != 4 && s.len() != 5) {
             return Err(format!("bad move '{s}': expected UCI like e2e4 or e7e8q"));
         }
         let from = parse_square(&s[0..2]).ok_or_else(|| format!("bad from-square in '{s}'"))?;
@@ -531,12 +531,23 @@ impl Board {
         minors <= 1
     }
 
-    /// 64-bit hash of the full position: placement, side to move, castling
-    /// rights, en-passant square, and the halfmove clock. The clock must be
-    /// in the key because terminality (the 50-move rule) depends on it — the
-    /// same placement one ply from the draw and at clock zero have different
-    /// game values, and the search's transposition table keys on this hash.
-    /// (The cost is fewer TT hits across lines that differ only in clock.)
+    /// Whether the side to move has a pawn placed to capture en passant.
+    pub fn ep_capturable(&self) -> bool {
+        self.ep.is_some_and(|ep| {
+            self.any_piece_on(
+                PAWN_ATTACKERS[self.stm.index()][ep as usize],
+                (self.stm, Piece::Pawn),
+            )
+        })
+    }
+
+    /// 64-bit position-identity hash: placement, side to move, castling
+    /// rights, and the en-passant square *when a capture is actually
+    /// available* (so positions differing only in a dead ep square repeat).
+    /// Deliberately excludes the halfmove clock — this key counts
+    /// repetitions, and genuine repetitions recur at ever-higher clocks.
+    /// Value-equivalence keys (the search TT) must mix the clock in on top:
+    /// see `Chess::state_key`.
     pub fn key(&self) -> u64 {
         let mut h = 0u64;
         for (sq, cell) in self.squares.iter().enumerate() {
@@ -548,10 +559,11 @@ impl Board {
             h ^= splitmix64(0x1000);
         }
         h ^= splitmix64(0x2000 + self.castling as u64);
-        if let Some(ep) = self.ep {
+        if let Some(ep) = self.ep
+            && self.ep_capturable()
+        {
             h ^= splitmix64(0x3000 + ep as u64);
         }
-        h ^= splitmix64(0x4000 + self.halfmove as u64);
         h
     }
 }

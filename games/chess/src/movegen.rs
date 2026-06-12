@@ -55,6 +55,13 @@ pub fn legal_moves(board: &Board) -> Vec<Move> {
         .collect()
 }
 
+/// Early-exit mate/stalemate probe: stops at the first legal move instead of
+/// generating them all.
+pub fn has_legal_move(board: &Board) -> bool {
+    let in_check = board.in_check(board.stm);
+    visit(board, false, &mut |m| is_legal(board, m, in_check))
+}
+
 fn is_legal(board: &Board, m: Move, in_check: bool) -> bool {
     let us = board.stm;
     let (_, piece) = board.squares[m.from as usize].expect("move from empty square");
@@ -116,6 +123,16 @@ fn uncovers_king(board: &Board, m: Move) -> bool {
 
 fn generate(board: &Board, captures_only: bool) -> Vec<Move> {
     let mut moves = Vec::with_capacity(48);
+    visit(board, captures_only, &mut |m| {
+        moves.push(m);
+        false
+    });
+    moves
+}
+
+/// Feeds every pseudo-legal move (in the stable generation order) to `emit`
+/// until it returns `true`; returns whether emission was stopped.
+fn visit(board: &Board, captures_only: bool, emit: &mut impl FnMut(Move) -> bool) -> bool {
     let us = board.stm;
     for from in 0..64u8 {
         let Some((color, piece)) = board.squares[from as usize] else {
@@ -124,15 +141,15 @@ fn generate(board: &Board, captures_only: bool) -> Vec<Move> {
         if color != us {
             continue;
         }
-        match piece {
-            Piece::Pawn => gen_pawn(board, from, us, captures_only, &mut moves),
+        let stopped = match piece {
+            Piece::Pawn => gen_pawn(board, from, us, captures_only, emit),
             Piece::Knight => gen_leaper(
                 board,
                 us,
                 &KNIGHT_TARGETS[from as usize],
                 from,
                 captures_only,
-                &mut moves,
+                emit,
             ),
             Piece::King => {
                 gen_leaper(
@@ -141,42 +158,48 @@ fn generate(board: &Board, captures_only: bool) -> Vec<Move> {
                     &KING_TARGETS[from as usize],
                     from,
                     captures_only,
-                    &mut moves,
-                );
-                if !captures_only {
-                    gen_castles(board, us, &mut moves);
-                }
+                    emit,
+                ) || (!captures_only && gen_castles(board, us, emit))
             }
-            Piece::Bishop => gen_slider(board, from, us, &DIAG_RAYS, captures_only, &mut moves),
-            Piece::Rook => gen_slider(board, from, us, &ORTHO_RAYS, captures_only, &mut moves),
+            Piece::Bishop => gen_slider(board, from, us, &DIAG_RAYS, captures_only, emit),
+            Piece::Rook => gen_slider(board, from, us, &ORTHO_RAYS, captures_only, emit),
             Piece::Queen => {
-                gen_slider(board, from, us, &ORTHO_RAYS, captures_only, &mut moves);
-                gen_slider(board, from, us, &DIAG_RAYS, captures_only, &mut moves);
+                gen_slider(board, from, us, &ORTHO_RAYS, captures_only, emit)
+                    || gen_slider(board, from, us, &DIAG_RAYS, captures_only, emit)
             }
+        };
+        if stopped {
+            return true;
         }
     }
-    moves
+    false
 }
 
-fn push_pawn_move(from: u8, to: u8, promotes: bool, moves: &mut Vec<Move>) {
+fn push_pawn_move(from: u8, to: u8, promotes: bool, emit: &mut impl FnMut(Move) -> bool) -> bool {
     if promotes {
-        for p in PROMO_PIECES {
-            moves.push(Move {
+        PROMO_PIECES.iter().any(|&p| {
+            emit(Move {
                 from,
                 to,
                 promo: Some(p),
-            });
-        }
+            })
+        })
     } else {
-        moves.push(Move {
+        emit(Move {
             from,
             to,
             promo: None,
-        });
+        })
     }
 }
 
-fn gen_pawn(board: &Board, from: u8, us: Color, captures_only: bool, moves: &mut Vec<Move>) {
+fn gen_pawn(
+    board: &Board,
+    from: u8,
+    us: Color,
+    captures_only: bool,
+    emit: &mut impl FnMut(Move) -> bool,
+) -> bool {
     let f = (from % 8) as i8;
     let r = (from / 8) as i8;
     let (dir, start_rank, promo_rank): (i8, i8, i8) = match us {
@@ -188,39 +211,40 @@ fn gen_pawn(board: &Board, from: u8, us: Color, captures_only: bool, moves: &mut
         && board.squares[one as usize].is_none()
     {
         let promotes = r + dir == promo_rank;
-        if promotes || !captures_only {
-            push_pawn_move(from, one, promotes, moves);
+        if (promotes || !captures_only) && push_pawn_move(from, one, promotes, emit) {
+            return true;
         }
         if !captures_only
             && r == start_rank
             && let Some(two) = square_at(f, r + 2 * dir)
             && board.squares[two as usize].is_none()
-        {
-            moves.push(Move {
+            && emit(Move {
                 from,
                 to: two,
                 promo: None,
-            });
+            })
+        {
+            return true;
         }
     }
 
     for df in [-1, 1] {
         if let Some(to) = square_at(f + df, r + dir) {
-            match board.squares[to as usize] {
-                Some((c, _)) if c != us => {
-                    push_pawn_move(from, to, r + dir == promo_rank, moves);
-                }
-                None if board.ep == Some(to) => {
-                    moves.push(Move {
-                        from,
-                        to,
-                        promo: None,
-                    });
-                }
-                _ => {}
+            let stopped = match board.squares[to as usize] {
+                Some((c, _)) if c != us => push_pawn_move(from, to, r + dir == promo_rank, emit),
+                None if board.ep == Some(to) => emit(Move {
+                    from,
+                    to,
+                    promo: None,
+                }),
+                _ => false,
+            };
+            if stopped {
+                return true;
             }
         }
     }
+    false
 }
 
 fn gen_leaper(
@@ -229,24 +253,24 @@ fn gen_leaper(
     targets: &Targets,
     from: u8,
     captures_only: bool,
-    moves: &mut Vec<Move>,
-) {
+    emit: &mut impl FnMut(Move) -> bool,
+) -> bool {
     for &to in &targets.sq[..targets.len as usize] {
-        match board.squares[to as usize] {
-            Some((c, _)) if c == us => {}
-            Some(_) => moves.push(Move {
+        let movable = match board.squares[to as usize] {
+            Some((c, _)) => c != us,
+            None => !captures_only,
+        };
+        if movable
+            && emit(Move {
                 from,
                 to,
                 promo: None,
-            }),
-            None if !captures_only => moves.push(Move {
-                from,
-                to,
-                promo: None,
-            }),
-            None => {}
+            })
+        {
+            return true;
         }
     }
+    false
 }
 
 fn gen_slider(
@@ -255,8 +279,8 @@ fn gen_slider(
     us: Color,
     rays: &[usize; 4],
     captures_only: bool,
-    moves: &mut Vec<Move>,
-) {
+    emit: &mut impl FnMut(Move) -> bool,
+) -> bool {
     for &d in rays {
         let mut s = from as i32;
         for _ in 0..RAY_LEN[from as usize][d] {
@@ -264,30 +288,35 @@ fn gen_slider(
             let to = s as u8;
             match board.squares[s as usize] {
                 Some((c, _)) => {
-                    if c != us {
-                        moves.push(Move {
+                    if c != us
+                        && emit(Move {
                             from,
                             to,
                             promo: None,
-                        });
+                        })
+                    {
+                        return true;
                     }
                     break;
                 }
                 None => {
-                    if !captures_only {
-                        moves.push(Move {
+                    if !captures_only
+                        && emit(Move {
                             from,
                             to,
                             promo: None,
-                        });
+                        })
+                    {
+                        return true;
                     }
                 }
             }
         }
     }
+    false
 }
 
-fn gen_castles(board: &Board, us: Color, moves: &mut Vec<Move>) {
+fn gen_castles(board: &Board, us: Color, emit: &mut impl FnMut(Move) -> bool) -> bool {
     let (king_sq, ks_right, qs_right) = match us {
         Color::White => (4u8, CASTLE_WK, CASTLE_WQ),
         Color::Black => (60u8, CASTLE_BK, CASTLE_BQ),
@@ -302,12 +331,13 @@ fn gen_castles(board: &Board, us: Color, moves: &mut Vec<Move>) {
         && !board.is_attacked(king_sq, them)
         && !board.is_attacked(king_sq + 1, them)
         && !board.is_attacked(king_sq + 2, them)
-    {
-        moves.push(Move {
+        && emit(Move {
             from: king_sq,
             to: king_sq + 2,
             promo: None,
-        });
+        })
+    {
+        return true;
     }
 
     if board.castling & qs_right != 0
@@ -318,13 +348,15 @@ fn gen_castles(board: &Board, us: Color, moves: &mut Vec<Move>) {
         && !board.is_attacked(king_sq, them)
         && !board.is_attacked(king_sq - 1, them)
         && !board.is_attacked(king_sq - 2, them)
-    {
-        moves.push(Move {
+        && emit(Move {
             from: king_sq,
             to: king_sq - 2,
             promo: None,
-        });
+        })
+    {
+        return true;
     }
+    false
 }
 
 /// Leaf-node count of the legal move tree to `depth` — the standard

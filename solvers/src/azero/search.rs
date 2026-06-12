@@ -13,7 +13,7 @@
 //!
 //! Two behaviors that started life chess-side are config, not code:
 //!
-//! * **Cycle awareness** (`cycle_draws`). A state whose [`Game::state_key`]
+//! * **Cycle awareness** (`cycle_draws`). A state whose [`Game::repetition_key`]
 //!   already occurred in the game (the caller's `seen`) or earlier on the
 //!   current descent path backs up a draw immediately — without it,
 //!   self-play in repetition games shuffles into threefold draws the tree
@@ -36,8 +36,9 @@ pub struct PuctConfig {
     pub root_noise: f32,
     /// Leaves gathered per `advance` call (virtual-loss parallelism).
     pub max_leaves: u32,
-    /// Back up a draw when a descent revisits a state (by [`Game::state_key`])
-    /// seen earlier in the game or on the current path. Game knowledge:
+    /// Back up a draw when a descent revisits a state (by
+    /// [`Game::repetition_key`]) seen earlier in the game or on the current
+    /// path. Game knowledge:
     /// enable where repetition means a draw (chess), leave off elsewhere.
     pub cycle_draws: bool,
 }
@@ -142,8 +143,8 @@ impl<G: Game> Search<G> {
 
     /// Resolves `results` (aligned with the previous `Gather::Requests`),
     /// then gathers the next batch of leaves or finishes. `seen` answers
-    /// "did this state key already occur in the game?" (only consulted when
-    /// `cycle_draws` is on; pass `&|_| false` otherwise).
+    /// "did this repetition key already occur in the game?" (only consulted
+    /// when `cycle_draws` is on; pass `&|_| false` otherwise).
     #[allow(clippy::too_many_arguments)]
     pub fn advance<E: PolicyValueEncoder<G>>(
         &mut self,
@@ -234,7 +235,7 @@ impl<G: Game> Search<G> {
             let child = self.tree.nodes[cur].child[e];
             if child >= 0 {
                 if cfg.cycle_draws
-                    && let Some(key) = game.state_key(&self.tree.nodes[child as usize].state)
+                    && let Some(key) = game.repetition_key(&self.tree.nodes[child as usize].state)
                 {
                     if seen(key) || path_keys.contains(&key) {
                         self.backup(&path, Leaf::Exact(0.0));
@@ -264,7 +265,7 @@ impl<G: Game> Search<G> {
                 }
             };
             if cfg.cycle_draws
-                && let Some(key) = game.state_key(&s)
+                && let Some(key) = game.repetition_key(&s)
             {
                 if seen(key) || path_keys.contains(&key) {
                     self.backup(&path, Leaf::Exact(0.0));
@@ -465,7 +466,7 @@ fn eval_request<G: Game, E: PolicyValueEncoder<G>>(
         .iter()
         .map(|&a| {
             let idx = enc.action_index(game, state, a);
-            debug_assert!(idx < usize::from(u16::MAX), "policy index fits u16");
+            debug_assert!(idx <= usize::from(u16::MAX), "policy index fits u16");
             idx as u16
         })
         .collect();
@@ -504,16 +505,6 @@ fn add_dirichlet<G: Game>(node: &mut Node<G>, cfg: &PuctConfig, rng: &mut Rng) {
     let noise = dirichlet(cfg.dirichlet_alpha, node.prior.len(), rng);
     for (p, n) in node.prior.iter_mut().zip(noise) {
         *p = (1.0 - cfg.root_noise) * *p + cfg.root_noise * n as f32;
-    }
-}
-
-/// Advances `s` through any chance nodes by sampling outcomes.
-#[cfg_attr(not(feature = "parallel"), allow(dead_code))]
-pub(crate) fn sample_chance<G: Game>(game: &G, s: &mut G::State, rng: &mut Rng) {
-    while !game.is_terminal(s) && matches!(game.turn(s), Turn::Chance) {
-        let outs = game.chance_outcomes(s);
-        let i = game_core::rand::sample_outcome(&outs, rng);
-        game.apply(s, outs[i].0);
     }
 }
 

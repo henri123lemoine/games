@@ -8,3 +8,16 @@ pub mod mcts;
 pub mod model;
 
 pub use solvers::azero::{EvalRequest, EvalResult, argmax};
+
+/// In-place softmax: logits → distribution.
+pub fn softmax(logits: &mut [f32]) {
+    let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let mut sum = 0.0;
+    for q in logits.iter_mut() {
+        *q = (*q - max).exp();
+        sum += *q;
+    }
+    for q in logits.iter_mut() {
+        *q /= sum;
+    }
+}

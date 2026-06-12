@@ -8,8 +8,9 @@
 use std::collections::HashMap;
 
 use chess::encode::{PLANE_COUNT, az_move_index, encode_planes};
-use chess::{Board, legal_moves};
+use chess::{Adjudication, Board, adjudicate};
 use game_core::Rng;
+use game_core::rand::sample_visits;
 use rayon::prelude::*;
 
 use crate::net::{EvalRequest, EvalResult, Infer};
@@ -234,7 +235,7 @@ impl Worker {
         }
 
         let choice = if self.plies < cfg.temp_plies {
-            sample_proportional(&visits, &mut self.rng)
+            sample_visits(&visits, &mut self.rng)
         } else {
             argmax(&visits)
         };
@@ -245,27 +246,15 @@ impl Worker {
 
         let reps = self.key_counts.entry(self.board.key()).or_insert(0);
         *reps += 1;
-        if *reps >= 3 {
-            return Some(self.finish(0.0, GameEnd::Repetition));
+        if let Some(adj) = adjudicate(&self.board, *reps) {
+            let end = match adj {
+                Adjudication::Repetition => GameEnd::Repetition,
+                _ => GameEnd::Natural,
+            };
+            return Some(self.finish(adj.white_score() as f32, end));
         }
         if self.plies >= cfg.ply_cap {
             return Some(self.finish(0.0, GameEnd::PlyCap));
-        }
-        if self.board.halfmove >= 100 || self.board.insufficient_material() {
-            return Some(self.finish(0.0, GameEnd::Natural));
-        }
-        if legal_moves(&self.board).is_empty() {
-            let z_white = if self.board.in_check(self.board.stm) {
-                // The side to move is mated; the previous mover won.
-                if self.board.stm == chess::Color::White {
-                    -1.0
-                } else {
-                    1.0
-                }
-            } else {
-                0.0
-            };
-            return Some(self.finish(z_white, GameEnd::Natural));
         }
         None
     }
@@ -418,21 +407,6 @@ pub fn expand_planes(planes: &[u64; 17], halfmove: u8, out: &mut [f32]) {
         }
     }
     out[17 * 64..].fill(f32::from(halfmove) / 100.0);
-}
-
-fn sample_proportional(visits: &[u32], rng: &mut Rng) -> usize {
-    let total: u32 = visits.iter().sum();
-    if total == 0 {
-        return 0;
-    }
-    let mut r = rng.unit() * f64::from(total);
-    for (i, &n) in visits.iter().enumerate() {
-        r -= f64::from(n);
-        if r < 0.0 {
-            return i;
-        }
-    }
-    visits.len() - 1
 }
 
 pub use azinfer::argmax;

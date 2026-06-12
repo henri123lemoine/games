@@ -4,21 +4,48 @@
 
 use crate::Rng;
 
-/// Samples an index from `(outcome, probability)` pairs — the shape of
-/// [`Game::chance_outcomes`](crate::Game::chance_outcomes). Normalizes by the
-/// total weight, so distributions need not sum to exactly 1; floating-point
-/// shortfall lands on the last index.
-pub fn sample_outcome<A>(outs: &[(A, f64)], rng: &mut Rng) -> usize {
-    debug_assert!(!outs.is_empty());
-    let total: f64 = outs.iter().map(|(_, p)| *p).sum();
+/// Samples an index proportionally to non-negative weights. Normalizes by the
+/// total, so weights need not sum to 1; floating-point shortfall lands on the
+/// last index. The one weighted sampler behind [`Rng::pick`],
+/// [`sample_outcome`], and [`sample_visits`].
+pub fn pick_weighted<I>(weights: I, rng: &mut Rng) -> usize
+where
+    I: Iterator<Item = f64> + Clone,
+{
+    let total: f64 = weights.clone().sum();
     let mut target = rng.unit() * total;
-    for (i, (_, p)) in outs.iter().enumerate() {
-        target -= p;
+    let mut last = 0;
+    for (i, w) in weights.enumerate() {
+        target -= w;
         if target < 0.0 {
             return i;
         }
+        last = i;
     }
-    outs.len() - 1
+    last
+}
+
+/// Samples an index from `(outcome, probability)` pairs — the shape of
+/// [`Game::chance_outcomes`](crate::Game::chance_outcomes).
+pub fn sample_outcome<A>(outs: &[(A, f64)], rng: &mut Rng) -> usize {
+    debug_assert!(!outs.is_empty());
+    pick_weighted(outs.iter().map(|(_, p)| *p), rng)
+}
+
+/// Samples an index proportionally to visit counts (all-zero counts fall back
+/// to the last index).
+pub fn sample_visits(visits: &[u32], rng: &mut Rng) -> usize {
+    debug_assert!(!visits.is_empty());
+    pick_weighted(visits.iter().map(|&n| f64::from(n)), rng)
+}
+
+/// Advances `state` through any chance nodes by sampling outcomes.
+pub fn step_chance<G: crate::Game>(game: &G, state: &mut G::State, rng: &mut Rng) {
+    while !game.is_terminal(state) && matches!(game.turn(state), crate::Turn::Chance) {
+        let outs = game.chance_outcomes(state);
+        let i = sample_outcome(&outs, rng);
+        game.apply(state, outs[i].0);
+    }
 }
 
 /// Standard normal via Box-Muller.

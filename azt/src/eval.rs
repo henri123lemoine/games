@@ -151,20 +151,12 @@ impl EvalGame {
 
     /// Terminal result for the net, if the game is over.
     fn result_now(&self) -> Option<f64> {
-        if self.key_counts.values().any(|&c| c >= 3) || self.plies >= PLY_CAP {
-            return Some(0.0);
+        let reps = self.key_counts.get(&self.board.key()).copied().unwrap_or(1);
+        if let Some(adj) = chess::adjudicate(&self.board, reps) {
+            let w = adj.white_score();
+            return Some(if self.net_seat == 0 { w } else { -w });
         }
-        if self.board.halfmove >= 100 || self.board.insufficient_material() {
-            return Some(0.0);
-        }
-        if legal_moves(&self.board).is_empty() {
-            if self.board.in_check(self.board.stm) {
-                let loser = self.board.stm.index();
-                return Some(if loser == self.net_seat { -1.0 } else { 1.0 });
-            }
-            return Some(0.0);
-        }
-        None
+        (self.plies >= PLY_CAP).then_some(0.0)
     }
 }
 
@@ -312,22 +304,11 @@ fn fixed_game(
     let mut keys = HashMap::new();
     keys.insert(board.key(), 1u8);
     for _ in 0..PLY_CAP {
+        let reps = keys.get(&board.key()).copied().unwrap_or(1);
+        if let Some(adj) = chess::adjudicate(&board, reps) {
+            return adj.white_score();
+        }
         let moves = legal_moves(&board);
-        if moves.is_empty() {
-            return if board.in_check(board.stm) {
-                if board.stm == chess::Color::White {
-                    -1.0
-                } else {
-                    1.0
-                }
-            } else {
-                0.0
-            };
-        }
-        if board.halfmove >= 100 || board.insufficient_material() || keys.values().any(|&c| c >= 3)
-        {
-            return 0.0;
-        }
         let stm = board.stm.index();
         let agent = if stm == 0 { white } else { black };
         let i = agent.act(game, &board, stm, rng);
@@ -345,10 +326,9 @@ fn random_opening(rng: &mut Rng) -> Board {
             if moves.is_empty() {
                 break;
             }
-            let i = ((rng.unit() * moves.len() as f64) as usize).min(moves.len() - 1);
-            b.apply(moves[i]);
+            b.apply(moves[rng.below(moves.len())]);
         }
-        if !legal_moves(&b).is_empty() && b.halfmove < 100 && !b.insufficient_material() {
+        if chess::adjudicate(&b, 1).is_none() {
             return b;
         }
     }
