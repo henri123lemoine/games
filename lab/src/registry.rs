@@ -109,10 +109,34 @@ pub struct OptSpec {
     pub key: &'static str,
     pub value: &'static str,
     pub note: &'static str,
+    /// Values of the `bot` option this option configures; empty for
+    /// game-level options that always apply. Rich clients use this to show
+    /// only the chosen bot's knobs (and to drop the rest, which the
+    /// unused-option guard would otherwise reject).
+    pub bots: &'static [&'static str],
 }
 
 const fn opt(key: &'static str, value: &'static str, note: &'static str) -> OptSpec {
-    OptSpec { key, value, note }
+    OptSpec {
+        key,
+        value,
+        note,
+        bots: &[],
+    }
+}
+
+const fn bot_opt(
+    key: &'static str,
+    value: &'static str,
+    note: &'static str,
+    bots: &'static [&'static str],
+) -> OptSpec {
+    OptSpec {
+        key,
+        value,
+        note,
+        bots,
+    }
 }
 
 /// A registered game: how to play it, and (when it has a bot parser) how to
@@ -137,11 +161,14 @@ impl Entry {
         self.opts
             .iter()
             .map(|o| {
-                if o.note.is_empty() {
-                    format!("{}={}", o.key, o.value)
-                } else {
-                    format!("{}={} {}", o.key, o.value, o.note)
+                let mut s = format!("{}={}", o.key, o.value);
+                if !o.bots.is_empty() {
+                    s.push_str(&format!(" [{}]", o.bots.join("/")));
                 }
+                if !o.note.is_empty() {
+                    s.push_str(&format!(" {}", o.note));
+                }
+                s
             })
             .collect::<Vec<_>>()
             .join("  ")
@@ -246,15 +273,15 @@ fn make_external_versus<G: game_core::GameUi + Sync + 'static>(
 }
 
 const CHESS_OPTS: &[OptSpec] = &[
-    opt("depth", "5", ""),
     opt("seat", "0|1|watch", "(0=White)"),
     opt(
         "bot",
         "alphabeta|alphabeta-rich|azero|azero-gpu",
         "(azero-gpu: browser only)",
     ),
-    opt("net", "data/azero/chess.bin", ""),
-    opt("sims", "256", ""),
+    bot_opt("depth", "5", "", &["alphabeta", "alphabeta-rich"]),
+    bot_opt("net", "data/azero/chess.bin", "", &["azero"]),
+    bot_opt("sims", "256", "", &["azero", "azero-gpu"]),
     opt("seed", "...", ""),
 ];
 
@@ -262,8 +289,8 @@ const LIARS_DICE_OPTS: &[OptSpec] = &[
     opt("players", "5", ""),
     opt("dice", "5", ""),
     opt("faces", "6", ""),
-    opt("rollouts", "1000", ""),
     opt("bot", "rollout|belief|random", ""),
+    bot_opt("rollouts", "1000", "", &["rollout"]),
     opt("seat", "0|..|watch", ""),
     opt("seed", "...", ""),
 ];
@@ -276,31 +303,34 @@ const TWENTYONE_OPTS: &[OptSpec] = &[
 ];
 
 const OTHELLO_OPTS: &[OptSpec] = &[
-    opt("depth", "6", ""),
     opt("seat", "0|1|watch", "(0=Black)"),
     opt("bot", "alphabeta|mcts", ""),
+    bot_opt("depth", "6", "", &["alphabeta"]),
+    bot_opt("sims", "2000", "", &["mcts"]),
     opt("seed", "...", ""),
 ];
 
 const CONNECT4_OPTS: &[OptSpec] = &[
-    opt("depth", "9", ""),
     opt("seat", "0|1|watch", ""),
     opt("bot", "alphabeta|mcts", ""),
+    bot_opt("depth", "9", "", &["alphabeta"]),
+    bot_opt("sims", "2000", "", &["mcts"]),
     opt("seed", "...", ""),
 ];
 
 const GO_OPTS: &[OptSpec] = &[
     opt("size", "9", ""),
-    opt("sims", "6000", ""),
-    opt("bot", "mcts|mcts-eval|mcts-spec", ""),
     opt("seat", "0|1|watch", "(0=Black)"),
+    opt("bot", "mcts|mcts-eval|mcts-spec", ""),
+    bot_opt("sims", "6000", "", &["mcts", "mcts-eval", "mcts-spec"]),
+    bot_opt("depth", "...", "(default size²)", &["mcts-eval"]),
     opt("seed", "...", ""),
 ];
 
 const G2048_OPTS: &[OptSpec] = &[
     opt("bot", "mcts|mcts-eval", "(omit to play yourself)"),
-    opt("sims", "200", ""),
-    opt("depth", "8", ""),
+    bot_opt("sims", "200", "", &["mcts", "mcts-eval"]),
+    bot_opt("depth", "8", "", &["mcts-eval"]),
     opt("seed", "...", ""),
 ];
 
@@ -308,8 +338,8 @@ const SNAKE_OPTS: &[OptSpec] = &[
     opt("width", "10", ""),
     opt("height", "10", ""),
     opt("bot", "mcts|mcts-eval", "(omit to play yourself)"),
-    opt("sims", "200", ""),
-    opt("depth", "12", ""),
+    bot_opt("sims", "200", "", &["mcts", "mcts-eval"]),
+    bot_opt("depth", "12", "", &["mcts-eval"]),
     opt("seed", "...", ""),
 ];
 
