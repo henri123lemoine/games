@@ -55,24 +55,28 @@ pub trait AnyMatch {
     fn human_seat(&self) -> Option<usize>;
 }
 
-/// An `AnyMatch` over a concrete game: the human at `human` seat, and a bot
-/// at every seat that has one — a `None` bot elsewhere marks an externally
-/// driven seat, whose moves arrive through [`AnyMatch::apply_human`]. A
-/// `human` seat beyond the seat count means no seat is the human's; with all
-/// seats botted that is spectator mode.
+/// An `AnyMatch` over a concrete game: the human at `human` seat (`None` to
+/// spectate), and a bot at every seat that has one — a `None` bot elsewhere
+/// marks an externally driven seat, whose moves arrive through
+/// [`AnyMatch::apply_human`].
 pub struct TypedMatch<G: GameUi> {
     game: G,
     state: G::State,
     bots: Vec<Option<Box<dyn Agent<G>>>>,
-    human: usize,
+    human: Option<usize>,
     rng: Rng,
 }
 
 impl<G: GameUi + 'static> TypedMatch<G> {
-    pub fn new(game: G, bots: Vec<Option<Box<dyn Agent<G>>>>, human: usize, seed: u64) -> Self {
+    pub fn new(
+        game: G,
+        bots: Vec<Option<Box<dyn Agent<G>>>>,
+        human: Option<usize>,
+        seed: u64,
+    ) -> Self {
         assert_eq!(bots.len(), game.num_players());
         assert!(
-            human >= bots.len() || bots[human].is_none(),
+            human.is_none_or(|h| bots[h].is_none()),
             "human seat must have no bot"
         );
         let state = game.initial_state();
@@ -85,17 +89,24 @@ impl<G: GameUi + 'static> TypedMatch<G> {
         }
     }
 
+    /// The [`GameUi`] viewer index: games treat an out-of-range viewer as a
+    /// spectator (no seat's hidden information is theirs to see).
+    fn viewer(&self) -> usize {
+        self.human.unwrap_or(usize::MAX)
+    }
+
     pub fn boxed(self) -> Box<dyn AnyMatch> {
         Box::new(self)
     }
 
     fn apply_event(&mut self, actor: usize, index: usize) -> MatchEvent {
+        let viewer = self.viewer();
         let actions = self.game.legal_actions(&self.state);
         let action = actions[index];
         let before = self.state.clone();
         self.game.apply(&mut self.state, action);
         let label = self.game.action_label(&before, action);
-        let who = if actor == self.human {
+        let who = if Some(actor) == self.human {
             "You".to_string()
         } else {
             format!("Player {actor}")
@@ -105,10 +116,10 @@ impl<G: GameUi + 'static> TypedMatch<G> {
             text: format!("{who}: {label}"),
             detail: self
                 .game
-                .describe_transition(&before, action, &self.state, self.human),
+                .describe_transition(&before, action, &self.state, viewer),
             data: self
                 .game
-                .transition_data(&before, action, &self.state, self.human),
+                .transition_data(&before, action, &self.state, viewer),
             label,
         }
     }
@@ -142,11 +153,11 @@ impl<G: GameUi + 'static> AnyMatch for TypedMatch<G> {
     }
 
     fn view(&self) -> String {
-        self.game.render(&self.state, self.human)
+        self.game.render(&self.state, self.viewer())
     }
 
     fn view_data(&self) -> Option<String> {
-        self.game.view_data(&self.state, self.human)
+        self.game.view_data(&self.state, self.viewer())
     }
 
     fn legal_labels(&self) -> Vec<String> {
@@ -182,8 +193,8 @@ impl<G: GameUi + 'static> AnyMatch for TypedMatch<G> {
 
     fn result_text(&self) -> String {
         let n = self.bots.len();
-        if self.human < n {
-            return self.game.result_text(&self.state, self.human);
+        if let Some(h) = self.human {
+            return self.game.result_text(&self.state, h);
         }
         if n == 1 {
             return self.game.result_text(&self.state, 0);
@@ -219,6 +230,6 @@ impl<G: GameUi + 'static> AnyMatch for TypedMatch<G> {
     }
 
     fn human_seat(&self) -> Option<usize> {
-        (self.human < self.bots.len()).then_some(self.human)
+        self.human
     }
 }

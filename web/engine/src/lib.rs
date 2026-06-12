@@ -60,7 +60,15 @@ pub fn list_games() -> String {
                 .iter()
                 .map(|o| json!({"key": o.key, "value": o.value, "note": o.note}))
                 .collect();
-            json!({"id": e.id, "summary": e.summary, "opts": e.opts_help(), "optsSchema": schema})
+            json!({
+                "id": e.id,
+                "name": e.name,
+                "summary": e.summary,
+                "solo": e.solo,
+                "watchBot": e.watch_bot,
+                "opts": e.opts_help(),
+                "optsSchema": schema,
+            })
         })
         .collect();
     let compare: Vec<Value> = all
