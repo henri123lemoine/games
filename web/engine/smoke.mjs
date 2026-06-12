@@ -72,4 +72,48 @@ const table = JSON.parse(
 );
 assert(table.length === 2 && table[0] > table[1], 'fit_elo orders the stronger bot first');
 
+// The azero-gpu seam: an externally driven seat, the AzChessBot mirror, and
+// the park/resume wire format — evaluated here with uniform priors (the
+// browser supplies the WebGPU net; strength is not under test).
+m = engine.create_match('chess', JSON.stringify({ bot: 'azero-gpu', seat: 0, seed: 11 }));
+assert(m.step() === '', 'no engine-side bot moves in an externally driven match');
+const bot = new engine.AzChessBot(64, 8, 11);
+const evalUniform = (n) => {
+  const offsets = bot.batch_offsets();
+  assert(offsets.length === n + 1, 'offsets delimit the batch');
+  const support = bot.batch_support();
+  assert(offsets[n] === support.length, 'offsets cover the support');
+  assert(bot.batch_features().length === n * 18 * 64, 'feature shape');
+  const priors = new Float32Array(support.length);
+  for (let i = 0; i < n; i++) {
+    const k = offsets[i + 1] - offsets[i];
+    priors.fill(1 / k, offsets[i], offsets[i + 1]);
+  }
+  return { priors, values: new Float32Array(n) };
+};
+const azMove = () => {
+  let priors = new Float32Array(0);
+  let values = new Float32Array(0);
+  for (;;) {
+    const n = bot.advance(priors, values);
+    if (n === 0) break;
+    ({ priors, values } = evalUniform(n));
+  }
+  return bot.best();
+};
+let plies = 0;
+while (!m.is_over() && plies < 30) {
+  const turn = m.to_act();
+  const want = JSON.parse(m.legal_labels());
+  const input = turn === m.human_seat() ? want[plies % want.length] : azMove();
+  if (turn !== m.human_seat()) assert(want.includes(input), `az move ${input} is legal`);
+  const mev = JSON.parse(m.apply_human(input));
+  bot.push(mev.label);
+  const stats = JSON.parse(bot.stats());
+  assert(Number.isFinite(stats.value), 'bot stats parse');
+  plies++;
+}
+assert(plies >= 30 || m.is_over(), 'azero-gpu match advanced');
+console.log('azero-gpu seam:', plies, 'plies, ok');
+
 console.log('SMOKE OK');
