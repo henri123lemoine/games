@@ -98,6 +98,14 @@ pub trait Game: Sync {
         None
     }
 
+    /// Key identifying positions for repetition/cycle detection. Unlike
+    /// [`Game::state_key`] it must *exclude* value-relevant counters that never
+    /// repeat (chess's halfmove clock), or genuine repetitions never collide.
+    /// Defaults to `state_key`; override for games where the two differ.
+    fn repetition_key(&self, state: &Self::State) -> Option<u64> {
+        self.state_key(state)
+    }
+
     /// A stable 64-bit identity for an action, used by algorithms to index
     /// killer/history/RAVE tables across states. Two actions must collide only
     /// if they are the same move. The default hashes the `Debug` rendering —

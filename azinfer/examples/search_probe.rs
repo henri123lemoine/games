@@ -11,26 +11,10 @@
 use std::collections::HashMap;
 
 use azinfer::argmax;
-use azinfer::mcts::{Gather, MctsConfig, Search};
+use azinfer::mcts::{MctsConfig, Search, run_to_done};
 use azinfer::model::Model;
 use chess::{Board, legal_moves};
 use game_core::Rng;
-
-fn run_to_done(
-    search: &mut Search,
-    board: &Board,
-    history: &HashMap<u64, u8>,
-    cfg: &MctsConfig,
-    rng: &mut Rng,
-    model: &Model,
-) {
-    let mut results = Vec::new();
-    while let Gather::Requests(reqs) =
-        search.advance(board, history, cfg, rng, std::mem::take(&mut results))
-    {
-        results = model.eval(&reqs);
-    }
-}
 
 fn trace(label: &str, search: &Search) {
     let visits: Vec<String> = search
@@ -94,7 +78,9 @@ fn main() {
             let mut history = HashMap::new();
             history.insert(board.key(), 1);
             let mut search = Search::new(None);
-            run_to_done(&mut search, &board, &history, cfg, &mut rng, &model);
+            run_to_done(&mut search, &board, &history, cfg, &mut rng, |r| {
+                model.eval(r)
+            });
             trace(&format!("{name}/{cname}"), &search);
 
             // Tree reuse: play the most-visited move, keep the subtree, search
@@ -109,7 +95,9 @@ fn main() {
             {
                 *history.entry(next.key()).or_insert(0) += 1;
                 let mut reused = Search::new(search.extract_child(choice));
-                run_to_done(&mut reused, &next, &history, cfg, &mut rng, &model);
+                run_to_done(&mut reused, &next, &history, cfg, &mut rng, |r| {
+                    model.eval(r)
+                });
                 trace(&format!("{name}/{cname}/reuse[{mv:?}]"), &reused);
             }
         }
@@ -136,6 +124,8 @@ fn main() {
     };
     let mut rng = Rng::new(3);
     let mut search = Search::new(None);
-    run_to_done(&mut search, &board, &history, &cfg, &mut rng, &model);
+    run_to_done(&mut search, &board, &history, &cfg, &mut rng, |r| {
+        model.eval(r)
+    });
     trace("repetition", &search);
 }

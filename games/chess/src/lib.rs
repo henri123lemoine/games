@@ -19,10 +19,61 @@ mod search;
 mod ui;
 
 pub use board::{Board, Color, Move, Piece, START_FEN};
-pub use movegen::{legal_moves, perft, perft_divide};
+pub use movegen::{has_legal_move, legal_moves, perft, perft_divide};
 pub use search::{ChessSpec, MaterialEval, RichEval, evaluate, rich_evaluate};
 
+use game_core::hash::splitmix64;
 use game_core::{Game, Turn};
+
+/// Why a game is over. Checkmate outranks the draw rules: a mating move that
+/// also reaches the 50-move boundary or a third repetition wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Adjudication {
+    Checkmate { winner: Color },
+    Stalemate,
+    Repetition,
+    FiftyMove,
+    InsufficientMaterial,
+}
+
+impl Adjudication {
+    /// Game score from White's perspective.
+    pub fn white_score(self) -> f64 {
+        match self {
+            Adjudication::Checkmate {
+                winner: Color::White,
+            } => 1.0,
+            Adjudication::Checkmate {
+                winner: Color::Black,
+            } => -1.0,
+            _ => 0.0,
+        }
+    }
+}
+
+/// The one chess game-over rule: `repetitions` is how many times the current
+/// position has occurred in the game (≥ 1; pass 1 when history is untracked).
+/// Returns `None` while the game continues.
+pub fn adjudicate(board: &Board, repetitions: u8) -> Option<Adjudication> {
+    if !has_legal_move(board) {
+        return Some(if board.in_check(board.stm) {
+            Adjudication::Checkmate {
+                winner: board.stm.flip(),
+            }
+        } else {
+            Adjudication::Stalemate
+        });
+    }
+    if repetitions >= 3 {
+        Some(Adjudication::Repetition)
+    } else if board.halfmove >= 100 {
+        Some(Adjudication::FiftyMove)
+    } else if board.insufficient_material() {
+        Some(Adjudication::InsufficientMaterial)
+    } else {
+        None
+    }
+}
 
 /// White is player 0, Black is player 1.
 pub struct Chess;
@@ -40,16 +91,12 @@ impl Game for Chess {
     }
 
     fn is_terminal(&self, state: &Board) -> bool {
-        state.halfmove >= 100 || state.insufficient_material() || legal_moves(state).is_empty()
+        adjudicate(state, 1).is_some()
     }
 
     fn returns(&self, state: &Board, player: usize) -> f64 {
-        if legal_moves(state).is_empty() && state.in_check(state.stm) {
-            let loser = state.stm.index();
-            if player == loser { -1.0 } else { 1.0 }
-        } else {
-            0.0
-        }
+        let score = adjudicate(state, 1).map_or(0.0, Adjudication::white_score);
+        if player == 0 { score } else { -score }
     }
 
     fn legal_actions(&self, state: &Board) -> Vec<Move> {
@@ -65,10 +112,16 @@ impl Game for Chess {
     }
 
     fn infoset_key(&self, state: &Board, _player: usize) -> u64 {
-        state.key()
+        self.state_key(state).expect("chess has a state key")
     }
 
+    /// [`Board::key`] plus the halfmove clock: value-equivalence for the
+    /// search TT, where 50-move proximity changes the game value.
     fn state_key(&self, state: &Board) -> Option<u64> {
+        Some(state.key() ^ splitmix64(0x4000 + u64::from(state.halfmove)))
+    }
+
+    fn repetition_key(&self, state: &Board) -> Option<u64> {
         Some(state.key())
     }
 

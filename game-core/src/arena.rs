@@ -63,15 +63,7 @@ impl Rng {
     /// to exactly 1; floating-point shortfall lands on the last index.
     pub fn pick(&mut self, weights: &[f64]) -> usize {
         debug_assert!(!weights.is_empty());
-        let total: f64 = weights.iter().sum();
-        let mut target = self.unit() * total;
-        for (i, w) in weights.iter().enumerate() {
-            target -= w;
-            if target < 0.0 {
-                return i;
-            }
-        }
-        weights.len() - 1
+        crate::rand::pick_weighted(weights.iter().copied(), self)
     }
 }
 
@@ -79,6 +71,7 @@ impl Rng {
 /// Returns the terminal state — score it with [`Game::returns`], [`winner`],
 /// or [`win_share`].
 pub fn play_n<G: Game>(game: &G, agents: &[&dyn Agent<G>], rng: &mut Rng) -> G::State {
+    assert_eq!(agents.len(), game.num_players(), "one agent per player");
     playout_from(game, game.initial_state(), agents, rng)
 }
 

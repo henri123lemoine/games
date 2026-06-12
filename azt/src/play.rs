@@ -14,8 +14,8 @@ use crate::{arg, device, epoch_secs, net_config_for};
 /// notation (e2e4, e7e8q), `quit` to leave.
 pub fn play(args: &[String]) {
     use crate::selfplay::argmax;
-    use azinfer::mcts::{Gather, Search};
-    use chess::{Board, Color, legal_moves};
+    use azinfer::mcts::{Search, run_to_done};
+    use chess::{Adjudication, Board, Color, adjudicate, legal_moves};
     use std::collections::HashMap;
 
     let net_path: PathBuf = arg(args, "--net", PathBuf::from("../data/azt/run2/latest.ot"));
@@ -52,28 +52,25 @@ pub fn play(args: &[String]) {
     keys.insert(board.key(), 1);
     loop {
         println!("\n{board}\n");
-        let moves = legal_moves(&board);
-        if moves.is_empty() {
-            if board.in_check(board.stm) {
-                let mated_human = (board.stm == Color::White) == human_is_white;
-                println!(
-                    "checkmate — {}",
-                    if mated_human {
-                        "the engine wins"
+        let reps = keys.get(&board.key()).copied().unwrap_or(1);
+        if let Some(adj) = adjudicate(&board, reps) {
+            let verdict = match adj {
+                Adjudication::Checkmate { winner } => {
+                    if (winner == Color::White) == human_is_white {
+                        "checkmate — you win!"
                     } else {
-                        "you win!"
+                        "checkmate — the engine wins"
                     }
-                );
-            } else {
-                println!("stalemate — draw");
-            }
+                }
+                Adjudication::Stalemate => "stalemate — draw",
+                Adjudication::Repetition => "draw by threefold repetition",
+                Adjudication::FiftyMove => "draw by the fifty-move rule",
+                Adjudication::InsufficientMaterial => "draw — bare material",
+            };
+            println!("{verdict}");
             return;
         }
-        if board.halfmove >= 100 || board.insufficient_material() || keys.values().any(|&c| c >= 3)
-        {
-            println!("draw (repetition, fifty-move rule, or bare material)");
-            return;
-        }
+        let moves = legal_moves(&board);
 
         let human_turn = (board.stm == Color::White) == human_is_white;
         let m = if human_turn {
@@ -100,16 +97,9 @@ pub fn play(args: &[String]) {
             }
         } else {
             let mut search = Search::new(None);
-            let mut results = Vec::new();
-            while let Gather::Requests(reqs) = search.advance(
-                &board,
-                &keys,
-                &mcts_cfg,
-                &mut rng,
-                std::mem::take(&mut results),
-            ) {
-                results = infer.forward_batch(&reqs);
-            }
+            run_to_done(&mut search, &board, &keys, &mcts_cfg, &mut rng, |reqs| {
+                infer.forward_batch(reqs)
+            });
             let i = argmax(search.root_visits());
             let m = search.root_moves()[i];
             println!("engine plays {m} (q {:+.2})", search.root_q());
@@ -124,7 +114,7 @@ pub fn play(args: &[String]) {
 /// local web board (position startpos|fen [moves ...], go [movetime N]).
 pub fn uci_engine(args: &[String]) {
     use azinfer::argmax;
-    use azinfer::mcts::{Gather, MctsConfig, Search};
+    use azinfer::mcts::{MctsConfig, Search, run_to_done};
     use chess::{Board, legal_moves};
     use std::collections::HashMap;
     use std::io::BufRead;
@@ -139,6 +129,7 @@ pub fn uci_engine(args: &[String]) {
     });
     let mut board = Board::start();
     let mut keys: HashMap<u64, u8> = HashMap::new();
+    keys.insert(board.key(), 1);
     let mut rng = Rng::new(epoch_secs());
 
     let stdin = std::io::stdin();
@@ -156,6 +147,7 @@ pub fn uci_engine(args: &[String]) {
             Some("ucinewgame") => {
                 board = Board::start();
                 keys.clear();
+                keys.insert(board.key(), 1);
             }
             Some("position") => {
                 let rest: Vec<&str> = words.collect();
@@ -180,13 +172,19 @@ pub fn uci_engine(args: &[String]) {
                 keys.clear();
                 keys.insert(board.key(), 1);
                 if rest.get(move_idx) == Some(&"moves") {
-                    for m in &rest[move_idx + 1..] {
-                        if let Ok(m) = m.parse::<chess::Move>()
-                            && legal_moves(&board).contains(&m)
-                        {
-                            board.apply(m);
-                            *keys.entry(board.key()).or_insert(0) += 1;
-                        }
+                    for text in &rest[move_idx + 1..] {
+                        // A bad move here means engine and GUI disagree on
+                        // the position — bail loudly rather than desync.
+                        let legal = text
+                            .parse::<chess::Move>()
+                            .ok()
+                            .filter(|m| legal_moves(&board).contains(m));
+                        let Some(m) = legal else {
+                            eprintln!("illegal move '{text}' in position command");
+                            break;
+                        };
+                        board.apply(m);
+                        *keys.entry(board.key()).or_insert(0) += 1;
                     }
                 }
             }
@@ -197,16 +195,9 @@ pub fn uci_engine(args: &[String]) {
                     ..MctsConfig::default()
                 };
                 let mut search = Search::new(None);
-                let mut results = Vec::new();
-                while let Gather::Requests(reqs) = search.advance(
-                    &board,
-                    &keys,
-                    &mcts_cfg,
-                    &mut rng,
-                    std::mem::take(&mut results),
-                ) {
-                    results = infer.forward_batch(&reqs);
-                }
+                run_to_done(&mut search, &board, &keys, &mcts_cfg, &mut rng, |reqs| {
+                    infer.forward_batch(reqs)
+                });
                 let i = argmax(search.root_visits());
                 let q = search.root_q();
                 println!("info score cp {} string q {q:+.3}", (q * 600.0) as i64);

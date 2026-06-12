@@ -11,7 +11,8 @@ use web_time::Instant;
 use super::mlp::{Mlp, Sample, SgdMomentum};
 use super::puct::{PolicyValueEncoder, Puct};
 use super::rand::mix;
-use super::search::{argmax, sample_chance};
+use super::search::argmax;
+use game_core::rand::step_chance;
 
 pub struct AzeroConfig {
     pub hidden: usize,
@@ -184,7 +185,7 @@ impl<'a, G: Game, E: PolicyValueEncoder<G>> SelfPlayTrainer<'a, G, E> {
         puct.root_noise = self.cfg.root_noise;
 
         let mut s = g.initial_state();
-        sample_chance(g, &mut s, &mut rng);
+        step_chance(g, &mut s, &mut rng);
         let mut recs: Vec<Record> = Vec::new();
         while !g.is_terminal(&s) && recs.len() < self.cfg.max_game_len {
             let Turn::Player(player) = g.turn(&s) else {
@@ -200,12 +201,12 @@ impl<'a, G: Game, E: PolicyValueEncoder<G>> SelfPlayTrainer<'a, G, E> {
                 .collect();
             recs.push((self.enc.encode_state(g, &s), target, player));
             let choice = if recs.len() <= self.cfg.temp_moves {
-                sample_proportional(&visits, &mut rng)
+                game_core::rand::sample_visits(&visits, &mut rng)
             } else {
                 argmax(&visits)
             };
             g.apply(&mut s, actions[choice]);
-            sample_chance(g, &mut s, &mut rng);
+            step_chance(g, &mut s, &mut rng);
         }
 
         let z0 = if g.is_terminal(&s) {
@@ -226,18 +227,3 @@ impl<'a, G: Game, E: PolicyValueEncoder<G>> SelfPlayTrainer<'a, G, E> {
 }
 
 type Record = (Vec<f32>, Vec<(usize, f32)>, usize);
-
-fn sample_proportional(visits: &[u32], rng: &mut Rng) -> usize {
-    let total: u32 = visits.iter().sum();
-    if total == 0 {
-        return 0;
-    }
-    let mut r = rng.unit() * f64::from(total);
-    for (i, &n) in visits.iter().enumerate() {
-        r -= f64::from(n);
-        if r < 0.0 {
-            return i;
-        }
-    }
-    visits.len() - 1
-}
