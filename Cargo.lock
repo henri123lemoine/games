@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "chess",
  "game-core",
+ "solvers",
 ]
 
 [[package]]
@@ -398,6 +399,8 @@ dependencies = [
 name = "web-engine"
 version = "0.1.0"
 dependencies = [
+ "azinfer",
+ "chess",
  "console_error_panic_hook",
  "game-core",
  "lab",

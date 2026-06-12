@@ -123,7 +123,7 @@ pub fn verify_export(args: &[String]) {
             continue;
         }
         let req = azinfer::EvalRequest {
-            planes: chess::encode::encode_planes(&board),
+            features: chess::encode::encode_planes(&board),
             support: moves
                 .iter()
                 .map(|&m| chess::encode::az_move_index(m, board.stm) as u16)

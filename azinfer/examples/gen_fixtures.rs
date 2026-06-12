@@ -39,7 +39,7 @@ fn main() {
         // Sample positions at varying depths.
         if plies % 17 == (items.len() * 3) % 17 {
             let req = EvalRequest {
-                planes: encode_planes(&board),
+                features: encode_planes(&board),
                 support: moves
                     .iter()
                     .map(|&m| az_move_index(m, board.stm) as u16)
@@ -50,7 +50,7 @@ fn main() {
             items.push(format!(
                 r#"{{"fen":"{}","planes":[{}],"support":[{}],"priors":[{}],"value":{}}}"#,
                 board.to_fen(),
-                join(req.planes.iter().map(|x| format!("{x}")).collect()),
+                join(req.features.iter().map(|x| format!("{x}")).collect()),
                 join(req.support.iter().map(|s| s.to_string()).collect()),
                 join(res.priors.iter().map(|p| format!("{p}")).collect()),
                 res.value,

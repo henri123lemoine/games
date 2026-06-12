@@ -181,8 +181,8 @@ impl Infer {
         let mut planes = vec![0.0f32; bucket * PLANE_COUNT * 64];
         let mut gather: Vec<i64> = Vec::with_capacity(reqs.len() * 40);
         for (i, r) in reqs.iter().enumerate() {
-            debug_assert_eq!(r.planes.len(), PLANE_COUNT * 64);
-            planes[i * PLANE_COUNT * 64..(i + 1) * PLANE_COUNT * 64].copy_from_slice(&r.planes);
+            debug_assert_eq!(r.features.len(), PLANE_COUNT * 64);
+            planes[i * PLANE_COUNT * 64..(i + 1) * PLANE_COUNT * 64].copy_from_slice(&r.features);
             let base = i as i64 * POLICY;
             gather.extend(r.support.iter().map(|&s| base + i64::from(s)));
         }
