@@ -44,28 +44,39 @@ pub(crate) fn arg_opt<T: FromStr>(args: &[String], name: &str) -> Option<T> {
         .and_then(|w| w[1].parse().ok())
 }
 
-/// Net architecture for a checkpoint: explicit `--blocks`/`--ch` flags win;
-/// otherwise the latest `start` event in the metrics.jsonl beside the
-/// checkpoint names the architecture it was trained with. Ends the silent
-/// failure mode where a default-config run gauged with different defaults
-/// died on an opaque tensor-shape error.
+/// Net architecture for a checkpoint: explicit `--blocks`/`--ch` flags win,
+/// then the checkpoint's own `<name>.json` sidecar, then (for checkpoints
+/// from before sidecars) the latest `start` event in the metrics.jsonl
+/// beside it. Ends the silent failure mode where a default-config run
+/// gauged with different defaults died on an opaque tensor-shape error.
 pub(crate) fn net_config_for(args: &[String], net_path: &Path) -> NetConfig {
-    let recorded = net_path
-        .parent()
-        .map(|d| d.join("metrics.jsonl"))
+    let from_json = |v: &serde_json::Value| {
+        Some((
+            v["blocks"].as_u64()? as usize,
+            v["channels"].as_u64()? as i64,
+        ))
+    };
+    let sidecar = net_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| net_path.with_file_name(format!("{n}.json")))
         .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|text| {
-            text.lines().rev().find_map(|l| {
-                let v: serde_json::Value = serde_json::from_str(l).ok()?;
-                if v["event"] != "start" {
-                    return None;
-                }
-                Some((
-                    v["blocks"].as_u64()? as usize,
-                    v["channels"].as_u64()? as i64,
-                ))
+        .and_then(|text| from_json(&serde_json::from_str(&text).ok()?));
+    let recorded = sidecar.or_else(|| {
+        net_path
+            .parent()
+            .map(|d| d.join("metrics.jsonl"))
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|text| {
+                text.lines().rev().find_map(|l| {
+                    let v: serde_json::Value = serde_json::from_str(l).ok()?;
+                    if v["event"] != "start" {
+                        return None;
+                    }
+                    from_json(&v)
+                })
             })
-        });
+    });
     let blocks = arg_opt(args, "--blocks")
         .or(recorded.map(|r| r.0))
         .unwrap_or(8);
@@ -84,16 +95,18 @@ pub(crate) fn net_config_for(args: &[String], net_path: &Path) -> NetConfig {
 
 pub(crate) fn append_line(path: &Path, line: &str) {
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .expect("open metrics file");
     // One write_all per line: the trainer and `elo --watch` append to the
     // same file, and O_APPEND only makes a *single* write atomic — writeln!
     // issues the payload and the newline as two syscalls, which can tear.
-    f.write_all(format!("{line}\n").as_bytes())
-        .expect("append metrics line");
+    // A transient I/O error costs one metrics line, never the run.
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut f| f.write_all(format!("{line}\n").as_bytes()));
+    if let Err(e) = written {
+        eprintln!("warning: dropped metrics line ({e})");
+    }
 }
 
 /// The effective learning rate of the last completed iteration, if logged.
@@ -136,6 +149,21 @@ pub(crate) fn device() -> Device {
     } else {
         eprintln!("warning: MPS unavailable, training on CPU");
         Device::Cpu
+    }
+}
+
+/// A transient checkpoint-write failure should not abort a day-long run;
+/// retry once, then keep training on the previous checkpoint.
+fn save_with_retry(trainer: &Trainer, path: &Path) {
+    for attempt in 1..=2 {
+        match trainer.save(path) {
+            Ok(()) => return,
+            Err(e) => eprintln!(
+                "warning: checkpoint save to {} failed (attempt {attempt}): {e}",
+                path.display()
+            ),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
     }
 }
 
@@ -271,7 +299,8 @@ fn run(args: &[String]) {
         if calib_pool.len() >= 100 {
             let mut sorted: Vec<f64> = calib_pool.iter().copied().collect();
             sorted.sort_by(f64::total_cmp);
-            let t = sorted[(resign_fp_target * sorted.len() as f64) as usize];
+            let q = ((resign_fp_target * sorted.len() as f64) as usize).min(sorted.len() - 1);
+            let t = sorted[q];
             // Wide sanity bounds only — a tight floor here silently overrode
             // the measured fp-target quantile in the conservative direction.
             live_resign_q = (-t).clamp(0.5, 0.995);
@@ -284,11 +313,9 @@ fn run(args: &[String]) {
             trainer.train(&replay, steps, batch, &mut Rng::new(mix(0xC0FFEE, iter)));
         let train_secs = train_start.elapsed().as_secs_f32();
 
-        trainer.save(&latest).expect("write checkpoint");
+        save_with_retry(&trainer, &latest);
         if iter.is_multiple_of(snapshot_every) {
-            trainer
-                .save(&dir.join(format!("ckpt-{iter:06}.ot")))
-                .expect("write snapshot");
+            save_with_retry(&trainer, &dir.join(format!("ckpt-{iter:06}.ot")));
         }
 
         let mut eval_fields: Option<(f32, serde_json::Value)> = None;

@@ -1,14 +1,20 @@
 //! Minimal UCI client for strength-calibrated opponents (Stockfish with
 //! `UCI_LimitStrength`/`UCI_Elo`). One engine process per game; positions
-//! are sent as FEN, so the client stays stateless per move.
+//! are sent as FEN, so the client stays stateless per move. Reads go through
+//! a forwarding thread so a hung engine times out instead of wedging an
+//! unattended run forever.
 
 use std::io::{self, BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::Duration;
+
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct Uci {
     child: Child,
     stdin: ChildStdin,
-    reader: BufReader<ChildStdout>,
+    lines: Receiver<String>,
 }
 
 impl Uci {
@@ -22,10 +28,19 @@ impl Uci {
             .spawn()?;
         let stdin = child.stdin.take().expect("uci stdin");
         let stdout = child.stdout.take().expect("uci stdout");
+        let (tx, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
         let mut uci = Uci {
             child,
             stdin,
-            reader: BufReader::new(stdout),
+            lines,
         };
         uci.send("uci")?;
         uci.wait_for("uciok")?;
@@ -52,17 +67,22 @@ impl Uci {
     }
 
     fn wait_for(&mut self, token: &str) -> io::Result<String> {
-        let mut line = String::new();
         loop {
-            line.clear();
-            if self.reader.read_line(&mut line)? == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "engine exited",
-                ));
-            }
-            if line.starts_with(token) {
-                return Ok(line.trim().to_string());
+            match self.lines.recv_timeout(READ_TIMEOUT) {
+                Ok(line) if line.starts_with(token) => return Ok(line.trim().to_string()),
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("engine silent for {READ_TIMEOUT:?} awaiting '{token}'"),
+                    ));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "engine exited",
+                    ));
+                }
             }
         }
     }

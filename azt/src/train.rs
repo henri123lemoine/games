@@ -52,6 +52,7 @@ pub struct Trainer {
     pub vs: nn::VarStore,
     net: Net,
     opt: nn::Optimizer,
+    cfg: NetConfig,
     /// Weight of the search's root value in the value target:
     /// `target = (1-mix)·z + mix·q`. De-noises the raw game outcome and
     /// softens the self-labeling loop resignation introduces.
@@ -78,6 +79,7 @@ impl Trainer {
             vs,
             net,
             opt,
+            cfg,
             value_mix,
         }
     }
@@ -144,15 +146,24 @@ impl Trainer {
     }
 
     /// Saves via temp file + rename so concurrent readers (the elo gauge,
-    /// `azt play`) never see a torn checkpoint.
+    /// `azt play`) never see a torn checkpoint. A `<name>.json` sidecar
+    /// records the architecture, so the checkpoint stays loadable away from
+    /// its run's metrics.jsonl.
     pub fn save(&self, path: &std::path::Path) -> Result<(), tch::TchError> {
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("checkpoint");
-        let tmp = path.with_file_name(format!("{name}.tmp"));
+        let tmp = path.with_file_name(format!("{name}.{}.tmp", std::process::id()));
         self.vs.save(&tmp)?;
         std::fs::rename(&tmp, path)?;
+        std::fs::write(
+            path.with_file_name(format!("{name}.json")),
+            format!(
+                "{{\"blocks\":{},\"channels\":{}}}\n",
+                self.cfg.blocks, self.cfg.channels
+            ),
+        )?;
         Ok(())
     }
 
