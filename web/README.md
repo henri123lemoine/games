@@ -49,6 +49,14 @@ Netlify, Vercel, nginx) at any path. To embed in a personal site, either:
 
 Everything runs client-side — no server component, no API keys, no state.
 
+CI automates the personal-site embed: every push to main rebuilds the arcade,
+publishes `dist/` to the `arcade-dist` branch (single orphan commit), and
+dispatches `personal-website`'s deploy workflow, which mounts that branch at
+`henrilemoine.com/arcade/`. Trained models come from the `web-artifacts`
+GitHub release (`gh release create web-artifacts <files>`), since they are
+gitignored. The cross-repo handshake uses the `ARCADE_PAT` secret — see the
+comments in `.github/workflows/ci.yml` here and `deploy.yml` there.
+
 ## Performance notes
 
 - The engine runs single-threaded inside a Web Worker (the UI never blocks).

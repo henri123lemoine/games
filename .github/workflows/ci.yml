@@ -38,5 +38,56 @@ jobs:
       - run: node web/engine/smoke.mjs
       - run: npm ci
         working-directory: web/app
-      - run: npx tsc --noEmit
+      # Trained models are gitignored; the arcade serves them from the
+      # `web-artifacts` release when it exists (without it, bot=azero
+      # reports a missing artifact and every other bot works).
+      - name: Fetch trained artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p web/app/public/artifacts
+          gh release download web-artifacts -p azero-chess.bin \
+            -O web/app/public/artifacts/azero-chess.bin -R ${{ github.repository }} \
+            || echo "no web-artifacts release; building without the azero net"
+      - run: npm run build
         working-directory: web/app
+      - run: rm -rf web/app/dist/azero # wasm test fixtures, not part of the site
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          name: arcade-dist
+          path: web/app/dist
+
+  # Publishes the built arcade to the `arcade-dist` branch and asks the
+  # personal-website repo to redeploy (it mounts that branch at /arcade/).
+  # The dispatch needs an ARCADE_PAT secret: a fine-grained PAT with
+  # Actions:write on henri123lemoine/personal-website.
+  deploy-arcade:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [rust, web]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: arcade-dist
+          path: arcade-dist
+      - uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./arcade-dist
+          publish_branch: arcade-dist
+          force_orphan: true
+          user_name: "github-actions[bot]"
+          user_email: "github-actions[bot]@users.noreply.github.com"
+      - name: Trigger website deploy
+        env:
+          GH_TOKEN: ${{ secrets.ARCADE_PAT }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::ARCADE_PAT not set; website not redeployed"
+            exit 0
+          fi
+          gh workflow run deploy.yml -R henri123lemoine/personal-website --ref main
