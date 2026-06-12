@@ -57,6 +57,7 @@ interface LdReveal {
   gameOver: boolean;
   winner: number | null;
   nextRound: number;
+  adjudicated?: boolean;
 }
 
 type BannerTone = 'liar' | 'exact' | 'good' | 'info';
@@ -517,8 +518,9 @@ class LiarsDiceFrontend implements GameFrontend {
     }
     if (r.gameOver && r.winner !== null) {
       this.seatsEl.querySelector(`[data-seat="${r.winner}"]`)?.classList.add('ld-winner');
+      const how = r.adjudicated ? ' on dice count (round cap reached)' : '';
       this.showBanner(
-        `★ ${this.name(r.winner)} ${r.winner === human ? 'win' : 'wins'} the game!`,
+        `★ ${this.name(r.winner)} ${r.winner === human ? 'win' : 'wins'} the game${how}!`,
         'good',
       );
       await sleep(t(1200));
