@@ -57,12 +57,21 @@ impl GameUi for LiarsDice {
     }
 
     fn render(&self, state: &LdState, player: usize) -> String {
+        let n = self.players as usize;
         let (q, f) = state.current_bid();
-        let mut out = format!(
-            "Your hand: {:?}\nDice left per player: {:?}\n",
-            state.hand(player),
-            &state.dice_left()[..self.players as usize]
-        );
+        let mut out = if player < n {
+            format!(
+                "Your hand: {:?}\nDice left per player: {:?}\n",
+                state.hand(player),
+                &state.dice_left()[..n]
+            )
+        } else {
+            let hands: Vec<Vec<u8>> = (0..n).map(|p| state.hand(p)).collect();
+            format!(
+                "Hands: {hands:?}\nDice left per player: {:?}\n",
+                &state.dice_left()[..n]
+            )
+        };
         if q == 0 {
             out.push_str("You open the round (type `open QxF`, e.g. `open 2x4`).");
         } else {
@@ -335,6 +344,15 @@ mod tests {
             game.apply(&mut s, a);
         }
         s
+    }
+
+    #[test]
+    fn render_treats_out_of_range_viewer_as_spectator() {
+        let game = LiarsDice::new(3, 2, 6);
+        let s = rolled_state(&game);
+        let text = game.render(&s, usize::MAX);
+        assert!(text.contains("Hands:"), "spectator sees all hands: {text}");
+        assert!(game.render(&s, 0).contains("Your hand:"));
     }
 
     #[test]
