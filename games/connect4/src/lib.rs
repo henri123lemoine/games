@@ -207,7 +207,7 @@ impl Eval<Connect4> for Connect4Eval {
         let center = column_mask(CENTER_COL);
         net += CENTER_WEIGHT
             * ((mine & center).count_ones() as i32 - (theirs & center).count_ones() as i32);
-        (f64::from(net) / 50.0).tanh()
+        game_core::eval_squash(f64::from(net), 50.0)
     }
 }
 

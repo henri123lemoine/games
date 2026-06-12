@@ -27,6 +27,9 @@ impl<G: Game> Agent<G> for RandomAgent {
 }
 
 /// A minimal reproducible PRNG so matches are deterministic given a seed.
+/// `Clone` duplicates the stream — for states that carry their own RNG and
+/// branch (determinization); don't clone where streams must stay private.
+#[derive(Clone, Debug)]
 pub struct Rng(u64);
 impl Rng {
     /// The seed is splitmix-finalized so that nearby seeds (1, 2, 3…) still

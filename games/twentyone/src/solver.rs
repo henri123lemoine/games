@@ -21,6 +21,7 @@ use std::io::{self, Read, Write};
 use rayon::prelude::*;
 
 use crate::env::Env;
+use game_core::Rng;
 
 /// FxHash-style hasher: the information-set keys are already well-distributed
 /// bit-packed `u64`s, so a single multiply-rotate mixes them far faster than the
@@ -76,30 +77,6 @@ const MAX_ROUND: u8 = 16;
 /// Monte-Carlo rollouts used to estimate each round subgame's continuation value
 /// during backward induction.
 const VALUE_SAMPLES: u32 = 4000;
-
-/// Minimal xorshift PRNG (the solver owns its randomness so runs are
-/// reproducible and independent of any cloned env's internal RNG).
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        Self(seed.max(1))
-    }
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-    fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
-    }
-    fn unit(&mut self) -> f64 {
-        (self.next() >> 11) as f64 / (1u64 << 53) as f64
-    }
-}
 
 pub struct Solver {
     regret: FastMap<u64, [f64; 2]>,
@@ -503,7 +480,7 @@ impl Solver {
             let mut seeded = Vec::new();
             while i < subgames.len() && subgames[i].2 == round {
                 let (h0, h1, r) = subgames[i];
-                seeded.push((h0, h1, r, self.rng.next()));
+                seeded.push((h0, h1, r, self.rng.next_u64()));
                 i += 1;
             }
             let results: Vec<SubgameResult> = seeded
@@ -698,7 +675,7 @@ impl Solver {
         while done < iters {
             let n = batch.min(iters - done);
             let seeds: Vec<(u64, f64)> = (0..n)
-                .map(|_| (self.rng.next(), (base + done + 1) as f64))
+                .map(|_| (self.rng.next_u64(), (base + done + 1) as f64))
                 .collect();
             let deltas: Vec<(InfoTable, InfoTable)> = seeds
                 .par_iter()

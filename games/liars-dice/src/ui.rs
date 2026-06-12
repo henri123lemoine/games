@@ -92,7 +92,8 @@ impl GameUi for LiarsDice {
         }
         let rest = t.strip_prefix("open")?.trim().replace(' ', "");
         let (qs, fs) = rest.split_once('x')?;
-        Some(Action::Open(qs.parse().ok()?, fs.parse().ok()?))
+        let (q, f): (u8, u8) = (qs.parse().ok()?, fs.parse().ok()?);
+        (q >= 1 && (1..=self.faces).contains(&f)).then_some(Action::Open(q, f))
     }
 
     fn describe_transition(

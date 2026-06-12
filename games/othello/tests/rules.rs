@@ -68,7 +68,7 @@ fn pass_is_the_only_action_when_stuck() {
             return;
         }
         assert_eq!(game.parse_action(&state, "pass"), None);
-        let i = ((rng.unit() * actions.len() as f64) as usize).min(actions.len() - 1);
+        let i = rng.below(actions.len());
         game.apply(&mut state, actions[i]);
         if game.is_terminal(&state) {
             state = game.initial_state();
@@ -88,7 +88,7 @@ fn random_playthroughs_terminate_with_disc_count_winner() {
             assert!(plies <= 130, "game did not terminate");
             let actions = game.legal_actions(&state);
             assert!(!actions.is_empty());
-            let i = ((rng.unit() * actions.len() as f64) as usize).min(actions.len() - 1);
+            let i = rng.below(actions.len());
             game.apply(&mut state, actions[i]);
         }
         let (black, white) = (state.discs(0), state.discs(1));

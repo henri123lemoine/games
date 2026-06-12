@@ -129,7 +129,7 @@ pub struct Env {
     last_public_up: Option<([u8; 8], u8, [u8; 8], u8)>,
     preset_decks: Vec<[u8; NUM_CARDS]>,
     preset_round_index: usize,
-    rng: XorShift64,
+    rng: game_core::Rng,
     game_over: bool,
 }
 
@@ -157,7 +157,7 @@ impl Env {
             last_public_up: None,
             preset_decks: Vec::new(),
             preset_round_index: 0,
-            rng: XorShift64::seed(seed),
+            rng: game_core::Rng::new(seed),
             game_over: false,
         }
     }
@@ -193,7 +193,7 @@ impl Env {
             last_public_up: None,
             preset_decks,
             preset_round_index: 0,
-            rng: XorShift64::seed(0xDEADBEEFCAFEBABE),
+            rng: game_core::Rng::new(0xDEADBEEFCAFEBABE),
             game_over: false,
         }
     }
@@ -215,7 +215,7 @@ impl Env {
             last_public_up: None,
             preset_decks: Vec::new(),
             preset_round_index: 0,
-            rng: XorShift64::seed(0x1234_5678_9ABC_DEF0),
+            rng: game_core::Rng::new(0x1234_5678_9ABC_DEF0),
             game_over: hearts[0] == 0 || hearts[1] == 0,
         }
     }
@@ -733,24 +733,6 @@ pub struct StepResult {
     pub outcome: Option<RoundOutcome>,
 }
 
-#[derive(Debug, Clone)]
-struct XorShift64 {
-    state: u64,
-}
-impl XorShift64 {
-    fn seed(seed: u64) -> Self {
-        Self { state: seed.max(1) }
-    }
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.state = x;
-        x
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -772,7 +754,7 @@ mod tests {
         }
     }
 
-    fn random_perm(rng: &mut XorShift64) -> [u8; NUM_CARDS] {
+    fn random_perm(rng: &mut game_core::Rng) -> [u8; NUM_CARDS] {
         let mut order = [0u8; NUM_CARDS];
         for (i, slot) in order.iter_mut().enumerate() {
             *slot = (i + 1) as u8;
@@ -847,7 +829,7 @@ mod tests {
 
     #[test]
     fn controlled_matches_preset_engine() {
-        let mut rng = XorShift64::seed(0xC0FFEE);
+        let mut rng = game_core::Rng::new(0xC0FFEE);
         for _ in 0..5000 {
             let orders: Vec<[u8; NUM_CARDS]> = (0..16).map(|_| random_perm(&mut rng)).collect();
             assert_eq!(play_preset(&orders), play_controlled(&orders));

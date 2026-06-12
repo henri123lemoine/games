@@ -82,7 +82,7 @@ fn golden_master_trajectory_is_stable() {
     // Frozen characterization value. If an intentional rules/engine change moves
     // it, re-run and update this constant deliberately.
     assert_eq!(
-        h.0, 0xedb7_35f6_4266_3ce5,
+        h.0, 0xdd0a_6796_cd90_88b0,
         "trajectory digest changed: {:#018x}",
         h.0
     );

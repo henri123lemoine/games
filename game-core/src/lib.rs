@@ -124,6 +124,15 @@ pub trait Eval<G: Game>: Sync {
     fn eval(&self, game: &G, state: &G::State, player: usize) -> f64;
 }
 
+/// Squashes an unbounded score onto the `(-1, 1)` returns scale the [`Eval`]
+/// contract expects: `(2/π)·atan(score/scale)`. Strictly monotone, so
+/// alpha-beta's move choice is unchanged by the mapping; atan rather than
+/// tanh keeps f64 resolution at extreme scores instead of saturating to
+/// exactly ±1.
+pub fn eval_squash(score: f64, scale: f64) -> f64 {
+    (2.0 / std::f64::consts::PI) * (score / scale).atan()
+}
+
 /// Rewrites `state`'s hidden information into a concrete sample consistent
 /// with everything `observer` can see — a *determinization*. Game knowledge
 /// (e.g. "a bidder plausibly holds the face they bid"); consumed by

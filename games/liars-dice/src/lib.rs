@@ -13,8 +13,7 @@
 //! the bid history to the last few actions (full history is infeasible for, e.g.,
 //! 5 players × 5 dice).
 
-use std::hash::{Hash, Hasher};
-
+use game_core::hash::{combine, splitmix64};
 use game_core::{Game, Turn};
 
 mod agents;
@@ -283,6 +282,15 @@ fn hand_distribution(dice: u8, faces: u8) -> Vec<([u8; MAX_FACES], f64)> {
     out
 }
 
+/// Little-endian byte pack (≤ 8 bytes) — fixed-size fields fold into the
+/// stable position keys without per-byte hashing.
+fn pack(bytes: &[u8]) -> u64 {
+    bytes
+        .iter()
+        .enumerate()
+        .fold(0, |a, (i, &b)| a | u64::from(b) << (8 * i))
+}
+
 /// History code for the infoset key. `u16` because the `Open` range scales
 /// with the total dice in play (`5 + (q-1)*faces + (f-1)`), which overflows
 /// `u8` on large-but-legal configurations like 8 players x 6 dice.
@@ -440,52 +448,46 @@ impl Game for LiarsDice {
     /// continuation values round-dependent; the cap is an anti-stall guard,
     /// not a rule worth spending key entropy on).
     fn infoset_key(&self, s: &LdState, player: usize) -> u64 {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        player.hash(&mut h);
-        s.hands[player].hash(&mut h);
-        s.dice_left[..self.players as usize].hash(&mut h);
-        s.qty.hash(&mut h);
-        s.face.hash(&mut h);
-        s.first_round.hash(&mut h);
         // position relative to the bid owner conveys turn order without the path.
-        ((s.turn + self.players - s.last_bidder) % self.players).hash(&mut h);
-        s.hist.hash(&mut h);
-        h.finish()
+        let rel = (s.turn + self.players - s.last_bidder) % self.players;
+        let bid = u64::from(s.qty) << 24
+            | u64::from(s.face) << 16
+            | u64::from(s.first_round) << 8
+            | u64::from(rel);
+        let hist = s.hist.iter().fold(0, |h, &c| combine(h, u64::from(c)));
+        [pack(&s.hands[player]), pack(&s.dice_left), bid, hist]
+            .into_iter()
+            .fold(splitmix64(player as u64 + 1), combine)
     }
 
     fn state_key(&self, s: &LdState) -> Option<u64> {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        s.dice_left[..self.players as usize].hash(&mut h);
-        s.hands[..self.players as usize].hash(&mut h);
-        s.rolled.hash(&mut h);
-        s.qty.hash(&mut h);
-        s.face.hash(&mut h);
-        s.turn.hash(&mut h);
-        s.last_bidder.hash(&mut h);
-        s.first_round.hash(&mut h);
-        s.hist.hash(&mut h);
-        s.endorsed[..self.players as usize].hash(&mut h);
-        s.done.hash(&mut h);
-        Some(h.finish())
+        let fields = u64::from(s.qty) << 40
+            | u64::from(s.face) << 32
+            | u64::from(s.turn) << 24
+            | u64::from(s.last_bidder) << 16
+            | u64::from(s.rolled) << 8
+            | u64::from(s.first_round) << 1
+            | u64::from(s.done);
+        let hands = s.hands.iter().fold(0, |h, hand| combine(h, pack(hand)));
+        let hist = s.hist.iter().fold(0, |h, &c| combine(h, u64::from(c)));
+        Some(
+            [pack(&s.dice_left), hands, fields, hist, pack(&s.endorsed)]
+                .into_iter()
+                .fold(splitmix64(0x11A5), combine),
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn rng(seed: &mut u64) -> u64 {
-        *seed ^= *seed << 13;
-        *seed ^= *seed >> 7;
-        *seed ^= *seed << 17;
-        *seed
-    }
+    use game_core::Rng;
 
     #[test]
     fn n_player_games_terminate_with_one_winner() {
         for &players in &[2u8, 3, 5] {
             let game = LiarsDice::new(players, 2, 6);
-            let mut seed = 0x1234 + players as u64;
+            let mut rng = Rng::new(0x1234 + u64::from(players));
             for _ in 0..100 {
                 let mut s = game.initial_state();
                 let mut steps = 0;
@@ -495,12 +497,12 @@ mod tests {
                     match game.turn(&s) {
                         Turn::Chance => {
                             let o = game.chance_outcomes(&s);
-                            let a = o[(rng(&mut seed) as usize) % o.len()].0;
+                            let a = o[rng.below(o.len())].0;
                             game.apply(&mut s, a);
                         }
                         Turn::Player(_) => {
                             let acts = game.legal_actions(&s);
-                            let a = acts[(rng(&mut seed) as usize) % acts.len()];
+                            let a = acts[rng.below(acts.len())];
                             game.apply(&mut s, a);
                         }
                     }
@@ -509,6 +511,52 @@ mod tests {
                 assert!(total.abs() < 1e-9, "zero-sum, got {total}");
             }
         }
+    }
+
+    /// Two players, one die each: a lost die is elimination, so every call
+    /// resolution ends the game with an inspectable winner.
+    fn rolled(game: &LiarsDice, hands: &[[u8; MAX_FACES]]) -> LdState {
+        let mut s = game.initial_state();
+        for &h in hands {
+            game.apply(&mut s, Action::Roll(h));
+        }
+        s
+    }
+
+    #[test]
+    fn call_liar_against_a_false_bid_charges_the_bid_owner() {
+        let game = LiarsDice::new(2, 1, 6);
+        // No 1s anywhere: the forced 1x1 opener (owned by the last seat) is
+        // a lie, so player 0's immediate call costs player 1 their die.
+        let mut s = rolled(&game, &[[0, 1, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0]]);
+        game.apply(&mut s, Action::CallLiar);
+        assert!(game.is_terminal(&s));
+        assert_eq!(game.returns(&s, 0), 1.0);
+    }
+
+    #[test]
+    fn call_liar_against_a_true_bid_charges_the_caller() {
+        let game = LiarsDice::new(2, 1, 6);
+        let mut s = rolled(&game, &[[1, 0, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0]]);
+        game.apply(&mut s, Action::CallLiar);
+        assert!(game.is_terminal(&s));
+        assert_eq!(game.returns(&s, 1), 1.0);
+    }
+
+    #[test]
+    fn call_exact_costs_nothing_when_right_and_a_die_when_wrong() {
+        let game = LiarsDice::new(2, 1, 6);
+        let mut s = rolled(&game, &[[1, 0, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0]]);
+        game.apply(&mut s, Action::CallExact);
+        assert!(!game.is_terminal(&s), "exactly one 1: nobody loses a die");
+        assert_eq!(s.dice_left[..2], [1, 1]);
+        assert!(matches!(game.turn(&s), Turn::Chance), "next round re-rolls");
+
+        let game = LiarsDice::new(2, 1, 6);
+        let mut s = rolled(&game, &[[1, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0]]);
+        game.apply(&mut s, Action::CallExact);
+        assert!(game.is_terminal(&s), "two 1s != qty 1: the caller loses");
+        assert_eq!(game.returns(&s, 1), 1.0);
     }
 
     #[test]
