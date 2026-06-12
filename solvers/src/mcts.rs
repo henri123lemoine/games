@@ -247,7 +247,7 @@ impl<G: Game> Mcts<G> {
         // pairs played at-or-below the current node, so each AMAF update is a
         // set lookup instead of a trajectory scan (`moves` is sorted by path
         // position: descent pushes in order, the playout appends at the tail).
-        let mut played: std::collections::HashSet<(usize, u64)> = std::collections::HashSet::new();
+        let mut played: crate::FastSet<(usize, u64)> = crate::FastSet::default();
         let mut moves_idx = moves.len();
         for i in (0..path.len()).rev() {
             let id = path[i];
@@ -551,11 +551,7 @@ fn try_prove<A: Copy>(nodes: &mut [Node<A>], id: usize, max_return: f64) {
 
 /// AMAF update: credit every of the node's actions that its mover played at or
 /// after this node during the simulation (`played` holds those pairs).
-fn update_amaf<A>(
-    node: &mut Node<A>,
-    played: &std::collections::HashSet<(usize, u64)>,
-    values: &[f64],
-) {
+fn update_amaf<A>(node: &mut Node<A>, played: &crate::FastSet<(usize, u64)>, values: &[f64]) {
     let Some(p) = node.mover else { return };
     for j in 0..node.amaf_keys.len() {
         if played.contains(&(p, node.amaf_keys[j])) {

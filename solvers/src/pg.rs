@@ -173,9 +173,7 @@ impl<'a, G: Game, E: PolicyValueEncoder<G>> Reinforce<'a, G, E> {
         while !g.is_terminal(&s) && steps.len() < self.cfg.max_episode_len {
             match g.turn(&s) {
                 Turn::Chance => {
-                    let outs = g.chance_outcomes(&s);
-                    let i = game_core::rand::sample_outcome(&outs, &mut self.rng);
-                    g.apply(&mut s, outs[i].0);
+                    game_core::rand::step_chance(g, &mut s, &mut self.rng);
                 }
                 Turn::Player(player) => {
                     let actions = g.legal_actions(&s);

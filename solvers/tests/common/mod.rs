@@ -238,6 +238,43 @@ pub fn kuhn_nashconv(policy: &dyn Fn(&KuhnState, usize) -> Vec<f64>) -> f64 {
     (0..2).map(|br| kuhn_best_response(policy, br)).sum()
 }
 
+/// Expected value to player 0 when both players follow `policy`, chance
+/// integrated exactly. At a Nash this equals the game value −1/18.
+pub fn kuhn_value(policy: &dyn Fn(&KuhnState, usize) -> Vec<f64>) -> f64 {
+    fn walk(g: &Kuhn, s: &KuhnState, policy: &dyn Fn(&KuhnState, usize) -> Vec<f64>) -> f64 {
+        if g.is_terminal(s) {
+            return g.returns(s, 0);
+        }
+        match g.turn(s) {
+            Turn::Chance => g
+                .chance_outcomes(s)
+                .iter()
+                .map(|&(a, p)| {
+                    let mut c = s.clone();
+                    g.apply(&mut c, a);
+                    p * walk(g, &c, policy)
+                })
+                .sum(),
+            Turn::Player(pl) => {
+                let sigma = policy(s, pl);
+                g.legal_actions(s)
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &a)| {
+                        if sigma[i] == 0.0 {
+                            return 0.0;
+                        }
+                        let mut c = s.clone();
+                        g.apply(&mut c, a);
+                        sigma[i] * walk(g, &c, policy)
+                    })
+                    .sum()
+            }
+        }
+    }
+    walk(&Kuhn, &Kuhn.initial_state(), policy)
+}
+
 fn kuhn_best_response(policy: &dyn Fn(&KuhnState, usize) -> Vec<f64>, br: usize) -> f64 {
     let g = Kuhn;
     let mut keys = Vec::new();

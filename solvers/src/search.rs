@@ -244,12 +244,6 @@ impl<G: Game, E: Eval<G>, S: SearchSpec<G>> AlphaBeta<G, E, S> {
         }
     }
 
-    fn ordered_actions(&self, game: &G, state: &G::State) -> Vec<G::Action> {
-        let mut actions = game.legal_actions(state);
-        actions.sort_by_key(|&a| -self.spec.order_hint(game, state, a));
-        actions
-    }
-
     /// Search order over `actions` as indices: TT best move first, then by
     /// `order_hint` descending with killers/history breaking ties among quiet
     /// moves.
@@ -417,10 +411,13 @@ impl<G: Game, E: Eval<G>, S: SearchSpec<G>> AlphaBeta<G, E, S> {
             alpha = stand;
         }
         let mut best = stand;
-        for a in self.ordered_actions(game, state) {
-            if !self.spec.is_noisy(game, state, a) {
-                continue;
-            }
+        let mut noisy: Vec<G::Action> = game
+            .legal_actions(state)
+            .into_iter()
+            .filter(|&a| self.spec.is_noisy(game, state, a))
+            .collect();
+        noisy.sort_by_key(|&a| -self.spec.order_hint(game, state, a));
+        for a in noisy {
             let mut child = state.clone();
             game.apply(&mut child, a);
             let score = if game.is_terminal(&child) {

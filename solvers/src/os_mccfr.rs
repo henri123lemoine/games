@@ -11,7 +11,8 @@
 //! The estimator is the outcome-sampling scheme of Lanctot, Waugh, Zinkevich &
 //! Bowling, "Monte Carlo Sampling for Regret Minimization in Extensive Games"
 //! (NIPS 2009): at the traverser's information sets actions are drawn from an
-//! ε-greedy mix of uniform and the regret-matched strategy (ε = 0.6); chance
+//! ε-greedy mix of uniform and the regret-matched strategy (ε, default 0.6);
+//! chance
 //! and opponents are sampled on-policy; sampled counterfactual regrets are
 //! importance-weighted by the trajectory's sample probability. The average
 //! strategy uses the paper's stochastically-weighted scheme: during player i's
@@ -29,29 +30,26 @@
 
 use game_core::{Agent, Game, Rng, Turn};
 
-use crate::FastMap;
-use crate::tabular::{normalized_or_uniform, regret_match};
-
-/// Uniform-exploration weight in the traverser's sampling policy.
-const EPSILON: f64 = 0.6;
+use crate::tabular::Tabular;
 
 /// Outcome-sampling MCCFR+ trainer for an N-player [`Game`].
 pub struct OsMccfr<G: Game> {
     game: G,
-    regret: FastMap<u64, Vec<f64>>,
-    strategy: FastMap<u64, Vec<f64>>,
+    tab: Tabular,
     rng: Rng,
     iterations: u64,
+    /// Uniform-exploration weight in the traverser's sampling policy.
+    pub epsilon: f64,
 }
 
 impl<G: Game> OsMccfr<G> {
     pub fn new(game: G, seed: u64) -> Self {
         Self {
             game,
-            regret: FastMap::default(),
-            strategy: FastMap::default(),
+            tab: Tabular::default(),
             rng: Rng::new(seed),
             iterations: 0,
+            epsilon: 0.6,
         }
     }
 
@@ -59,7 +57,7 @@ impl<G: Game> OsMccfr<G> {
         &self.game
     }
     pub fn num_infosets(&self) -> usize {
-        self.strategy.len()
+        self.tab.num_infosets()
     }
     pub fn iterations(&self) -> u64 {
         self.iterations
@@ -108,27 +106,12 @@ impl<G: Game> OsMccfr<G> {
                 let actions = self.game.legal_actions(state);
                 let n = actions.len();
                 let key = self.game.infoset_key(state, p);
-                let sigma = {
-                    let r = self.regret.entry(key).or_insert_with(|| vec![0.0; n]);
-                    debug_assert_eq!(
-                        r.len(),
-                        n,
-                        "action count changed for infoset {key:#x} — legal_actions must be \
-                         stable per information set"
-                    );
-                    regret_match(r)
-                };
+                let sigma = self.tab.sigma(key, n);
                 if p == traverser {
-                    {
-                        let w = my_reach / sample_reach;
-                        let s = self.strategy.entry(key).or_insert_with(|| vec![0.0; n]);
-                        for i in 0..n {
-                            s[i] += w * sigma[i];
-                        }
-                    }
+                    self.tab.accumulate(key, &sigma, my_reach / sample_reach);
                     let explore: Vec<f64> = sigma
                         .iter()
-                        .map(|&pr| EPSILON / n as f64 + (1.0 - EPSILON) * pr)
+                        .map(|&pr| self.epsilon / n as f64 + (1.0 - self.epsilon) * pr)
                         .collect();
                     let i = self.rng.pick(&explore);
                     let mut child = state.clone();
@@ -144,7 +127,7 @@ impl<G: Game> OsMccfr<G> {
                     // for the sampled action, 0 for the rest, and
                     // ṽ(I) = σ(a|I)·ṽ(I,a); regret increments are ṽ(I,·) − ṽ(I).
                     let w = u * opp_reach * tail;
-                    let r = self.regret.get_mut(&key).unwrap();
+                    let r = self.tab.regret.get_mut(&key).unwrap();
                     for (j, rj) in r.iter_mut().enumerate() {
                         let inc = if j == i {
                             w * (1.0 - sigma[i])
@@ -173,8 +156,7 @@ impl<G: Game> OsMccfr<G> {
     /// Average-strategy distribution at `state`'s information set for `player`.
     pub fn policy(&self, state: &G::State, player: usize) -> Vec<f64> {
         let n = self.game.legal_actions(state).len();
-        let key = self.game.infoset_key(state, player);
-        normalized_or_uniform(self.strategy.get(&key), n)
+        self.tab.average(self.game.infoset_key(state, player), n)
     }
 
     /// Sample an action index from the average strategy. Usable as an

@@ -8,126 +8,7 @@ use game_core::{Game, Turn};
 use solvers::os_mccfr::OsMccfr;
 
 mod common;
-use common::{Kuhn, KuhnState};
-
-/// Expected value to player 0 when both players play the solver's average
-/// strategy, chance integrated exactly.
-fn self_play_value(g: &Kuhn, solver: &OsMccfr<Kuhn>, s: &KuhnState) -> f64 {
-    if g.is_terminal(s) {
-        return g.returns(s, 0);
-    }
-    match g.turn(s) {
-        Turn::Chance => g
-            .chance_outcomes(s)
-            .iter()
-            .map(|&(a, p)| {
-                let mut c = s.clone();
-                g.apply(&mut c, a);
-                p * self_play_value(g, solver, &c)
-            })
-            .sum(),
-        Turn::Player(pl) => {
-            let sigma = solver.policy(s, pl);
-            g.legal_actions(s)
-                .iter()
-                .enumerate()
-                .map(|(i, &a)| {
-                    let mut c = s.clone();
-                    g.apply(&mut c, a);
-                    sigma[i] * self_play_value(g, solver, &c)
-                })
-                .sum()
-        }
-    }
-}
-
-fn collect_infosets(g: &Kuhn, s: &KuhnState, br: usize, keys: &mut Vec<u64>) {
-    if g.is_terminal(s) {
-        return;
-    }
-    if let Turn::Player(pl) = g.turn(s)
-        && pl == br
-    {
-        let k = g.infoset_key(s, br);
-        if !keys.contains(&k) {
-            keys.push(k);
-        }
-    }
-    let actions: Vec<u8> = match g.turn(s) {
-        Turn::Chance => g.chance_outcomes(s).iter().map(|&(a, _)| a).collect(),
-        Turn::Player(_) => g.legal_actions(s),
-    };
-    for a in actions {
-        let mut c = s.clone();
-        g.apply(&mut c, a);
-        collect_infosets(g, &c, br, keys);
-    }
-}
-
-/// Value to `br` when `br` plays the pure strategy `choice` (action index per
-/// infoset key) and the opponent plays the solver's average strategy.
-fn pure_vs_avg(
-    g: &Kuhn,
-    solver: &OsMccfr<Kuhn>,
-    s: &KuhnState,
-    br: usize,
-    choice: &std::collections::HashMap<u64, usize>,
-) -> f64 {
-    if g.is_terminal(s) {
-        return g.returns(s, br);
-    }
-    match g.turn(s) {
-        Turn::Chance => g
-            .chance_outcomes(s)
-            .iter()
-            .map(|&(a, p)| {
-                let mut c = s.clone();
-                g.apply(&mut c, a);
-                p * pure_vs_avg(g, solver, &c, br, choice)
-            })
-            .sum(),
-        Turn::Player(pl) if pl == br => {
-            let actions = g.legal_actions(s);
-            let i = choice[&g.infoset_key(s, br)];
-            let mut c = s.clone();
-            g.apply(&mut c, actions[i]);
-            pure_vs_avg(g, solver, &c, br, choice)
-        }
-        Turn::Player(pl) => {
-            let sigma = solver.policy(s, pl);
-            g.legal_actions(s)
-                .iter()
-                .enumerate()
-                .map(|(i, &a)| {
-                    let mut c = s.clone();
-                    g.apply(&mut c, a);
-                    sigma[i] * pure_vs_avg(g, solver, &c, br, choice)
-                })
-                .sum()
-        }
-    }
-}
-
-/// Exact best-response value for `br` against the solver's average strategy by
-/// enumerating all of `br`'s pure strategies (Kuhn: 6 binary infosets → 64).
-/// A best response over infosets is realized by some pure strategy, so the max
-/// over all of them is exact.
-fn best_response_value(g: &Kuhn, solver: &OsMccfr<Kuhn>, br: usize) -> f64 {
-    let mut keys = Vec::new();
-    collect_infosets(g, &g.initial_state(), br, &mut keys);
-    assert_eq!(keys.len(), 6, "each Kuhn player has 6 infosets");
-    let mut best = f64::NEG_INFINITY;
-    for assignment in 0..(1u32 << keys.len()) {
-        let choice: std::collections::HashMap<u64, usize> = keys
-            .iter()
-            .enumerate()
-            .map(|(i, &k)| (k, (assignment >> i & 1) as usize))
-            .collect();
-        let v = pure_vs_avg(g, solver, &g.initial_state(), br, &choice);
-        best = best.max(v);
-    }
-    best
-}
+use common::{Kuhn, KuhnState, kuhn_nashconv, kuhn_value};
 
 /// P(action 1) at the infoset where `player` holds `card` after `history`.
 fn p_bet(solver: &OsMccfr<Kuhn>, player: usize, card: i8, history: &[u8]) -> f64 {
@@ -149,21 +30,16 @@ fn kuhn_converges_to_nash() {
     assert_eq!(solver.num_infosets(), 12, "Kuhn has 12 information sets");
 
     // Self-play value of the average strategy approximates the game value -1/18.
-    let value = self_play_value(solver.game(), &solver, &solver.game().initial_state());
+    let value = kuhn_value(&|s, p| solver.policy(s, p));
     assert!(
         (value - (-1.0 / 18.0)).abs() < 0.02,
         "value to P0 should be ~-1/18, got {value}"
     );
 
-    // Exact best response against the average strategy: NashConv = br0 + br1
-    // is 0 at Nash; outcome sampling should drive it small.
-    let br0 = best_response_value(solver.game(), &solver, 0);
-    let br1 = best_response_value(solver.game(), &solver, 1);
-    let nashconv = br0 + br1;
-    assert!(
-        nashconv < 0.08,
-        "should approach Nash: br0={br0} br1={br1} nashconv={nashconv}"
-    );
+    // Exact best response against the average strategy: NashConv is 0 at
+    // Nash; outcome sampling should drive it small.
+    let nashconv = kuhn_nashconv(&|s, p| solver.policy(s, p));
+    assert!(nashconv < 0.08, "should approach Nash: nashconv={nashconv}");
 
     // Known equilibrium structure. P0 opens: bet(Q)=0, bet(K)=3·bet(J) with
     // bet(J)=α ∈ [0, 1/3]. P1 facing a bet: call(J)=0, call(Q)=1/3, call(K)=1.
