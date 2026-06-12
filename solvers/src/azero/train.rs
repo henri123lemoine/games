@@ -9,8 +9,9 @@ use rayon::prelude::*;
 use web_time::Instant;
 
 use super::mlp::{Mlp, Sample, SgdMomentum};
-use super::puct::{PolicyValueEncoder, Puct, argmax, sample_chance};
+use super::puct::{PolicyValueEncoder, Puct};
 use super::rand::mix;
+use super::search::{argmax, sample_chance};
 
 pub struct AzeroConfig {
     pub hidden: usize,
