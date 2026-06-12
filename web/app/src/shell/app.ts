@@ -42,17 +42,29 @@ const ARTIFACTS: Record<string, string> = {
 interface OptField {
   key: string;
   value: string;
+  note: string;
+  bots: string[];
 }
 
 /** The drawer's fields come from the engine's structured option schema;
- * seed and seat get dedicated rows, so they are filtered out here. */
+ * seed, seat, and bot get dedicated rows, so they are filtered out here. */
 function optFields(schema: GameOpt[], current: Record<string, string>): OptField[] {
   return schema
-    .filter((o) => o.key !== 'seed' && o.key !== 'seat')
+    .filter((o) => o.key !== 'seed' && o.key !== 'seat' && o.key !== 'bot')
     .map((o) => ({
       key: o.key,
       value: current[o.key] ?? o.value.split('|')[0].replace(/\.{3}$/, ''),
+      note: o.note,
+      bots: o.bots,
     }));
+}
+
+/** The bot the engine will seat for these opts — explicit choice, or the
+ * schema's first listed bot (the registry default) for versus games. */
+function effectiveBot(game: GameInfo, opts: Record<string, string>): string {
+  const spec = game.optsSchema.find((o) => o.key === 'bot');
+  if (!spec) return '';
+  return opts.bot ?? (game.solo ? '' : spec.value.split('|')[0]);
 }
 
 function randomSeed(): number {
@@ -184,6 +196,10 @@ export class App {
     } else if (opts.seat === 'watch') {
       opts.seat = '0';
     }
+    const bot = effectiveBot(game, opts);
+    for (const o of game.optsSchema) {
+      if (o.bots.length > 0 && !o.bots.includes(bot)) delete opts[o.key];
+    }
     opts.seed ||= String(randomSeed());
     return opts;
   }
@@ -295,28 +311,60 @@ export class App {
         input.value = '';
       }
     };
-    this.wireDrawer(game, mode, opts);
+    this.wireDrawer(game, opts);
   }
 
-  private wireDrawer(game: GameInfo, mode: Mode, opts: Record<string, string>): void {
+  private wireDrawer(game: GameInfo, opts: Record<string, string>): void {
     const drawer = this.root.querySelector<HTMLElement>('.drawer')!;
     const fieldsEl = drawer.querySelector<HTMLElement>('.drawer-fields')!;
+    const note = (text: string) =>
+      text ? `<small class="opt-note">${esc(text)}</small>` : '';
     const open = () => {
-      const fields = optFields(game.optsSchema, opts);
+      const botSpec = game.optsSchema.find((o) => o.key === 'bot');
+      const botNames = botSpec ? botSpec.value.split('|') : [];
+      const curBot = effectiveBot(game, opts);
+      const seatSpec = game.optsSchema.find((o) => o.key === 'seat');
       const seatRow = game.solo
         ? ''
         : `<label class="opt-row"><span>seat</span>
-             <input name="d-seat" value="${esc(opts.seat ?? '0')}" autocomplete="off" /></label>`;
+             <input name="d-seat" value="${esc(opts.seat ?? '0')}" autocomplete="off" />
+             ${note(seatSpec?.note ?? '')}</label>`;
+      const botRow = botSpec
+        ? `<label class="opt-row"><span>bot</span>
+             <select name="d-bot">
+               ${game.solo ? `<option value=""${curBot === '' ? ' selected' : ''}>— you play —</option>` : ''}
+               ${botNames
+                 .map(
+                   (b) =>
+                     `<option value="${esc(b)}"${b === curBot ? ' selected' : ''}>${esc(b)}</option>`,
+                 )
+                 .join('')}
+             </select>
+             ${note(game.solo ? '' : botSpec.note)}</label>`
+        : '';
+      const fields = optFields(game.optsSchema, opts);
       fieldsEl.innerHTML = `
         ${seatRow}
+        ${botRow}
         ${fields
           .map(
-            (f) => `<label class="opt-row"><span>${esc(f.key)}</span>
-              <input name="d-${esc(f.key)}" value="${esc(f.value)}" autocomplete="off" /></label>`,
+            (f) => `<label class="opt-row"${f.bots.length ? ` data-bots="${esc(f.bots.join(' '))}"` : ''}>
+              <span>${esc(f.key)}</span>
+              <input name="d-${esc(f.key)}" value="${esc(f.value)}" autocomplete="off" />
+              ${note(f.note)}</label>`,
           )
           .join('')}
         <label class="opt-row"><span>seed</span>
           <input name="d-seed" value="${esc(String(opts.seed ?? randomSeed()))}" autocomplete="off" /></label>`;
+      const botSel = fieldsEl.querySelector<HTMLSelectElement>('select[name="d-bot"]');
+      const syncRows = () => {
+        const bot = botSel?.value ?? '';
+        for (const row of fieldsEl.querySelectorAll<HTMLElement>('.opt-row[data-bots]')) {
+          row.hidden = !row.dataset.bots!.split(' ').includes(bot);
+        }
+      };
+      if (botSel) botSel.onchange = syncRows;
+      syncRows();
       drawer.hidden = false;
     };
     this.root.querySelector<HTMLButtonElement>('.gear')!.onclick = open;
@@ -328,11 +376,21 @@ export class App {
     };
     drawer.querySelector<HTMLButtonElement>('.drawer-apply')!.onclick = () => {
       const overrides: Record<string, string> = {};
-      for (const input of fieldsEl.querySelectorAll<HTMLInputElement>('input')) {
-        const key = input.name.replace(/^d-/, '');
-        if (input.value.trim() !== '') overrides[key] = input.value.trim();
+      const controls = fieldsEl.querySelectorAll<HTMLInputElement | HTMLSelectElement>(
+        'input, select',
+      );
+      for (const el of controls) {
+        if (el.closest<HTMLElement>('.opt-row')?.hidden) continue;
+        const key = el.name.replace(/^d-/, '');
+        if (el.value.trim() !== '') overrides[key] = el.value.trim();
       }
-      const nextMode: Mode = overrides.seat === 'watch' ? 'watch' : mode;
+      const nextMode: Mode = game.solo
+        ? overrides.bot
+          ? 'watch'
+          : 'play'
+        : overrides.seat === 'watch'
+          ? 'watch'
+          : 'play';
       void this.startMatch(game, nextMode, overrides);
     };
   }

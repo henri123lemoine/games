@@ -5,6 +5,8 @@ export interface GameOpt {
   key: string;
   value: string;
   note: string;
+  /** `bot` values this option configures; empty for game-level options. */
+  bots: string[];
 }
 
 export interface GameInfo {

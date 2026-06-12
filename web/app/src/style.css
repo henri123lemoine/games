@@ -608,8 +608,13 @@ button {
 
 .opt-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+}
+
+.opt-row[hidden] {
+  display: none;
 }
 
 .opt-row span {
@@ -618,7 +623,8 @@ button {
   font-size: 0.88rem;
 }
 
-.opt-row input {
+.opt-row input,
+.opt-row select {
   flex: 1;
   background: var(--bg-inset);
   border: 1px solid var(--border);
@@ -628,9 +634,18 @@ button {
   font: inherit;
 }
 
-.opt-row input:focus {
+.opt-row input:focus,
+.opt-row select:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+.opt-note {
+  flex-basis: 100%;
+  margin-top: -6px;
+  padding-left: 106px;
+  color: var(--text-dim);
+  font-size: 0.75rem;
 }
 
 .drawer-actions {
