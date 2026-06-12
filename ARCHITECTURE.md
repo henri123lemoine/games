@@ -140,6 +140,11 @@ random at chess within minutes of CPU self-play, while real chess *strength*
 remains a GPU-scale endeavor — which is what `azt/` is for: a deliberately
 *standalone* crate (not a workspace member, so libtorch never touches the
 main build) that trains an AlphaZero resnet on Apple-GPU via tch-rs, batching
-leaf evaluations across hundreds of concurrent games. It consumes the chess
-crate's `encode_planes`/`az_move_index` knowledge and the same run-dir
-contract (metrics.jsonl + dashboard + STOP) as the CPU harness.
+leaf evaluations across hundreds of concurrent games. The search itself is
+not bespoke: there is exactly one PUCT implementation, the batched
+park/resume `solvers::azero::Search` (generic over `Game` +
+`PolicyValueEncoder`), which the MLP trainer drives synchronously, `azt`
+drives with GPU batches through `azinfer`'s chess instantiation, and the
+browser drives with WebGPU through the same `azinfer` surface. `azt` keeps
+the same run-dir contract (metrics.jsonl + dashboard + STOP) as the CPU
+harness.
