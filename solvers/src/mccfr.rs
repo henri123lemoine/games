@@ -12,14 +12,12 @@
 
 use game_core::{Agent, Game, Rng, Turn};
 
-use crate::FastMap;
-use crate::tabular::{normalized_or_uniform, regret_match};
+use crate::tabular::Tabular;
 
 /// External-sampling MCCFR+ trainer for an N-player [`Game`].
 pub struct Mccfr<G: Game> {
     game: G,
-    regret: FastMap<u64, Vec<f64>>,
-    strategy: FastMap<u64, Vec<f64>>,
+    tab: Tabular,
     rng: Rng,
     iterations: u64,
 }
@@ -28,8 +26,7 @@ impl<G: Game> Mccfr<G> {
     pub fn new(game: G, seed: u64) -> Self {
         Self {
             game,
-            regret: FastMap::default(),
-            strategy: FastMap::default(),
+            tab: Tabular::default(),
             rng: Rng::new(seed),
             iterations: 0,
         }
@@ -39,7 +36,7 @@ impl<G: Game> Mccfr<G> {
         &self.game
     }
     pub fn num_infosets(&self) -> usize {
-        self.strategy.len()
+        self.tab.num_infosets()
     }
     pub fn iterations(&self) -> u64 {
         self.iterations
@@ -74,16 +71,7 @@ impl<G: Game> Mccfr<G> {
                 let actions = self.game.legal_actions(state);
                 let n = actions.len();
                 let key = self.game.infoset_key(state, p);
-                let sigma = {
-                    let r = self.regret.entry(key).or_insert_with(|| vec![0.0; n]);
-                    debug_assert_eq!(
-                        r.len(),
-                        n,
-                        "action count changed for infoset {key:#x} — legal_actions must be \
-                         stable per information set"
-                    );
-                    regret_match(r)
-                };
+                let sigma = self.tab.sigma(key, n);
                 if p == traverser {
                     let mut child_v = vec![0.0; n];
                     let mut v = 0.0;
@@ -93,18 +81,13 @@ impl<G: Game> Mccfr<G> {
                         child_v[i] = self.traverse(&child, traverser);
                         v += sigma[i] * child_v[i];
                     }
-                    let r = self.regret.get_mut(&key).unwrap();
+                    let r = self.tab.regret.get_mut(&key).unwrap();
                     for i in 0..n {
                         r[i] = (r[i] + child_v[i] - v).max(0.0);
                     }
                     v
                 } else {
-                    {
-                        let s = self.strategy.entry(key).or_insert_with(|| vec![0.0; n]);
-                        for i in 0..n {
-                            s[i] += sigma[i];
-                        }
-                    }
+                    self.tab.accumulate(key, &sigma, 1.0);
                     let i = self.rng.pick(&sigma);
                     let mut child = state.clone();
                     self.game.apply(&mut child, actions[i]);
@@ -117,8 +100,7 @@ impl<G: Game> Mccfr<G> {
     /// Average-strategy distribution at `state`'s information set for `player`.
     pub fn policy(&self, state: &G::State, player: usize) -> Vec<f64> {
         let n = self.game.legal_actions(state).len();
-        let key = self.game.infoset_key(state, player);
-        normalized_or_uniform(self.strategy.get(&key), n)
+        self.tab.average(self.game.infoset_key(state, player), n)
     }
 
     /// Sample an action index from the average strategy. Usable as an

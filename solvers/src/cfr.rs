@@ -1,7 +1,7 @@
 use game_core::{Agent, Game, Rng, Turn};
 
 use crate::FastMap;
-use crate::tabular::{argmax, normalized_or_uniform, regret_match};
+use crate::tabular::{Tabular, argmax};
 
 /// Generic CFR+ solver with exact best-response exploitability.
 ///
@@ -14,8 +14,7 @@ use crate::tabular::{argmax, normalized_or_uniform, regret_match};
 /// optimization for larger games.
 pub struct Cfr<G: Game> {
     game: G,
-    regret: FastMap<u64, Vec<f64>>,
-    strategy: FastMap<u64, Vec<f64>>,
+    tab: Tabular,
     iterations: u64,
 }
 
@@ -29,8 +28,7 @@ impl<G: Game> Cfr<G> {
         );
         Self {
             game,
-            regret: FastMap::default(),
-            strategy: FastMap::default(),
+            tab: Tabular::default(),
             iterations: 0,
         }
     }
@@ -40,7 +38,7 @@ impl<G: Game> Cfr<G> {
     }
 
     pub fn num_infosets(&self) -> usize {
-        self.strategy.len()
+        self.tab.num_infosets()
     }
 
     pub fn game(&self) -> &G {
@@ -91,16 +89,7 @@ impl<G: Game> Cfr<G> {
                 let actions = self.game.legal_actions(state);
                 let n = actions.len();
                 let key = self.game.infoset_key(state, pl);
-                let sigma = {
-                    let r = self.regret.entry(key).or_insert_with(|| vec![0.0; n]);
-                    debug_assert_eq!(
-                        r.len(),
-                        n,
-                        "action count changed for infoset {key:#x} — legal_actions must be \
-                         stable per information set"
-                    );
-                    regret_match(r)
-                };
+                let sigma = self.tab.sigma(key, n);
                 if pl != traverser {
                     let mut v = 0.0;
                     for (i, &a) in actions.iter().enumerate() {
@@ -123,14 +112,11 @@ impl<G: Game> Cfr<G> {
                         self.cfr(&child, traverser, my_reach * sigma[i], ext_reach, weight);
                     v += sigma[i] * child_v[i];
                 }
-                let r = self.regret.get_mut(&key).unwrap();
+                let r = self.tab.regret.get_mut(&key).unwrap();
                 for i in 0..n {
                     r[i] = (r[i] + ext_reach * (child_v[i] - v)).max(0.0);
                 }
-                let s = self.strategy.entry(key).or_insert_with(|| vec![0.0; n]);
-                for i in 0..n {
-                    s[i] += weight * my_reach * sigma[i];
-                }
+                self.tab.accumulate(key, &sigma, weight * my_reach);
                 v
             }
         }
@@ -139,7 +125,7 @@ impl<G: Game> Cfr<G> {
     /// Average strategy at an information set (normalized strategy sums), or a
     /// uniform distribution over `n` actions if the set was never visited.
     fn average_strategy(&self, key: u64, n: usize) -> Vec<f64> {
-        normalized_or_uniform(self.strategy.get(&key), n)
+        self.tab.average(key, n)
     }
 
     /// Exact best-response exploitability. Returns `(br0, br1, nashconv)` where

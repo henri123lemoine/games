@@ -1,5 +1,52 @@
-//! Helpers shared by the tabular regret-minimization family
-//! ([`crate::Cfr`], [`crate::Mccfr`], [`crate::os_mccfr::OsMccfr`]).
+//! Scaffolding shared by the tabular regret-minimization family
+//! ([`crate::Cfr`], [`crate::Mccfr`], [`crate::os_mccfr::OsMccfr`]): the
+//! regret/strategy tables with their reads and the regret-matching math.
+//! The traversal logic — where the variants actually differ — stays with
+//! each solver.
+
+use crate::FastMap;
+
+/// Cumulative regrets and cumulative strategy weights, keyed by infoset.
+#[derive(Default)]
+pub(crate) struct Tabular {
+    pub regret: FastMap<u64, Vec<f64>>,
+    pub strategy: FastMap<u64, Vec<f64>>,
+}
+
+impl Tabular {
+    pub fn num_infosets(&self) -> usize {
+        self.strategy.len()
+    }
+
+    /// Regret-matched current strategy at `key`, creating the regret vector
+    /// on first visit.
+    pub fn sigma(&mut self, key: u64, n: usize) -> Vec<f64> {
+        let r = self.regret.entry(key).or_insert_with(|| vec![0.0; n]);
+        debug_assert_eq!(
+            r.len(),
+            n,
+            "action count changed for infoset {key:#x} — legal_actions must be \
+             stable per information set"
+        );
+        regret_match(r)
+    }
+
+    /// Accumulates `w·sigma` into the average strategy at `key`.
+    pub fn accumulate(&mut self, key: u64, sigma: &[f64], w: f64) {
+        let s = self
+            .strategy
+            .entry(key)
+            .or_insert_with(|| vec![0.0; sigma.len()]);
+        for (si, p) in s.iter_mut().zip(sigma) {
+            *si += w * p;
+        }
+    }
+
+    /// Average-strategy distribution at `key` (uniform when unvisited).
+    pub fn average(&self, key: u64, n: usize) -> Vec<f64> {
+        normalized_or_uniform(self.strategy.get(&key), n)
+    }
+}
 
 /// Index of the maximum element (first on ties).
 pub(crate) fn argmax(v: &[f64]) -> usize {

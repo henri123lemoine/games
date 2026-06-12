@@ -53,3 +53,4 @@ impl Hasher for FxHasher {
     }
 }
 pub(crate) type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
+pub(crate) type FastSet<T> = std::collections::HashSet<T, BuildHasherDefault<FxHasher>>;

@@ -125,9 +125,7 @@ impl<G: Game> QLearner<G> {
             }
             match self.game.turn(&state) {
                 Turn::Chance => {
-                    let outs = self.game.chance_outcomes(&state);
-                    let i = game_core::rand::sample_outcome(&outs, &mut self.rng);
-                    self.game.apply(&mut state, outs[i].0);
+                    game_core::rand::step_chance(&self.game, &mut state, &mut self.rng);
                 }
                 Turn::Player(p) => {
                     let key = self.game.infoset_key(&state, p);
