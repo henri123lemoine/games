@@ -18,7 +18,7 @@ const GAME_TAGLINES: Record<string, string> = {
   connect4: 'deep tactical search',
   go: 'Monte-Carlo tree search, 9×9',
   '2048': 'an MCTS bot, or your own arrows',
-  snake: 'the classic, with a watchful bot',
+  snake: "the classic, and it won't wait for you",
 };
 
 /** What clicking a card starts: browser-tuned, no questions asked. */
@@ -393,7 +393,7 @@ export class App {
       this.frontend!.promptAction(st.labels);
       const input = await new Promise<string>((res) => (this.submitResolve = res));
       if (gen !== this.gen) return;
-      this.setStatus('Thinking…');
+      if (st.numSeats > 1) this.setStatus('Thinking…');
       try {
         const mev = await this.host.apply(input);
         if (gen !== this.gen) return;
