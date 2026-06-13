@@ -963,6 +963,44 @@ impl Solver {
         f.write_all(&self.to_bytes())
     }
 
+    /// A strategy-only encoding for shipped play artifacts (the web arcade):
+    /// regrets are training state and are dropped, and each infoset stores
+    /// only its normalized draw probability as an `f32` — roughly a quarter
+    /// of the full file. A solver loaded from this plays identically but
+    /// must not resume training (its regrets come back empty).
+    pub fn to_play_bytes(&self) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&SOLVER_MAGIC.to_le_bytes());
+        buf.push(SOLVER_PLAY_FORMAT_VERSION);
+        buf.extend_from_slice(&self.iterations.to_le_bytes());
+        buf.push(self.start_hearts);
+        buf.push(self.abstract_keys as u8);
+        let entries: Vec<(u64, f32)> = self
+            .strategy_sum
+            .iter()
+            .filter_map(|(k, s)| {
+                let sum = s[DRAW] + s[STAND];
+                (sum > 0.0).then(|| (*k, (s[DRAW] / sum) as f32))
+            })
+            .collect();
+        buf.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        for (k, p) in entries {
+            buf.extend_from_slice(&k.to_le_bytes());
+            buf.extend_from_slice(&p.to_le_bytes());
+        }
+        buf.extend_from_slice(&(self.value.len() as u64).to_le_bytes());
+        for (k, v) in &self.value {
+            buf.extend_from_slice(&k.to_le_bytes());
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        buf
+    }
+
+    pub fn save_play(&self, path: &str) -> io::Result<()> {
+        let mut f = std::fs::File::create(path)?;
+        f.write_all(&self.to_play_bytes())
+    }
+
     /// Parses a solver produced by [`Solver::to_bytes`] / [`Solver::save`].
     pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
         let mut r = Reader::new(bytes);
@@ -973,16 +1011,19 @@ impl Solver {
             ));
         }
         let version = r.u8()?;
-        if version != SOLVER_FORMAT_VERSION {
+        if version != SOLVER_FORMAT_VERSION && version != SOLVER_PLAY_FORMAT_VERSION {
             return Err(invalid(format!(
-                "unsupported solver format version {version} (expected {SOLVER_FORMAT_VERSION}); retrain with this build"
+                "unsupported solver format version {version} (expected {SOLVER_FORMAT_VERSION} or {SOLVER_PLAY_FORMAT_VERSION}); retrain with this build"
             )));
         }
         let iterations = r.u64()?;
         let start_hearts = r.u8()?;
         let abstract_keys = r.u8()? != 0;
-        let regret = r.table()?;
-        let strategy_sum = r.table()?;
+        let (regret, strategy_sum) = if version == SOLVER_FORMAT_VERSION {
+            (r.table()?, r.table()?)
+        } else {
+            (FastMap::default(), r.play_table()?)
+        };
         let value = r.value_table()?;
         if !r.is_empty() {
             return Err(invalid(
@@ -1011,6 +1052,8 @@ impl Solver {
 /// instead of a panic. Bump the version whenever the byte layout changes.
 const SOLVER_MAGIC: u32 = 0x3132_5453; // "T21S" little-endian
 const SOLVER_FORMAT_VERSION: u8 = 2;
+/// The strategy-only artifact written by [`Solver::to_play_bytes`].
+const SOLVER_PLAY_FORMAT_VERSION: u8 = 3;
 
 fn invalid(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
@@ -1090,6 +1133,32 @@ impl<'a> Reader<'a> {
         Ok(table)
     }
 
+    fn f32(&mut self) -> io::Result<f32> {
+        Ok(f32::from_le_bytes(self.take(4)?.try_into().unwrap()))
+    }
+
+    /// The play format's strategy table: per infoset just the draw
+    /// probability, reconstructed as an already-normalized strategy pair.
+    fn play_table(&mut self) -> io::Result<FastMap<u64, [f64; 2]>> {
+        let n = self.u64()? as usize;
+        let remaining = self.bytes.len() - self.pos;
+        if n > remaining / 12 {
+            return Err(invalid(
+                "solver table length exceeds file size (corrupt file)",
+            ));
+        }
+        let mut table = FastMap::with_capacity_and_hasher(n, Default::default());
+        for _ in 0..n {
+            let k = self.u64()?;
+            let p = (self.f32()? as f64).clamp(0.0, 1.0);
+            let mut s = [0.0; 2];
+            s[DRAW] = p;
+            s[STAND] = 1.0 - p;
+            table.insert(k, s);
+        }
+        Ok(table)
+    }
+
     fn value_table(&mut self) -> io::Result<FastMap<u32, f64>> {
         let n = self.u64()? as usize;
         let remaining = self.bytes.len() - self.pos;
@@ -1111,6 +1180,23 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn play_bytes_roundtrip_preserves_strategy() {
+        let mut solver = Solver::with_hearts(7, 1);
+        solver.solve(200);
+        let loaded = Solver::from_bytes(&solver.to_play_bytes()).expect("parse play bytes");
+        assert_eq!(loaded.start_hearts(), solver.start_hearts());
+        assert!(loaded.regret.is_empty());
+        let mut checked = 0;
+        for k in solver.strategy_sum.keys() {
+            let want = solver.average_draw_prob(*k);
+            let got = loaded.average_draw_prob(*k);
+            assert!((want - got).abs() < 1e-6, "key {k}: {want} vs {got}");
+            checked += 1;
+        }
+        assert!(checked > 0);
+    }
 
     #[test]
     fn parallel_solve_is_deterministic() {

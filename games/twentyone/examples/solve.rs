@@ -46,7 +46,7 @@ fn main() {
         );
     }
     if let Some(path) = out {
-        solver.save(&path).expect("save solver");
-        println!("saved to {path}");
+        solver.save_play(&path).expect("save solver");
+        println!("saved play artifact to {path}");
     }
 }
