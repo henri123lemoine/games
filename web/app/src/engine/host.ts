@@ -113,6 +113,10 @@ export class EngineHost {
     return this.call({ op: 'azNew', sims, leaves, seed }) as Promise<void>;
   }
 
+  goNew(sims: number, leaves: number, seed: number, size: number): Promise<void> {
+    return this.call({ op: 'goNew', sims, leaves, seed, size }) as Promise<void>;
+  }
+
   azPush(uci: string): Promise<void> {
     return this.call({ op: 'azPush', uci }) as Promise<void>;
   }

@@ -3,6 +3,7 @@
 
 import init, {
   AzChessBot,
+  AzGoBot,
   WebMatch,
   create_match,
   elo,
@@ -16,7 +17,9 @@ import wasmUrl from 'web-engine/web_engine_bg.wasm?url';
 import type { EngineRequest, EngineResponse, ViewState } from './protocol';
 
 let match: WebMatch | null = null;
-let azBot: AzChessBot | null = null;
+// One client-driven search bot at a time; chess and go share the push/
+// advance/best surface, so the rest of the az* ops are bot-agnostic.
+let azBot: AzChessBot | AzGoBot | null = null;
 const ready = init({ module_or_path: wasmUrl });
 
 function state(): ViewState {
@@ -79,6 +82,10 @@ function handle(req: EngineRequest): unknown {
     case 'azNew':
       azBot?.free();
       azBot = new AzChessBot(req.sims, req.leaves, req.seed);
+      return null;
+    case 'goNew':
+      azBot?.free();
+      azBot = new AzGoBot(req.sims, req.leaves, req.seed, req.size);
       return null;
     case 'azPush': {
       if (!azBot) throw new Error('no az bot');

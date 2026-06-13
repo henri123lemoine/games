@@ -125,6 +125,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "goinfer"
+version = "0.1.0"
+dependencies = [
+ "game-core",
+ "go",
+ "solvers",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -403,6 +412,8 @@ dependencies = [
  "chess",
  "console_error_panic_hook",
  "game-core",
+ "go",
+ "goinfer",
  "lab",
  "serde_json",
  "wasm-bindgen",

@@ -7,6 +7,7 @@
 import type { EngineHost } from '../engine/host';
 import type { MatchEventData, ViewState } from '../engine/protocol';
 import { createAzeroChess } from './azero-chess';
+import { createAzeroGo } from './azero-go';
 
 export interface ClientBot {
   /** Mirror every applied move (any seat's), in order. */
@@ -23,7 +24,10 @@ export type ClientBotFactory = (
   opts: Record<string, string>,
 ) => Promise<ClientBot>;
 
-const factories = new Map<string, ClientBotFactory>([['chess/azero-gpu', createAzeroChess]]);
+const factories = new Map<string, ClientBotFactory>([
+  ['chess/azero-gpu', createAzeroChess],
+  ['go/azero-gpu', createAzeroGo],
+]);
 
 export function clientBotFor(gameId: string, bot: string | undefined): ClientBotFactory | null {
   return (bot && factories.get(`${gameId}/${bot}`)) || null;

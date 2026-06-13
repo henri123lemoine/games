@@ -37,6 +37,7 @@ version = "0.1.0"
 dependencies = [
  "game-core",
  "go",
+ "goinfer",
  "rayon",
  "serde_json",
  "solvers",
@@ -317,6 +318,15 @@ name = "go"
 version = "0.1.0"
 dependencies = [
  "game-core",
+]
+
+[[package]]
+name = "goinfer"
+version = "0.1.0"
+dependencies = [
+ "game-core",
+ "go",
+ "solvers",
 ]
 
 [[package]]
