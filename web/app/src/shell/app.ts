@@ -3,42 +3,37 @@
 // you and the board. One engine worker drives play; the shell owns the loop
 // and narration, frontends own the board.
 
-import { type ClientBot, clientBotFor } from '../bots';
-import { EngineHost } from '../engine/host';
-import type { GameInfo, GameOpt, Manifest, MatchEventData, ViewState } from '../engine/protocol';
-import { frontendFor } from '../frontends';
-import type { FrontendCtx, GameFrontend } from '../frontends/types';
-import { TournamentScreen } from './tournament';
-
-const GAME_TAGLINES: Record<string, string> = {
-  chess: 'alpha-beta search, perft-validated rules',
-  'liars-dice': 'belief-tracking bots that bluff back',
-  twentyone: 'a full-strength CFR+ solver',
-  othello: 'weighted squares and mobility',
-  connect4: 'deep tactical search',
-  go: 'Monte-Carlo tree search, 9×9',
-  '2048': 'an MCTS bot, or your own arrows',
-  snake: "the classic, and it won't wait for you",
-};
+import { type ClientBot, clientBotFor } from "../bots";
+import { EngineHost } from "../engine/host";
+import type {
+  GameInfo,
+  GameOpt,
+  Manifest,
+  MatchEventData,
+  ViewState,
+} from "../engine/protocol";
+import { frontendFor } from "../frontends";
+import type { FrontendCtx, GameFrontend } from "../frontends/types";
+import { TournamentScreen } from "./tournament";
 
 /** What clicking a card starts: browser-tuned, no questions asked. */
 const DEFAULT_OPTS: Record<string, Record<string, string>> = {
-  chess: { depth: '4' },
-  'liars-dice': { players: '5', dice: '5', rollouts: '400' },
-  twentyone: { hearts: '3' },
-  othello: { depth: '5' },
-  connect4: { depth: '7' },
-  go: { size: '9', sims: '1500' },
-  '2048': {},
+  chess: { depth: "4" },
+  "liars-dice": { players: "5", dice: "5", rollouts: "400" },
+  twentyone: { hearts: "3" },
+  othello: { depth: "5" },
+  connect4: { depth: "7" },
+  go: { size: "9", sims: "1500" },
+  "2048": {},
   snake: {},
 };
 
 /** Trained artifacts fetched as static assets, keyed by the path the
  * registry asks for. */
 const ARTIFACTS: Record<string, string> = {
-  'data/azero/chess.bin': 'artifacts/azero-chess.bin',
-  'data/twentyone/solver-h3.bin': 'artifacts/t21-solver-h3.bin',
-  'data/twentyone/solver-h6.bin': 'artifacts/t21-solver-h6.bin',
+  "data/azero/chess.bin": "artifacts/azero-chess.bin",
+  "data/twentyone/solver-h3.bin": "artifacts/t21-solver-h3.bin",
+  "data/twentyone/solver-h6.bin": "artifacts/t21-solver-h6.bin",
 };
 
 /** The shipped artifacts a match with these opts will ask the registry for.
@@ -46,11 +41,13 @@ const ARTIFACTS: Record<string, string> = {
  * browser never trains. */
 function artifactsFor(gameId: string, opts: Record<string, string>): string[] {
   const wanted: string[] = [];
-  if (gameId === 'chess') {
-    const net = opts.net ?? (opts.bot === 'azero' ? 'data/azero/chess.bin' : null);
+  if (gameId === "chess") {
+    const net =
+      opts.net ?? (opts.bot === "azero" ? "data/azero/chess.bin" : null);
     if (net) wanted.push(net);
   }
-  if (gameId === 'twentyone') wanted.push(`data/twentyone/solver-h${opts.hearts ?? '6'}.bin`);
+  if (gameId === "twentyone")
+    wanted.push(`data/twentyone/solver-h${opts.hearts ?? "6"}.bin`);
   return wanted.filter((w) => w in ARTIFACTS);
 }
 
@@ -64,12 +61,21 @@ interface OptField {
 /** The drawer's fields come from the engine's structured option schema;
  * seed, seat, and bot get dedicated rows, and native-only options (training
  * knobs) do not exist on the web. */
-function optFields(schema: GameOpt[], current: Record<string, string>): OptField[] {
+function optFields(
+  schema: GameOpt[],
+  current: Record<string, string>,
+): OptField[] {
   return schema
-    .filter((o) => o.key !== 'seed' && o.key !== 'seat' && o.key !== 'bot' && !o.nativeOnly)
+    .filter(
+      (o) =>
+        o.key !== "seed" &&
+        o.key !== "seat" &&
+        o.key !== "bot" &&
+        !o.nativeOnly,
+    )
     .map((o) => ({
       key: o.key,
-      value: current[o.key] ?? o.value.split('|')[0].replace(/\.{3}$/, ''),
+      value: current[o.key] ?? o.value.split("|")[0].replace(/\.{3}$/, ""),
       note: o.note,
       bots: o.bots,
     }));
@@ -78,9 +84,9 @@ function optFields(schema: GameOpt[], current: Record<string, string>): OptField
 /** The bot the engine will seat for these opts — explicit choice, or the
  * schema's first listed bot (the registry default) for versus games. */
 function effectiveBot(game: GameInfo, opts: Record<string, string>): string {
-  const spec = game.optsSchema.find((o) => o.key === 'bot');
-  if (!spec) return '';
-  return opts.bot ?? (game.solo ? '' : spec.value.split('|')[0]);
+  const spec = game.optsSchema.find((o) => o.key === "bot");
+  if (!spec) return "";
+  return opts.bot ?? (game.solo ? "" : spec.value.split("|")[0]);
 }
 
 function randomSeed(): number {
@@ -96,31 +102,31 @@ function esc(s: string): string {
  * itself with its own board, not an icon. */
 function miniFor(id: string): string {
   switch (id) {
-    case 'chess':
+    case "chess":
       return `<div class="mini mini-chess"><span class="mini-pc" style="left:12%;top:8%">♞</span><span class="mini-pc mini-pc-w" style="left:58%;top:52%">♙</span></div>`;
-    case 'liars-dice':
+    case "liars-dice":
       return `<div class="mini mini-dice">
         <span class="mini-die"><i style="left:25%;top:25%"></i><i style="left:65%;top:65%"></i></span>
         <span class="mini-die mini-die-2"><i style="left:45%;top:45%"></i><i style="left:18%;top:18%"></i><i style="left:72%;top:72%"></i></span>
         <span class="mini-cup"></span></div>`;
-    case 'twentyone':
+    case "twentyone":
       return `<div class="mini mini-t21"><span class="mini-card">7♠</span><span class="mini-card mini-card-2">9♦</span><span class="mini-heart">♥♥♥</span></div>`;
-    case 'othello':
+    case "othello":
       return `<div class="mini mini-othello"><span class="mini-disc mini-disc-b" style="left:28%;top:28%"></span><span class="mini-disc mini-disc-w" style="left:52%;top:28%"></span><span class="mini-disc mini-disc-w" style="left:28%;top:52%"></span><span class="mini-disc mini-disc-b" style="left:52%;top:52%"></span></div>`;
-    case 'connect4':
+    case "connect4":
       return `<div class="mini mini-c4"></div>`;
-    case 'go':
+    case "go":
       return `<div class="mini mini-go"><span class="mini-stone mini-stone-b" style="left:30%;top:30%"></span><span class="mini-stone mini-stone-w" style="left:55%;top:47%"></span><span class="mini-stone mini-stone-b" style="left:38%;top:63%"></span></div>`;
-    case '2048':
+    case "2048":
       return `<div class="mini mini-2048"><span>2</span><span class="v4">4</span><span class="v8">8</span><span class="v16">16</span></div>`;
-    case 'snake':
+    case "snake":
       return `<div class="mini mini-snake"><span class="mini-seg" style="left:18%;top:55%"></span><span class="mini-seg" style="left:33%;top:55%"></span><span class="mini-seg" style="left:48%;top:55%"></span><span class="mini-seg mini-head" style="left:48%;top:38%"></span><span class="mini-food" style="left:72%;top:25%"></span></div>`;
     default:
       return `<div class="mini"></div>`;
   }
 }
 
-type Mode = 'play' | 'watch';
+type Mode = "play" | "watch";
 
 export class App {
   private host = new EngineHost();
@@ -153,64 +159,77 @@ export class App {
           ${miniFor(g.id)}
           <div class="card-text">
             <span class="card-name">${esc(g.name || g.id)}</span>
-            <span class="card-summary">${esc(GAME_TAGLINES[g.id] ?? g.summary)}</span>
           </div>
           <button type="button" class="card-watch" title="Watch bots play">watch</button>
         </div>`,
       )
-      .join('');
+      .join("");
     this.root.innerHTML = `
       <div class="home">
-        <header class="hero">
-          <p class="eyebrow">rust · webassembly · runs on your device</p>
-          <h1>The Games Room</h1>
-          <p>Eight games, one engine. Sit down against the lab's bots —
-             or let them play each other.</p>
+        <header class="home-head">
+          <h1><a href="https://henrilemoine.com/">Games Room</a></h1>
         </header>
         <div class="card-grid">${cards}</div>
         <div class="home-foot">
           <button type="button" class="link tourney-link">Bot tournament lab &rarr;</button>
         </div>
+        <footer class="home-footer">
+          <nav>
+            <a href="https://github.com/henri123lemoine/games">GitHub</a>
+            <a href="https://henrilemoine.com/">henrilemoine.com</a>
+          </nav>
+          <span class="muted">Rust compiled to WebAssembly — everything runs on your device.</span>
+        </footer>
       </div>`;
-    for (const el of this.root.querySelectorAll<HTMLElement>('.card')) {
+    for (const el of this.root.querySelectorAll<HTMLElement>(".card")) {
       const game = this.manifest.games.find((g) => g.id === el.dataset.game);
       if (!game) continue;
-      const play = () => void this.startMatch(game, 'play');
+      const play = () => void this.startMatch(game, "play");
       el.onclick = play;
       el.onkeydown = (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
+        if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           play();
         }
       };
-      el.querySelector<HTMLButtonElement>('.card-watch')!.onclick = (e) => {
+      el.querySelector<HTMLButtonElement>(".card-watch")!.onclick = (e) => {
         e.stopPropagation();
-        void this.startMatch(game, 'watch');
+        void this.startMatch(game, "watch");
       };
     }
-    this.root.querySelector<HTMLButtonElement>('.tourney-link')!.onclick = () =>
+    this.root.querySelector<HTMLButtonElement>(".tourney-link")!.onclick = () =>
       this.renderTournament();
   }
 
   private renderTournament(): void {
     this.teardown();
-    this.tourney = new TournamentScreen(this.root, this.manifest.compare, this.host, () =>
-      this.renderHome(),
+    this.tourney = new TournamentScreen(
+      this.root,
+      this.manifest.compare,
+      this.host,
+      () => this.renderHome(),
     );
     this.tourney.render();
   }
 
   // ---------- match ----------
 
-  private buildOpts(game: GameInfo, mode: Mode, overrides: Record<string, string>): Record<string, string> {
-    const opts: Record<string, string> = { ...DEFAULT_OPTS[game.id], ...overrides };
-    if (mode === 'watch') {
+  private buildOpts(
+    game: GameInfo,
+    mode: Mode,
+    overrides: Record<string, string>,
+  ): Record<string, string> {
+    const opts: Record<string, string> = {
+      ...DEFAULT_OPTS[game.id],
+      ...overrides,
+    };
+    if (mode === "watch") {
       if (game.solo) opts.bot ||= game.watchBot;
-      else opts.seat = 'watch';
+      else opts.seat = "watch";
     } else if (game.solo) {
       delete opts.bot;
-    } else if (opts.seat === 'watch') {
-      opts.seat = '0';
+    } else if (opts.seat === "watch") {
+      opts.seat = "0";
     }
     const bot = effectiveBot(game, opts);
     for (const o of game.optsSchema) {
@@ -229,10 +248,10 @@ export class App {
     this.teardownMatch();
     const opts = this.buildOpts(game, mode, overrides);
     this.renderMatchSkeleton(game, mode, opts);
-    if (opts.bot === 'azero-gpu' && !('gpu' in navigator)) {
+    if (opts.bot === "azero-gpu" && !("gpu" in navigator)) {
       this.setStatus(
-        'WebGPU is unavailable in this browser — pick another bot in settings (azero runs the same net on CPU).',
-        'error',
+        "WebGPU is unavailable in this browser — pick another bot in settings (azero runs the same net on CPU).",
+        "error",
       );
       return;
     }
@@ -243,7 +262,7 @@ export class App {
       const makeBot = clientBotFor(game.id, opts.bot);
       this.clientBot = makeBot ? await makeBot(this.host, opts) : null;
       if (gen !== this.gen) return;
-      const boardEl = this.root.querySelector<HTMLElement>('.board')!;
+      const boardEl = this.root.querySelector<HTMLElement>(".board")!;
       this.frontend = frontendFor(game.id);
       const ctx: FrontendCtx = {
         gameId: game.id,
@@ -255,15 +274,20 @@ export class App {
       };
       this.frontend.mount(boardEl, ctx);
       this.frontend.render(st);
-      this.setStatus(st.humanSeat < 0 ? 'Bots playing…' : 'Thinking…');
+      this.setStatus(st.humanSeat < 0 ? "Bots playing…" : "Thinking…");
       void this.runLoop(gen);
     } catch (e) {
-      if (gen === this.gen) this.setStatus(`Could not start: ${message(e)}`, 'error');
+      if (gen === this.gen)
+        this.setStatus(`Could not start: ${message(e)}`, "error");
     }
   }
 
-  private renderMatchSkeleton(game: GameInfo, mode: Mode, opts: Record<string, string>): void {
-    const modeLabel = mode === 'watch' ? 'take a seat' : 'watch bots';
+  private renderMatchSkeleton(
+    game: GameInfo,
+    mode: Mode,
+    opts: Record<string, string>,
+  ): void {
+    const modeLabel = mode === "watch" ? "take a seat" : "watch bots";
     this.root.innerHTML = `
       <div class="match">
         <header class="match-bar">
@@ -304,114 +328,121 @@ export class App {
           </div>
         </div>
       </div>`;
-    this.logEl = this.root.querySelector('.log');
-    this.statusEl = this.root.querySelector('.status');
-    this.root.querySelector<HTMLButtonElement>('.back')!.onclick = () => this.renderHome();
-    this.root.querySelector<HTMLButtonElement>('.again')!.onclick = () =>
+    this.logEl = this.root.querySelector(".log");
+    this.statusEl = this.root.querySelector(".status");
+    this.root.querySelector<HTMLButtonElement>(".back")!.onclick = () =>
+      this.renderHome();
+    this.root.querySelector<HTMLButtonElement>(".again")!.onclick = () =>
       void this.startMatch(game, mode, { ...opts, seed: String(randomSeed()) });
-    this.root.querySelector<HTMLButtonElement>('.mode-toggle')!.onclick = () =>
-      void this.startMatch(game, mode === 'watch' ? 'play' : 'watch', {
+    this.root.querySelector<HTMLButtonElement>(".mode-toggle")!.onclick = () =>
+      void this.startMatch(game, mode === "watch" ? "play" : "watch", {
         seed: String(randomSeed()),
       });
-    this.root.querySelector<HTMLSelectElement>('.speed')!.onchange = (e) => {
+    this.root.querySelector<HTMLSelectElement>(".speed")!.onchange = (e) => {
       this.speedScale = Number((e.target as HTMLSelectElement).value);
     };
-    const form = this.root.querySelector<HTMLFormElement>('.free-input')!;
+    const form = this.root.querySelector<HTMLFormElement>(".free-input")!;
     form.onsubmit = (e) => {
       e.preventDefault();
-      const input = form.querySelector('input')!;
+      const input = form.querySelector("input")!;
       if (input.value.trim()) {
         this.submit(input.value.trim());
-        input.value = '';
+        input.value = "";
       }
     };
     this.wireDrawer(game, opts);
   }
 
   private wireDrawer(game: GameInfo, opts: Record<string, string>): void {
-    const drawer = this.root.querySelector<HTMLElement>('.drawer')!;
-    const fieldsEl = drawer.querySelector<HTMLElement>('.drawer-fields')!;
+    const drawer = this.root.querySelector<HTMLElement>(".drawer")!;
+    const fieldsEl = drawer.querySelector<HTMLElement>(".drawer-fields")!;
     const note = (text: string) =>
-      text ? `<small class="opt-note">${esc(text)}</small>` : '';
+      text ? `<small class="opt-note">${esc(text)}</small>` : "";
     const open = () => {
-      const botSpec = game.optsSchema.find((o) => o.key === 'bot');
-      const botNames = botSpec ? botSpec.value.split('|') : [];
+      const botSpec = game.optsSchema.find((o) => o.key === "bot");
+      const botNames = botSpec ? botSpec.value.split("|") : [];
       const curBot = effectiveBot(game, opts);
-      const seatSpec = game.optsSchema.find((o) => o.key === 'seat');
+      const seatSpec = game.optsSchema.find((o) => o.key === "seat");
       const seatRow = game.solo
-        ? ''
+        ? ""
         : `<label class="opt-row"><span>seat</span>
-             <input name="d-seat" value="${esc(opts.seat ?? '0')}" autocomplete="off" />
-             ${note(seatSpec?.note ?? '')}</label>`;
+             <input name="d-seat" value="${esc(opts.seat ?? "0")}" autocomplete="off" />
+             ${note(seatSpec?.note ?? "")}</label>`;
       const botRow = botSpec
         ? `<label class="opt-row"><span>bot</span>
              <select name="d-bot">
-               ${game.solo ? `<option value=""${curBot === '' ? ' selected' : ''}>— you play —</option>` : ''}
+               ${game.solo ? `<option value=""${curBot === "" ? " selected" : ""}>— you play —</option>` : ""}
                ${botNames
                  .map(
                    (b) =>
-                     `<option value="${esc(b)}"${b === curBot ? ' selected' : ''}>${esc(b)}</option>`,
+                     `<option value="${esc(b)}"${b === curBot ? " selected" : ""}>${esc(b)}</option>`,
                  )
-                 .join('')}
+                 .join("")}
              </select>
-             ${note(game.solo ? '' : botSpec.note)}</label>`
-        : '';
+             ${note(game.solo ? "" : botSpec.note)}</label>`
+        : "";
       const fields = optFields(game.optsSchema, opts);
       fieldsEl.innerHTML = `
         ${seatRow}
         ${botRow}
         ${fields
           .map(
-            (f) => `<label class="opt-row"${f.bots.length ? ` data-bots="${esc(f.bots.join(' '))}"` : ''}>
+            (
+              f,
+            ) => `<label class="opt-row"${f.bots.length ? ` data-bots="${esc(f.bots.join(" "))}"` : ""}>
               <span>${esc(f.key)}</span>
               <input name="d-${esc(f.key)}" value="${esc(f.value)}" autocomplete="off" />
               ${note(f.note)}</label>`,
           )
-          .join('')}
+          .join("")}
         <label class="opt-row"><span>seed</span>
           <input name="d-seed" value="${esc(String(opts.seed ?? randomSeed()))}" autocomplete="off" /></label>`;
-      const botSel = fieldsEl.querySelector<HTMLSelectElement>('select[name="d-bot"]');
+      const botSel = fieldsEl.querySelector<HTMLSelectElement>(
+        'select[name="d-bot"]',
+      );
       const syncRows = () => {
-        const bot = botSel?.value ?? '';
-        for (const row of fieldsEl.querySelectorAll<HTMLElement>('.opt-row[data-bots]')) {
-          row.hidden = !row.dataset.bots!.split(' ').includes(bot);
+        const bot = botSel?.value ?? "";
+        for (const row of fieldsEl.querySelectorAll<HTMLElement>(
+          ".opt-row[data-bots]",
+        )) {
+          row.hidden = !row.dataset.bots!.split(" ").includes(bot);
         }
       };
       if (botSel) botSel.onchange = syncRows;
       syncRows();
       drawer.hidden = false;
     };
-    this.root.querySelector<HTMLButtonElement>('.gear')!.onclick = open;
-    drawer.querySelector<HTMLButtonElement>('.drawer-close')!.onclick = () => {
+    this.root.querySelector<HTMLButtonElement>(".gear")!.onclick = open;
+    drawer.querySelector<HTMLButtonElement>(".drawer-close")!.onclick = () => {
       drawer.hidden = true;
     };
     drawer.onclick = (e) => {
       if (e.target === drawer) drawer.hidden = true;
     };
-    drawer.querySelector<HTMLButtonElement>('.drawer-apply')!.onclick = () => {
+    drawer.querySelector<HTMLButtonElement>(".drawer-apply")!.onclick = () => {
       const overrides: Record<string, string> = {};
-      const controls = fieldsEl.querySelectorAll<HTMLInputElement | HTMLSelectElement>(
-        'input, select',
-      );
+      const controls = fieldsEl.querySelectorAll<
+        HTMLInputElement | HTMLSelectElement
+      >("input, select");
       for (const el of controls) {
-        if (el.closest<HTMLElement>('.opt-row')?.hidden) continue;
-        const key = el.name.replace(/^d-/, '');
-        if (el.value.trim() !== '') overrides[key] = el.value.trim();
+        if (el.closest<HTMLElement>(".opt-row")?.hidden) continue;
+        const key = el.name.replace(/^d-/, "");
+        if (el.value.trim() !== "") overrides[key] = el.value.trim();
       }
       const nextMode: Mode = game.solo
         ? overrides.bot
-          ? 'watch'
-          : 'play'
-        : overrides.seat === 'watch'
-          ? 'watch'
-          : 'play';
+          ? "watch"
+          : "play"
+        : overrides.seat === "watch"
+          ? "watch"
+          : "play";
       void this.startMatch(game, nextMode, overrides);
     };
   }
 
   private async runLoop(gen: number): Promise<void> {
     const fail = (e: unknown) => {
-      if (gen === this.gen) this.setStatus(message(e), 'error');
+      if (gen === this.gen) this.setStatus(message(e), "error");
     };
     while (gen === this.gen) {
       let ev: MatchEventData | null;
@@ -439,12 +470,12 @@ export class App {
       if (gen !== this.gen) return;
       this.frontend!.render(st);
       if (st.isOver) {
-        this.setStatus(st.result ?? 'Game over', 'result');
-        this.logText(`— ${st.result ?? 'game over'}`);
+        this.setStatus(st.result ?? "Game over", "result");
+        this.logText(`— ${st.result ?? "game over"}`);
         return;
       }
       if (this.clientBot && st.toAct >= 0 && st.toAct !== st.humanSeat) {
-        this.setStatus('Thinking…');
+        this.setStatus("Thinking…");
         try {
           const input = await this.clientBot.chooseMove(st);
           if (gen !== this.gen) return;
@@ -461,11 +492,13 @@ export class App {
         }
         continue;
       }
-      this.setStatus('Your turn');
+      this.setStatus("Your turn");
       this.frontend!.promptAction(st.labels);
-      const input = await new Promise<string>((res) => (this.submitResolve = res));
+      const input = await new Promise<string>(
+        (res) => (this.submitResolve = res),
+      );
       if (gen !== this.gen) return;
-      if (st.numSeats > 1) this.setStatus('Thinking…');
+      if (st.numSeats > 1) this.setStatus("Thinking…");
       try {
         const mev = await this.host.apply(input);
         if (gen !== this.gen) return;
@@ -480,11 +513,15 @@ export class App {
     }
   }
 
-  private async loadArtifacts(game: GameInfo, opts: Record<string, string>): Promise<void> {
+  private async loadArtifacts(
+    game: GameInfo,
+    opts: Record<string, string>,
+  ): Promise<void> {
     for (const id of artifactsFor(game.id, opts)) {
       const url = `${import.meta.env.BASE_URL}${ARTIFACTS[id]}`;
       const resp = await fetch(url);
-      if (!resp.ok) throw new Error(`artifact ${url} missing (HTTP ${resp.status})`);
+      if (!resp.ok)
+        throw new Error(`artifact ${url} missing (HTTP ${resp.status})`);
       await this.host.artifact(id, await resp.arrayBuffer());
     }
   }
@@ -497,7 +534,7 @@ export class App {
   }
 
   private animationScale(): number {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return 0;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return 0;
     return this.speedScale;
   }
 
@@ -508,14 +545,17 @@ export class App {
 
   private logText(text: string, detail = false): void {
     if (!this.logEl) return;
-    const line = document.createElement('div');
-    line.className = detail ? 'log-line log-detail' : 'log-line';
+    const line = document.createElement("div");
+    line.className = detail ? "log-line log-detail" : "log-line";
     line.textContent = text;
     this.logEl.append(line);
     this.logEl.scrollTop = this.logEl.scrollHeight;
   }
 
-  private setStatus(text: string, kind: 'info' | 'error' | 'result' = 'info'): void {
+  private setStatus(
+    text: string,
+    kind: "info" | "error" | "result" = "info",
+  ): void {
     if (!this.statusEl) return;
     this.statusEl.textContent = text;
     this.statusEl.className = `status status-${kind}`;

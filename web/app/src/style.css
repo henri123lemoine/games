@@ -1,24 +1,43 @@
 /* The Games Room — shell theme.
-   Identity: a club games room at night. Felt greens, warm linen text, brass
-   accents; serif display type over a quiet sans body, mono for engine data.
-   Per-game frontends own everything inside .board and inherit only these
-   tokens, so the room stays coherent while each table keeps its character. */
+   Identity: a page of henrilemoine.com. Browser-default serif, white page
+   with hairline borders, GitHub-blue links, light-first with the same .dark
+   class and localStorage key as the main site, so the visitor's mode follows
+   them. Per-game frontends own everything inside .board and inherit only
+   these tokens — token names are the contract; only the values changed when
+   the room moved into the site. */
 
 :root {
-  --bg: #11150f;
-  --bg-raised: #1a211a;
-  --bg-inset: #0b0e0a;
-  --border: #2d352c;
-  --text: #eae6d8;
-  --text-dim: #9da28e;
-  --accent: #d4a95c;
-  --accent-2: #8fae6e;
-  --good: #8fae6e;
-  --bad: #d96a5a;
-  --radius: 10px;
-  --display: 'Iowan Old Style', 'Palatino Nova', Palatino, 'Book Antiqua', Georgia, serif;
+  --bg: #fff;
+  --bg-raised: #fff;
+  --bg-inset: #f1f3f4;
+  --border: #eee;
+  --text: #333;
+  --text-dim: #666;
+  --link: #555;
+  --accent: #0366d6;
+  --accent-2: #28a745;
+  --good: #28a745;
+  --bad: #d73a49;
+  --card-shadow: rgba(0, 0, 0, 0.05);
+  --card-shadow-hover: rgba(0, 0, 0, 0.1);
+  --radius: 8px;
   --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
-  font-size: 16px;
+}
+
+.dark {
+  --bg: #1a1a1a;
+  --bg-raised: #1a1a1a;
+  --bg-inset: #2a2a2a;
+  --border: #333;
+  --text: #e0e0e0;
+  --text-dim: #999;
+  --link: #aaa;
+  --accent: #6cb6ff;
+  --accent-2: #3fb950;
+  --good: #3fb950;
+  --bad: #f85149;
+  --card-shadow: rgba(0, 0, 0, 0.3);
+  --card-shadow-hover: rgba(0, 0, 0, 0.3);
 }
 
 * {
@@ -32,19 +51,41 @@ body {
 }
 
 body {
-  background:
-    radial-gradient(1200px 600px at 50% -200px, #1a2418 0%, transparent 60%),
-    var(--bg);
+  font-size: 16px;
+  line-height: 1.4;
+  background: var(--bg);
   color: var(--text);
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
+  transition:
+    background 0.3s ease,
+    color 0.3s ease;
 }
 
 #app {
   max-width: 1100px;
   margin: 0 auto;
-  padding: 24px 20px 60px;
+  padding: 26px 20px 60px;
+}
+
+.dark-toggle {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  z-index: 50;
+}
+
+.dark-toggle:hover {
+  transform: scale(1.1);
 }
 
 .boot {
@@ -64,26 +105,34 @@ button {
 .link {
   background: none;
   border: none;
-  color: var(--accent);
+  color: var(--link);
   padding: 4px 6px;
+  text-decoration: underline;
+  text-decoration-color: #ccc;
+  text-underline-offset: 2px;
+  transition: all 0.2s ease;
 }
 
 .link:hover {
-  text-decoration: underline;
+  color: var(--accent);
+  text-decoration-color: var(--accent);
 }
 
 .primary {
-  background: var(--accent);
-  color: #181408;
-  font-weight: 650;
-  border: none;
-  border-radius: var(--radius);
-  padding: 12px 26px;
-  transition: filter 0.15s;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.9em;
+  font-weight: 500;
+  transition: all 0.2s ease;
 }
 
 .primary:hover {
-  filter: brightness(1.1);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 
 .muted {
@@ -97,40 +146,36 @@ button {
 
 /* ---------- home ---------- */
 
-.hero {
-  text-align: center;
-  padding: 38px 0 30px;
-}
-
-.eyebrow {
-  margin: 0 0 10px;
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--accent);
-}
-
-.hero h1 {
-  margin: 0 0 12px;
-  font-family: var(--display);
-  font-weight: 600;
-  font-size: 3rem;
-  letter-spacing: 0.01em;
-}
-
-.hero p:not(.eyebrow) {
+.home {
+  max-width: 650px;
   margin: 0 auto;
-  max-width: 460px;
+}
+
+.home-head {
+  margin: 24px 0 0;
+}
+
+.home-head h1 {
+  font-size: 2em;
+  margin: 0 0 0.25em;
+}
+
+.home-head h1 a {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.tagline {
+  font-style: italic;
   color: var(--text-dim);
-  line-height: 1.55;
+  font-size: 1.05em;
+  margin: 0 0 2.4em;
 }
 
 .card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 14px;
-  margin-top: 26px;
 }
 
 .card {
@@ -144,6 +189,7 @@ button {
   border-radius: var(--radius);
   padding: 14px 14px 16px;
   cursor: pointer;
+  box-shadow: 0 2px 4px var(--card-shadow);
   transition:
     transform 0.14s,
     border-color 0.14s,
@@ -153,7 +199,7 @@ button {
 .card:hover {
   transform: translateY(-3px);
   border-color: var(--accent);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 4px 12px var(--card-shadow-hover);
 }
 
 .card-text {
@@ -163,9 +209,8 @@ button {
 }
 
 .card-name {
-  font-family: var(--display);
-  font-weight: 650;
-  font-size: 1.15rem;
+  font-weight: 600;
+  font-size: 1.1em;
 }
 
 .card-summary {
@@ -178,7 +223,7 @@ button {
   position: absolute;
   top: 10px;
   right: 10px;
-  background: rgba(11, 14, 10, 0.72);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--text-dim);
@@ -203,9 +248,9 @@ button {
 .mini {
   position: relative;
   height: 110px;
-  border-radius: 8px;
+  border-radius: 6px;
   overflow: hidden;
-  border: 1px solid rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(0, 0, 0, 0.25);
 }
 
 .mini-chess {
@@ -300,7 +345,7 @@ button {
   position: absolute;
   right: 10%;
   bottom: 12%;
-  color: var(--bad);
+  color: #d96a5a;
   letter-spacing: 2px;
 }
 
@@ -330,7 +375,7 @@ button {
 
 .mini-c4 {
   background:
-    radial-gradient(circle 9px at 18px 18px, var(--bg-raised) 98%, transparent) 0 0 / 36px 36px,
+    radial-gradient(circle 9px at 18px 18px, #f5f2e8 98%, transparent) 0 0 / 36px 36px,
     radial-gradient(circle 9px at 18px 18px, #d9613f 98%, transparent) 0 36px / 72px 72px,
     radial-gradient(circle 9px at 54px 54px, #e8c25a 98%, transparent) 0 0 / 72px 72px,
     #2c4f86;
@@ -405,7 +450,7 @@ button {
   position: absolute;
   width: 15px;
   height: 15px;
-  background: var(--good);
+  background: #8fae6e;
   border-radius: 4px;
   box-shadow: 0 0 8px rgba(143, 174, 110, 0.5);
 }
@@ -418,14 +463,47 @@ button {
   position: absolute;
   width: 11px;
   height: 11px;
-  background: var(--bad);
+  background: #d96a5a;
   border-radius: 50%;
   box-shadow: 0 0 8px rgba(217, 106, 90, 0.7);
 }
 
 .home-foot {
-  text-align: center;
   margin-top: 28px;
+}
+
+.home-foot .link {
+  padding-left: 0;
+}
+
+.home-footer {
+  margin-top: 4rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  flex-wrap: wrap;
+  font-size: 0.95em;
+}
+
+.home-footer nav {
+  display: flex;
+  gap: 1.5em;
+}
+
+.home-footer a {
+  color: var(--text-dim);
+  text-decoration: none;
+}
+
+.home-footer a:hover {
+  color: var(--text);
+}
+
+.home-footer .muted {
+  font-size: 0.9em;
 }
 
 /* ---------- match ---------- */
@@ -440,9 +518,8 @@ button {
 }
 
 .match-title {
-  font-family: var(--display);
-  font-weight: 650;
-  font-size: 1.2rem;
+  font-weight: 600;
+  font-size: 1.1em;
 }
 
 .spacer {
@@ -471,6 +548,7 @@ button {
   border-radius: 6px;
   color: var(--text-dim);
   padding: 3px 9px;
+  transition: all 0.2s ease;
 }
 
 .gear:hover {
@@ -552,7 +630,7 @@ button {
 
 .free-input input {
   flex: 1;
-  background: var(--bg-inset);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
@@ -562,10 +640,16 @@ button {
 }
 
 .free-input button {
-  background: var(--bg-raised);
+  background: var(--bg-inset);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px 12px;
+  transition: all 0.2s ease;
+}
+
+.free-input button:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 /* ---------- settings drawer ---------- */
@@ -573,7 +657,7 @@ button {
 .drawer {
   position: fixed;
   inset: 0;
-  background: rgba(5, 7, 5, 0.6);
+  background: rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -586,17 +670,16 @@ button {
 
 .drawer-panel {
   width: min(420px, calc(100vw - 40px));
-  background: var(--bg-raised);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 20px 22px;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
 }
 
 .drawer-panel h3 {
   margin: 0 0 14px;
-  font-family: var(--display);
-  font-weight: 650;
+  font-size: 1.15em;
 }
 
 .drawer-fields {
@@ -626,7 +709,7 @@ button {
 .opt-row input,
 .opt-row select {
   flex: 1;
-  background: var(--bg-inset);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
@@ -657,14 +740,14 @@ button {
 /* ---------- tournament lab ---------- */
 
 .tourney {
-  max-width: 760px;
+  max-width: 650px;
   margin: 0 auto;
   padding-top: 14px;
 }
 
 .tourney h2 {
   margin: 14px 0 4px;
-  font-family: var(--display);
+  font-size: 1.3em;
 }
 
 .tourney-form {
@@ -677,7 +760,7 @@ button {
 .tourney-form select,
 .tourney-form textarea {
   flex: 1;
-  background: var(--bg-inset);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
@@ -730,9 +813,7 @@ button {
 .t-table thead th {
   color: var(--text-dim);
   font-weight: 600;
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-size: 0.85em;
 }
 
 .t-spec {

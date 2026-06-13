@@ -69,8 +69,9 @@ const CSS = `
 .t21-seat[data-pos="bottom"] { flex-direction: column-reverse; }
 .t21-seat-bar { display: flex; align-items: center; gap: 12px; width: fit-content;
   padding: 6px 14px; border-radius: 999px; background: rgba(1, 4, 9, .4);
+  color: #e6edf3;
   border: 1px solid transparent; transition: border-color .2s, box-shadow .2s; }
-.t21-seat-bar.t21-active { border-color: var(--accent);
+.t21-seat-bar.t21-active { border-color: #58a6ff;
   box-shadow: 0 0 14px rgba(88, 166, 255, .28); }
 .t21-name { font-weight: 600; }
 .t21-hearts { letter-spacing: 2px; font-size: 15px; line-height: 1; }
@@ -83,8 +84,8 @@ const CSS = `
   to { transform: scale(.3); opacity: 0; }
 }
 .t21-badge { font-size: 10px; font-weight: 700; letter-spacing: .14em;
-  text-transform: uppercase; color: var(--accent-2); padding: 2px 8px;
-  border: 1px solid var(--accent-2); border-radius: 999px; }
+  text-transform: uppercase; color: #8fae6e; padding: 2px 8px;
+  border: 1px solid #8fae6e; border-radius: 999px; }
 .t21-cards { display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
   min-height: 88px; }
 .t21-card { position: relative; width: clamp(46px, 9vw, 60px); aspect-ratio: 5 / 7;
@@ -103,7 +104,7 @@ const CSS = `
 .t21-hole { outline: 2px dashed rgba(88, 166, 255, .5); outline-offset: 2px; }
 .t21-hole::after { content: 'hole'; position: absolute; bottom: 2px; left: 50%;
   transform: translateX(-50%); font-size: 8px; font-weight: 600;
-  letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }
+  letter-spacing: .14em; text-transform: uppercase; color: #58a6ff; }
 .t21-spent { opacity: .55; filter: saturate(.7); }
 .t21-deal { animation: t21-deal .32s cubic-bezier(.2, .8, .3, 1.15) backwards; }
 @keyframes t21-deal {
@@ -111,17 +112,17 @@ const CSS = `
 }
 .t21-flip { animation: t21-flip .5s ease both; }
 @keyframes t21-flip { from { transform: rotateY(90deg); } }
-.t21-placeholder { color: var(--text-dim); font-size: 13px; font-style: italic; }
+.t21-placeholder { color: rgba(230, 237, 243, .6); font-size: 13px; font-style: italic; }
 .t21-total { width: fit-content; min-height: 27px; padding: 4px 12px;
-  border-radius: 999px; background: rgba(1, 4, 9, .45); border: 1px solid var(--border);
-  font-size: 13px; color: var(--text-dim); }
-.t21-total b { color: var(--text); font-size: 15px; }
-.t21-total.t21-bust b { color: var(--bad); }
+  border-radius: 999px; background: rgba(1, 4, 9, .45); border: 1px solid #2d352c;
+  font-size: 13px; color: rgba(230, 237, 243, .65); }
+.t21-total b { color: #e6edf3; font-size: 15px; }
+.t21-total.t21-bust b { color: #d96a5a; }
 .t21-total.t21-sweet b { color: #ffd566; text-shadow: 0 0 8px rgba(255, 213, 102, .5); }
 .t21-mid { display: flex; align-items: center; justify-content: space-between;
-  gap: 14px; padding: 2px 2px; }
+  gap: 14px; padding: 2px 2px; color: #e6edf3; }
 .t21-round b { font-size: 15px; display: block; }
-.t21-stake { font-size: 12px; color: var(--text-dim); }
+.t21-stake { font-size: 12px; color: rgba(230, 237, 243, .6); }
 .t21-deck { display: flex; align-items: center; gap: 10px; }
 .t21-deck-pile { position: relative; width: 34px; height: 46px; }
 .t21-deck-pile i { position: absolute; inset: 0; border-radius: 6px;
@@ -131,16 +132,16 @@ const CSS = `
 .t21-deck-pile i:nth-child(3) { transform: translate(3px, -2px) rotate(3deg); }
 .t21-deck-pulse { animation: t21-deck-pulse .26s ease; }
 @keyframes t21-deck-pulse { 50% { transform: scale(1.12); } }
-.t21-deck-count { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+.t21-deck-count { font-size: 12px; color: rgba(230, 237, 243, .6); white-space: nowrap; }
 .t21-banner { position: absolute; inset: 0; display: grid; place-items: center;
   pointer-events: none; z-index: 3; }
 .t21-banner[hidden] { display: none; }
 .t21-banner-chip { max-width: 82%; text-align: center; padding: 12px 26px;
   border-radius: 14px; background: rgba(1, 4, 9, .85); backdrop-filter: blur(4px);
-  border: 1px solid var(--border); font-weight: 700; font-size: 17px;
+  border: 1px solid #2d352c; color: #e6edf3; font-weight: 700; font-size: 17px;
   animation: t21-pop .35s cubic-bezier(.2, .9, .3, 1.3) backwards; }
-.t21-banner-good .t21-banner-chip { border-color: var(--good); color: var(--good); }
-.t21-banner-bad .t21-banner-chip { border-color: var(--bad); color: var(--bad); }
+.t21-banner-good .t21-banner-chip { border-color: #8fae6e; color: #8fae6e; }
+.t21-banner-bad .t21-banner-chip { border-color: #d96a5a; color: #d96a5a; }
 @keyframes t21-pop { from { transform: scale(.7); opacity: 0; } }
 .t21-actions { display: flex; gap: 12px; justify-content: center; min-height: 64px; }
 .t21-btn { flex: 1 1 0; max-width: 230px; padding: 12px 18px; border-radius: 14px;
@@ -151,11 +152,12 @@ const CSS = `
 .t21-btn:active:not(:disabled) { transform: translateY(2px) scale(.985); }
 .t21-btn:disabled { opacity: .45; cursor: default; }
 .t21-btn-draw { background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  border: none; color: #04111f; box-shadow: 0 6px 18px rgba(88, 166, 255, .3); }
+  border: none; color: #fff; box-shadow: 0 6px 18px rgba(88, 166, 255, .3); }
+.dark .t21-btn-draw { color: #04111f; }
 .t21-btn span { display: block; font-size: 11px; font-weight: 500; letter-spacing: 0;
   text-transform: none; opacity: .8; }
 .t21-stand-flash { animation: t21-stand-flash .4s ease; }
-@keyframes t21-stand-flash { 30% { box-shadow: 0 0 0 2px var(--accent-2); } }
+@keyframes t21-stand-flash { 30% { box-shadow: 0 0 0 2px var(--accent); } }
 @media (max-width: 520px) {
   .t21-table { padding: 12px; }
   .t21-cards { gap: 6px; min-height: 72px; }

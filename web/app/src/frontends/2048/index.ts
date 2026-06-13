@@ -198,7 +198,7 @@ const STYLE = `
   border-radius: 6px;
 }
 .g2048-cell-inner {
-  background: rgba(255, 255, 255, 0.045);
+  background: rgba(120, 120, 120, 0.12);
 }
 .g2048-tile-inner {
   display: flex;
@@ -225,8 +225,8 @@ const STYLE = `
 .g2048-v2048 { background: #edc22e; color: #f9f6f2; box-shadow: 0 0 22px rgba(237, 194, 46, 0.55); }
 .g2048-vmax {
   background: #21262e;
-  color: var(--accent);
-  border: 1px solid var(--accent);
+  color: #58a6ff;
+  border: 1px solid #58a6ff;
   box-shadow: 0 0 18px rgba(88, 166, 255, 0.4);
 }
 .g2048-pop { animation: g2048-pop ${POP_MS}ms ease-out backwards; }
@@ -256,9 +256,10 @@ const STYLE = `
   justify-content: center;
   gap: 4px;
   border-radius: var(--radius);
-  background: rgba(13, 17, 23, 0.74);
+  background: rgba(255, 255, 255, 0.72);
   backdrop-filter: blur(2px);
 }
+.dark .g2048-overlay { background: rgba(13, 17, 23, 0.74); }
 .g2048-overlay.g2048-show { display: flex; }
 .g2048-overlay-title { font-size: 1.5rem; font-weight: 800; }
 .g2048-overlay-sub { color: var(--text-dim); }

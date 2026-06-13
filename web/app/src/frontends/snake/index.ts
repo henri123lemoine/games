@@ -232,13 +232,6 @@ class SnakeFrontend implements GameFrontend {
     this.scoreEl = host.querySelector('.snake-score')!;
     this.lenEl = host.querySelector('.snake-len')!;
 
-    const cs = getComputedStyle(host);
-    const cssVar = (name: string, fallback: string) =>
-      cs.getPropertyValue(name).trim() || fallback;
-    this.colors.bg = cssVar('--bg-inset', this.colors.bg);
-    this.colors.snake = cssVar('--good', this.colors.snake);
-    this.colors.food = cssVar('--bad', this.colors.food);
-
     const pad = host.querySelector<HTMLElement>('.snake-pad')!;
     if (ctx.humanSeat < 0) {
       pad.classList.add('snake-hidden');
