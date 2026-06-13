@@ -1,0 +1,14 @@
+[package]
+name = "goinfer"
+version = "0.1.0"
+edition = "2024"
+description = "Torch-free azero go inference: the AZWEBGO1 export's reference fp32 forward (wasm-safe; the browser's WebGPU path validates against it), and the batched park/resume PUCT for go instantiated from solvers::azero"
+
+[lib]
+name = "goinfer"
+path = "src/lib.rs"
+
+[dependencies]
+go = { path = "../games/go" }
+game-core = { path = "../game-core" }
+solvers = { path = "../solvers", default-features = false }

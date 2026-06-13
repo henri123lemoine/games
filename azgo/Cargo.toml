@@ -11,6 +11,7 @@ description = "AlphaZero go (9x9) on Metal: tch-rs resnet, batched self-play ove
 
 [dependencies]
 go = { path = "../games/go" }
+goinfer = { path = "../goinfer" }
 game-core = { path = "../game-core" }
 solvers = { path = "../solvers" }
 rayon = "1"

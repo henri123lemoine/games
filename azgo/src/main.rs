@@ -12,6 +12,7 @@
 //! the live view, and a `STOP` file for graceful shutdown.
 
 mod eval;
+mod export;
 mod gauge;
 mod gtp;
 mod net;
@@ -281,7 +282,13 @@ fn run(args: &[String]) {
     let budget_secs = hours * 3600.0;
     let mut work_secs = 0.0f64;
     let start = Instant::now();
-    let opponents = [Opponent::Random, Opponent::Mcts(256), Opponent::GnuGo(10)];
+    // Rollout MCTS is near-random on 19×19 and its deep playouts make the
+    // in-run ladder slow, so the big board leans on (fast) GNU Go rungs.
+    let opponents = if size > 11 {
+        [Opponent::Random, Opponent::GnuGo(5), Opponent::GnuGo(10)]
+    } else {
+        [Opponent::Random, Opponent::Mcts(256), Opponent::GnuGo(10)]
+    };
     loop {
         iter += 1;
         let infer = Infer::snapshot(&trainer.vs, net_cfg, Kind::Half);
@@ -530,6 +537,8 @@ fn main() {
         Some("bench") => bench(&args[1..]),
         Some("elo") => gauge::elo_gauge(&args[1..]),
         Some("calibrate") => gauge::calibrate(&args[1..]),
+        Some("export") => export::export(&args[1..]),
+        Some("verify-export") => export::verify_export(&args[1..]),
         _ => {
             eprintln!(
                 "usage: azgo run   [--dir ../data/azgo/run1] [--hours 5] [--size 9] [--blocks 6] \
@@ -548,6 +557,8 @@ fn main() {
                  [--watch <minutes>]"
             );
             eprintln!("       azgo calibrate [--size 9] [--pairs 12]");
+            eprintln!("       azgo export [--net ...] [--out azero-go.azweb]");
+            eprintln!("       azgo verify-export [--net ...] [--export azero-go.azweb]");
             eprintln!(
                 "       (--blocks/--ch/--size default to the architecture recorded in the run's \
                  metrics.jsonl; GNUGO env var overrides the gnugo binary path)"
