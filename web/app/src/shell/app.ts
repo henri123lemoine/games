@@ -25,7 +25,7 @@ const GAME_TAGLINES: Record<string, string> = {
 const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   chess: { depth: '4' },
   'liars-dice': { players: '5', dice: '5', rollouts: '400' },
-  twentyone: { hearts: '3', iters: '1500' },
+  twentyone: { hearts: '3' },
   othello: { depth: '5' },
   connect4: { depth: '7' },
   go: { size: '9', sims: '1500' },
@@ -42,7 +42,8 @@ const ARTIFACTS: Record<string, string> = {
 };
 
 /** The shipped artifacts a match with these opts will ask the registry for.
- * Anything not shipped falls back to the engine's train-at-startup path. */
+ * A config whose artifact is not shipped fails loudly at create — the
+ * browser never trains. */
 function artifactsFor(gameId: string, opts: Record<string, string>): string[] {
   const wanted: string[] = [];
   if (gameId === 'chess') {
@@ -61,10 +62,11 @@ interface OptField {
 }
 
 /** The drawer's fields come from the engine's structured option schema;
- * seed, seat, and bot get dedicated rows, so they are filtered out here. */
+ * seed, seat, and bot get dedicated rows, and native-only options (training
+ * knobs) do not exist on the web. */
 function optFields(schema: GameOpt[], current: Record<string, string>): OptField[] {
   return schema
-    .filter((o) => o.key !== 'seed' && o.key !== 'seat' && o.key !== 'bot')
+    .filter((o) => o.key !== 'seed' && o.key !== 'seat' && o.key !== 'bot' && !o.nativeOnly)
     .map((o) => ({
       key: o.key,
       value: current[o.key] ?? o.value.split('|')[0].replace(/\.{3}$/, ''),
@@ -226,15 +228,13 @@ export class App {
     const gen = ++this.gen;
     this.teardownMatch();
     const opts = this.buildOpts(game, mode, overrides);
-    let gpuNote = '';
-    if (opts.bot === 'azero-gpu' && !('gpu' in navigator)) {
-      opts.bot = 'azero';
-      gpuNote = 'WebGPU unavailable — playing the CPU azero net instead.';
-    }
     this.renderMatchSkeleton(game, mode, opts);
-    if (gpuNote) this.logText(gpuNote, true);
-    if (game.id === 'twentyone' && artifactsFor(game.id, opts).length === 0) {
-      this.setStatus('Training the CFR+ solver in your browser…');
+    if (opts.bot === 'azero-gpu' && !('gpu' in navigator)) {
+      this.setStatus(
+        'WebGPU is unavailable in this browser — pick another bot in settings (azero runs the same net on CPU).',
+        'error',
+      );
+      return;
     }
     try {
       await this.loadArtifacts(game, opts);

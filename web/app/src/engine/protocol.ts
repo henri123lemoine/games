@@ -7,6 +7,9 @@ export interface GameOpt {
   note: string;
   /** `bot` values this option configures; empty for game-level options. */
   bots: string[];
+  /** Meaningful only on native builds (training knobs); never shown or sent
+   * on the web — the wasm engine rejects it as unused if supplied. */
+  nativeOnly: boolean;
 }
 
 export interface GameInfo {
