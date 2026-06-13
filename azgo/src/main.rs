@@ -536,6 +536,7 @@ fn main() {
         Some("run") => run(&args[1..]),
         Some("bench") => bench(&args[1..]),
         Some("elo") => gauge::elo_gauge(&args[1..]),
+        Some("rate") => gauge::rate(&args[1..]),
         Some("calibrate") => gauge::calibrate(&args[1..]),
         Some("export") => export::export(&args[1..]),
         Some("verify-export") => export::verify_export(&args[1..]),
@@ -555,6 +556,10 @@ fn main() {
             eprintln!(
                 "       azgo elo   [--net ../data/azgo/run1/latest.ot] [--sims 400] [--pairs 6] \
                  [--watch <minutes>]"
+            );
+            eprintln!(
+                "       azgo rate [--dir ../data/azgo/run19] [--pairs 4] [--sims 128] \
+                 [--watch <minutes>]  (current net vs oldest snapshot — cheap progress signal)"
             );
             eprintln!("       azgo calibrate [--size 9] [--pairs 12]");
             eprintln!("       azgo export [--net ...] [--out azero-go.azweb]");

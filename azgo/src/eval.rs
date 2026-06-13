@@ -414,6 +414,112 @@ pub fn duel(a: Opponent, b: Opponent, pairs: u32, size: usize, seed: u64) -> (f6
     ((wins + 0.5 * draws) / f64::from(games), games)
 }
 
+/// Plays `pairs` paired games (each random opening with net A as Black, then
+/// as White) between two nets — both argmax, pass-masked, no root noise, at
+/// `sims`. Returns (net A wins, total games). The KataGo-style relative
+/// progress signal: A = current net, B = an older snapshot, so a win rate
+/// above 0.5 means the net is still improving. Batched: every cycle the
+/// parked leaves are split by whichever net is on move and sent to that net
+/// in one forward pass, so it stays cheap.
+pub fn net_vs_net(a: &Infer, b: &Infer, pairs: u32, sims: u32, size: usize, seed: u64) -> (u32, u32) {
+    let game = Go::new(size);
+    let enc = GoEncoder::new(size);
+    let puct = PuctConfig {
+        sims,
+        root_noise: 0.0,
+        ..PuctConfig::default()
+    };
+
+    struct RateGame {
+        state: GoState,
+        search: azero::Search<Go>,
+        a_seat: usize,
+        rng: Rng,
+        outcome: Option<f64>,
+    }
+    let mut games: Vec<RateGame> = Vec::new();
+    for pair in 0..pairs {
+        let mut rng = Rng::new(mix(seed, u64::from(pair)));
+        let opening = random_opening(&game, &mut rng);
+        for a_seat in 0..2 {
+            games.push(RateGame {
+                state: opening.clone(),
+                search: azero::Search::new(None),
+                a_seat,
+                rng: Rng::new(mix(seed, (u64::from(pair) << 8) | a_seat as u64)),
+                outcome: None,
+            });
+        }
+    }
+
+    let mut results: Vec<Vec<EvalResult>> = (0..games.len()).map(|_| Vec::new()).collect();
+    loop {
+        // Per game: (Some(net_is_a) with leaves to eval, or None when idle/done).
+        let gathered: Vec<(Option<bool>, Vec<EvalRequest>)> = games
+            .par_iter_mut()
+            .zip(results.par_iter_mut())
+            .map(|(g, r)| {
+                let mut pending = std::mem::take(r);
+                loop {
+                    if g.outcome.is_some() {
+                        return (None, Vec::new());
+                    }
+                    if game.is_terminal(&g.state) {
+                        g.outcome = Some(game.returns(&g.state, g.a_seat));
+                        return (None, Vec::new());
+                    }
+                    match g.search.advance(
+                        &game,
+                        &enc,
+                        &g.state,
+                        &puct,
+                        &mut g.rng,
+                        std::mem::take(&mut pending),
+                        &|_| false,
+                    ) {
+                        Gather::Requests(reqs) => return (Some(g.state.to_move() == g.a_seat), reqs),
+                        Gather::Done => {
+                            let mut visits = g.search.root_visits().to_vec();
+                            let actions = g.search.root_actions();
+                            goinfer::mask_pass_visits(&game, &g.state, actions, &mut visits);
+                            let action = actions[argmax(&visits)];
+                            game.apply(&mut g.state, action);
+                            g.search = azero::Search::new(None);
+                        }
+                    }
+                }
+            })
+            .collect();
+
+        let mut a_flat: Vec<EvalRequest> = Vec::new();
+        let mut b_flat: Vec<EvalRequest> = Vec::new();
+        let mut route: Vec<(Option<bool>, usize)> = Vec::with_capacity(gathered.len());
+        for (tag, reqs) in gathered {
+            route.push((tag, reqs.len()));
+            match tag {
+                Some(true) => a_flat.extend(reqs),
+                Some(false) => b_flat.extend(reqs),
+                None => {}
+            }
+        }
+        if a_flat.is_empty() && b_flat.is_empty() {
+            break;
+        }
+        let mut a_out = a.forward_batch(&a_flat).into_iter();
+        let mut b_out = b.forward_batch(&b_flat).into_iter();
+        for (i, (tag, len)) in route.into_iter().enumerate() {
+            results[i] = match tag {
+                Some(true) => (0..len).filter_map(|_| a_out.next()).collect(),
+                Some(false) => (0..len).filter_map(|_| b_out.next()).collect(),
+                None => Vec::new(),
+            };
+        }
+    }
+
+    let a_wins = games.iter().filter(|g| g.outcome.unwrap_or(0.0) > 0.0).count() as u32;
+    (a_wins, games.len() as u32)
+}
+
 /// One game between fixed agents from `opening`; returns Black's result.
 fn fixed_game(
     game: &Go,
