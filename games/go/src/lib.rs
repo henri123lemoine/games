@@ -23,6 +23,7 @@
 //! of [`Game::state_key`], so positions identical up to the draw-guard clock
 //! share a key.
 
+pub mod encode;
 mod knowledge;
 mod ui;
 
@@ -81,6 +82,16 @@ impl GoState {
     /// does not count prisoners).
     pub fn captures(&self) -> [u32; 2] {
         self.captures
+    }
+
+    /// The player to move: 0 Black, 1 White.
+    pub fn to_move(&self) -> usize {
+        self.to_move
+    }
+
+    /// Plies played so far, passes included.
+    pub fn plies(&self) -> u32 {
+        self.plies
     }
 
     fn key(&self) -> u64 {
