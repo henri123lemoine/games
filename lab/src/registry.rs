@@ -114,6 +114,10 @@ pub struct OptSpec {
     /// only the chosen bot's knobs (and to drop the rest, which the
     /// unused-option guard would otherwise reject).
     pub bots: &'static [&'static str],
+    /// Only meaningful on native builds (e.g. training knobs — the browser
+    /// never trains); web clients omit it, and the wasm engine never reads
+    /// it, so the unused-option guard rejects it loudly if supplied.
+    pub native_only: bool,
 }
 
 const fn opt(key: &'static str, value: &'static str, note: &'static str) -> OptSpec {
@@ -122,6 +126,7 @@ const fn opt(key: &'static str, value: &'static str, note: &'static str) -> OptS
         value,
         note,
         bots: &[],
+        native_only: false,
     }
 }
 
@@ -136,6 +141,17 @@ const fn bot_opt(
         value,
         note,
         bots,
+        native_only: false,
+    }
+}
+
+const fn native_opt(key: &'static str, value: &'static str, note: &'static str) -> OptSpec {
+    OptSpec {
+        key,
+        value,
+        note,
+        bots: &[],
+        native_only: true,
     }
 }
 
@@ -297,7 +313,11 @@ const LIARS_DICE_OPTS: &[OptSpec] = &[
 
 const TWENTYONE_OPTS: &[OptSpec] = &[
     opt("hearts", "6", ""),
-    opt("iters", "50000", "(training iters/subgame)"),
+    native_opt(
+        "iters",
+        "50000",
+        "(training iters/subgame, used only when no solver artifact exists)",
+    ),
     opt("seat", "0|1|watch", ""),
     opt("seed", "...", ""),
 ];
@@ -605,27 +625,24 @@ impl Agent<TwentyOne> for SolverBot {
 
 fn make_twentyone(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
     let hearts: u8 = o.get("hearts", 6)?;
-    let iters: u64 = o.get("iters", 50_000)?;
     // A pre-trained artifact (shipped on the web, written back after a native
-    // train-at-startup) beats re-solving on every launch.
+    // train-at-startup) is the only way to play; an artifact that exists but
+    // fails to parse or was trained for different rules is a hard error,
+    // never a silent retrain. Only native builds train at all.
     let artifact = format!("data/twentyone/solver-h{hearts}.bin");
-    let solver = match crate::artifacts::read(&artifact)
-        .ok()
-        .and_then(|b| twentyone::Solver::from_bytes(&b).ok())
-        .filter(|s| s.start_hearts() == hearts)
-    {
-        Some(s) => s,
-        None => {
-            let mut solver = if hearts <= 2 {
-                twentyone::Solver::with_hearts(0xD1CE, hearts)
-            } else {
-                twentyone::Solver::abstracted(0xD1CE, hearts)
-            };
-            eprintln!("training the Twenty-One solver ({iters} iters/subgame)...");
-            solver.solve(iters);
-            persist_twentyone(&solver, &artifact);
-            solver
+    let solver = match crate::artifacts::read(&artifact) {
+        Ok(bytes) => {
+            let s =
+                twentyone::Solver::from_bytes(&bytes).map_err(|e| format!("{artifact}: {e}"))?;
+            if s.start_hearts() != hearts {
+                return Err(format!(
+                    "{artifact} was trained for hearts={}, not hearts={hearts}",
+                    s.start_hearts()
+                ));
+            }
+            s
         }
+        Err(missing) => train_twentyone(o, hearts, &artifact, &missing)?,
     };
     let solver = std::sync::Arc::new(solver);
     let seat = parse_seat(o, 2)?;
@@ -642,6 +659,43 @@ fn make_twentyone(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
     Ok(TypedMatch::new(game, bots, seat, o.get("seed", default_seed())?).boxed())
 }
 
+/// Native train-at-startup when no artifact exists yet — the lab producing
+/// its own cache, announced loudly and persisted for the next launch.
+#[cfg(not(target_arch = "wasm32"))]
+fn train_twentyone(
+    o: &Opts,
+    hearts: u8,
+    artifact: &str,
+    _missing: &str,
+) -> Result<twentyone::Solver, String> {
+    let iters: u64 = o.get("iters", 50_000)?;
+    let mut solver = if hearts <= 2 {
+        twentyone::Solver::with_hearts(0xD1CE, hearts)
+    } else {
+        twentyone::Solver::abstracted(0xD1CE, hearts)
+    };
+    eprintln!("training the Twenty-One solver ({iters} iters/subgame)...");
+    solver.solve(iters);
+    persist_twentyone(&solver, artifact);
+    Ok(solver)
+}
+
+/// The browser never trains: a missing artifact is the host's bug to surface,
+/// not something to paper over with an undertrained stand-in.
+#[cfg(target_arch = "wasm32")]
+fn train_twentyone(
+    _o: &Opts,
+    hearts: u8,
+    artifact: &str,
+    missing: &str,
+) -> Result<twentyone::Solver, String> {
+    Err(format!(
+        "no solver shipped for hearts={hearts} ({missing}); the browser never trains — \
+         solve it natively (`cargo run --release -p twentyone --example solve {hearts} 50000 {artifact}`) \
+         and ship the artifact"
+    ))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn persist_twentyone(solver: &twentyone::Solver, artifact: &str) {
     if let Some(dir) = std::path::Path::new(artifact).parent()
@@ -655,10 +709,6 @@ fn persist_twentyone(solver: &twentyone::Solver, artifact: &str) {
         Err(e) => eprintln!("note: could not save {artifact}: {e}"),
     }
 }
-
-/// Wasm matches are ephemeral; artifacts arrive via the host instead.
-#[cfg(target_arch = "wasm32")]
-fn persist_twentyone(_solver: &twentyone::Solver, _artifact: &str) {}
 
 fn chess_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<chess::Chess>, String> {
     let depth: u32 = spec.opts.get("depth", 5)?;

@@ -58,7 +58,15 @@ pub fn list_games() -> String {
             let schema: Vec<Value> = e
                 .opts
                 .iter()
-                .map(|o| json!({"key": o.key, "value": o.value, "note": o.note, "bots": o.bots}))
+                .map(|o| {
+                    json!({
+                        "key": o.key,
+                        "value": o.value,
+                        "note": o.note,
+                        "bots": o.bots,
+                        "nativeOnly": o.native_only,
+                    })
+                })
                 .collect();
             json!({
                 "id": e.id,
