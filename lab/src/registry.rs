@@ -341,8 +341,17 @@ const CONNECT4_OPTS: &[OptSpec] = &[
 const GO_OPTS: &[OptSpec] = &[
     opt("size", "9", ""),
     opt("seat", "0|1|watch", "(0=Black)"),
-    opt("bot", "mcts|mcts-eval|mcts-spec", ""),
-    bot_opt("sims", "6000", "", &["mcts", "mcts-eval", "mcts-spec"]),
+    opt(
+        "bot",
+        "mcts|mcts-eval|mcts-spec|azero-gpu",
+        "(azero-gpu: browser only)",
+    ),
+    bot_opt(
+        "sims",
+        "6000",
+        "",
+        &["mcts", "mcts-eval", "mcts-spec", "azero-gpu"],
+    ),
     bot_opt("depth", "...", "(default size²)", &["mcts-eval"]),
     opt("seed", "...", ""),
 ];
@@ -453,6 +462,9 @@ pub fn entries() -> Vec<Entry> {
             summary: "Go (area scoring, komi 7.5) vs MCTS",
             opts: GO_OPTS,
             make: Box::new(|o| {
+                if o.str("bot", "mcts") == "azero-gpu" {
+                    return make_external_versus(o, go_game(o)?, &["sims", "size"]);
+                }
                 // Play wants a stronger default than compare's quick 2000.
                 let sims: u32 = o.get("sims", 6000)?;
                 let mut spec_opts = o.clone();

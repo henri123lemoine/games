@@ -20,18 +20,39 @@ use crate::net::Infer;
 use crate::selfplay::mix;
 use crate::{append_line, arg, device, epoch_secs, net_config_for};
 
-/// The gauge's anchored opponent panel. Elo values come from
-/// `azgo calibrate` (opponent-vs-opponent matches solved as Bradley-Terry,
-/// anchored at GNU Go level 10 = 1800); rerun after any rules change.
-pub const PANEL: [(Opponent, f64); 7] = [
-    (Opponent::Random, -400.0),
-    (Opponent::Mcts(128), 189.0),
-    (Opponent::Mcts(512), 778.0),
-    (Opponent::Mcts(2048), 1141.0),
-    (Opponent::GnuGo(1), 1675.0),
-    (Opponent::GnuGo(5), 1784.0),
-    (Opponent::GnuGo(10), 1800.0),
-];
+/// The gauge's anchored opponent panel for a board size. Elo values come
+/// from `azgo calibrate` (opponent-vs-opponent matches solved as
+/// Bradley-Terry, anchored at GNU Go level 10 = 1800); rerun after any rules
+/// change.
+///
+/// 9×9 and 19×19 need different panels: rollout MCTS over [`eval::GoEval`] is
+/// near-random on the big board, so 19×19 leans on GNU Go levels to span the
+/// range, and its weak anchors below are provisional until calibrated.
+pub fn panel(size: usize) -> Vec<(Opponent, f64)> {
+    if size <= 11 {
+        vec![
+            (Opponent::Random, -400.0),
+            (Opponent::Mcts(128), 189.0),
+            (Opponent::Mcts(512), 778.0),
+            (Opponent::Mcts(2048), 1141.0),
+            (Opponent::GnuGo(1), 1675.0),
+            (Opponent::GnuGo(5), 1784.0),
+            (Opponent::GnuGo(10), 1800.0),
+        ]
+    } else {
+        // Calibrated 2026-06-12 (BT, 12 pairs/link, anchor gnugo-l10 = 1800).
+        // On 19×19 the GNU Go levels bunch near the top and rollout MCTS is
+        // weak, so the useful spread is random → mcts → gnugo-l1.
+        vec![
+            (Opponent::Random, 743.0),
+            (Opponent::Mcts(256), 1098.0),
+            (Opponent::GnuGo(1), 1539.0),
+            (Opponent::GnuGo(3), 1579.0),
+            (Opponent::GnuGo(5), 1680.0),
+            (Opponent::GnuGo(10), 1800.0),
+        ]
+    }
+}
 
 /// Maximum-likelihood Elo from scores against rated opponents: the unique
 /// root of the score-vs-expectation excess.
@@ -63,19 +84,16 @@ fn mle_elo(anchors: &[(f64, f64, u32)]) -> f64 {
 pub fn calibrate(args: &[String]) {
     let pairs: u32 = arg(args, "--pairs", 12);
     let size: usize = arg(args, "--size", 9);
-    let players: Vec<Opponent> = PANEL.iter().map(|&(o, _)| o).collect();
+    let players: Vec<Opponent> = panel(size).iter().map(|&(o, _)| o).collect();
     let anchor = players.len() - 1;
-    let links = [
-        (0, 1),
-        (1, 2),
-        (2, 3),
-        (3, 4),
-        (4, 5),
-        (5, 6),
-        (2, 4),
-        (3, 5),
-        (4, 6),
-    ];
+    // Chain consecutive rungs, plus a skip link every other rung so the fit
+    // is over-determined rather than a fragile path.
+    let mut links: Vec<(usize, usize)> = (0..players.len() - 1).map(|i| (i, i + 1)).collect();
+    links.extend(
+        (0..players.len().saturating_sub(2))
+            .step_by(2)
+            .map(|i| (i, i + 2)),
+    );
     let mut results = Vec::new();
     for &(i, j) in &links {
         let t = Instant::now();
@@ -149,7 +167,8 @@ pub fn elo_gauge(args: &[String]) {
         };
 
         let t = Instant::now();
-        let panel_opps: Vec<Opponent> = PANEL.iter().map(|&(o, _)| o).collect();
+        let board_panel = panel(cfg.size as usize);
+        let panel_opps: Vec<Opponent> = board_panel.iter().map(|&(o, _)| o).collect();
         let entries = ladder(
             &infer,
             &panel_opps,
@@ -160,7 +179,7 @@ pub fn elo_gauge(args: &[String]) {
         );
         let mut anchors: Vec<(f64, f64, u32)> = Vec::new();
         let mut detail = Vec::new();
-        for (&(_, elo), en) in PANEL.iter().zip(&entries) {
+        for (&(_, elo), en) in board_panel.iter().zip(&entries) {
             let n = en.wins + en.draws + en.losses;
             // Clamp clean sweeps off 0/1 (as calibrate does): an unclamped
             // shutout pins the MLE to the bracket edge instead of bounding it.

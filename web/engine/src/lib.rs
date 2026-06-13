@@ -4,6 +4,7 @@
 //! game-schema-free.
 
 mod az;
+mod azgo;
 
 use lab::registry::{Opts, entries};
 use lab::runner::{AnyMatch, MatchEvent};
@@ -11,6 +12,7 @@ use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
 
 pub use az::AzChessBot;
+pub use azgo::AzGoBot;
 
 #[wasm_bindgen(start)]
 pub fn start() {
