@@ -24,10 +24,6 @@ pub const MAX_FACES: usize = 6;
 pub const MAX_PLAYERS: usize = 8;
 /// Bid-history actions retained in the information-set key (an abstraction).
 const HIST_K: usize = 6;
-/// Floor for the default round cap. The cap itself scales as
-/// `2 x players x dice`: a natural game needs up to `players x dice - 1`
-/// die-loss rounds, so a fixed cap would truncate legitimate large games.
-const MIN_MAX_ROUNDS: u8 = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -52,7 +48,7 @@ pub struct LdState {
     first_round: bool,
     hist: [u16; HIST_K],
     endorsed: [u8; MAX_PLAYERS], // face each player last bid this round (0 = none)
-    rounds: u8,
+    rounds: u16,
     done: bool,
     winner: u8,
 }
@@ -61,7 +57,7 @@ pub struct LiarsDice {
     pub players: u8,
     pub dice: u8,
     pub faces: u8,
-    pub max_rounds: u8,
+    pub max_rounds: u16,
 }
 
 impl LiarsDice {
@@ -75,9 +71,13 @@ impl LiarsDice {
             players as u16 * dice as u16 <= u8::MAX as u16,
             "dice counts are u8: players x dice must not exceed 255"
         );
-        let max_rounds = (u16::from(players) * u16::from(dice) * 2)
-            .clamp(u16::from(MIN_MAX_ROUNDS), u16::from(u8::MAX) - 1)
-            as u8;
+        // A natural game needs up to `players x dice - 1` die-loss rounds, and
+        // correct Exact calls add no-loss rounds that cluster in the few-dice
+        // endgame. Truncating a legitimate game is catastrophic while a longer
+        // pathological stall only costs rollout time, so the cap doubles the
+        // loss bound and adds a flat buffer on top.
+        let loss_rounds = u16::from(players) * u16::from(dice) - 1;
+        let max_rounds = loss_rounds * 2 + 50;
         Self {
             players,
             dice,
@@ -91,8 +91,8 @@ impl LiarsDice {
         Self::new(2, dice, faces)
     }
 
-    pub fn with_max_rounds(mut self, m: u8) -> Self {
-        assert!(m < u8::MAX, "the round counter must fit max_rounds + 1");
+    pub fn with_max_rounds(mut self, m: u16) -> Self {
+        assert!(m < u16::MAX, "the round counter must fit max_rounds + 1");
         self.max_rounds = m;
         self
     }
@@ -574,9 +574,9 @@ mod tests {
 
     #[test]
     fn round_cap_scales_with_the_dice_in_play() {
-        assert_eq!(LiarsDice::new(2, 2, 6).max_rounds, MIN_MAX_ROUNDS);
-        assert_eq!(LiarsDice::new(5, 5, 6).max_rounds, 50);
-        assert_eq!(LiarsDice::new(8, 6, 6).max_rounds, 96);
+        assert_eq!(LiarsDice::new(2, 2, 6).max_rounds, 56);
+        assert_eq!(LiarsDice::new(5, 5, 6).max_rounds, 98);
+        assert_eq!(LiarsDice::new(8, 6, 6).max_rounds, 144);
     }
 
     /// A 5p5d game played to the natural end — one die lost per round plus a
