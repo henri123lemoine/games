@@ -13,7 +13,7 @@ import { TournamentScreen } from './tournament';
 const GAME_TAGLINES: Record<string, string> = {
   chess: 'alpha-beta search, perft-validated rules',
   'liars-dice': 'belief-tracking bots that bluff back',
-  twentyone: 'a CFR+ solver trained as you watch',
+  twentyone: 'a full-strength CFR+ solver',
   othello: 'weighted squares and mobility',
   connect4: 'deep tactical search',
   go: 'Monte-Carlo tree search, 9×9',
@@ -37,7 +37,21 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
  * registry asks for. */
 const ARTIFACTS: Record<string, string> = {
   'data/azero/chess.bin': 'artifacts/azero-chess.bin',
+  'data/twentyone/solver-h3.bin': 'artifacts/t21-solver-h3.bin',
+  'data/twentyone/solver-h6.bin': 'artifacts/t21-solver-h6.bin',
 };
+
+/** The shipped artifacts a match with these opts will ask the registry for.
+ * Anything not shipped falls back to the engine's train-at-startup path. */
+function artifactsFor(gameId: string, opts: Record<string, string>): string[] {
+  const wanted: string[] = [];
+  if (gameId === 'chess') {
+    const net = opts.net ?? (opts.bot === 'azero' ? 'data/azero/chess.bin' : null);
+    if (net) wanted.push(net);
+  }
+  if (gameId === 'twentyone') wanted.push(`data/twentyone/solver-h${opts.hearts ?? '6'}.bin`);
+  return wanted.filter((w) => w in ARTIFACTS);
+}
 
 interface OptField {
   key: string;
@@ -219,11 +233,11 @@ export class App {
     }
     this.renderMatchSkeleton(game, mode, opts);
     if (gpuNote) this.logText(gpuNote, true);
-    if (game.id === 'twentyone') {
+    if (game.id === 'twentyone' && artifactsFor(game.id, opts).length === 0) {
       this.setStatus('Training the CFR+ solver in your browser…');
     }
     try {
-      await this.loadArtifacts(opts);
+      await this.loadArtifacts(game, opts);
       const st = await this.host.create(game.id, opts);
       if (gen !== this.gen) return;
       const makeBot = clientBotFor(game.id, opts.bot);
@@ -466,13 +480,13 @@ export class App {
     }
   }
 
-  private async loadArtifacts(opts: Record<string, string>): Promise<void> {
-    const wanted = opts.net ?? (opts.bot === 'azero' ? 'data/azero/chess.bin' : null);
-    if (!wanted || !(wanted in ARTIFACTS)) return;
-    const url = `${import.meta.env.BASE_URL}${ARTIFACTS[wanted]}`;
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`artifact ${url} missing (HTTP ${resp.status})`);
-    await this.host.artifact(wanted, await resp.arrayBuffer());
+  private async loadArtifacts(game: GameInfo, opts: Record<string, string>): Promise<void> {
+    for (const id of artifactsFor(game.id, opts)) {
+      const url = `${import.meta.env.BASE_URL}${ARTIFACTS[id]}`;
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`artifact ${url} missing (HTTP ${resp.status})`);
+      await this.host.artifact(id, await resp.arrayBuffer());
+    }
   }
 
   private submit(input: string): void {
