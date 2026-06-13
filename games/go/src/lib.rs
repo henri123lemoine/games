@@ -217,6 +217,59 @@ impl Go {
         (score[0], score[1])
     }
 
+    /// Per-point ownership of `state`: `+1.0` a point that scores for Black,
+    /// `-1.0` for White, `0.0` neutral (dame, or an empty region bordered by
+    /// both). A stone scores for its color; an empty region bordered by one
+    /// color scores for that color — the same partition [`Go::area_scores`]
+    /// counts. This is the dense per-point territory signal the trainer's
+    /// auxiliary ownership head learns from (KataGo-style): it teaches the
+    /// trunk territory directly, so even late filling positions are
+    /// informative and the net never finds passing-early attractive.
+    pub fn ownership(&self, s: &GoState) -> Vec<f32> {
+        let n = self.size * self.size;
+        let mut own = vec![0.0f32; n];
+        let mut seen = vec![false; n];
+        for p in 0..n {
+            match s.cells[p] {
+                BLACK => own[p] = 1.0,
+                WHITE => own[p] = -1.0,
+                _ => {
+                    if seen[p] {
+                        continue;
+                    }
+                    let mut region = vec![p];
+                    seen[p] = true;
+                    let mut borders = [false; 2];
+                    let mut i = 0;
+                    while i < region.len() {
+                        let q = region[i];
+                        i += 1;
+                        for nb in neighbors(self.size, q) {
+                            match s.cells[nb] {
+                                EMPTY => {
+                                    if !seen[nb] {
+                                        seen[nb] = true;
+                                        region.push(nb);
+                                    }
+                                }
+                                c => borders[c as usize] = true,
+                            }
+                        }
+                    }
+                    let val = match (borders[0], borders[1]) {
+                        (true, false) => 1.0,
+                        (false, true) => -1.0,
+                        _ => 0.0,
+                    };
+                    for &q in &region {
+                        own[q] = val;
+                    }
+                }
+            }
+        }
+        own
+    }
+
     /// True if the mover has a *productive* move: a legal placement that does
     /// not merely fill one of its own true eyes. When this holds, passing is a
     /// strictly wasteful move and self-play/eval/serving should forbid it —

@@ -231,7 +231,7 @@ impl Worker {
                 if self.bad_streak[stm] >= 2 {
                     if self.resign_enabled {
                         let z_black = if stm == 0 { -1.0 } else { 1.0 };
-                        return Some(self.finish(z_black, GameEnd::Resign));
+                        return Some(self.finish(game, z_black, GameEnd::Resign));
                     }
                     if self.would_resign.is_none() {
                         self.would_resign = Some(stm);
@@ -259,12 +259,19 @@ impl Worker {
             } else {
                 GameEnd::Natural
             };
-            return Some(self.finish(z_black, end));
+            return Some(self.finish(game, z_black, end));
         }
         None
     }
 
-    fn finish(&mut self, z_black: f32, end: GameEnd) -> WorkerStep {
+    fn finish(&mut self, game: &Go, z_black: f32, end: GameEnd) -> WorkerStep {
+        // The final board's ownership — the same dense territory target for
+        // every position in this game.
+        let ownership: Box<[i8]> = game
+            .ownership(&self.state)
+            .iter()
+            .map(|&o| o as i8)
+            .collect();
         let samples = self
             .records
             .drain(..)
@@ -274,6 +281,7 @@ impl Worker {
                 policy,
                 z: if stm == 0 { z_black } else { -z_black },
                 q,
+                ownership: ownership.clone(),
             })
             .collect();
         let fp = self.would_resign.map(|side| {

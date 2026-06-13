@@ -57,6 +57,10 @@ pub struct Net {
     vb: nn::BatchNorm,
     vf1: nn::Linear,
     vf2: nn::Linear,
+    /// Auxiliary ownership head (1×1 conv → per-point tanh). Trained against
+    /// the final board's [`go::Go::ownership`]; not exported (inference needs
+    /// only policy + value). Its gradient shapes the shared trunk.
+    o1: nn::Conv2D,
 }
 
 fn conv(p: nn::Path, cin: i64, cout: i64, k: i64) -> nn::Conv2D {
@@ -94,11 +98,13 @@ impl Net {
             vb: nn::batch_norm2d(root / "vb", 2, Default::default()),
             vf1: nn::linear(root / "vf1", 2 * area, 128, Default::default()),
             vf2: nn::linear(root / "vf2", 128, 1, Default::default()),
+            o1: conv(root / "o1", c, 1, 1),
         }
     }
 
-    /// `x`: `[B, 9, size, size]` → (policy logits `[B, size²+1]`, value `[B]`).
-    pub fn forward(&self, x: &Tensor, train: bool) -> (Tensor, Tensor) {
+    /// `x`: `[B, 9, size, size]` → (policy logits `[B, size²+1]`, value `[B]`,
+    /// ownership `[B, size²]` in `(-1, 1)`).
+    pub fn forward(&self, x: &Tensor, train: bool) -> (Tensor, Tensor, Tensor) {
         let mut t = x.apply(&self.stem_c).apply_t(&self.stem_b, train).relu();
         for b in &self.tower {
             t = b.forward(&t, train);
@@ -120,7 +126,8 @@ impl Net {
             .apply(&self.vf2)
             .tanh()
             .squeeze_dim(-1);
-        (p, v)
+        let o = t.apply(&self.o1).flatten(1, -1).tanh();
+        (p, v, o)
     }
 }
 
@@ -226,7 +233,7 @@ impl Infer {
                 .to_device(self.device)
                 .to_kind(self.kind);
             let idx = Tensor::from_slice(&gather).to_device(self.device);
-            let (p, v) = self.net.forward(&x, false);
+            let (p, v, _own) = self.net.forward(&x, false);
             (
                 p.reshape([-1])
                     .index_select(0, &idx)

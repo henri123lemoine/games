@@ -20,6 +20,10 @@ use crate::net::{Net, NetConfig, PLANE_COUNT};
 /// reconstructed at expansion, so only these are packed.
 const PACKED_PLANES: usize = 7;
 
+/// Weight of the auxiliary ownership MSE in the total loss. KataGo-ish: large
+/// enough to shape the trunk, small enough not to swamp policy/value.
+const OWNERSHIP_WEIGHT: f64 = 1.0;
+
 fn words_per_plane(cells: usize) -> usize {
     cells.div_ceil(64)
 }
@@ -37,6 +41,9 @@ pub struct Sample {
     /// The search's root value at this position (player to move) — mixed
     /// into the value target to de-noise the raw outcome.
     pub q: f32,
+    /// Final-board ownership, absolute (`+1` Black, `-1` White, `0` neutral),
+    /// shared by every position in the game — the auxiliary territory target.
+    pub ownership: Box<[i8]>,
 }
 
 /// Packs the encoder's f32 features into per-plane bitsets for a `size`×`size`
@@ -173,6 +180,7 @@ impl Trainer {
         let mut planes = vec![0.0f32; batch * plane_len];
         let mut targets = vec![0.0f32; batch * policy as usize];
         let mut zs = vec![0.0f32; batch];
+        let mut owns = vec![0.0f32; batch * cells];
         let (mut pl_sum, mut vl_sum) = (0.0f64, 0.0f64);
 
         for _ in 0..steps {
@@ -192,6 +200,14 @@ impl Trainer {
                     targets[i * policy as usize + usize::from(ti)] = p;
                 }
                 zs[i] = (1.0 - self.value_mix) * s.z + self.value_mix * s.q;
+                // Ownership target from the mover's view (negate when White is
+                // to move, since `s.ownership` is absolute Black-positive),
+                // transformed by the same dihedral symmetry as the planes.
+                let sign = if s.stm_white { -1.0 } else { 1.0 };
+                let base = i * cells;
+                for (p, &o) in s.ownership.iter().enumerate() {
+                    owns[base + d8(p, t, size as usize)] = sign * f32::from(o);
+                }
             }
             let x = Tensor::from_slice(&planes)
                 .reshape([batch as i64, PLANE_COUNT as i64, size, size])
@@ -200,14 +216,21 @@ impl Trainer {
                 .reshape([batch as i64, policy])
                 .to_device(device);
             let tz = Tensor::from_slice(&zs).to_device(device);
+            let to = Tensor::from_slice(&owns)
+                .reshape([batch as i64, cells as i64])
+                .to_device(device);
 
-            let (logits, v) = self.net.forward(&x, true);
+            let (logits, v, own) = self.net.forward(&x, true);
             let logp = logits.log_softmax(-1, Kind::Float);
             let pl = -(tp * logp)
                 .sum_dim_intlist(-1, false, Kind::Float)
                 .mean(Kind::Float);
             let vl = (v - tz).square().mean(Kind::Float);
-            let loss = &pl + &vl;
+            // Per-point ownership MSE — the dense auxiliary that teaches the
+            // trunk territory and kills the plateau from low-information
+            // late-game filling positions.
+            let ol = (own - to).square().mean(Kind::Float);
+            let loss = &pl + &vl + OWNERSHIP_WEIGHT * &ol;
             self.opt.backward_step(&loss);
             pl_sum += pl.double_value(&[]);
             vl_sum += vl.double_value(&[]);
