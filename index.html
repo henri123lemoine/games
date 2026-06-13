@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Games Room — Henri Lemoine</title>
+    <script>
+      if (
+        localStorage.getItem('dark') === 'true' ||
+        (!localStorage.getItem('dark') &&
+          window.matchMedia('(prefers-color-scheme: dark)').matches)
+      ) {
+        document.documentElement.classList.add('dark');
+      }
+    </script>
+    <script type="module" crossorigin src="./assets/main-YFk57Hu-.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/azgpu-qjTz9flN.js">
+    <link rel="stylesheet" crossorigin href="./assets/main-1f8KAHK-.css">
+  </head>
+  <body>
+    <button class="dark-toggle" aria-label="Toggle dark mode">🌙</button>
+    <div id="app"></div>
+    <script>
+      (function () {
+        var toggle = document.querySelector('.dark-toggle');
+        if (document.documentElement.classList.contains('dark')) {
+          toggle.textContent = '☀️';
+        }
+        toggle.addEventListener('click', function () {
+          var isDark = document.documentElement.classList.toggle('dark');
+          toggle.textContent = isDark ? '☀️' : '🌙';
+          localStorage.setItem('dark', String(isDark));
+        });
+      })();
+    </script>
+  </body>
+</html>
