@@ -181,7 +181,12 @@ impl AzGoBot {
         if !self.done {
             return Err(JsError::new("search is not done"));
         }
-        let action = self.search.root_actions()[argmax(self.search.root_visits())];
+        // Mirror self-play/eval: never pass while a productive move remains,
+        // so the deployed bot doesn't hand a human the game on a sparse board.
+        let mut visits = self.search.root_visits().to_vec();
+        let actions = self.search.root_actions();
+        goinfer::mask_pass_visits(&self.game, &self.state, actions, &mut visits);
+        let action = actions[argmax(&visits)];
         Ok(self.game.action_label(&self.state, action))
     }
 

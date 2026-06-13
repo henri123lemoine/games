@@ -192,8 +192,12 @@ impl Worker {
     /// Plays the searched move; returns `Some(Finished)` when the game ends.
     fn play_move(&mut self, game: &Go, cfg: &SelfPlayConfig) -> Option<WorkerStep> {
         let enc = GoEncoder::new(game.size());
-        let visits = self.search.root_visits().to_vec();
+        let mut visits = self.search.root_visits().to_vec();
         let actions = self.search.root_actions().to_vec();
+        // Forbid passing while productive moves remain — both for the played
+        // move and the recorded policy target — so the net never learns the
+        // area-scoring pass-early collapse.
+        goinfer::mask_pass_visits(game, &self.state, &actions, &mut visits);
         let stm = self.state.to_move();
         let dist: Vec<(u16, f32)> = {
             let total: u32 = visits.iter().sum();

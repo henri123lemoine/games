@@ -27,6 +27,7 @@ pub mod encode;
 mod knowledge;
 mod ui;
 
+use knowledge::is_eyelike;
 pub use knowledge::{GoEval, GoSpec};
 
 use game_core::hash::splitmix64;
@@ -214,6 +215,22 @@ impl Go {
             }
         }
         (score[0], score[1])
+    }
+
+    /// True if the mover has a *productive* move: a legal placement that does
+    /// not merely fill one of its own true eyes. When this holds, passing is a
+    /// strictly wasteful move and self-play/eval/serving should forbid it —
+    /// without that guard, area scoring's "a sparse board is a komi win for
+    /// White" makes passing early a degenerate self-play equilibrium (White
+    /// ends the game before Black can build territory). Pass becomes available
+    /// again once only eye-filling moves remain, so finished games still end.
+    pub fn has_productive_move(&self, s: &GoState) -> bool {
+        let color = s.to_move as u8;
+        (0..self.size * self.size).any(|p| {
+            s.cells[p] == EMPTY
+                && self.placement_legal(s, p)
+                && !is_eyelike(&s.cells, self.size, p, color)
+        })
     }
 
     fn placement_legal(&self, s: &GoState, p: usize) -> bool {

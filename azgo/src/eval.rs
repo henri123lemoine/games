@@ -325,8 +325,10 @@ pub fn ladder(
                     ) {
                         Gather::Requests(reqs) => return reqs,
                         Gather::Done => {
-                            let choice = argmax(g.search.root_visits());
-                            let action = g.search.root_actions()[choice];
+                            let mut visits = g.search.root_visits().to_vec();
+                            let actions = g.search.root_actions();
+                            goinfer::mask_pass_visits(&game, &g.state, actions, &mut visits);
+                            let action = actions[argmax(&visits)];
                             game.apply(&mut g.state, action);
                             // No tree reuse: the opponent moves before our
                             // next search, so the extracted subtree would be

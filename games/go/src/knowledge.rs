@@ -126,7 +126,7 @@ fn group_liberties(cells: &[u8], size: usize, stones: &[usize]) -> usize {
 /// seki, and positions where filling an eye is correct (e.g. to win an inside
 /// capturing race) are all beyond it. Good enough to stop a policy from
 /// killing its own groups; not an oracle.
-fn is_eyelike(cells: &[u8], size: usize, p: usize, color: u8) -> bool {
+pub(crate) fn is_eyelike(cells: &[u8], size: usize, p: usize, color: u8) -> bool {
     if neighbors(size, p).any(|n| cells[n] != color) {
         return false;
     }
@@ -147,6 +147,7 @@ fn is_eyelike(cells: &[u8], size: usize, p: usize, color: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use game_core::Game;
 
     fn cells(g: &Go, rows: &[&str]) -> Vec<u8> {
         g.parse_state(rows, 0).cells
@@ -226,6 +227,27 @@ mod tests {
             ],
         );
         assert!(!is_eyelike(&tainted, 5, a1, 0));
+    }
+
+    #[test]
+    fn productive_move_guard() {
+        let g = Go::new(5);
+        // Empty board: plenty of productive moves.
+        assert!(g.has_productive_move(&g.initial_state()));
+        // Black surrounds a single eye at c3 and fills the rest of a 5×5 so
+        // its only legal placement is its own eye → no productive move, pass
+        // is the right call.
+        let s = g.parse_state(
+            &[
+                "X X X X X",
+                "X X X X X",
+                "X X . X X",
+                "X X X X X",
+                "X X X X X",
+            ],
+            0,
+        );
+        assert!(!g.has_productive_move(&s), "only its own eye remains");
     }
 
     #[test]
