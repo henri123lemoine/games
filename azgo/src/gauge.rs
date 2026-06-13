@@ -62,6 +62,7 @@ fn mle_elo(anchors: &[(f64, f64, u32)]) -> f64 {
 /// anchored Bradley-Terry model, printing Elo values for [`PANEL`].
 pub fn calibrate(args: &[String]) {
     let pairs: u32 = arg(args, "--pairs", 12);
+    let size: usize = arg(args, "--size", 9);
     let players: Vec<Opponent> = PANEL.iter().map(|&(o, _)| o).collect();
     let anchor = players.len() - 1;
     let links = [
@@ -82,6 +83,7 @@ pub fn calibrate(args: &[String]) {
             players[i],
             players[j],
             pairs,
+            size,
             mix(0xCA1B, (i * 16 + j) as u64),
         );
         println!(
@@ -148,7 +150,14 @@ pub fn elo_gauge(args: &[String]) {
 
         let t = Instant::now();
         let panel_opps: Vec<Opponent> = PANEL.iter().map(|&(o, _)| o).collect();
-        let entries = ladder(&infer, &panel_opps, pairs, sims, mix(0x510, epoch_secs()));
+        let entries = ladder(
+            &infer,
+            &panel_opps,
+            pairs,
+            sims,
+            cfg.size as usize,
+            mix(0x510, epoch_secs()),
+        );
         let mut anchors: Vec<(f64, f64, u32)> = Vec::new();
         let mut detail = Vec::new();
         for (&(_, elo), en) in PANEL.iter().zip(&entries) {

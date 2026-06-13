@@ -47,10 +47,13 @@ pub(crate) fn arg_opt<T: FromStr>(args: &[String], name: &str) -> Option<T> {
 /// then the checkpoint's own `<name>.json` sidecar, then the latest `start`
 /// event in the metrics.jsonl beside it.
 pub(crate) fn net_config_for(args: &[String], net_path: &Path) -> NetConfig {
+    // `size` predates no checkpoints (it was always 9 before being recorded),
+    // so a missing field defaults to 9 rather than failing the parse.
     let from_json = |v: &serde_json::Value| {
         Some((
             v["blocks"].as_u64()? as usize,
             v["channels"].as_u64()? as i64,
+            v["size"].as_u64().unwrap_or(9) as i64,
         ))
     };
     let sidecar = net_path
@@ -80,14 +83,21 @@ pub(crate) fn net_config_for(args: &[String], net_path: &Path) -> NetConfig {
     let channels = arg_opt(args, "--ch")
         .or(recorded.map(|r| r.1))
         .unwrap_or(96);
-    if let Some((rb, rc)) = recorded
-        && (rb != blocks || rc != channels)
+    let size = arg_opt(args, "--size")
+        .or(recorded.map(|r| r.2))
+        .unwrap_or(9);
+    if let Some((rb, rc, rs)) = recorded
+        && (rb != blocks || rc != channels || rs != size)
     {
         eprintln!(
-            "note: run metrics say {rb}x{rc}, flags say {blocks}x{channels} — using the flags"
+            "note: run metrics say {rb}x{rc} size {rs}, flags say {blocks}x{channels} size {size} — using the flags"
         );
     }
-    NetConfig { blocks, channels }
+    NetConfig {
+        blocks,
+        channels,
+        size,
+    }
 }
 
 pub(crate) fn append_line(path: &Path, line: &str) {
@@ -190,7 +200,7 @@ fn run(args: &[String]) {
     // Resume reads the architecture recorded in the run's own metrics (flags
     // override) — the same rule every other subcommand already follows.
     let net_cfg = net_config_for(args, &dir.join("latest.ot"));
-    let (blocks, channels) = (net_cfg.blocks, net_cfg.channels);
+    let (blocks, channels, size) = (net_cfg.blocks, net_cfg.channels, net_cfg.size);
     let sp_cfg = SelfPlayConfig {
         puct: PuctConfig {
             sims,
@@ -238,7 +248,7 @@ fn run(args: &[String]) {
         lr_dropped = true;
         println!("restored lr {prev} from the previous leg (base {lr})");
     }
-    let mut pool = SelfPlay::new(sp_cfg, 0x60A1_5EED);
+    let mut pool = SelfPlay::new(sp_cfg, size as usize, 0x60A1_5EED);
     let mut replay = Replay::new(replay_cap);
     // Rolling pool of control games' non-loser minimum Qs; the resignation
     // threshold is the fp-target quantile of this distribution (AGZ-style
@@ -250,7 +260,7 @@ fn run(args: &[String]) {
         &metrics,
         &serde_json::json!({
             "event": "start", "time": epoch_secs(), "iter": iter,
-            "blocks": blocks, "channels": channels, "sims": sims,
+            "blocks": blocks, "channels": channels, "size": size, "sims": sims,
             "concurrent": concurrent, "samples_per_iter": samples_per_iter,
             "batch_size": batch, "replay_capacity": replay_cap, "lr": lr,
             "eval_every": eval_every, "eval_pairs": eval_pairs,
@@ -261,8 +271,8 @@ fn run(args: &[String]) {
         .to_string(),
     );
     println!(
-        "run: {hours:.1}h budget, {blocks}x{channels} resnet on {dev:?}, {sims} sims/move, \
-         {concurrent} concurrent games, {samples_per_iter} samples/iter, dir {}",
+        "run: {hours:.1}h budget, {blocks}x{channels} resnet, {size}x{size} board on {dev:?}, \
+         {sims} sims/move, {concurrent} concurrent games, {samples_per_iter} samples/iter, dir {}",
         dir.display()
     );
 
@@ -311,7 +321,14 @@ fn run(args: &[String]) {
         if iter == 1 || iter.is_multiple_of(eval_every) {
             let infer = Infer::snapshot(&trainer.vs, net_cfg, Kind::Half);
             let t = Instant::now();
-            let entries = ladder(&infer, &opponents, eval_pairs, eval_sims, mix(0xE7A1, iter));
+            let entries = ladder(
+                &infer,
+                &opponents,
+                eval_pairs,
+                eval_sims,
+                size as usize,
+                mix(0xE7A1, iter),
+            );
             let eval_secs = t.elapsed().as_secs_f32();
             eval_work = eval_secs;
             let table: serde_json::Map<String, serde_json::Value> = entries
@@ -405,13 +422,18 @@ fn bench(args: &[String]) {
 
     let blocks: usize = arg(args, "--blocks", 6);
     let channels: i64 = arg(args, "--ch", 96);
+    let size: i64 = arg(args, "--size", 9);
     let sims: u32 = arg(args, "--sims", 192);
     let leaves: u32 = arg(args, "--leaves", 8);
     let concurrent: usize = arg(args, "--concurrent", 768);
     let samples: usize = arg(args, "--samples", 8192);
 
     let dev = device();
-    let net_cfg = NetConfig { blocks, channels };
+    let net_cfg = NetConfig {
+        blocks,
+        channels,
+        size,
+    };
     let trainer = Trainer::new(dev, net_cfg, 1e-3, 1e-4, 0.3);
     let infer = Infer::snapshot(&trainer.vs, net_cfg, Kind::Half);
     let sp_cfg = SelfPlayConfig {
@@ -424,20 +446,23 @@ fn bench(args: &[String]) {
         concurrent,
         ..SelfPlayConfig::default()
     };
-    let mut pool = SelfPlay::new(sp_cfg, 0xBE7C);
+    let mut pool = SelfPlay::new(sp_cfg, size as usize, 0xBE7C);
 
-    println!("bench: {blocks}x{channels} resnet on {dev:?}, {sims} sims, {concurrent} games");
+    println!(
+        "bench: {blocks}x{channels} resnet, {size}x{size} board on {dev:?}, {sims} sims, {concurrent} games"
+    );
 
-    let game = Go::new(9);
+    let game = Go::new(size as usize);
+    let enc = GoEncoder::new(size as usize);
     let synth = |n: usize| {
         let s = game.initial_state();
         let actions = game.legal_actions(&s);
         (0..n)
             .map(|_| net::EvalRequest {
-                features: GoEncoder.encode_state(&game, &s),
+                features: enc.encode_state(&game, &s),
                 support: actions
                     .iter()
-                    .map(|&a| GoEncoder.action_index(&game, &s, a) as u16)
+                    .map(|&a| enc.action_index(&game, &s, a) as u16)
                     .collect(),
             })
             .collect::<Vec<_>>()
@@ -507,24 +532,24 @@ fn main() {
         Some("calibrate") => gauge::calibrate(&args[1..]),
         _ => {
             eprintln!(
-                "usage: azgo run   [--dir ../data/azgo/run1] [--hours 5] [--blocks 6] [--ch 96] \
-                 [--sims 192] [--leaves 8] [--concurrent 768] [--samples-per-iter 16384] \
+                "usage: azgo run   [--dir ../data/azgo/run1] [--hours 5] [--size 9] [--blocks 6] \
+                 [--ch 96] [--sims 192] [--leaves 8] [--concurrent 768] [--samples-per-iter 16384] \
                  [--temp-plies 10] [--alpha 0.15] [--value-mix 0.3] [--resign-fp-target 0.05] \
                  [--resign-q 0.95] [--resign-ply 20] [--resign-off 0.1] [--batch 1024] \
                  [--reuse 1.8] [--replay 500000] [--lr 1e-3] [--wd 1e-4] [--eval-every 4] \
                  [--eval-pairs 8] [--eval-sims 160] [--snapshot-every 30]"
             );
             eprintln!(
-                "       azgo bench [--blocks 6] [--ch 96] [--sims 192] [--leaves 8] \
+                "       azgo bench [--size 9] [--blocks 6] [--ch 96] [--sims 192] [--leaves 8] \
                  [--concurrent 768] [--samples 8192]"
             );
             eprintln!(
                 "       azgo elo   [--net ../data/azgo/run1/latest.ot] [--sims 400] [--pairs 6] \
                  [--watch <minutes>]"
             );
-            eprintln!("       azgo calibrate [--pairs 12]");
+            eprintln!("       azgo calibrate [--size 9] [--pairs 12]");
             eprintln!(
-                "       (--blocks/--ch default to the architecture recorded in the run's \
+                "       (--blocks/--ch/--size default to the architecture recorded in the run's \
                  metrics.jsonl; GNUGO env var overrides the gnugo binary path)"
             );
             std::process::exit(2);

@@ -16,15 +16,26 @@ use crate::{EMPTY, Go, GoAction, GoState, group, neighbors};
 
 pub const PLANES: usize = 9;
 
-pub struct GoEncoder;
+/// Board-size-parameterized so the policy-head width (`size² + 1`) and input
+/// length are known without a state in hand — the [`PolicyValueEncoder`]
+/// length methods take only `&self`.
+pub struct GoEncoder {
+    size: usize,
+}
+
+impl GoEncoder {
+    pub fn new(size: usize) -> GoEncoder {
+        GoEncoder { size }
+    }
+}
 
 impl PolicyValueEncoder<Go> for GoEncoder {
     fn input_len(&self) -> usize {
-        PLANES * 81
+        PLANES * self.size * self.size
     }
 
     fn policy_len(&self) -> usize {
-        82
+        self.size * self.size + 1
     }
 
     fn encode_state(&self, game: &Go, state: &GoState) -> Vec<f32> {
@@ -144,7 +155,7 @@ mod tests {
         g.apply(&mut s, GoAction::Place(g.point("a1").unwrap()));
         g.apply(&mut s, GoAction::Place(g.point("a2").unwrap()));
         // White to move: own = white.
-        let x = GoEncoder.encode_state(&g, &s);
+        let x = GoEncoder::new(g.size()).encode_state(&g, &s);
         let n = 81;
         let a1 = g.point("a1").unwrap() as usize;
         let a2 = g.point("a2").unwrap() as usize;
@@ -175,7 +186,7 @@ mod tests {
             ],
             1,
         );
-        let x = GoEncoder.encode_state(&g, &s);
+        let x = GoEncoder::new(g.size()).encode_state(&g, &s);
         let c3 = g.point("c3").unwrap() as usize;
         assert_eq!(x[6 * 25 + c3], 1.0, "suicide marked illegal for white");
     }
@@ -217,7 +228,7 @@ mod tests {
         for coord in ["d4", "f5", "c3", "g6", "e5"] {
             g.apply(&mut s, GoAction::Place(g.point(coord).unwrap()));
         }
-        let x = GoEncoder.encode_state(&g, &s);
+        let x = GoEncoder::new(g.size()).encode_state(&g, &s);
         for t in 0..8u8 {
             // Build the transformed position by replaying transformed moves.
             let mut ts = g.initial_state();
@@ -225,7 +236,7 @@ mod tests {
                 let p = g.point(coord).unwrap() as usize;
                 g.apply(&mut ts, GoAction::Place(d8(p, t, 9) as u16));
             }
-            let tx = GoEncoder.encode_state(&g, &ts);
+            let tx = GoEncoder::new(g.size()).encode_state(&g, &ts);
             for plane in 0..PLANES {
                 for p in 0..81 {
                     assert_eq!(

@@ -10,16 +10,25 @@
 use tch::nn;
 use tch::{Device, Kind, Tensor};
 
-pub const SIZE: i64 = 9;
-pub const CELLS: usize = 81;
 pub const PLANES: i64 = go::encode::PLANES as i64;
 pub const PLANE_COUNT: usize = go::encode::PLANES;
-pub const POLICY: i64 = 82;
 
 #[derive(Clone, Copy)]
 pub struct NetConfig {
     pub blocks: usize,
     pub channels: i64,
+    pub size: i64,
+}
+
+impl NetConfig {
+    pub fn cells(&self) -> usize {
+        (self.size * self.size) as usize
+    }
+
+    /// Policy width: one logit per board point plus the pass.
+    pub fn policy(&self) -> i64 {
+        self.size * self.size + 1
+    }
 }
 
 struct Block {
@@ -62,6 +71,7 @@ fn conv(p: nn::Path, cin: i64, cout: i64, k: i64) -> nn::Conv2D {
 impl Net {
     pub fn new(root: &nn::Path, cfg: NetConfig) -> Net {
         let c = cfg.channels;
+        let area = cfg.size * cfg.size;
         let tower = (0..cfg.blocks)
             .map(|i| {
                 let p = root / format!("block{i}");
@@ -79,15 +89,15 @@ impl Net {
             tower,
             p1: conv(root / "p1", c, 2, 1),
             pb: nn::batch_norm2d(root / "pb", 2, Default::default()),
-            pf: nn::linear(root / "pf", 2 * SIZE * SIZE, POLICY, Default::default()),
+            pf: nn::linear(root / "pf", 2 * area, cfg.policy(), Default::default()),
             v1: conv(root / "v1", c, 2, 1),
             vb: nn::batch_norm2d(root / "vb", 2, Default::default()),
-            vf1: nn::linear(root / "vf1", 2 * SIZE * SIZE, 128, Default::default()),
+            vf1: nn::linear(root / "vf1", 2 * area, 128, Default::default()),
             vf2: nn::linear(root / "vf2", 128, 1, Default::default()),
         }
     }
 
-    /// `x`: `[B, 9, 9, 9]` → (policy logits `[B, 82]`, value `[B]`).
+    /// `x`: `[B, 9, size, size]` → (policy logits `[B, size²+1]`, value `[B]`).
     pub fn forward(&self, x: &Tensor, train: bool) -> (Tensor, Tensor) {
         let mut t = x.apply(&self.stem_c).apply_t(&self.stem_b, train).relu();
         for b in &self.tower {
@@ -135,6 +145,8 @@ pub struct Infer {
     net: Net,
     device: Device,
     kind: Kind,
+    size: i64,
+    policy: i64,
 }
 
 impl Infer {
@@ -153,6 +165,8 @@ impl Infer {
             net,
             device,
             kind,
+            size: cfg.size,
+            policy: cfg.policy(),
         }
     }
 
@@ -176,6 +190,8 @@ impl Infer {
             net,
             device,
             kind,
+            size: cfg.size,
+            policy: cfg.policy(),
         })
     }
 
@@ -191,13 +207,14 @@ impl Infer {
         // OS kills the process.
         let bucket = reqs.len().next_multiple_of(256);
         let b = bucket as i64;
-        let plane_len = PLANE_COUNT * CELLS;
+        let cells = (self.size * self.size) as usize;
+        let plane_len = PLANE_COUNT * cells;
         let mut planes = vec![0.0f32; bucket * plane_len];
         let mut gather: Vec<i64> = Vec::with_capacity(reqs.len() * 48);
         for (i, r) in reqs.iter().enumerate() {
             debug_assert_eq!(r.features.len(), plane_len);
             planes[i * plane_len..(i + 1) * plane_len].copy_from_slice(&r.features);
-            let base = i as i64 * POLICY;
+            let base = i as i64 * self.policy;
             gather.extend(r.support.iter().map(|&s| base + i64::from(s)));
         }
         // Same shape-bucketing for the index tensor; padding rows point at
@@ -205,7 +222,7 @@ impl Infer {
         gather.resize(gather.len().next_multiple_of(4096), 0);
         let (legal_logits, values) = tch::no_grad(|| {
             let x = Tensor::from_slice(&planes)
-                .reshape([b, PLANES, SIZE, SIZE])
+                .reshape([b, PLANES, self.size, self.size])
                 .to_device(self.device)
                 .to_kind(self.kind);
             let idx = Tensor::from_slice(&gather).to_device(self.device);

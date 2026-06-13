@@ -13,13 +13,22 @@ use go::encode::{d8, d8_policy};
 use tch::nn::{self, OptimizerConfig};
 use tch::{Device, Kind, Tensor};
 
-use crate::net::{CELLS, Net, NetConfig, PLANE_COUNT, POLICY, SIZE};
+use crate::net::{Net, NetConfig, PLANE_COUNT};
 
-/// Planes 0..=6 of the encoding are position-dependent bitsets (81 bits
-/// each); plane 7 is the constant stm-is-white fill and plane 8 the constant
-/// ones fill, reconstructed at expansion.
+/// The first 7 of the 9 encoding planes are position-dependent bitsets;
+/// plane 7 (stm-is-white) and plane 8 (ones) are constant fills
+/// reconstructed at expansion, so only these are packed.
+const PACKED_PLANES: usize = 7;
+
+fn words_per_plane(cells: usize) -> usize {
+    cells.div_ceil(64)
+}
+
+/// One self-play training example. The position planes are bit-packed
+/// (`PACKED_PLANES` planes × ⌈cells/64⌉ words) so a replay buffer of a
+/// million 19×19 samples stays in hundreds of MB rather than tens of GB.
 pub struct Sample {
-    pub planes: [u128; 7],
+    pub planes: Box<[u64]>,
     pub stm_white: bool,
     /// Sparse visit distribution over policy indices.
     pub policy: Vec<(u16, f32)>,
@@ -30,37 +39,47 @@ pub struct Sample {
     pub q: f32,
 }
 
-/// Packs the encoder's f32 features into per-plane bitsets.
-pub fn compact(features: &[f32]) -> ([u128; 7], bool) {
-    debug_assert_eq!(features.len(), PLANE_COUNT * CELLS);
-    let mut planes = [0u128; 7];
-    for (p, plane) in planes.iter_mut().enumerate() {
-        for cell in 0..CELLS {
-            if features[p * CELLS + cell] != 0.0 {
-                *plane |= 1 << cell;
+/// Packs the encoder's f32 features into per-plane bitsets for a `size`×`size`
+/// board. Returns the packed planes and whether the mover is White.
+pub fn compact(features: &[f32], size: usize) -> (Box<[u64]>, bool) {
+    let cells = size * size;
+    debug_assert_eq!(features.len(), PLANE_COUNT * cells);
+    let wpp = words_per_plane(cells);
+    let mut planes = vec![0u64; PACKED_PLANES * wpp];
+    for p in 0..PACKED_PLANES {
+        for cell in 0..cells {
+            if features[p * cells + cell] != 0.0 {
+                planes[p * wpp + cell / 64] |= 1 << (cell % 64);
             }
         }
     }
-    (planes, features[7 * CELLS] != 0.0)
+    (
+        planes.into_boxed_slice(),
+        features[PACKED_PLANES * cells] != 0.0,
+    )
 }
 
 /// Expands packed planes under symmetry `t` (0..8) into the net's input
-/// layout.
-pub fn expand(planes: &[u128; 7], stm_white: bool, t: u8, out: &mut [f32]) {
-    debug_assert_eq!(out.len(), PLANE_COUNT * CELLS);
+/// layout for a `size`×`size` board.
+pub fn expand(planes: &[u64], stm_white: bool, t: u8, size: usize, out: &mut [f32]) {
+    let cells = size * size;
+    debug_assert_eq!(out.len(), PLANE_COUNT * cells);
+    let wpp = words_per_plane(cells);
     out.fill(0.0);
-    for (p, &bits) in planes.iter().enumerate() {
-        let mut b = bits;
-        while b != 0 {
-            let cell = b.trailing_zeros() as usize;
-            out[p * CELLS + d8(cell, t, SIZE as usize)] = 1.0;
-            b &= b - 1;
+    for p in 0..PACKED_PLANES {
+        for w in 0..wpp {
+            let mut bits = planes[p * wpp + w];
+            while bits != 0 {
+                let cell = w * 64 + bits.trailing_zeros() as usize;
+                out[p * cells + d8(cell, t, size)] = 1.0;
+                bits &= bits - 1;
+            }
         }
     }
     if stm_white {
-        out[7 * CELLS..8 * CELLS].fill(1.0);
+        out[PACKED_PLANES * cells..(PACKED_PLANES + 1) * cells].fill(1.0);
     }
-    out[8 * CELLS..9 * CELLS].fill(1.0);
+    out[(PACKED_PLANES + 1) * cells..PLANE_COUNT * cells].fill(1.0);
 }
 
 pub struct Replay {
@@ -147,9 +166,12 @@ impl Trainer {
             return (0.0, 0.0);
         }
         let device = self.vs.device();
-        let plane_len = PLANE_COUNT * CELLS;
+        let size = self.cfg.size;
+        let cells = self.cfg.cells();
+        let policy = self.cfg.policy();
+        let plane_len = PLANE_COUNT * cells;
         let mut planes = vec![0.0f32; batch * plane_len];
-        let mut targets = vec![0.0f32; batch * POLICY as usize];
+        let mut targets = vec![0.0f32; batch * policy as usize];
         let mut zs = vec![0.0f32; batch];
         let (mut pl_sum, mut vl_sum) = (0.0f64, 0.0f64);
 
@@ -162,19 +184,20 @@ impl Trainer {
                     &s.planes,
                     s.stm_white,
                     t,
+                    size as usize,
                     &mut planes[i * plane_len..(i + 1) * plane_len],
                 );
                 for &(idx, p) in &s.policy {
-                    let ti = d8_policy(idx, t, SIZE as usize);
-                    targets[i * POLICY as usize + usize::from(ti)] = p;
+                    let ti = d8_policy(idx, t, size as usize);
+                    targets[i * policy as usize + usize::from(ti)] = p;
                 }
                 zs[i] = (1.0 - self.value_mix) * s.z + self.value_mix * s.q;
             }
             let x = Tensor::from_slice(&planes)
-                .reshape([batch as i64, PLANE_COUNT as i64, SIZE, SIZE])
+                .reshape([batch as i64, PLANE_COUNT as i64, size, size])
                 .to_device(device);
             let tp = Tensor::from_slice(&targets)
-                .reshape([batch as i64, POLICY])
+                .reshape([batch as i64, policy])
                 .to_device(device);
             let tz = Tensor::from_slice(&zs).to_device(device);
 
@@ -214,8 +237,8 @@ impl Trainer {
         std::fs::write(
             path.with_file_name(format!("{name}.json")),
             format!(
-                "{{\"blocks\":{},\"channels\":{}}}\n",
-                self.cfg.blocks, self.cfg.channels
+                "{{\"blocks\":{},\"channels\":{},\"size\":{}}}\n",
+                self.cfg.blocks, self.cfg.channels, self.cfg.size
             ),
         )?;
         Ok(())
@@ -235,37 +258,54 @@ mod tests {
 
     #[test]
     fn compact_expand_roundtrip_under_identity() {
-        let g = Go::new(9);
-        let mut s = g.initial_state();
-        for coord in ["e5", "c3", "g7", "d4"] {
-            g.apply(&mut s, GoAction::Place(g.point(coord).unwrap()));
+        // 19 exercises the >128-cell packing (361 bits / plane) that 9 does not.
+        for size in [9usize, 19] {
+            let g = Go::new(size);
+            let enc = GoEncoder::new(size);
+            let mut s = g.initial_state();
+            for (i, _) in (0..6).enumerate() {
+                let p = (i * 37 + 5) % (size * size);
+                let placements: Vec<_> = g
+                    .legal_actions(&s)
+                    .into_iter()
+                    .filter(|a| matches!(a, GoAction::Place(q) if (*q as usize) == p))
+                    .collect();
+                if let Some(&a) = placements.first() {
+                    g.apply(&mut s, a);
+                }
+            }
+            let x = enc.encode_state(&g, &s);
+            let (planes, stm_white) = compact(&x, size);
+            let mut back = vec![0.0f32; x.len()];
+            expand(&planes, stm_white, 0, size, &mut back);
+            assert_eq!(x, back, "size {size}");
         }
-        let x = GoEncoder.encode_state(&g, &s);
-        let (planes, stm_white) = compact(&x);
-        let mut back = vec![0.0f32; x.len()];
-        expand(&planes, stm_white, 0, &mut back);
-        assert_eq!(x, back);
     }
 
     #[test]
     fn expand_under_symmetry_matches_encoding_of_transformed_board() {
-        let g = Go::new(9);
-        let coords = ["e5", "c3", "g7", "d4", "f6"];
-        let mut s = g.initial_state();
-        for c in &coords {
-            g.apply(&mut s, GoAction::Place(g.point(c).unwrap()));
-        }
-        let (planes, stm_white) = compact(&GoEncoder.encode_state(&g, &s));
-        for t in 0..8u8 {
-            let mut ts = g.initial_state();
+        for (size, coords) in [
+            (9usize, vec!["e5", "c3", "g7", "d4", "f6"]),
+            (19, vec!["k10", "d4", "q16", "c15", "r5"]),
+        ] {
+            let g = Go::new(size);
+            let enc = GoEncoder::new(size);
+            let mut s = g.initial_state();
             for c in &coords {
-                let p = g.point(c).unwrap() as usize;
-                g.apply(&mut ts, GoAction::Place(d8(p, t, 9) as u16));
+                g.apply(&mut s, GoAction::Place(g.point(c).unwrap()));
             }
-            let want = GoEncoder.encode_state(&g, &ts);
-            let mut got = vec![0.0f32; want.len()];
-            expand(&planes, stm_white, t, &mut got);
-            assert_eq!(got, want, "symmetry {t}");
+            let (planes, stm_white) = compact(&enc.encode_state(&g, &s), size);
+            for t in 0..8u8 {
+                let mut ts = g.initial_state();
+                for c in &coords {
+                    let p = g.point(c).unwrap() as usize;
+                    g.apply(&mut ts, GoAction::Place(d8(p, t, size) as u16));
+                }
+                let want = enc.encode_state(&g, &ts);
+                let mut got = vec![0.0f32; want.len()];
+                expand(&planes, stm_white, t, size, &mut got);
+                assert_eq!(got, want, "size {size} symmetry {t}");
+            }
         }
     }
 }

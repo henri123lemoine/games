@@ -18,11 +18,12 @@ pub struct Gtp {
 }
 
 impl Gtp {
-    /// Spawns GNU Go at `level` on a 9×9 board with the lab's go rules:
-    /// area scoring (`--chinese-rules`), komi 7.5, and `--capture-all-dead`
-    /// so its passes agree with our no-dead-stone-adjudication scoring.
-    /// `seed` varies its move choice between otherwise identical games.
-    pub fn spawn_gnugo(path: &str, level: u32, seed: u32) -> io::Result<Gtp> {
+    /// Spawns GNU Go at `level` on a `size`×`size` board with the lab's go
+    /// rules: area scoring (`--chinese-rules`), komi 7.5, and
+    /// `--capture-all-dead` so its passes agree with our
+    /// no-dead-stone-adjudication scoring. `seed` varies its move choice
+    /// between otherwise identical games.
+    pub fn spawn_gnugo(path: &str, level: u32, seed: u32, size: usize) -> io::Result<Gtp> {
         let mut child = Command::new(path)
             .args([
                 "--mode",
@@ -55,7 +56,7 @@ impl Gtp {
             stdin,
             lines,
         };
-        gtp.cmd("boardsize 9")?;
+        gtp.cmd(&format!("boardsize {size}"))?;
         gtp.cmd("clear_board")?;
         gtp.cmd("komi 7.5")?;
         Ok(gtp)

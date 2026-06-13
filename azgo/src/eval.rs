@@ -51,11 +51,11 @@ impl Opponent {
         }
     }
 
-    fn agent(self, seed: u32) -> Box<dyn Agent<Go> + Send> {
+    fn agent(self, size: usize, seed: u32) -> Box<dyn Agent<Go> + Send> {
         match self {
             Opponent::Random => Box::new(game_core::RandomAgent),
             Opponent::Mcts(sims) => Box::new(RolloutMcts { sims }),
-            Opponent::GnuGo(level) => Box::new(GnuGoAgent::spawn(level, seed)),
+            Opponent::GnuGo(level) => Box::new(GnuGoAgent::spawn(level, seed, size)),
         }
     }
 }
@@ -86,18 +86,20 @@ struct GnuGoInner {
     gtp: Option<Gtp>,
     level: u32,
     seed: u32,
+    size: usize,
     /// Cells as of the last position this agent relayed to the engine.
     cells: Vec<u8>,
 }
 
 impl GnuGoAgent {
-    pub fn spawn(level: u32, seed: u32) -> GnuGoAgent {
+    pub fn spawn(level: u32, seed: u32, size: usize) -> GnuGoAgent {
         GnuGoAgent {
             inner: RefCell::new(GnuGoInner {
                 gtp: None,
                 level,
                 seed,
-                cells: vec![2; 81],
+                size,
+                cells: vec![2; size * size],
             }),
         }
     }
@@ -131,7 +133,12 @@ fn snapshot(g: &Go, s: &GoState) -> Vec<u8> {
 impl GnuGoInner {
     fn relay_and_genmove(&mut self, g: &Go, s: &GoState, us: usize) -> std::io::Result<String> {
         if self.gtp.is_none() {
-            self.gtp = Some(Gtp::spawn_gnugo(&gnugo_path(), self.level, self.seed)?);
+            self.gtp = Some(Gtp::spawn_gnugo(
+                &gnugo_path(),
+                self.level,
+                self.seed,
+                self.size,
+            )?);
         }
         let size = g.size();
         let board = snapshot(g, s);
@@ -260,9 +267,11 @@ pub fn ladder(
     opponents: &[Opponent],
     pairs: u32,
     sims: u32,
+    size: usize,
     seed: u64,
 ) -> Vec<LadderEntry> {
-    let game = Go::new(9);
+    let game = Go::new(size);
+    let enc = GoEncoder::new(size);
     let puct = PuctConfig {
         sims,
         root_noise: 0.0,
@@ -277,7 +286,10 @@ pub fn ladder(
                 games.push(EvalGame {
                     state: opening.clone(),
                     opponent: opp,
-                    agent: opp.agent(mix(seed, u64::from(pair) * 2 + net_seat as u64) as u32),
+                    agent: opp.agent(
+                        size,
+                        mix(seed, u64::from(pair) * 2 + net_seat as u64) as u32,
+                    ),
                     net_seat,
                     search: azero::Search::new(None),
                     rng: Rng::new(mix(
@@ -304,7 +316,7 @@ pub fn ladder(
                     }
                     match g.search.advance(
                         &game,
-                        &GoEncoder,
+                        &enc,
                         &g.state,
                         &puct,
                         &mut g.rng,
@@ -368,26 +380,26 @@ pub fn ladder(
 /// Plays `pairs` paired games between two fixed opponents (no net), for
 /// calibrating the ladder's Elo anchors. Returns `a`'s score and the game
 /// count.
-pub fn duel(a: Opponent, b: Opponent, pairs: u32, seed: u64) -> (f64, u32) {
+pub fn duel(a: Opponent, b: Opponent, pairs: u32, size: usize, seed: u64) -> (f64, u32) {
     let results: Vec<f64> = (0..pairs)
         .into_par_iter()
         .flat_map_iter(|i| {
-            let game = Go::new(9);
+            let game = Go::new(size);
             let mut rng = Rng::new(mix(seed, u64::from(i) + 1));
             let opening = random_opening(&game, &mut rng);
             let sa = mix(seed, u64::from(i) * 4 + 1) as u32;
             let sb = mix(seed, u64::from(i) * 4 + 2) as u32;
             let as_black = fixed_game(
                 &game,
-                &*a.agent(sa),
-                &*b.agent(sb),
+                &*a.agent(size, sa),
+                &*b.agent(size, sb),
                 opening.clone(),
                 &mut rng,
             );
             let as_white = -fixed_game(
                 &game,
-                &*b.agent(sb + 1),
-                &*a.agent(sa + 1),
+                &*b.agent(size, sb + 1),
+                &*a.agent(size, sa + 1),
                 opening,
                 &mut rng,
             );
@@ -419,7 +431,7 @@ fn fixed_game(
 }
 
 /// A capture-free random opening: `OPENING_PLIES` uniform placements (never
-/// a pass). Two plies on an empty 9×9 cannot capture, which
+/// a pass). A few plies on an empty board cannot capture, which
 /// [`GnuGoAgent`] relies on when replaying the opening as a move sequence.
 fn random_opening(game: &Go, rng: &mut Rng) -> GoState {
     let mut s = game.initial_state();

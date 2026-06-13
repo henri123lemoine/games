@@ -19,7 +19,11 @@ use solvers::azero::{self, Gather, PuctConfig, argmax};
 use crate::net::{EvalRequest, EvalResult, Infer};
 use crate::train::{Sample, compact};
 
-const MAX_PLIES: u16 = 4 * 81;
+/// The go crate's draw-guard ends a game at `4·size²` plies; matching it
+/// here only classifies that ending as a cap rather than a two-pass finish.
+fn max_plies(size: usize) -> u16 {
+    (4 * size * size) as u16
+}
 
 #[derive(Clone, Copy)]
 pub struct SelfPlayConfig {
@@ -107,7 +111,7 @@ enum GameEnd {
 }
 
 /// (packed planes, stm-is-white, visit distribution, side to move, root value)
-type Record = ([u128; 7], bool, Vec<(u16, f32)>, usize, f32);
+type Record = (Box<[u64]>, bool, Vec<(u16, f32)>, usize, f32);
 
 struct Worker {
     state: GoState,
@@ -164,10 +168,11 @@ impl Worker {
         cfg: &SelfPlayConfig,
         mut results: Vec<EvalResult>,
     ) -> WorkerStep {
+        let enc = GoEncoder::new(game.size());
         loop {
             match self.search.advance(
                 game,
-                &GoEncoder,
+                &enc,
                 &self.state,
                 &cfg.puct,
                 &mut self.rng,
@@ -186,6 +191,7 @@ impl Worker {
 
     /// Plays the searched move; returns `Some(Finished)` when the game ends.
     fn play_move(&mut self, game: &Go, cfg: &SelfPlayConfig) -> Option<WorkerStep> {
+        let enc = GoEncoder::new(game.size());
         let visits = self.search.root_visits().to_vec();
         let actions = self.search.root_actions().to_vec();
         let stm = self.state.to_move();
@@ -196,13 +202,13 @@ impl Worker {
                 .zip(&visits)
                 .map(|(&a, &n)| {
                     (
-                        GoEncoder.action_index(game, &self.state, a) as u16,
+                        enc.action_index(game, &self.state, a) as u16,
                         n as f32 / total as f32,
                     )
                 })
                 .collect()
         };
-        let (planes, stm_white) = compact(&GoEncoder.encode_state(game, &self.state));
+        let (planes, stm_white) = compact(&enc.encode_state(game, &self.state), game.size());
         self.records.push((
             planes,
             stm_white,
@@ -244,7 +250,7 @@ impl Worker {
 
         if game.is_terminal(&self.state) {
             let z_black = game.returns(&self.state, 0) as f32;
-            let end = if self.plies >= MAX_PLIES {
+            let end = if self.plies >= max_plies(game.size()) {
                 GameEnd::PlyCap
             } else {
                 GameEnd::Natural
@@ -294,8 +300,8 @@ pub struct SelfPlay {
 }
 
 impl SelfPlay {
-    pub fn new(cfg: SelfPlayConfig, seed: u64) -> SelfPlay {
-        let game = Go::new(9);
+    pub fn new(cfg: SelfPlayConfig, size: usize, seed: u64) -> SelfPlay {
+        let game = Go::new(size);
         let workers = (0..cfg.concurrent)
             .map(|i| Worker::new(&game, mix(seed, i as u64), &cfg))
             .collect::<Vec<_>>();
