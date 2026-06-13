@@ -96,7 +96,7 @@ const CSS = `
 .go-player.go-active { border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent), 0 0 18px rgba(88, 166, 255, .22); }
 .go-stone-icon { width: 22px; height: 22px; border-radius: 50%; flex: none;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .22), 0 1px 3px rgba(0, 0, 0, .45); }
 .go-stone-icon-b { background: radial-gradient(circle at 35% 30%, #7c8088, #33343a 42%, #0a0a0d); }
 .go-stone-icon-w { background: radial-gradient(circle at 35% 30%, #ffffff, #f0eee4 60%, #c4c0ae); }
 .go-pinfo { display: flex; flex-direction: column; min-width: 0; }
@@ -110,10 +110,11 @@ const CSS = `
   border-radius: 999px; background: var(--bg-inset); border: 1px solid var(--border);
   font-size: 13px; color: var(--text-dim); white-space: nowrap; }
 .go-turn-dot { width: 11px; height: 11px; border-radius: 50%; flex: none;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .5); }
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .25), 0 1px 2px rgba(0, 0, 0, .4); }
 .go-board-wrap { position: relative; width: 100%; max-width: min(74vh, 640px); margin: 0 auto; }
 .go-svg { display: block; width: 100%; height: auto; border-radius: 12px;
-  box-shadow: 0 14px 40px rgba(0, 0, 0, .5), 0 2px 8px rgba(0, 0, 0, .4); }
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .22), 0 2px 6px rgba(0, 0, 0, .16); }
+.dark .go-svg { box-shadow: 0 14px 40px rgba(0, 0, 0, .5), 0 2px 8px rgba(0, 0, 0, .4); }
 .go-hit { fill: transparent; }
 .go-hit-on { cursor: pointer; }
 .go-ghost, .go-marker { pointer-events: none; }
@@ -136,7 +137,7 @@ const CSS = `
 .go-pass:not(:disabled):hover { border-color: var(--accent); filter: brightness(1.18); }
 .go-pass:disabled { opacity: .35; cursor: default; }
 .go-toast { position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
-  background: rgba(1, 4, 9, .8); border: 1px solid var(--border); color: var(--text);
+  background: rgba(1, 4, 9, .8); border: 1px solid rgba(230, 237, 243, .2); color: #e6edf3;
   padding: 6px 16px; border-radius: 999px; font-size: 13px; white-space: nowrap;
   opacity: 0; pointer-events: none; transition: opacity .2s; }
 .go-toast-show { opacity: 1; }

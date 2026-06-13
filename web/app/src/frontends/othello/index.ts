@@ -159,6 +159,9 @@ const CSS = `
   background:
     repeating-linear-gradient(48deg, rgba(255, 255, 255, 0.02) 0 2px, transparent 2px 5px),
     linear-gradient(158deg, #31894e, #1d5c31);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.25), inset 0 0 24px rgba(0, 0, 0, 0.28);
+}
+.dark .ot-board {
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45), inset 0 0 24px rgba(0, 0, 0, 0.28);
 }
 .ot-cell {
@@ -238,9 +241,9 @@ const CSS = `
   transform: translate(-50%, -50%);
   padding: 10px 20px;
   background: rgba(1, 4, 9, 0.88);
-  border: 1px solid var(--border);
+  border: 1px solid rgba(230, 237, 243, 0.2);
   border-radius: var(--radius);
-  color: var(--text);
+  color: #e6edf3;
   font-weight: 600;
   opacity: 0;
   pointer-events: none;

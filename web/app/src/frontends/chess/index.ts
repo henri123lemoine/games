@@ -747,10 +747,14 @@ const CSS_TEXT = `
   border: 1px solid #30331f;
   border-radius: 2px;
   overflow: hidden;
-  box-shadow: 0 1px 0 rgba(244, 238, 218, 0.05), 0 14px 30px rgba(5, 8, 3, 0.45);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22);
   user-select: none;
   -webkit-user-select: none;
   touch-action: none;
+}
+
+.dark .chess-board {
+  box-shadow: 0 1px 0 rgba(244, 238, 218, 0.05), 0 14px 30px rgba(5, 8, 3, 0.45);
 }
 
 .chess-squares {
@@ -956,6 +960,10 @@ const CSS_TEXT = `
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.25);
+}
+
+.dark .chess-promo-panel {
   box-shadow: 0 16px 48px rgba(5, 8, 3, 0.6);
 }
 

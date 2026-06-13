@@ -1,6 +1,7 @@
 // All styling for the Liar's Dice table, injected once by mount(). Classes
-// are prefixed `ld-`; colors come from the shell's theme tokens, with the
-// felt and the dice cups as this game's own identity.
+// are prefixed `ld-`. The table is a self-contained night scene — felt,
+// brass, and linen are hard-coded so it reads the same on the shell's light
+// and dark pages; only the text fallback follows the shell tokens.
 
 export const STYLE_ID = 'liars-dice-frontend-style';
 
@@ -91,10 +92,9 @@ export const STYLE = `
   display: flex;
   align-items: center;
   gap: 8px;
-  font-family: var(--display);
   font-size: 34px;
   font-weight: 700;
-  color: var(--text);
+  color: #eae6d8;
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
 }
 
@@ -105,13 +105,13 @@ export const STYLE = `
 }
 
 .ld-x {
-  color: var(--text-dim);
+  color: #9da28e;
   font-size: 20px;
   font-weight: 600;
 }
 
 .ld-tally-n {
-  color: var(--accent);
+  color: #d4a95c;
   min-width: 1.1em;
   text-align: right;
 }
@@ -128,10 +128,9 @@ export const STYLE = `
 }
 
 .ld-win-text {
-  font-family: var(--display);
   font-size: 24px;
   font-weight: 700;
-  color: var(--accent);
+  color: #d4a95c;
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
 }
 
@@ -156,7 +155,7 @@ export const STYLE = `
 }
 
 .ld-rung-now {
-  color: var(--text);
+  color: #eae6d8;
   font-weight: 600;
 }
 
@@ -182,20 +181,20 @@ export const STYLE = `
   gap: 6px;
   padding: 8px 12px;
   background: rgba(10, 13, 9, 0.6);
-  border: 1px solid var(--border);
+  border: 1px solid #2d352c;
   border-radius: 14px;
   backdrop-filter: blur(3px);
   transition: box-shadow 0.3s, border-color 0.3s;
 }
 
 .ld-turn .ld-pod {
-  border-color: var(--accent);
+  border-color: #d4a95c;
   animation: ld-glow 1.6s ease-in-out infinite;
 }
 
 @keyframes ld-glow {
-  0%, 100% { box-shadow: 0 0 0 1px var(--accent), 0 0 12px rgba(212, 169, 92, 0.25); }
-  50% { box-shadow: 0 0 0 1px var(--accent), 0 0 24px rgba(212, 169, 92, 0.55); }
+  0%, 100% { box-shadow: 0 0 0 1px #d4a95c, 0 0 12px rgba(212, 169, 92, 0.25); }
+  50% { box-shadow: 0 0 0 1px #d4a95c, 0 0 24px rgba(212, 169, 92, 0.55); }
 }
 
 .ld-out {
@@ -206,13 +205,13 @@ export const STYLE = `
 .ld-out-mark {
   font-size: 20px;
   line-height: 30px;
-  color: var(--text-dim);
+  color: #9da28e;
 }
 
 .ld-out-tag {
   font-size: 10px;
   letter-spacing: 1px;
-  color: var(--bad);
+  color: #d96a5a;
   font-weight: 700;
 }
 
@@ -222,18 +221,18 @@ export const STYLE = `
   gap: 6px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--text);
+  color: #eae6d8;
   white-space: nowrap;
 }
 
 .ld-tag {
   font-size: 10px;
   font-weight: 400;
-  color: var(--text-dim);
+  color: #9da28e;
 }
 
 .ld-crown {
-  color: var(--accent);
+  color: #d4a95c;
 }
 
 .ld-hand {
@@ -254,13 +253,13 @@ export const STYLE = `
   display: flex;
   align-items: center;
   gap: 4px;
-  background: var(--bg-inset);
-  border: 1px solid var(--accent);
+  background: #0b0e0a;
+  border: 1px solid #d4a95c;
   border-radius: 999px;
   padding: 2px 9px;
   font-size: 11px;
   font-weight: 700;
-  color: var(--text);
+  color: #eae6d8;
   white-space: nowrap;
   z-index: 2;
 }
@@ -326,7 +325,7 @@ export const STYLE = `
 
 .ld-die.ld-hit {
   background: linear-gradient(145deg, #ffedb9, #e9cb74);
-  box-shadow: 0 0 0 2px var(--accent), 0 0 10px rgba(212, 169, 92, 0.6);
+  box-shadow: 0 0 0 2px #d4a95c, 0 0 10px rgba(212, 169, 92, 0.6);
 }
 
 .ld-flip {
@@ -375,9 +374,9 @@ export const STYLE = `
   min-width: 17px;
   height: 17px;
   border-radius: 999px;
-  background: var(--bg-inset);
-  border: 1px solid var(--border);
-  color: var(--text);
+  background: #0b0e0a;
+  border: 1px solid #2d352c;
+  color: #eae6d8;
   font-size: 10px;
   font-weight: 700;
   display: flex;
@@ -399,33 +398,33 @@ export const STYLE = `
 /* ---------- reveal choreography ---------- */
 
 .ld-lose .ld-pod {
-  border-color: var(--bad);
+  border-color: #d96a5a;
   animation: ld-lose-flash 0.4s ease 3;
 }
 
 @keyframes ld-lose-flash {
-  0%, 100% { box-shadow: 0 0 0 1px var(--bad); }
+  0%, 100% { box-shadow: 0 0 0 1px #d96a5a; }
   50% {
-    box-shadow: 0 0 0 3px var(--bad), 0 0 26px rgba(217, 106, 90, 0.7);
+    box-shadow: 0 0 0 3px #d96a5a, 0 0 26px rgba(217, 106, 90, 0.7);
     background: rgba(217, 106, 90, 0.18);
   }
 }
 
 .ld-safe .ld-pod {
-  border-color: var(--good);
-  box-shadow: 0 0 0 1px var(--good), 0 0 18px rgba(143, 174, 110, 0.5);
+  border-color: #8fae6e;
+  box-shadow: 0 0 0 1px #8fae6e, 0 0 18px rgba(143, 174, 110, 0.5);
 }
 
 .ld-winner .ld-pod {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent), 0 0 26px rgba(212, 169, 92, 0.55);
+  border-color: #d4a95c;
+  box-shadow: 0 0 0 1px #d4a95c, 0 0 26px rgba(212, 169, 92, 0.55);
 }
 
 .ld-float {
   position: absolute;
   left: 50%;
   top: -6px;
-  color: var(--bad);
+  color: #d96a5a;
   font-weight: 800;
   font-size: 15px;
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
@@ -446,8 +445,8 @@ export const STYLE = `
   top: 13%;
   transform: translate(-50%, -50%) scale(0.85);
   z-index: 6;
-  background: var(--bg-inset);
-  border: 1px solid var(--border);
+  background: #0b0e0a;
+  border: 1px solid #2d352c;
   border-radius: 999px;
   padding: 9px 22px;
   font-size: 15px;
@@ -458,7 +457,7 @@ export const STYLE = `
   transition: opacity 0.22s ease, transform 0.22s ease;
   pointer-events: none;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
-  color: var(--text);
+  color: #eae6d8;
 }
 
 .ld-banner.ld-show {
@@ -466,9 +465,9 @@ export const STYLE = `
   transform: translate(-50%, -50%) scale(1);
 }
 
-.ld-banner-liar { color: var(--bad); border-color: var(--bad); }
-.ld-banner-exact { color: var(--accent-2); border-color: var(--accent-2); }
-.ld-banner-good { color: var(--good); border-color: var(--good); }
+.ld-banner-liar { color: #d96a5a; border-color: #d96a5a; }
+.ld-banner-exact { color: #8fae6e; border-color: #8fae6e; }
+.ld-banner-good { color: #8fae6e; border-color: #8fae6e; }
 
 .ld-fly {
   position: absolute;
@@ -477,13 +476,13 @@ export const STYLE = `
   display: flex;
   align-items: center;
   gap: 6px;
-  background: var(--bg-inset);
-  border: 1px solid var(--accent);
+  background: #0b0e0a;
+  border: 1px solid #d4a95c;
   border-radius: 999px;
   padding: 4px 12px;
   font-weight: 800;
   font-size: 14px;
-  color: var(--text);
+  color: #eae6d8;
   pointer-events: none;
 }
 
@@ -518,7 +517,7 @@ export const STYLE = `
   background: linear-gradient(180deg, #233527 0%, #162417 100%);
   border: 1px solid #3a4a38;
   border-radius: var(--radius);
-  color: var(--text);
+  color: #eae6d8;
   font: inherit;
   font-weight: 700;
   cursor: pointer;
@@ -526,7 +525,7 @@ export const STYLE = `
 }
 
 .ld-btn:hover:not(:disabled) {
-  border-color: var(--accent);
+  border-color: #d4a95c;
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
@@ -542,25 +541,25 @@ export const STYLE = `
 }
 
 .ld-btn-liar {
-  color: var(--bad);
+  color: #d96a5a;
   border-color: rgba(217, 106, 90, 0.55);
   letter-spacing: 1px;
 }
 
 .ld-btn-liar:hover:not(:disabled) {
-  border-color: var(--bad);
+  border-color: #d96a5a;
   background: rgba(217, 106, 90, 0.12);
   box-shadow: 0 0 14px rgba(217, 106, 90, 0.35);
 }
 
 .ld-btn-exact {
-  color: var(--accent-2);
+  color: #8fae6e;
   border-color: rgba(143, 174, 110, 0.55);
   letter-spacing: 1px;
 }
 
 .ld-btn-exact:hover:not(:disabled) {
-  border-color: var(--accent-2);
+  border-color: #8fae6e;
   background: rgba(143, 174, 110, 0.12);
   box-shadow: 0 0 14px rgba(143, 174, 110, 0.3);
 }
@@ -575,7 +574,7 @@ export const STYLE = `
 
 .ld-open-label {
   font-size: 11px;
-  color: var(--text-dim);
+  color: #9da28e;
   text-transform: uppercase;
   letter-spacing: 1px;
 }
@@ -587,7 +586,6 @@ export const STYLE = `
 }
 
 .ld-qty-n {
-  font-family: var(--display);
   font-size: 23px;
   font-weight: 700;
   min-width: 2ch;
@@ -598,9 +596,9 @@ export const STYLE = `
   width: 30px;
   height: 30px;
   border-radius: 50%;
-  border: 1px solid var(--border);
-  background: var(--bg-raised);
-  color: var(--text);
+  border: 1px solid #2d352c;
+  background: #1a211a;
+  color: #eae6d8;
   font-size: 16px;
   font-weight: 700;
   cursor: pointer;
@@ -608,7 +606,7 @@ export const STYLE = `
 }
 
 .ld-step:hover:not(:disabled) {
-  border-color: var(--accent);
+  border-color: #d4a95c;
 }
 
 .ld-step:disabled {
@@ -631,11 +629,11 @@ export const STYLE = `
 }
 
 .ld-face-btn:hover {
-  border-color: var(--border);
+  border-color: #2d352c;
 }
 
 .ld-face-btn.ld-sel {
-  border-color: var(--accent);
+  border-color: #d4a95c;
   box-shadow: 0 0 10px rgba(212, 169, 92, 0.35);
 }
 
