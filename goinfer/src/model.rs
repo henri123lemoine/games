@@ -1,16 +1,20 @@
-//! Parser and reference forward pass for the `AZWEBGO1` export: BN-folded
+//! Parser and reference forward pass for the `AZWEBGO2` export: BN-folded
 //! convs (so every conv carries a bias), the residual tower, and go's
-//! conv→linear policy/value heads. Plain fp32 loops — built for correctness
+//! global-pooling policy/value heads. Plain fp32 loops — built for correctness
 //! and wasm portability, not speed; the browser's WebGPU path and the tch
 //! export check (`azgo verify-export`) must agree with this to 1e-3.
 //!
 //! The policy head is one logit per board point plus the pass (`size²+1`),
-//! matching [`go::encode::GoEncoder::action_index`], so no channel-major
-//! rearrange is needed (unlike chess's 73-plane head).
+//! matching [`go::encode::GoEncoder::action_index`]. Global pooling collapses
+//! the `[C,H,W]` trunk to `[3C]` (mean, board-size-scaled mean, max), matching
+//! the trainer's `global_pool`.
 
 use go::encode::PLANES;
 
 use crate::{EvalRequest, EvalResult};
+
+/// `19.0` centers the global-pool size-scale; matches the trainer.
+const POOL_SIZE_REF: f32 = 19.0;
 
 pub struct Conv {
     /// `[c_out, c_in, k, k]` flattened, k ∈ {1, 3}.
@@ -36,8 +40,12 @@ pub struct Model {
     pub stem: Conv,
     /// Per block: (c1, c2).
     pub tower: Vec<(Conv, Conv)>,
+    // Policy head.
     pub p1: Conv,
-    pub pf: Linear,
+    pub pgb: Linear,
+    pub pfc: Conv,
+    pub ppass: Linear,
+    // Value head.
     pub v1: Conv,
     pub vf1: Linear,
     pub vf2: Linear,
@@ -71,46 +79,54 @@ impl Reader<'_> {
             k,
         })
     }
+
+    /// A conv with no stored bias (the bias-less placement conv); bias = 0.
+    fn conv_nobias(&mut self, c_in: usize, c_out: usize, k: usize) -> Result<Conv, String> {
+        Ok(Conv {
+            w: self.floats(c_out * c_in * k * k)?,
+            b: vec![0.0; c_out],
+            c_in,
+            c_out,
+            k,
+        })
+    }
+
+    fn linear(&mut self, n_in: usize, n_out: usize) -> Result<Linear, String> {
+        Ok(Linear {
+            w: self.floats(n_out * n_in)?,
+            b: self.floats(n_out)?,
+            n_in,
+            n_out,
+        })
+    }
 }
 
 impl Model {
     pub fn parse(data: &[u8]) -> Result<Model, String> {
-        if data.len() < 20 || &data[..8] != b"AZWEBGO1" {
-            return Err("not an AZWEBGO1 export".into());
+        if data.len() < 20 || &data[..8] != b"AZWEBGO2" {
+            return Err("not an AZWEBGO2 export".into());
         }
         let u32_at = |i: usize| u32::from_le_bytes(data[i..i + 4].try_into().unwrap()) as usize;
         let (blocks, c, size) = (u32_at(8), u32_at(12), u32_at(16));
         if blocks == 0 || blocks > 64 || c == 0 || c > 1024 || !(2..=25).contains(&size) {
             return Err(format!("implausible architecture {blocks}x{c} size {size}"));
         }
-        let area = size * size;
-        let policy = area + 1;
         let mut r = Reader { data, pos: 20 };
         let stem = r.conv(PLANES, c, 3)?;
         let mut tower = Vec::new();
         for _ in 0..blocks {
             tower.push((r.conv(c, c, 3)?, r.conv(c, c, 3)?));
         }
-        let p1 = r.conv(c, 2, 1)?;
-        let pf = Linear {
-            w: r.floats(policy * 2 * area)?,
-            b: r.floats(policy)?,
-            n_in: 2 * area,
-            n_out: policy,
-        };
-        let v1 = r.conv(c, 2, 1)?;
-        let vf1 = Linear {
-            w: r.floats(128 * 2 * area)?,
-            b: r.floats(128)?,
-            n_in: 2 * area,
-            n_out: 128,
-        };
-        let vf2 = Linear {
-            w: r.floats(128)?,
-            b: r.floats(1)?,
-            n_in: 128,
-            n_out: 1,
-        };
+        // Policy head: p1 conv (+BN), pool-bias linear (3C→C), placement conv
+        // (C→1, no bias), pass linear (3C→1).
+        let p1 = r.conv(c, c, 1)?;
+        let pgb = r.linear(3 * c, c)?;
+        let pfc = r.conv_nobias(c, 1, 1)?;
+        let ppass = r.linear(3 * c, 1)?;
+        // Value head: v1 conv (+BN) → global pool → MLP.
+        let v1 = r.conv(c, c, 1)?;
+        let vf1 = r.linear(3 * c, 128)?;
+        let vf2 = r.linear(128, 1)?;
         if r.pos != data.len() {
             return Err(format!("{} trailing bytes in export", data.len() - r.pos));
         }
@@ -121,7 +137,9 @@ impl Model {
             stem,
             tower,
             p1,
-            pf,
+            pgb,
+            pfc,
+            ppass,
             v1,
             vf1,
             vf2,
@@ -142,10 +160,26 @@ impl Model {
             }
             t = y;
         }
-        let p = conv_fwd(&self.p1, &t, self.size, true);
-        let logits = linear_fwd(&self.pf, &p, false);
+        // Policy: per-point conv features biased by their global-pool summary;
+        // placement logits from a bias-less 1×1 conv, pass from the pool.
+        let pol = conv_fwd(&self.p1, &t, self.size, true);
+        let pol_g = global_pool(&pol, self.channels, area);
+        let bias = linear_fwd(&self.pgb, &pol_g, false);
+        let mut pol_biased = pol;
+        for ch in 0..self.channels {
+            let b = bias[ch];
+            for v in &mut pol_biased[ch * area..(ch + 1) * area] {
+                *v = (*v + b).max(0.0);
+            }
+        }
+        let placement = conv_fwd(&self.pfc, &pol_biased, self.size, false); // [1, area]
+        let pass = linear_fwd(&self.ppass, &pol_g, false);
+        let mut logits = placement;
+        logits.push(pass[0]);
+        // Value: conv → global pool → MLP.
         let v = conv_fwd(&self.v1, &t, self.size, true);
-        let h = linear_fwd(&self.vf1, &v, true);
+        let v_g = global_pool(&v, self.channels, area);
+        let h = linear_fwd(&self.vf1, &v_g, true);
         let out = linear_fwd(&self.vf2, &h, false);
         (logits, out[0].tanh())
     }
@@ -200,6 +234,27 @@ fn conv_fwd(conv: &Conv, x: &[f32], size: usize, relu: bool) -> Vec<f32> {
     out
 }
 
+/// Global pooling: channel-major `[c, area]` → `[3c]` = per-channel mean, then
+/// board-size-scaled mean, then max. Mirrors the trainer's `global_pool`.
+fn global_pool(x: &[f32], c: usize, area: usize) -> Vec<f32> {
+    let scale = (area as f32).sqrt() / POOL_SIZE_REF;
+    let mut out = vec![0.0f32; 3 * c];
+    for ch in 0..c {
+        let plane = &x[ch * area..(ch + 1) * area];
+        let mut sum = 0.0f32;
+        let mut mx = f32::NEG_INFINITY;
+        for &v in plane {
+            sum += v;
+            mx = mx.max(v);
+        }
+        let mean = sum / area as f32;
+        out[ch] = mean;
+        out[c + ch] = mean * scale;
+        out[2 * c + ch] = mx;
+    }
+    out
+}
+
 fn linear_fwd(l: &Linear, x: &[f32], relu: bool) -> Vec<f32> {
     (0..l.n_out)
         .map(|o| {
@@ -218,19 +273,19 @@ fn linear_fwd(l: &Linear, x: &[f32], relu: bool) -> Vec<f32> {
 mod tests {
     use super::*;
 
-    /// Builds an `AZWEBGO1` buffer of the right length for the given dims.
+    /// Builds an `AZWEBGO2` buffer of the right length for the given dims.
     fn buf(blocks: usize, c: usize, size: usize, fill: f32) -> Vec<u8> {
-        let area = size * size;
-        let floats = c * PLANES * 9
-            + c
-            + blocks * 2 * (c * c * 9 + c)
-            + (2 * c + 2)
-            + ((area + 1) * 2 * area + (area + 1))
-            + (2 * c + 2)
-            + (128 * 2 * area + 128)
-            + (128 + 1);
+        let floats = c * PLANES * 9 + c                  // stem
+            + blocks * 2 * (c * c * 9 + c)               // tower
+            + (c * c + c)                                // p1 (1×1, folded)
+            + (c * 3 * c + c)                            // pgb 3c→c
+            + c                                          // pfc c→1 (no bias)
+            + (3 * c + 1)                                // ppass 3c→1
+            + (c * c + c)                                // v1 (1×1, folded)
+            + (128 * 3 * c + 128)                        // vf1 3c→128
+            + (128 + 1); // vf2 128→1
         let mut b = Vec::new();
-        b.extend_from_slice(b"AZWEBGO1");
+        b.extend_from_slice(b"AZWEBGO2");
         b.extend_from_slice(&(blocks as u32).to_le_bytes());
         b.extend_from_slice(&(c as u32).to_le_bytes());
         b.extend_from_slice(&(size as u32).to_le_bytes());

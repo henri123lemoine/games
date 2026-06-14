@@ -1,6 +1,13 @@
-//! Checkpoint export to the portable `AZWEBGO1` browser format (every
+//! Checkpoint export to the portable `AZWEBGO2` browser format (every
 //! BatchNorm folded into its conv), and the tch-vs-goinfer agreement check
 //! that guards the folding and layout.
+//!
+//! `AZWEBGO2` matches the global-pooling, board-size-agnostic net: a conv
+//! stem + residual tower, then a policy head (1×1 conv biased by a global
+//! pool, plus a pooled pass logit) and a value head (1×1 conv → global pool →
+//! MLP). The ownership and score auxiliary heads are training-only and not
+//! exported. Global pooling collapses `[C,H,W]` to `[3C]` (mean, size-scaled
+//! mean, max) — the runtime implements that; the file is only weights.
 
 use std::path::PathBuf;
 
@@ -12,10 +19,12 @@ use crate::{arg, net_config_for};
 /// Exports a checkpoint as the portable browser format: magic, dims, then
 /// fp32 tensors in fixed order with every BatchNorm folded into its conv
 /// (`w' = w·γ/√(σ²+ε)`, `b' = β − μ·γ/√(σ²+ε)`), so a runtime needs only
-/// conv+bias, linear, relu, tanh.
+/// conv+bias, linear, global-pool, relu, tanh.
 ///
-/// Tensor order: stem, then each block's (c1, c2), then the policy head
-/// (p1 conv, pf linear) and the value head (v1 conv, vf1, vf2 linears).
+/// Tensor order: stem, each block's (c1, c2); policy head (p1 conv, `pgb`
+/// pool-bias linear, `pfc` placement conv [no bias], `ppass` pass linear);
+/// value head (v1 conv, vf1, vf2 linears). `pgb`/`ppass`/`vf1` take the
+/// `3·channels` global-pool vector.
 pub fn export(args: &[String]) {
     let net_path: PathBuf = arg(args, "--net", PathBuf::from("../data/azgo/run19/latest.ot"));
     let out: PathBuf = arg(
@@ -56,7 +65,7 @@ pub fn export(args: &[String]) {
         |name: &str| -> Vec<f32> { Vec::<f32>::try_from(get(name).flatten(0, -1)).unwrap() };
 
     let mut buf: Vec<u8> = Vec::new();
-    buf.extend_from_slice(b"AZWEBGO1");
+    buf.extend_from_slice(b"AZWEBGO2");
     buf.extend_from_slice(&(cfg.blocks as u32).to_le_bytes());
     buf.extend_from_slice(&(cfg.channels as u32).to_le_bytes());
     buf.extend_from_slice(&(cfg.size as u32).to_le_bytes());
@@ -76,11 +85,17 @@ pub fn export(args: &[String]) {
             push(&b);
         }
     }
+    // Policy head: p1 conv (+BN), then the pool-bias linear, the placement
+    // conv (bias-less 1×1), and the pass linear off the global pool.
     let (w, b) = folded("p1", "pb");
     push(&w);
     push(&b);
-    push(&plain("pf.weight"));
-    push(&plain("pf.bias"));
+    push(&plain("pgb.weight"));
+    push(&plain("pgb.bias"));
+    push(&plain("pfc.weight"));
+    push(&plain("ppass.weight"));
+    push(&plain("ppass.bias"));
+    // Value head: v1 conv (+BN) → global pool → MLP.
     let (w, b) = folded("v1", "vb");
     push(&w);
     push(&b);
