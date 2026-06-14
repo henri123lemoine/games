@@ -30,7 +30,7 @@ use eval::{Opponent, ladder};
 use net::{Infer, NetConfig};
 use selfplay::{SelfPlay, SelfPlayConfig, SelfPlayStats, mix};
 use solvers::azero::PuctConfig;
-use train::{Replay, Trainer};
+use train::{OptConfig, Replay, Trainer};
 
 const DASHBOARD: &str = include_str!("../../assets/azgo_dashboard.html");
 
@@ -204,6 +204,13 @@ fn run(args: &[String]) {
     // Komi randomization half-range in points (0 = fixed 7.5): self-play games
     // draw komi from 7.5 ± this, so the score head learns score across komi.
     let komi_range: i64 = arg(args, "--komi-range", 0);
+    // Optimizer (Phase 9): AdamW by default, or KataGo-style SGD+Nesterov
+    // momentum (`--optimizer sgd`, which wants a larger --lr, ~0.02), with
+    // optional global gradient-norm clipping and an LR warmup.
+    let use_sgd = arg(args, "--optimizer", String::from("adam")) == "sgd";
+    let momentum: f64 = arg(args, "--momentum", 0.9);
+    let grad_clip: f64 = arg(args, "--grad-clip", 0.0);
+    let warmup_iters: u64 = arg(args, "--warmup-iters", 0);
     let batch: usize = arg(args, "--batch", 1024);
     let reuse: f64 = arg(args, "--reuse", 1.8);
     let replay_cap: usize = arg(args, "--replay", 500_000);
@@ -261,7 +268,13 @@ fn run(args: &[String]) {
     }
 
     let dev = device();
-    let mut trainer = Trainer::new(dev, net_cfg, lr, weight_decay, value_mix, swa_decay);
+    let opt_cfg = OptConfig {
+        sgd: use_sgd,
+        momentum,
+        weight_decay,
+        grad_clip,
+    };
+    let mut trainer = Trainer::new(dev, net_cfg, lr, value_mix, swa_decay, opt_cfg);
     let mut iter = 0u64;
     if latest.exists() {
         trainer.load(&latest).unwrap_or_else(|e| {
@@ -317,6 +330,8 @@ fn run(args: &[String]) {
             "eval_sims": eval_sims, "value_mix": value_mix,
             "fast_sims": fast_sims, "full_sims": full_sims, "full_prob": full_prob,
             "forced_k": forced_k, "swa_decay": swa_decay, "komi_range": komi_range,
+            "optimizer": if use_sgd { "sgd" } else { "adam" },
+            "grad_clip": grad_clip, "warmup_iters": warmup_iters,
             "resign_fp_target": resign_fp_target, "alpha": alpha,
             "threads": rayon::current_num_threads(),
         })
@@ -342,6 +357,15 @@ fn run(args: &[String]) {
     };
     loop {
         iter += 1;
+        // LR warmup: ramp the rate up over the first `warmup_iters` (steadies
+        // SGD's early steps); restore the full rate once past it.
+        if warmup_iters > 0 {
+            if iter <= warmup_iters {
+                trainer.set_lr(current_lr * iter as f64 / warmup_iters as f64);
+            } else if iter == warmup_iters + 1 {
+                trainer.set_lr(current_lr);
+            }
+        }
         let sp_start = Instant::now();
         // One self-play pass per board size, each driven by an inference net at
         // that size (weights shared from the trainer); samples mix in `replay`.
@@ -518,7 +542,19 @@ fn bench(args: &[String]) {
         channels,
         size,
     };
-    let trainer = Trainer::new(dev, net_cfg, 1e-3, 1e-4, 0.3, 0.0);
+    let trainer = Trainer::new(
+        dev,
+        net_cfg,
+        1e-3,
+        0.3,
+        0.0,
+        OptConfig {
+            sgd: false,
+            momentum: 0.9,
+            weight_decay: 1e-4,
+            grad_clip: 0.0,
+        },
+    );
     let infer = Infer::snapshot(&trainer.vs, net_cfg, Kind::Half);
     let sp_cfg = SelfPlayConfig {
         puct: PuctConfig {

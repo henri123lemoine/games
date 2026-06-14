@@ -157,6 +157,18 @@ pub struct Trainer {
     swa_vs: Option<nn::VarStore>,
     swa_decay: f64,
     swa_inited: bool,
+    /// Global gradient-norm clip applied before each step; 0 disables.
+    grad_clip: f64,
+}
+
+/// Optimizer choice (Phase 9): AdamW by default, or SGD+Nesterov-momentum
+/// (KataGo's pick), optionally with global gradient-norm clipping.
+pub struct OptConfig {
+    pub sgd: bool,
+    pub momentum: f64,
+    pub weight_decay: f64,
+    /// Clip the global gradient norm to this before each step; 0 disables.
+    pub grad_clip: f64,
 }
 
 impl Trainer {
@@ -164,18 +176,30 @@ impl Trainer {
         device: Device,
         cfg: NetConfig,
         lr: f64,
-        weight_decay: f64,
         value_mix: f32,
         swa_decay: f64,
+        opt_cfg: OptConfig,
     ) -> Trainer {
         let vs = nn::VarStore::new(device);
         let net = Net::new(&vs.root(), cfg);
-        let opt = nn::Adam {
-            wd: weight_decay,
-            ..Default::default()
-        }
-        .build(&vs, lr)
-        .expect("build optimizer");
+        let opt = if opt_cfg.sgd {
+            nn::Sgd {
+                momentum: opt_cfg.momentum,
+                wd: opt_cfg.weight_decay,
+                nesterov: true,
+                ..Default::default()
+            }
+            .build(&vs, lr)
+            .expect("build optimizer")
+        } else {
+            nn::Adam {
+                wd: opt_cfg.weight_decay,
+                ..Default::default()
+            }
+            .build(&vs, lr)
+            .expect("build optimizer")
+        };
+        let grad_clip = opt_cfg.grad_clip;
         let swa_vs = (swa_decay > 0.0).then(|| {
             let mut s = nn::VarStore::new(device);
             // Allocate variables matching `vs` (names + shapes); the Net handle
@@ -194,6 +218,7 @@ impl Trainer {
             swa_vs,
             swa_decay,
             swa_inited: false,
+            grad_clip,
         }
     }
 
@@ -330,7 +355,12 @@ impl Trainer {
                 vl_acc += vl.double_value(&[]) * w;
             }
             if let Some(total) = total {
-                self.opt.backward_step(&total);
+                self.opt.zero_grad();
+                total.backward();
+                if self.grad_clip > 0.0 {
+                    self.opt.clip_grad_norm(self.grad_clip);
+                }
+                self.opt.step();
             }
             pl_sum += pl_acc;
             vl_sum += vl_acc;
