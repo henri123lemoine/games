@@ -219,7 +219,9 @@ pub fn rate(args: &[String]) {
                     eprintln!("rate: checkpoint load failed; retrying next cycle");
                 }
             }
-            _ => println!("rate: waiting for a snapshot older than the current net (iter {latest_iter})"),
+            _ => println!(
+                "rate: waiting for a snapshot older than the current net (iter {latest_iter})"
+            ),
         }
         if watch_min <= 0.0 {
             break;

@@ -421,7 +421,14 @@ pub fn duel(a: Opponent, b: Opponent, pairs: u32, size: usize, seed: u64) -> (f6
 /// above 0.5 means the net is still improving. Batched: every cycle the
 /// parked leaves are split by whichever net is on move and sent to that net
 /// in one forward pass, so it stays cheap.
-pub fn net_vs_net(a: &Infer, b: &Infer, pairs: u32, sims: u32, size: usize, seed: u64) -> (u32, u32) {
+pub fn net_vs_net(
+    a: &Infer,
+    b: &Infer,
+    pairs: u32,
+    sims: u32,
+    size: usize,
+    seed: u64,
+) -> (u32, u32) {
     let game = Go::new(size);
     let enc = GoEncoder::new(size);
     let puct = PuctConfig {
@@ -477,7 +484,9 @@ pub fn net_vs_net(a: &Infer, b: &Infer, pairs: u32, sims: u32, size: usize, seed
                         std::mem::take(&mut pending),
                         &|_| false,
                     ) {
-                        Gather::Requests(reqs) => return (Some(g.state.to_move() == g.a_seat), reqs),
+                        Gather::Requests(reqs) => {
+                            return (Some(g.state.to_move() == g.a_seat), reqs);
+                        }
                         Gather::Done => {
                             let mut visits = g.search.root_visits().to_vec();
                             let actions = g.search.root_actions();
@@ -516,7 +525,10 @@ pub fn net_vs_net(a: &Infer, b: &Infer, pairs: u32, sims: u32, size: usize, seed
         }
     }
 
-    let a_wins = games.iter().filter(|g| g.outcome.unwrap_or(0.0) > 0.0).count() as u32;
+    let a_wins = games
+        .iter()
+        .filter(|g| g.outcome.unwrap_or(0.0) > 0.0)
+        .count() as u32;
     (a_wins, games.len() as u32)
 }
 
