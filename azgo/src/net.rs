@@ -73,9 +73,16 @@ pub struct Net {
     stem_c: nn::Conv2D,
     stem_b: nn::BatchNorm,
     tower: Vec<Block>,
+    // Policy head — board-size-agnostic: a 1×1 conv gives per-point placement
+    // logits, a global-pooled vector both biases that conv (whole-board
+    // context) and produces the single pass logit.
     p1: nn::Conv2D,
     pb: nn::BatchNorm,
-    pf: nn::Linear,
+    pgb: nn::Linear,
+    pfc: nn::Conv2D,
+    ppass: nn::Linear,
+    // Value head — board-size-agnostic: a 1×1 conv then global pooling into an
+    // MLP, so it no longer flattens a size-locked spatial vector.
     v1: nn::Conv2D,
     vb: nn::BatchNorm,
     vf1: nn::Linear,
@@ -95,10 +102,24 @@ fn conv(p: nn::Path, cin: i64, cout: i64, k: i64) -> nn::Conv2D {
     nn::conv2d(p, cin, cout, k, cfg)
 }
 
+/// Global pooling (KataGo): collapse `[B, C, H, W]` to `[B, 3C]` —
+/// per-channel mean, max, and a board-size-scaled mean. The scaled channel
+/// hands the net an explicit board-size signal, and pooling over the whole
+/// board is what makes the value/policy heads independent of board size, so a
+/// single net can serve 9×9…19×19. `19.0` only centers the size scale; it is
+/// not a board-size assumption.
+fn global_pool(t: &Tensor) -> Tensor {
+    let (_, _, h, w) = t.size4().expect("gpool expects [B,C,H,W]");
+    let dims = [2i64, 3];
+    let mean = t.mean_dim(dims.as_slice(), false, t.kind());
+    let max = t.amax(dims.as_slice(), false);
+    let scaled = &mean * (((h * w) as f64).sqrt() / 19.0);
+    Tensor::cat(&[mean, scaled, max], 1)
+}
+
 impl Net {
     pub fn new(root: &nn::Path, cfg: NetConfig) -> Net {
         let c = cfg.channels;
-        let area = cfg.size * cfg.size;
         let tower = (0..cfg.blocks)
             .map(|i| {
                 let p = root / format!("block{i}");
@@ -114,41 +135,45 @@ impl Net {
             stem_c: conv(root / "stem_c", PLANES, c, 3),
             stem_b: nn::batch_norm2d(root / "stem_b", c, Default::default()),
             tower,
-            p1: conv(root / "p1", c, 2, 1),
-            pb: nn::batch_norm2d(root / "pb", 2, Default::default()),
-            pf: nn::linear(root / "pf", 2 * area, cfg.policy(), Default::default()),
-            v1: conv(root / "v1", c, 2, 1),
-            vb: nn::batch_norm2d(root / "vb", 2, Default::default()),
-            vf1: nn::linear(root / "vf1", 2 * area, 128, Default::default()),
+            p1: conv(root / "p1", c, c, 1),
+            pb: nn::batch_norm2d(root / "pb", c, Default::default()),
+            pgb: nn::linear(root / "pgb", 3 * c, c, Default::default()),
+            pfc: conv(root / "pfc", c, 1, 1),
+            ppass: nn::linear(root / "ppass", 3 * c, 1, Default::default()),
+            v1: conv(root / "v1", c, c, 1),
+            vb: nn::batch_norm2d(root / "vb", c, Default::default()),
+            vf1: nn::linear(root / "vf1", 3 * c, 128, Default::default()),
             vf2: nn::linear(root / "vf2", 128, 1, Default::default()),
             o1: conv(root / "o1", c, 1, 1),
         }
     }
 
     /// `x`: `[B, 9, size, size]` → (policy logits `[B, size²+1]`, value `[B]`,
-    /// ownership `[B, size²]` in `(-1, 1)`).
+    /// ownership `[B, size²]` in `(-1, 1)`). All heads are board-size-agnostic.
     pub fn forward(&self, x: &Tensor, train: bool) -> (Tensor, Tensor, Tensor) {
         let mut t = x.apply(&self.stem_c).apply_t(&self.stem_b, train).relu();
         for b in &self.tower {
             t = b.forward(&t, train);
         }
-        let p = t
-            .apply(&self.p1)
-            .apply_t(&self.pb, train)
-            .relu()
-            .flatten(1, -1)
-            .apply(&self.pf);
-        let v = t
-            .apply(&self.v1)
-            .apply_t(&self.vb, train)
-            .relu()
-            .flatten(1, -1);
-        let v = v
+
+        // Policy: per-point conv features, biased by their global-pool summary;
+        // placement logits from a 1×1 conv, the pass logit from the pool.
+        let pol = t.apply(&self.p1).apply_t(&self.pb, train).relu();
+        let pol_g = global_pool(&pol);
+        let pol = (&pol + pol_g.apply(&self.pgb).unsqueeze(-1).unsqueeze(-1)).relu();
+        let placement = pol.apply(&self.pfc).flatten(1, -1);
+        let pass = pol_g.apply(&self.ppass);
+        let p = Tensor::cat(&[placement, pass], 1);
+
+        // Value: conv → global pool → MLP (no size-locked flatten).
+        let v = t.apply(&self.v1).apply_t(&self.vb, train).relu();
+        let v = global_pool(&v)
             .apply(&self.vf1)
             .relu()
             .apply(&self.vf2)
             .tanh()
             .squeeze_dim(-1);
+
         let o = t.apply(&self.o1).flatten(1, -1).tanh();
         (p, v, o)
     }
