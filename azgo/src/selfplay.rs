@@ -131,6 +131,21 @@ impl SelfPlayStats {
             self.plies as f32 / self.games as f32
         }
     }
+
+    /// Folds another pool's stats in (multi-size training sums across pools).
+    pub fn merge(&mut self, o: &SelfPlayStats) {
+        self.games += o.games;
+        self.black_wins += o.black_wins;
+        self.resigned += o.resigned;
+        self.capped += o.capped;
+        self.plies += o.plies;
+        self.would_resign += o.would_resign;
+        self.resign_fp += o.resign_fp;
+        self.cpu_secs += o.cpu_secs;
+        self.gpu_secs += o.gpu_secs;
+        self.batches += o.batches;
+        self.evals += o.evals;
+    }
 }
 
 enum GameEnd {
@@ -364,6 +379,7 @@ impl Worker {
         // Final score margin (Black's view); flipped per mover like `z`.
         let margin = go.score_margin(&self.state) as f32;
         let komi = go.komi() as f32;
+        let size = go.size() as u8;
         let samples = self
             .records
             .drain(..)
@@ -376,6 +392,7 @@ impl Worker {
                 ownership: ownership.clone(),
                 score: if stm == 0 { margin } else { -margin },
                 komi,
+                size,
             })
             .collect();
         let fp = self.would_resign.map(|side| {

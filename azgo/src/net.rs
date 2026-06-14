@@ -48,10 +48,6 @@ pub struct NetConfig {
 }
 
 impl NetConfig {
-    pub fn cells(&self) -> usize {
-        (self.size * self.size) as usize
-    }
-
     /// Policy width: one logit per board point plus the pass.
     pub fn policy(&self) -> i64 {
         self.size * self.size + 1

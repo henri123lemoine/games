@@ -53,6 +53,9 @@ pub struct Sample {
     /// This game's komi (points). Reconstructs the komi input plane on expand;
     /// constant within a game.
     pub komi: f32,
+    /// Board edge length of this sample — the replay buffer mixes sizes
+    /// (KataGo-style), so each example carries its own.
+    pub size: u8,
 }
 
 /// Packs the encoder's f32 features into per-plane bitsets for a `size`×`size`
@@ -237,78 +240,99 @@ impl Trainer {
             return (0.0, 0.0);
         }
         let device = self.vs.device();
-        let size = self.cfg.size;
-        let cells = self.cfg.cells();
-        let policy = self.cfg.policy();
-        let plane_len = PLANE_COUNT * cells;
-        let mut planes = vec![0.0f32; batch * plane_len];
-        let mut targets = vec![0.0f32; batch * policy as usize];
-        let mut zs = vec![0.0f32; batch];
-        let mut owns = vec![0.0f32; batch * cells];
-        let mut scores = vec![0.0f32; batch];
         let (mut pl_sum, mut vl_sum) = (0.0f64, 0.0f64);
 
         for _ in 0..steps {
-            targets.fill(0.0);
-            for i in 0..batch {
+            // The replay buffer mixes board sizes (KataGo-style); group the
+            // minibatch by size so each group is one fixed-shape forward, and
+            // sum their losses (weighted by share) into a single optimizer step.
+            let mut groups: std::collections::HashMap<usize, Vec<&Sample>> =
+                std::collections::HashMap::new();
+            for _ in 0..batch {
                 let s = replay.get(rng);
-                let t = rng.below(8) as u8;
-                expand(
-                    &s.planes,
-                    s.stm_white,
-                    s.komi,
-                    t,
-                    size as usize,
-                    &mut planes[i * plane_len..(i + 1) * plane_len],
-                );
-                for &(idx, p) in &s.policy {
-                    let ti = d8_policy(idx, t, size as usize);
-                    targets[i * policy as usize + usize::from(ti)] = p;
-                }
-                zs[i] = (1.0 - self.value_mix) * s.z + self.value_mix * s.q;
-                // Ownership target from the mover's view (negate when White is
-                // to move, since `s.ownership` is absolute Black-positive),
-                // transformed by the same dihedral symmetry as the planes.
-                let sign = if s.stm_white { -1.0 } else { 1.0 };
-                let base = i * cells;
-                for (p, &o) in s.ownership.iter().enumerate() {
-                    owns[base + d8(p, t, size as usize)] = sign * f32::from(o);
-                }
-                // Score is a scalar from the mover's view already (set in
-                // selfplay), so no dihedral transform is needed.
-                scores[i] = s.score;
+                groups.entry(s.size as usize).or_default().push(s);
             }
-            let x = Tensor::from_slice(&planes)
-                .reshape([batch as i64, PLANE_COUNT as i64, size, size])
-                .to_device(device);
-            let tp = Tensor::from_slice(&targets)
-                .reshape([batch as i64, policy])
-                .to_device(device);
-            let tz = Tensor::from_slice(&zs).to_device(device);
-            let to = Tensor::from_slice(&owns)
-                .reshape([batch as i64, cells as i64])
-                .to_device(device);
-            let ts = Tensor::from_slice(&scores).to_device(device);
+            let mut total: Option<Tensor> = None;
+            let (mut pl_acc, mut vl_acc) = (0.0f64, 0.0f64);
+            for (&size, group) in &groups {
+                let n = group.len();
+                let cells = size * size;
+                let policy = (size * size + 1) as i64;
+                let plane_len = PLANE_COUNT * cells;
+                let mut planes = vec![0.0f32; n * plane_len];
+                let mut targets = vec![0.0f32; n * policy as usize];
+                let mut zs = vec![0.0f32; n];
+                let mut owns = vec![0.0f32; n * cells];
+                let mut scores = vec![0.0f32; n];
+                for (i, s) in group.iter().enumerate() {
+                    let t = rng.below(8) as u8;
+                    expand(
+                        &s.planes,
+                        s.stm_white,
+                        s.komi,
+                        t,
+                        size,
+                        &mut planes[i * plane_len..(i + 1) * plane_len],
+                    );
+                    for &(idx, p) in &s.policy {
+                        let ti = d8_policy(idx, t, size);
+                        targets[i * policy as usize + usize::from(ti)] = p;
+                    }
+                    zs[i] = (1.0 - self.value_mix) * s.z + self.value_mix * s.q;
+                    // Ownership from the mover's view (negate when White is to
+                    // move, `s.ownership` being absolute Black-positive), under
+                    // the same dihedral symmetry as the planes.
+                    let sign = if s.stm_white { -1.0 } else { 1.0 };
+                    let base = i * cells;
+                    for (p, &o) in s.ownership.iter().enumerate() {
+                        owns[base + d8(p, t, size)] = sign * f32::from(o);
+                    }
+                    // Score is already mover-relative and scalar — no transform.
+                    scores[i] = s.score;
+                }
+                let sz = size as i64;
+                let x = Tensor::from_slice(&planes)
+                    .reshape([n as i64, PLANE_COUNT as i64, sz, sz])
+                    .to_device(device);
+                let tp = Tensor::from_slice(&targets)
+                    .reshape([n as i64, policy])
+                    .to_device(device);
+                let tz = Tensor::from_slice(&zs).to_device(device);
+                let to = Tensor::from_slice(&owns)
+                    .reshape([n as i64, cells as i64])
+                    .to_device(device);
+                let ts = Tensor::from_slice(&scores).to_device(device);
 
-            let (logits, v, own, score) = self.net.forward(&x, true);
-            let logp = logits.log_softmax(-1, Kind::Float);
-            let pl = -(tp * logp)
-                .sum_dim_intlist(-1, false, Kind::Float)
-                .mean(Kind::Float);
-            let vl = (v - tz).square().mean(Kind::Float);
-            // Per-point ownership MSE — the dense auxiliary that teaches the
-            // trunk territory and kills the plateau from low-information
-            // late-game filling positions.
-            let ol = (own - to).square().mean(Kind::Float);
-            // Score-margin Huber, normalized by board edge so the loss
-            // magnitude is comparable across board sizes (a denser scalar
-            // signal than win/loss).
-            let sscale = size as f64;
-            let sl = (score / sscale).smooth_l1_loss(&(ts / sscale), tch::Reduction::Mean, 1.0);
-            let loss = &pl + &vl + OWNERSHIP_WEIGHT * &ol + SCORE_WEIGHT * &sl;
-            self.opt.backward_step(&loss);
-            pl_sum += pl.double_value(&[]);
-            vl_sum += vl.double_value(&[]);
+                let (logits, v, own, score) = self.net.forward(&x, true);
+                let logp = logits.log_softmax(-1, Kind::Float);
+                let pl = -(tp * logp)
+                    .sum_dim_intlist(-1, false, Kind::Float)
+                    .mean(Kind::Float);
+                let vl = (v - tz).square().mean(Kind::Float);
+                // Per-point ownership MSE — the dense auxiliary that teaches the
+                // trunk territory and kills the plateau from low-information
+                // late-game filling positions.
+                let ol = (own - to).square().mean(Kind::Float);
+                // Score-margin Huber, normalized by board edge so the loss
+                // magnitude is comparable across board sizes.
+                let sscale = size as f64;
+                let sl = (score / sscale).smooth_l1_loss(&(ts / sscale), tch::Reduction::Mean, 1.0);
+                // Weight each size-group by its batch share so the summed loss
+                // is a proper batch-mean across mixed sizes.
+                let w = n as f64 / batch as f64;
+                let group_loss = (&pl + &vl + OWNERSHIP_WEIGHT * &ol + SCORE_WEIGHT * &sl) * w;
+                total = Some(match total {
+                    Some(t) => t + group_loss,
+                    None => group_loss,
+                });
+                pl_acc += pl.double_value(&[]) * w;
+                vl_acc += vl.double_value(&[]) * w;
+            }
+            if let Some(total) = total {
+                self.opt.backward_step(&total);
+            }
+            pl_sum += pl_acc;
+            vl_sum += vl_acc;
         }
         (
             (pl_sum / steps as f64) as f32,
@@ -357,6 +381,14 @@ impl Trainer {
 
     pub fn load(&mut self, path: &std::path::Path) -> Result<(), tch::TchError> {
         self.vs.load(path)
+    }
+
+    /// Seeds the trainable weights from another checkpoint (transfer learning).
+    /// Every weight is board-size-independent (the heads are conv + global
+    /// pool, no size-locked layer), so a net trained at one size loads straight
+    /// into one at any other; missing auxiliary heads are tolerated.
+    pub fn init_from(&mut self, path: &std::path::Path) -> Result<(), tch::TchError> {
+        crate::net::load_inference_weights(&mut self.vs, path)
     }
 }
 

@@ -28,7 +28,7 @@ use tch::{Device, Kind};
 
 use eval::{Opponent, ladder};
 use net::{Infer, NetConfig};
-use selfplay::{SelfPlay, SelfPlayConfig, mix};
+use selfplay::{SelfPlay, SelfPlayConfig, SelfPlayStats, mix};
 use solvers::azero::PuctConfig;
 use train::{Replay, Trainer};
 
@@ -216,7 +216,21 @@ fn run(args: &[String]) {
 
     // Resume reads the architecture recorded in the run's own metrics (flags
     // override) — the same rule every other subcommand already follows.
-    let net_cfg = net_config_for(args, &dir.join("latest.ot"));
+    let mut net_cfg = net_config_for(args, &dir.join("latest.ot"));
+    // KataGo-style multi-size training: `--sizes 9,13,19` runs one self-play
+    // pool per board size feeding a shared replay, training the single
+    // (size-independent) net on the mixture. Defaults to the single `--size`.
+    // The net's weights don't depend on board size, so the eval/target/sidecar
+    // size is just the largest in the mix.
+    let sizes: Vec<usize> = arg_opt::<String>(args, "--sizes")
+        .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .filter(|v: &Vec<usize>| !v.is_empty())
+        .unwrap_or_else(|| vec![net_cfg.size as usize]);
+    let size_weights: Vec<f64> = arg_opt::<String>(args, "--size-weights")
+        .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .filter(|v: &Vec<f64>| v.len() == sizes.len())
+        .unwrap_or_else(|| vec![1.0; sizes.len()]);
+    net_cfg.size = *sizes.iter().max().unwrap() as i64;
     let (blocks, channels, size) = (net_cfg.blocks, net_cfg.channels, net_cfg.size);
     let sp_cfg = SelfPlayConfig {
         puct: PuctConfig {
@@ -256,6 +270,14 @@ fn run(args: &[String]) {
         });
         iter = last_iter(&metrics);
         println!("resumed {} at iter {iter}", latest.display());
+    } else if let Some(seed) = arg_opt::<PathBuf>(args, "--init-from") {
+        // Transfer learning: seed a fresh run from a net trained on another
+        // board size (weights are board-size-independent). Skipped on resume.
+        trainer.init_from(&seed).unwrap_or_else(|e| {
+            eprintln!("failed to seed from {}: {e}", seed.display());
+            std::process::exit(1);
+        });
+        println!("seeded weights from {} (transfer)", seed.display());
     }
     // LR continuity across legs: if a previous leg's schedule dropped the
     // rate, resume there instead of re-shocking the run at the base lr.
@@ -270,7 +292,12 @@ fn run(args: &[String]) {
         lr_dropped = true;
         println!("restored lr {prev} from the previous leg (base {lr})");
     }
-    let mut pool = SelfPlay::new(sp_cfg, size as usize, 0x60A1_5EED);
+    let mut pools: Vec<SelfPlay> = sizes
+        .iter()
+        .enumerate()
+        .map(|(i, &sz)| SelfPlay::new(sp_cfg, sz, mix(0x60A1_5EED, i as u64)))
+        .collect();
+    let weight_total: f64 = size_weights.iter().sum();
     let mut replay = Replay::new(replay_cap);
     // Rolling pool of control games' non-loser minimum Qs; the resignation
     // threshold is the fp-target quantile of this distribution (AGZ-style
@@ -282,7 +309,8 @@ fn run(args: &[String]) {
         &metrics,
         &serde_json::json!({
             "event": "start", "time": epoch_secs(), "iter": iter,
-            "blocks": blocks, "channels": channels, "size": size, "sims": sims,
+            "blocks": blocks, "channels": channels, "size": size, "sizes": sizes,
+            "size_weights": size_weights, "sims": sims,
             "concurrent": concurrent, "samples_per_iter": samples_per_iter,
             "batch_size": batch, "replay_capacity": replay_cap, "lr": lr,
             "eval_every": eval_every, "eval_pairs": eval_pairs,
@@ -314,9 +342,26 @@ fn run(args: &[String]) {
     };
     loop {
         iter += 1;
-        let infer = Infer::snapshot(&trainer.vs, net_cfg, Kind::Half);
         let sp_start = Instant::now();
-        let (samples, stats, calib) = pool.collect(&infer, samples_per_iter);
+        // One self-play pass per board size, each driven by an inference net at
+        // that size (weights shared from the trainer); samples mix in `replay`.
+        let mut samples = Vec::new();
+        let mut stats = SelfPlayStats::default();
+        let mut calib = Vec::new();
+        for (i, pool) in pools.iter_mut().enumerate() {
+            let cfg_sz = NetConfig {
+                blocks,
+                channels,
+                size: sizes[i] as i64,
+            };
+            let infer = Infer::snapshot(trainer.infer_vs(), cfg_sz, Kind::Half);
+            let target =
+                ((samples_per_iter as f64) * size_weights[i] / weight_total).round() as usize;
+            let (s, st, cal) = pool.collect(&infer, target.max(1));
+            samples.extend(s);
+            stats.merge(&st);
+            calib.extend(cal);
+        }
         let self_play_secs = sp_start.elapsed().as_secs_f32();
         let n_new = samples.len();
         replay.extend(samples);
@@ -331,7 +376,9 @@ fn run(args: &[String]) {
             let q = ((resign_fp_target * sorted.len() as f64) as usize).min(sorted.len() - 1);
             let t = sorted[q];
             live_resign_q = (-t).clamp(0.5, 0.995);
-            pool.set_resign_q(live_resign_q);
+            for pool in &mut pools {
+                pool.set_resign_q(live_resign_q);
+            }
         }
 
         let steps = ((n_new as f64 * reuse) / batch as f64).ceil() as usize;
