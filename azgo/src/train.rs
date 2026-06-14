@@ -134,6 +134,14 @@ pub struct Trainer {
     /// `target = (1-mix)·z + mix·q`. De-noises the raw game outcome and
     /// softens the self-labeling loop resignation introduces.
     value_mix: f32,
+    /// Stochastic Weight Averaging: an exponential moving average of the
+    /// weights (`Some` iff `swa_decay > 0`). Training always updates `vs`;
+    /// the averaged copy, which generalizes better, is what eval and export
+    /// read. Includes BatchNorm running stats so the average stays usable
+    /// without a stat-recomputation pass.
+    swa_vs: Option<nn::VarStore>,
+    swa_decay: f64,
+    swa_inited: bool,
 }
 
 impl Trainer {
@@ -143,6 +151,7 @@ impl Trainer {
         lr: f64,
         weight_decay: f64,
         value_mix: f32,
+        swa_decay: f64,
     ) -> Trainer {
         let vs = nn::VarStore::new(device);
         let net = Net::new(&vs.root(), cfg);
@@ -152,12 +161,56 @@ impl Trainer {
         }
         .build(&vs, lr)
         .expect("build optimizer");
+        let swa_vs = (swa_decay > 0.0).then(|| {
+            let mut s = nn::VarStore::new(device);
+            // Allocate variables matching `vs` (names + shapes); the Net handle
+            // is dropped but the VarStore owns the tensors. Freeze it — it is
+            // never optimized, only averaged into in place.
+            let _ = Net::new(&s.root(), cfg);
+            s.freeze();
+            s
+        });
         Trainer {
             vs,
             net,
             opt,
             cfg,
             value_mix,
+            swa_vs,
+            swa_decay,
+            swa_inited: false,
+        }
+    }
+
+    /// Fold the current weights into the SWA exponential moving average; the
+    /// first call seeds it. No-op when SWA is disabled.
+    pub fn update_swa(&mut self) {
+        if self.swa_vs.is_none() {
+            return;
+        }
+        let (decay, inited) = (self.swa_decay, self.swa_inited);
+        let cur = self.vs.variables();
+        let mut avg = self.swa_vs.as_ref().unwrap().variables();
+        tch::no_grad(|| {
+            for (name, swa_t) in &mut avg {
+                let cur_t = &cur[name];
+                if inited {
+                    let updated = &*swa_t * decay + cur_t * (1.0 - decay);
+                    swa_t.copy_(&updated);
+                } else {
+                    swa_t.copy_(cur_t);
+                }
+            }
+        });
+        self.swa_inited = true;
+    }
+
+    /// The VarStore eval/export should read: the SWA average once seeded,
+    /// otherwise the raw trained weights.
+    pub fn infer_vs(&self) -> &nn::VarStore {
+        match &self.swa_vs {
+            Some(s) if self.swa_inited => s,
+            _ => &self.vs,
         }
     }
 
@@ -250,12 +303,25 @@ impl Trainer {
     /// architecture, so the checkpoint stays loadable away from its run's
     /// metrics.jsonl.
     pub fn save(&self, path: &std::path::Path) -> Result<(), tch::TchError> {
+        self.save_vs(&self.vs, path)
+    }
+
+    /// Saves the SWA average (for eval/export). No-op when SWA is off or not
+    /// yet seeded, so callers can invoke it unconditionally.
+    pub fn save_swa(&self, path: &std::path::Path) -> Result<(), tch::TchError> {
+        match &self.swa_vs {
+            Some(s) if self.swa_inited => self.save_vs(s, path),
+            _ => Ok(()),
+        }
+    }
+
+    fn save_vs(&self, vs: &nn::VarStore, path: &std::path::Path) -> Result<(), tch::TchError> {
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("checkpoint");
         let tmp = path.with_file_name(format!("{name}.{}.tmp", std::process::id()));
-        self.vs.save(&tmp)?;
+        vs.save(&tmp)?;
         std::fs::rename(&tmp, path)?;
         std::fs::write(
             path.with_file_name(format!("{name}.json")),

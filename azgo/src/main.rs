@@ -197,6 +197,10 @@ fn run(args: &[String]) {
     // KataGo forced playouts at the root (0 = off); pairs with policy-target
     // pruning in self-play. ~2.0 is a sensible on value.
     let forced_k: f32 = arg(args, "--forced-k", 0.0);
+    // Stochastic Weight Averaging EMA decay (0 = off). The averaged net (used
+    // for eval/export, written to latest_swa.ot) generalizes better than any
+    // single iterate; ~0.99 averages over roughly the last 100 iterations.
+    let swa_decay: f64 = arg(args, "--swa-decay", 0.0);
     let batch: usize = arg(args, "--batch", 1024);
     let reuse: f64 = arg(args, "--reuse", 1.8);
     let replay_cap: usize = arg(args, "--replay", 500_000);
@@ -239,7 +243,7 @@ fn run(args: &[String]) {
     }
 
     let dev = device();
-    let mut trainer = Trainer::new(dev, net_cfg, lr, weight_decay, value_mix);
+    let mut trainer = Trainer::new(dev, net_cfg, lr, weight_decay, value_mix, swa_decay);
     let mut iter = 0u64;
     if latest.exists() {
         trainer.load(&latest).unwrap_or_else(|e| {
@@ -280,7 +284,7 @@ fn run(args: &[String]) {
             "eval_every": eval_every, "eval_pairs": eval_pairs,
             "eval_sims": eval_sims, "value_mix": value_mix,
             "fast_sims": fast_sims, "full_sims": full_sims, "full_prob": full_prob,
-            "forced_k": forced_k,
+            "forced_k": forced_k, "swa_decay": swa_decay,
             "resign_fp_target": resign_fp_target, "alpha": alpha,
             "threads": rayon::current_num_threads(),
         })
@@ -330,9 +334,16 @@ fn run(args: &[String]) {
         let train_start = Instant::now();
         let (policy_loss, value_loss) =
             trainer.train(&replay, steps, batch, &mut Rng::new(mix(0xC0FFEE, iter)));
+        trainer.update_swa();
         let train_secs = train_start.elapsed().as_secs_f32();
 
+        // latest.ot stays the raw weights so resume + the optimizer pick up
+        // exactly where they left off; the SWA average (used for eval/export)
+        // lives alongside in latest_swa.ot.
         save_with_retry(&trainer, &latest);
+        if let Err(e) = trainer.save_swa(&dir.join("latest_swa.ot")) {
+            eprintln!("save_swa failed: {e}");
+        }
         if iter.is_multiple_of(snapshot_every) {
             save_with_retry(&trainer, &dir.join(format!("ckpt-{iter:06}.ot")));
         }
@@ -341,7 +352,7 @@ fn run(args: &[String]) {
         let mut eval_human = String::new();
         let mut eval_work = 0.0f32;
         if iter == 1 || iter.is_multiple_of(eval_every) {
-            let infer = Infer::snapshot(&trainer.vs, net_cfg, Kind::Half);
+            let infer = Infer::snapshot(trainer.infer_vs(), net_cfg, Kind::Half);
             let t = Instant::now();
             let entries = ladder(
                 &infer,
@@ -456,7 +467,7 @@ fn bench(args: &[String]) {
         channels,
         size,
     };
-    let trainer = Trainer::new(dev, net_cfg, 1e-3, 1e-4, 0.3);
+    let trainer = Trainer::new(dev, net_cfg, 1e-3, 1e-4, 0.3, 0.0);
     let infer = Infer::snapshot(&trainer.vs, net_cfg, Kind::Half);
     let sp_cfg = SelfPlayConfig {
         puct: PuctConfig {
