@@ -10,12 +10,13 @@
 use tch::nn;
 use tch::{Device, Kind, Tensor};
 
-/// Load weights for inference/export, tolerating a missing ownership head.
+/// Load weights for inference/export, tolerating missing training-only heads.
 ///
-/// The ownership head (`o1.*`) is a training-only auxiliary — never exported,
-/// never read during inference — so checkpoints saved before it existed (the
-/// 9×9 `run1` net) lack it. Strict `load` is tried first; only an `o1`-only
-/// shortfall is tolerated, so a genuine architecture mismatch still fails loud.
+/// The ownership (`o1.*`) and score (`sf.*`) heads are training-only
+/// auxiliaries — never exported, never read during inference — so checkpoints
+/// saved before either existed lack them (the 9×9 `run1` net predates `o1`).
+/// Strict `load` is tried first; only an auxiliary-head shortfall is tolerated,
+/// so a genuine architecture mismatch still fails loud.
 pub(crate) fn load_inference_weights(
     vs: &mut nn::VarStore,
     path: &std::path::Path,
@@ -24,7 +25,10 @@ pub(crate) fn load_inference_weights(
         Ok(()) => Ok(()),
         Err(e) => {
             let missing = vs.load_partial(path)?;
-            if missing.iter().all(|n| n.starts_with("o1")) {
+            if missing
+                .iter()
+                .all(|n| n.starts_with("o1") || n.starts_with("sf"))
+            {
                 Ok(())
             } else {
                 Err(e)
@@ -87,6 +91,10 @@ pub struct Net {
     vb: nn::BatchNorm,
     vf1: nn::Linear,
     vf2: nn::Linear,
+    /// Score head: predicts the final area-score margin (points, mover's view)
+    /// off the same pooled value features. A KataGo-style auxiliary — a far
+    /// denser gradient than win/loss — that enriches the trunk; not exported.
+    sf: nn::Linear,
     /// Auxiliary ownership head (1×1 conv → per-point tanh). Trained against
     /// the final board's [`go::Go::ownership`]; not exported (inference needs
     /// only policy + value). Its gradient shapes the shared trunk.
@@ -144,13 +152,15 @@ impl Net {
             vb: nn::batch_norm2d(root / "vb", c, Default::default()),
             vf1: nn::linear(root / "vf1", 3 * c, 128, Default::default()),
             vf2: nn::linear(root / "vf2", 128, 1, Default::default()),
+            sf: nn::linear(root / "sf", 128, 1, Default::default()),
             o1: conv(root / "o1", c, 1, 1),
         }
     }
 
     /// `x`: `[B, 9, size, size]` → (policy logits `[B, size²+1]`, value `[B]`,
-    /// ownership `[B, size²]` in `(-1, 1)`). All heads are board-size-agnostic.
-    pub fn forward(&self, x: &Tensor, train: bool) -> (Tensor, Tensor, Tensor) {
+    /// ownership `[B, size²]` in `(-1, 1)`, score margin `[B]` in points from
+    /// the mover's view). All heads are board-size-agnostic.
+    pub fn forward(&self, x: &Tensor, train: bool) -> (Tensor, Tensor, Tensor, Tensor) {
         let mut t = x.apply(&self.stem_c).apply_t(&self.stem_b, train).relu();
         for b in &self.tower {
             t = b.forward(&t, train);
@@ -165,17 +175,15 @@ impl Net {
         let pass = pol_g.apply(&self.ppass);
         let p = Tensor::cat(&[placement, pass], 1);
 
-        // Value: conv → global pool → MLP (no size-locked flatten).
+        // Value + score share the pooled MLP features: value is win/loss
+        // (tanh), score is the raw margin in points.
         let v = t.apply(&self.v1).apply_t(&self.vb, train).relu();
-        let v = global_pool(&v)
-            .apply(&self.vf1)
-            .relu()
-            .apply(&self.vf2)
-            .tanh()
-            .squeeze_dim(-1);
+        let vh = global_pool(&v).apply(&self.vf1).relu();
+        let value = vh.apply(&self.vf2).tanh().squeeze_dim(-1);
+        let score = vh.apply(&self.sf).squeeze_dim(-1);
 
         let o = t.apply(&self.o1).flatten(1, -1).tanh();
-        (p, v, o)
+        (p, value, o, score)
     }
 }
 
@@ -281,7 +289,9 @@ impl Infer {
                 .to_device(self.device)
                 .to_kind(self.kind);
             let idx = Tensor::from_slice(&gather).to_device(self.device);
-            let (p, v, _own) = self.net.forward(&x, false);
+            // Inference needs only policy + value; ownership and score are
+            // training-only auxiliaries.
+            let (p, v, _own, _score) = self.net.forward(&x, false);
             (
                 p.reshape([-1])
                     .index_select(0, &idx)

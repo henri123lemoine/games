@@ -345,6 +345,8 @@ impl Worker {
             .iter()
             .map(|&o| o as i8)
             .collect();
+        // Final score margin (Black's view); flipped per mover like `z`.
+        let margin = game.score_margin(&self.state) as f32;
         let samples = self
             .records
             .drain(..)
@@ -355,6 +357,7 @@ impl Worker {
                 z: if stm == 0 { z_black } else { -z_black },
                 q,
                 ownership: ownership.clone(),
+                score: if stm == 0 { margin } else { -margin },
             })
             .collect();
         let fp = self.would_resign.map(|side| {

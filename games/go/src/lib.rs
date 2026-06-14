@@ -270,6 +270,16 @@ impl Go {
         own
     }
 
+    /// Final area-score margin from Black's view: `black − white − komi`,
+    /// positive when Black is ahead. The continuous signal underneath the
+    /// win/loss [`Game::returns`] — a denser training target (how *much* one
+    /// side won, not just who) that lets the net learn score, not a single
+    /// fixed-komi bit.
+    pub fn score_margin(&self, s: &GoState) -> f64 {
+        let (black, white) = self.area_scores(s);
+        black as f64 - white as f64 - self.komi()
+    }
+
     /// True if the mover has a *productive* move: a legal placement that does
     /// not merely fill one of its own true eyes. When this holds, passing is a
     /// strictly wasteful move and self-play/eval/serving should forbid it —

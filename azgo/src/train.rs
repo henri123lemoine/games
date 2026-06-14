@@ -24,6 +24,9 @@ const PACKED_PLANES: usize = 7;
 /// enough to shape the trunk, small enough not to swamp policy/value.
 const OWNERSHIP_WEIGHT: f64 = 1.0;
 
+/// Weight of the auxiliary score-margin (Huber) loss in the total loss.
+const SCORE_WEIGHT: f64 = 0.3;
+
 fn words_per_plane(cells: usize) -> usize {
     cells.div_ceil(64)
 }
@@ -44,6 +47,9 @@ pub struct Sample {
     /// Final-board ownership, absolute (`+1` Black, `-1` White, `0` neutral),
     /// shared by every position in the game — the auxiliary territory target.
     pub ownership: Box<[i8]>,
+    /// Final area-score margin in points from the player-to-move's view — the
+    /// auxiliary score target (denser than the win/loss `z`).
+    pub score: f32,
 }
 
 /// Packs the encoder's f32 features into per-plane bitsets for a `size`×`size`
@@ -234,6 +240,7 @@ impl Trainer {
         let mut targets = vec![0.0f32; batch * policy as usize];
         let mut zs = vec![0.0f32; batch];
         let mut owns = vec![0.0f32; batch * cells];
+        let mut scores = vec![0.0f32; batch];
         let (mut pl_sum, mut vl_sum) = (0.0f64, 0.0f64);
 
         for _ in 0..steps {
@@ -261,6 +268,9 @@ impl Trainer {
                 for (p, &o) in s.ownership.iter().enumerate() {
                     owns[base + d8(p, t, size as usize)] = sign * f32::from(o);
                 }
+                // Score is a scalar from the mover's view already (set in
+                // selfplay), so no dihedral transform is needed.
+                scores[i] = s.score;
             }
             let x = Tensor::from_slice(&planes)
                 .reshape([batch as i64, PLANE_COUNT as i64, size, size])
@@ -272,8 +282,9 @@ impl Trainer {
             let to = Tensor::from_slice(&owns)
                 .reshape([batch as i64, cells as i64])
                 .to_device(device);
+            let ts = Tensor::from_slice(&scores).to_device(device);
 
-            let (logits, v, own) = self.net.forward(&x, true);
+            let (logits, v, own, score) = self.net.forward(&x, true);
             let logp = logits.log_softmax(-1, Kind::Float);
             let pl = -(tp * logp)
                 .sum_dim_intlist(-1, false, Kind::Float)
@@ -283,7 +294,12 @@ impl Trainer {
             // trunk territory and kills the plateau from low-information
             // late-game filling positions.
             let ol = (own - to).square().mean(Kind::Float);
-            let loss = &pl + &vl + OWNERSHIP_WEIGHT * &ol;
+            // Score-margin Huber, normalized by board edge so the loss
+            // magnitude is comparable across board sizes (a denser scalar
+            // signal than win/loss).
+            let sscale = size as f64;
+            let sl = (score / sscale).smooth_l1_loss(&(ts / sscale), tch::Reduction::Mean, 1.0);
+            let loss = &pl + &vl + OWNERSHIP_WEIGHT * &ol + SCORE_WEIGHT * &sl;
             self.opt.backward_step(&loss);
             pl_sum += pl.double_value(&[]);
             vl_sum += vl.double_value(&[]);
