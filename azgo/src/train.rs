@@ -50,10 +50,14 @@ pub struct Sample {
     /// Final area-score margin in points from the player-to-move's view — the
     /// auxiliary score target (denser than the win/loss `z`).
     pub score: f32,
+    /// This game's komi (points). Reconstructs the komi input plane on expand;
+    /// constant within a game.
+    pub komi: f32,
 }
 
 /// Packs the encoder's f32 features into per-plane bitsets for a `size`×`size`
-/// board. Returns the packed planes and whether the mover is White.
+/// board. Returns the packed planes and whether the mover is White (the sign
+/// of the signed-komi plane: `+` when White is to move).
 pub fn compact(features: &[f32], size: usize) -> (Box<[u64]>, bool) {
     let cells = size * size;
     debug_assert_eq!(features.len(), PLANE_COUNT * cells);
@@ -68,13 +72,14 @@ pub fn compact(features: &[f32], size: usize) -> (Box<[u64]>, bool) {
     }
     (
         planes.into_boxed_slice(),
-        features[PACKED_PLANES * cells] != 0.0,
+        features[PACKED_PLANES * cells] > 0.0,
     )
 }
 
 /// Expands packed planes under symmetry `t` (0..8) into the net's input
-/// layout for a `size`×`size` board.
-pub fn expand(planes: &[u64], stm_white: bool, t: u8, size: usize, out: &mut [f32]) {
+/// layout for a `size`×`size` board, rebuilding the constant komi plane (signed
+/// by mover) and the ones plane.
+pub fn expand(planes: &[u64], stm_white: bool, komi: f32, t: u8, size: usize, out: &mut [f32]) {
     let cells = size * size;
     debug_assert_eq!(out.len(), PLANE_COUNT * cells);
     let wpp = words_per_plane(cells);
@@ -89,9 +94,9 @@ pub fn expand(planes: &[u64], stm_white: bool, t: u8, size: usize, out: &mut [f3
             }
         }
     }
-    if stm_white {
-        out[PACKED_PLANES * cells..(PACKED_PLANES + 1) * cells].fill(1.0);
-    }
+    let self_komi = if stm_white { komi } else { -komi };
+    out[PACKED_PLANES * cells..(PACKED_PLANES + 1) * cells]
+        .fill((f64::from(self_komi) / go::encode::KOMI_SCALE) as f32);
     out[(PACKED_PLANES + 1) * cells..PLANE_COUNT * cells].fill(1.0);
 }
 
@@ -251,6 +256,7 @@ impl Trainer {
                 expand(
                     &s.planes,
                     s.stm_white,
+                    s.komi,
                     t,
                     size as usize,
                     &mut planes[i * plane_len..(i + 1) * plane_len],
@@ -382,7 +388,7 @@ mod tests {
             let x = enc.encode_state(&g, &s);
             let (planes, stm_white) = compact(&x, size);
             let mut back = vec![0.0f32; x.len()];
-            expand(&planes, stm_white, 0, size, &mut back);
+            expand(&planes, stm_white, g.komi() as f32, 0, size, &mut back);
             assert_eq!(x, back, "size {size}");
         }
     }
@@ -408,7 +414,7 @@ mod tests {
                 }
                 let want = enc.encode_state(&g, &ts);
                 let mut got = vec![0.0f32; want.len()];
-                expand(&planes, stm_white, t, size, &mut got);
+                expand(&planes, stm_white, g.komi() as f32, t, size, &mut got);
                 assert_eq!(got, want, "size {size} symmetry {t}");
             }
         }

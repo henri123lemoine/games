@@ -3,7 +3,7 @@
 
 use game_core::{Eval, SearchSpec};
 
-use crate::{EMPTY, Go, GoAction, GoState, KOMI, group, neighbors, place};
+use crate::{EMPTY, Go, GoAction, GoState, group, neighbors, place};
 
 /// the komi-adjusted area lead, squashed by [`game_core::eval_squash`].
 ///
@@ -16,8 +16,7 @@ pub struct GoEval;
 
 impl Eval<Go> for GoEval {
     fn eval(&self, game: &Go, state: &GoState, player: usize) -> f64 {
-        let (black, white) = game.area_scores(state);
-        let black_lead = black as f64 - white as f64 - KOMI;
+        let black_lead = game.score_margin(state);
         let lead = if player == 0 { black_lead } else { -black_lead };
         game_core::eval_squash(lead, game.size() as f64)
     }

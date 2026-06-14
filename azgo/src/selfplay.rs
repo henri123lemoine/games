@@ -49,6 +49,11 @@ pub struct SelfPlayConfig {
     pub fast_sims: u32,
     pub full_sims: u32,
     pub full_prob: f64,
+    /// Komi randomization half-range in integer points: each game draws komi
+    /// uniformly from `7.5 ± komi_range`. 0 fixes komi at the standard 7.5.
+    /// A spread teaches the score head to read score across komi instead of a
+    /// single fixed-komi win/loss bit.
+    pub komi_range: i64,
 }
 
 impl Default for SelfPlayConfig {
@@ -67,8 +72,19 @@ impl Default for SelfPlayConfig {
             fast_sims: 100,
             full_sims: 600,
             full_prob: 0.0,
+            komi_range: 0,
         }
     }
+}
+
+/// Draws a game's komi: `7.5 ± range` integer points (so it keeps a half point
+/// and never ties). `range <= 0` fixes the standard komi.
+fn draw_komi(rng: &mut Rng, range: i64) -> f64 {
+    if range <= 0 {
+        return go::KOMI;
+    }
+    let offset = rng.below((2 * range + 1) as usize) as i64 - range;
+    go::KOMI + offset as f64
 }
 
 #[derive(Default, Clone, Copy)]
@@ -127,6 +143,9 @@ enum GameEnd {
 type Record = (Box<[u64]>, bool, Vec<(u16, f32)>, usize, f32);
 
 struct Worker {
+    /// This game's board + komi (komi randomized per game, so each worker owns
+    /// its own `Go` rather than sharing the pool's).
+    go: Go,
     state: GoState,
     search: azero::Search<Go>,
     rng: Rng,
@@ -152,11 +171,13 @@ enum WorkerStep {
 }
 
 impl Worker {
-    fn new(game: &Go, seed: u64, cfg: &SelfPlayConfig) -> Worker {
+    fn new(size: usize, seed: u64, cfg: &SelfPlayConfig) -> Worker {
         let mut rng = Rng::new(seed);
         let resign_enabled = cfg.resign_q > 0.0 && rng.unit() >= cfg.resign_off;
+        let go = Go::with_komi(size, draw_komi(&mut rng, cfg.komi_range));
         let mut w = Worker {
-            state: game.initial_state(),
+            state: go.initial_state(),
+            go,
             search: azero::Search::new(None),
             rng,
             records: Vec::new(),
@@ -172,8 +193,9 @@ impl Worker {
         w
     }
 
-    fn reset(&mut self, game: &Go, cfg: &SelfPlayConfig) {
-        self.state = game.initial_state();
+    fn reset(&mut self, cfg: &SelfPlayConfig) {
+        self.go = Go::with_komi(self.go.size(), draw_komi(&mut self.rng, cfg.komi_range));
+        self.state = self.go.initial_state();
         self.search = azero::Search::new(None);
         self.records.clear();
         self.plies = 0;
@@ -200,13 +222,9 @@ impl Worker {
         }
     }
 
-    fn advance(
-        &mut self,
-        game: &Go,
-        cfg: &SelfPlayConfig,
-        mut results: Vec<EvalResult>,
-    ) -> WorkerStep {
-        let enc = GoEncoder::new(game.size());
+    fn advance(&mut self, cfg: &SelfPlayConfig, mut results: Vec<EvalResult>) -> WorkerStep {
+        let go = self.go;
+        let enc = GoEncoder::new(go.size());
         // This move's search budget is the Playout Cap Randomization roll;
         // unrecorded (fast) moves also skip root exploration noise, which only
         // exists to diversify the *recorded* policy targets.
@@ -221,7 +239,7 @@ impl Worker {
         };
         loop {
             match self.search.advance(
-                game,
+                &go,
                 &enc,
                 &self.state,
                 &puct,
@@ -231,7 +249,7 @@ impl Worker {
             ) {
                 Gather::Requests(reqs) => return WorkerStep::Requests(reqs),
                 Gather::Done => {
-                    if let Some(step) = self.play_move(game, cfg) {
+                    if let Some(step) = self.play_move(cfg) {
                         return step;
                     }
                 }
@@ -240,14 +258,15 @@ impl Worker {
     }
 
     /// Plays the searched move; returns `Some(Finished)` when the game ends.
-    fn play_move(&mut self, game: &Go, cfg: &SelfPlayConfig) -> Option<WorkerStep> {
-        let enc = GoEncoder::new(game.size());
+    fn play_move(&mut self, cfg: &SelfPlayConfig) -> Option<WorkerStep> {
+        let go = self.go;
+        let enc = GoEncoder::new(go.size());
         let mut visits = self.search.root_visits().to_vec();
         let actions = self.search.root_actions().to_vec();
         // Forbid passing while productive moves remain — both for the played
         // move and the recorded policy target — so the net never learns the
         // area-scoring pass-early collapse.
-        goinfer::mask_pass_visits(game, &self.state, &actions, &mut visits);
+        goinfer::mask_pass_visits(&go, &self.state, &actions, &mut visits);
         let stm = self.state.to_move();
         // Only full (recorded) moves become training targets; fast moves are
         // played to advance the game cheaply (Playout Cap Randomization).
@@ -277,13 +296,13 @@ impl Worker {
                     .zip(&tvisits)
                     .map(|(&a, &n)| {
                         (
-                            enc.action_index(game, &self.state, a) as u16,
+                            enc.action_index(&go, &self.state, a) as u16,
                             n as f32 / total as f32,
                         )
                     })
                     .collect()
             };
-            let (planes, stm_white) = compact(&enc.encode_state(game, &self.state), game.size());
+            let (planes, stm_white) = compact(&enc.encode_state(&go, &self.state), go.size());
             self.records.push((
                 planes,
                 stm_white,
@@ -303,7 +322,7 @@ impl Worker {
                 if self.bad_streak[stm] >= 2 {
                     if self.resign_enabled {
                         let z_black = if stm == 0 { -1.0 } else { 1.0 };
-                        return Some(self.finish(game, z_black, GameEnd::Resign));
+                        return Some(self.finish(z_black, GameEnd::Resign));
                     }
                     if self.would_resign.is_none() {
                         self.would_resign = Some(stm);
@@ -319,34 +338,32 @@ impl Worker {
         } else {
             argmax(&visits)
         };
-        game.apply(&mut self.state, actions[choice]);
+        go.apply(&mut self.state, actions[choice]);
         self.plies += 1;
         let search = std::mem::replace(&mut self.search, azero::Search::new(None));
         self.search = azero::Search::new(search.extract_child(choice));
 
-        if game.is_terminal(&self.state) {
-            let z_black = game.returns(&self.state, 0) as f32;
-            let end = if self.plies >= max_plies(game.size()) {
+        if go.is_terminal(&self.state) {
+            let z_black = go.returns(&self.state, 0) as f32;
+            let end = if self.plies >= max_plies(go.size()) {
                 GameEnd::PlyCap
             } else {
                 GameEnd::Natural
             };
-            return Some(self.finish(game, z_black, end));
+            return Some(self.finish(z_black, end));
         }
         self.roll_move(cfg);
         None
     }
 
-    fn finish(&mut self, game: &Go, z_black: f32, end: GameEnd) -> WorkerStep {
+    fn finish(&mut self, z_black: f32, end: GameEnd) -> WorkerStep {
+        let go = self.go;
         // The final board's ownership — the same dense territory target for
         // every position in this game.
-        let ownership: Box<[i8]> = game
-            .ownership(&self.state)
-            .iter()
-            .map(|&o| o as i8)
-            .collect();
+        let ownership: Box<[i8]> = go.ownership(&self.state).iter().map(|&o| o as i8).collect();
         // Final score margin (Black's view); flipped per mover like `z`.
-        let margin = game.score_margin(&self.state) as f32;
+        let margin = go.score_margin(&self.state) as f32;
+        let komi = go.komi() as f32;
         let samples = self
             .records
             .drain(..)
@@ -358,6 +375,7 @@ impl Worker {
                 q,
                 ownership: ownership.clone(),
                 score: if stm == 0 { margin } else { -margin },
+                komi,
             })
             .collect();
         let fp = self.would_resign.map(|side| {
@@ -381,7 +399,6 @@ impl Worker {
 
 /// Persistent self-play pool; call [`SelfPlay::collect`] each iteration.
 pub struct SelfPlay {
-    game: Go,
     cfg: SelfPlayConfig,
     workers: Vec<Worker>,
     results: Vec<Vec<EvalResult>>,
@@ -389,13 +406,11 @@ pub struct SelfPlay {
 
 impl SelfPlay {
     pub fn new(cfg: SelfPlayConfig, size: usize, seed: u64) -> SelfPlay {
-        let game = Go::new(size);
         let workers = (0..cfg.concurrent)
-            .map(|i| Worker::new(&game, mix(seed, i as u64), &cfg))
+            .map(|i| Worker::new(size, mix(seed, i as u64), &cfg))
             .collect::<Vec<_>>();
         let results = (0..cfg.concurrent).map(|_| Vec::new()).collect();
         SelfPlay {
-            game,
             cfg,
             workers,
             results,
@@ -417,20 +432,19 @@ impl SelfPlay {
         let mut calib = Vec::new();
         while samples.len() < target_samples {
             let cfg = self.cfg;
-            let game = &self.game;
             let cpu_start = std::time::Instant::now();
             type Finished = (Vec<Sample>, u16, f32, GameEnd, Option<bool>, Vec<f64>);
             let outcomes: Vec<(Option<Finished>, Vec<EvalRequest>)> = self
                 .workers
                 .par_iter_mut()
                 .zip(self.results.par_iter_mut())
-                .map(|(w, r)| match w.advance(game, &cfg, std::mem::take(r)) {
+                .map(|(w, r)| match w.advance(&cfg, std::mem::take(r)) {
                     WorkerStep::Requests(reqs) => (None, reqs),
                     WorkerStep::Finished(s, plies, z, end, fp, calib) => {
                         // Deal the next game immediately so the batch keeps
                         // its width; a fresh game always needs a root eval.
-                        w.reset(game, &cfg);
-                        let WorkerStep::Requests(reqs) = w.advance(game, &cfg, Vec::new()) else {
+                        w.reset(&cfg);
+                        let WorkerStep::Requests(reqs) = w.advance(&cfg, Vec::new()) else {
                             unreachable!("fresh game cannot finish before any eval");
                         };
                         (Some((s, plies, z, end, fp, calib)), reqs)

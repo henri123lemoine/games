@@ -4,17 +4,22 @@
 //! Features are 9 planes of `size²`, all from the side to move's
 //! perspective: own/opponent stones, each side's groups at one and at two
 //! liberties, the empty points illegal for the mover (ko and suicide — the
-//! one piece of state the stone planes cannot show), a constant "the mover
-//! is White" plane (komi breaks color symmetry), and a constant ones plane
-//! (zero conv padding otherwise makes off-board indistinguishable from
-//! empty). Policy index `p` is the board index of a placement; `size²` is
-//! the pass.
+//! one piece of state the stone planes cannot show), a constant signed-komi
+//! plane (`+komi/scale` when White is to move, `−` for Black — its sign gives
+//! the color to move, its magnitude the komi so the net can read score across
+//! randomized komi), and a constant ones plane (zero conv padding otherwise
+//! makes off-board indistinguishable from empty). Policy index `p` is the
+//! board index of a placement; `size²` is the pass.
 
 use game_core::{Game, PolicyValueEncoder};
 
 use crate::{EMPTY, Go, GoAction, GoState, group, neighbors};
 
 pub const PLANES: usize = 9;
+
+/// Divisor that maps a komi (points) to the plane-7 input magnitude, keeping it
+/// O(1): komi 7.5 → 0.5. Shared by the encoder and the trainer's `expand`.
+pub const KOMI_SCALE: f64 = 15.0;
 
 /// Board-size-parameterized so the policy-head width (`size² + 1`) and input
 /// length are known without a state in hand — the [`PolicyValueEncoder`]
@@ -79,9 +84,16 @@ impl PolicyValueEncoder<Go> for GoEncoder {
             }
         }
 
-        if state.to_move == 1 {
-            out[7 * n..8 * n].fill(1.0);
-        }
+        // Plane 7: komi from the mover's view (`+komi` when White is to move,
+        // since White receives it), scaled. Its sign also encodes the color to
+        // move, replacing the old binary mover-is-white plane; its magnitude
+        // lets the net learn score across randomized komi.
+        let self_komi = if state.to_move == 1 {
+            game.komi()
+        } else {
+            -game.komi()
+        };
+        out[7 * n..8 * n].fill((self_komi / KOMI_SCALE) as f32);
         out[8 * n..9 * n].fill(1.0);
         out
     }
@@ -165,7 +177,12 @@ mod tests {
         assert_eq!(x[n + d4], 1.0, "opp (black) stone");
         assert_eq!(x[2 * n + a1], 1.0, "white a1 is in atari");
         assert_eq!(x[4 * n + a1], 0.0, "atari group is not the 2-lib plane");
-        assert_eq!(x[7 * n], 1.0, "white to move sets the komi plane");
+        // White to move sees +komi (7.5) on the komi plane, scaled by 15 → 0.5.
+        assert_eq!(
+            x[7 * n],
+            0.5,
+            "white to move sets +komi/scale on the komi plane"
+        );
         assert_eq!(x[8 * n + 40], 1.0, "ones plane");
 
         let visible: f32 = x[6 * n..7 * n].iter().sum();

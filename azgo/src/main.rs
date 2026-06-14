@@ -201,6 +201,9 @@ fn run(args: &[String]) {
     // for eval/export, written to latest_swa.ot) generalizes better than any
     // single iterate; ~0.99 averages over roughly the last 100 iterations.
     let swa_decay: f64 = arg(args, "--swa-decay", 0.0);
+    // Komi randomization half-range in points (0 = fixed 7.5): self-play games
+    // draw komi from 7.5 ± this, so the score head learns score across komi.
+    let komi_range: i64 = arg(args, "--komi-range", 0);
     let batch: usize = arg(args, "--batch", 1024);
     let reuse: f64 = arg(args, "--reuse", 1.8);
     let replay_cap: usize = arg(args, "--replay", 500_000);
@@ -231,6 +234,7 @@ fn run(args: &[String]) {
         fast_sims,
         full_sims,
         full_prob,
+        komi_range,
     };
 
     std::fs::create_dir_all(&dir).expect("create run dir");
@@ -284,7 +288,7 @@ fn run(args: &[String]) {
             "eval_every": eval_every, "eval_pairs": eval_pairs,
             "eval_sims": eval_sims, "value_mix": value_mix,
             "fast_sims": fast_sims, "full_sims": full_sims, "full_prob": full_prob,
-            "forced_k": forced_k, "swa_decay": swa_decay,
+            "forced_k": forced_k, "swa_decay": swa_decay, "komi_range": komi_range,
             "resign_fp_target": resign_fp_target, "alpha": alpha,
             "threads": rayon::current_num_threads(),
         })

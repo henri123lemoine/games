@@ -33,16 +33,18 @@ pub use knowledge::{GoEval, GoSpec};
 use game_core::hash::splitmix64;
 use game_core::{Game, Turn};
 
+/// Default komi (White's compensation for moving second), area scoring.
 pub const KOMI: f64 = 7.5;
-const KOMI_X2: u64 = 15;
 
 const BLACK: u8 = 0;
 const WHITE: u8 = 1;
 const EMPTY: u8 = 2;
 
-/// Black is player 0 and moves first; White (player 1) receives komi 7.5.
+/// Black is player 0 and moves first; White (player 1) receives `komi`.
+#[derive(Clone, Copy)]
 pub struct Go {
     size: usize,
+    komi: f64,
 }
 
 impl Default for Go {
@@ -110,10 +112,18 @@ impl GoState {
 }
 
 impl Go {
-    /// A `size`×`size` board; sizes 2..=25 (coordinate letters skip `i`).
+    /// A `size`×`size` board with the default komi; sizes 2..=25 (coordinate
+    /// letters skip `i`).
     pub fn new(size: usize) -> Self {
+        Self::with_komi(size, KOMI)
+    }
+
+    /// A `size`×`size` board with an explicit komi — used by self-play komi
+    /// randomization so the net learns *score* across komi rather than a single
+    /// fixed-komi win/loss bit.
+    pub fn with_komi(size: usize, komi: f64) -> Self {
         assert!((2..=25).contains(&size), "board size must be in 2..=25");
-        Self { size }
+        Self { size, komi }
     }
 
     pub fn size(&self) -> usize {
@@ -121,7 +131,7 @@ impl Go {
     }
 
     pub fn komi(&self) -> f64 {
-        KOMI
+        self.komi
     }
 
     fn max_plies(&self) -> u32 {
@@ -344,12 +354,9 @@ impl Game for Go {
     }
 
     fn returns(&self, state: &GoState, player: usize) -> f64 {
-        let (black, white) = self.area_scores(state);
-        let winner = if 2 * black > 2 * white + KOMI_X2 {
-            0
-        } else {
-            1
-        };
+        // Komi carries a half point (no integer ties); Black wins iff its area
+        // lead beats komi.
+        let winner = if self.score_margin(state) > 0.0 { 0 } else { 1 };
         if player == winner { 1.0 } else { -1.0 }
     }
 
