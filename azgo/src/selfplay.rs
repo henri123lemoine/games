@@ -39,6 +39,16 @@ pub struct SelfPlayConfig {
     /// Fraction of games that ignore resignation, keeping value targets
     /// honest about "lost" positions that turn around.
     pub resign_off: f64,
+    /// Playout Cap Randomization (KataGo): when `full_prob > 0`, each move
+    /// independently runs either a *full* search (`full_sims`, recorded as a
+    /// policy/value target) with probability `full_prob`, or a *fast* search
+    /// (`fast_sims`, played but **not** recorded). Fast moves carry the game
+    /// forward cheaply, so far more games finish per GPU-hour while every
+    /// recorded target still comes from a deep search. `full_prob == 0`
+    /// disables it: every move uses `puct.sims` and is recorded.
+    pub fast_sims: u32,
+    pub full_sims: u32,
+    pub full_prob: f64,
 }
 
 impl Default for SelfPlayConfig {
@@ -54,6 +64,9 @@ impl Default for SelfPlayConfig {
             resign_q: 0.95,
             resign_min_ply: 20,
             resign_off: 0.1,
+            fast_sims: 100,
+            full_sims: 600,
+            full_prob: 0.0,
         }
     }
 }
@@ -127,6 +140,10 @@ struct Worker {
     /// Lowest searched best-edge Q seen by each side, for calibrating the
     /// resignation threshold from no-resign control games.
     min_q: [f64; 2],
+    /// Current move's Playout Cap Randomization roll: sims to search and
+    /// whether this move is recorded as a training target.
+    cur_sims: u32,
+    record_move: bool,
 }
 
 enum WorkerStep {
@@ -138,7 +155,7 @@ impl Worker {
     fn new(game: &Go, seed: u64, cfg: &SelfPlayConfig) -> Worker {
         let mut rng = Rng::new(seed);
         let resign_enabled = cfg.resign_q > 0.0 && rng.unit() >= cfg.resign_off;
-        Worker {
+        let mut w = Worker {
             state: game.initial_state(),
             search: azero::Search::new(None),
             rng,
@@ -148,7 +165,11 @@ impl Worker {
             bad_streak: [0, 0],
             would_resign: None,
             min_q: [1.0, 1.0],
-        }
+            cur_sims: cfg.puct.sims,
+            record_move: true,
+        };
+        w.roll_move(cfg);
+        w
     }
 
     fn reset(&mut self, game: &Go, cfg: &SelfPlayConfig) {
@@ -160,6 +181,23 @@ impl Worker {
         self.bad_streak = [0, 0];
         self.would_resign = None;
         self.min_q = [1.0, 1.0];
+        self.roll_move(cfg);
+    }
+
+    /// Draw this move's Playout Cap Randomization outcome: with probability
+    /// `full_prob` a full, recorded search; otherwise a cheap, unrecorded one.
+    fn roll_move(&mut self, cfg: &SelfPlayConfig) {
+        if cfg.full_prob > 0.0 {
+            self.record_move = self.rng.unit() < cfg.full_prob;
+            self.cur_sims = if self.record_move {
+                cfg.full_sims
+            } else {
+                cfg.fast_sims
+            };
+        } else {
+            self.record_move = true;
+            self.cur_sims = cfg.puct.sims;
+        }
     }
 
     fn advance(
@@ -169,12 +207,24 @@ impl Worker {
         mut results: Vec<EvalResult>,
     ) -> WorkerStep {
         let enc = GoEncoder::new(game.size());
+        // This move's search budget is the Playout Cap Randomization roll;
+        // unrecorded (fast) moves also skip root exploration noise, which only
+        // exists to diversify the *recorded* policy targets.
+        let puct = PuctConfig {
+            sims: self.cur_sims,
+            root_noise: if self.record_move {
+                cfg.puct.root_noise
+            } else {
+                0.0
+            },
+            ..cfg.puct
+        };
         loop {
             match self.search.advance(
                 game,
                 &enc,
                 &self.state,
-                &cfg.puct,
+                &puct,
                 &mut self.rng,
                 std::mem::take(&mut results),
                 &|_| false,
@@ -199,27 +249,31 @@ impl Worker {
         // area-scoring pass-early collapse.
         goinfer::mask_pass_visits(game, &self.state, &actions, &mut visits);
         let stm = self.state.to_move();
-        let dist: Vec<(u16, f32)> = {
-            let total: u32 = visits.iter().sum();
-            actions
-                .iter()
-                .zip(&visits)
-                .map(|(&a, &n)| {
-                    (
-                        enc.action_index(game, &self.state, a) as u16,
-                        n as f32 / total as f32,
-                    )
-                })
-                .collect()
-        };
-        let (planes, stm_white) = compact(&enc.encode_state(game, &self.state), game.size());
-        self.records.push((
-            planes,
-            stm_white,
-            dist,
-            stm,
-            self.search.root_value() as f32,
-        ));
+        // Only full (recorded) moves become training targets; fast moves are
+        // played to advance the game cheaply (Playout Cap Randomization).
+        if self.record_move {
+            let dist: Vec<(u16, f32)> = {
+                let total: u32 = visits.iter().sum();
+                actions
+                    .iter()
+                    .zip(&visits)
+                    .map(|(&a, &n)| {
+                        (
+                            enc.action_index(game, &self.state, a) as u16,
+                            n as f32 / total as f32,
+                        )
+                    })
+                    .collect()
+            };
+            let (planes, stm_white) = compact(&enc.encode_state(game, &self.state), game.size());
+            self.records.push((
+                planes,
+                stm_white,
+                dist,
+                stm,
+                self.search.root_value() as f32,
+            ));
+        }
 
         let best_q = self.search.root_q();
         if self.plies > cfg.resign_min_ply && best_q < self.min_q[stm] {
@@ -261,6 +315,7 @@ impl Worker {
             };
             return Some(self.finish(game, z_black, end));
         }
+        self.roll_move(cfg);
         None
     }
 

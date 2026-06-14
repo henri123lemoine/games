@@ -188,6 +188,12 @@ fn run(args: &[String]) {
     let resign_q: f64 = arg(args, "--resign-q", 0.95);
     let resign_min_ply: u16 = arg(args, "--resign-ply", 20);
     let resign_off: f64 = arg(args, "--resign-off", 0.1);
+    // Playout Cap Randomization: `--full-prob 0` (default) keeps every move a
+    // recorded `--sims` search; set it (e.g. 0.25) to record only a fraction
+    // of moves at `--full-sims` while the rest run cheap `--fast-sims` searches.
+    let fast_sims: u32 = arg(args, "--fast-sims", 100);
+    let full_sims: u32 = arg(args, "--full-sims", sims.max(600));
+    let full_prob: f64 = arg(args, "--full-prob", 0.0);
     let batch: usize = arg(args, "--batch", 1024);
     let reuse: f64 = arg(args, "--reuse", 1.8);
     let replay_cap: usize = arg(args, "--replay", 500_000);
@@ -214,6 +220,9 @@ fn run(args: &[String]) {
         resign_q,
         resign_min_ply,
         resign_off,
+        fast_sims,
+        full_sims,
+        full_prob,
     };
 
     std::fs::create_dir_all(&dir).expect("create run dir");
@@ -266,6 +275,7 @@ fn run(args: &[String]) {
             "batch_size": batch, "replay_capacity": replay_cap, "lr": lr,
             "eval_every": eval_every, "eval_pairs": eval_pairs,
             "eval_sims": eval_sims, "value_mix": value_mix,
+            "fast_sims": fast_sims, "full_sims": full_sims, "full_prob": full_prob,
             "resign_fp_target": resign_fp_target, "alpha": alpha,
             "threads": rayon::current_num_threads(),
         })
