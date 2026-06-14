@@ -15,10 +15,22 @@ use game_core::{Game, PolicyValueEncoder};
 
 use crate::{EMPTY, Go, GoAction, GoState, group, neighbors};
 
-pub const PLANES: usize = 9;
+/// Plane layout (all from the mover's perspective):
+/// `0` own / `1` opp stones; `2/3` own/opp groups at 1 liberty (atari);
+/// `4/5` own/opp at 2 liberties; `6` empties illegal for the mover (ko +
+/// suicide); `7..7+HISTORY` the last [`crate::HISTORY`] move locations
+/// (most-recent first); then own/opp laddered groups, the signed-komi scalar,
+/// and a ones plane.
+const N_BASE: usize = 7;
+const HIST0: usize = N_BASE;
+const LADDER_OWN: usize = N_BASE + crate::HISTORY;
+const LADDER_OPP: usize = LADDER_OWN + 1;
+const KOMI_PLANE: usize = LADDER_OPP + 1;
+const ONES_PLANE: usize = KOMI_PLANE + 1;
+pub const PLANES: usize = ONES_PLANE + 1;
 
-/// Divisor that maps a komi (points) to the plane-7 input magnitude, keeping it
-/// O(1): komi 7.5 → 0.5. Shared by the encoder and the trainer's `expand`.
+/// Divisor that maps a komi (points) to the komi-plane input magnitude, keeping
+/// it O(1): komi 7.5 → 0.5. Shared by the encoder and the trainer's `expand`.
 pub const KOMI_SCALE: f64 = 15.0;
 
 /// Board-size-parameterized so the policy-head width (`size² + 1`) and input
@@ -63,11 +75,18 @@ impl PolicyValueEncoder<Go> for GoEncoder {
                 2 => Some(4 + side),
                 _ => None,
             };
+            // A two-liberty group that dies to a ladder — the tactic nets and
+            // shallow search read worst. (One-liberty groups are the atari
+            // planes already.)
+            let laddered = libs == 2 && crate::knowledge::laddered(cells, game.size(), p);
             for &s in &stones {
                 seen[s] = true;
                 out[side * n + s] = 1.0;
                 if let Some(pl) = lib_plane {
                     out[pl * n + s] = 1.0;
+                }
+                if laddered {
+                    out[(LADDER_OWN + side) * n + s] = 1.0;
                 }
             }
         }
@@ -84,17 +103,25 @@ impl PolicyValueEncoder<Go> for GoEncoder {
             }
         }
 
-        // Plane 7: komi from the mover's view (`+komi` when White is to move,
-        // since White receives it), scaled. Its sign also encodes the color to
-        // move, replacing the old binary mover-is-white plane; its magnitude
-        // lets the net learn score across randomized komi.
+        // Move-history planes: one-hot at the location of the move played `i`
+        // turns ago (most-recent first); passes and unfilled slots are blank.
+        for i in 0..crate::HISTORY {
+            let loc = state.recent[i] as usize;
+            if loc < n {
+                out[(HIST0 + i) * n + loc] = 1.0;
+            }
+        }
+
+        // Komi from the mover's view (`+komi` when White is to move, since
+        // White receives it), scaled. Its sign also encodes the color to move;
+        // its magnitude lets the net read score across randomized komi.
         let self_komi = if state.to_move == 1 {
             game.komi()
         } else {
             -game.komi()
         };
-        out[7 * n..8 * n].fill((self_komi / KOMI_SCALE) as f32);
-        out[8 * n..9 * n].fill(1.0);
+        out[KOMI_PLANE * n..(KOMI_PLANE + 1) * n].fill((self_komi / KOMI_SCALE) as f32);
+        out[ONES_PLANE * n..(ONES_PLANE + 1) * n].fill(1.0);
         out
     }
 
@@ -179,11 +206,13 @@ mod tests {
         assert_eq!(x[4 * n + a1], 0.0, "atari group is not the 2-lib plane");
         // White to move sees +komi (7.5) on the komi plane, scaled by 15 → 0.5.
         assert_eq!(
-            x[7 * n],
+            x[KOMI_PLANE * n],
             0.5,
             "white to move sets +komi/scale on the komi plane"
         );
-        assert_eq!(x[8 * n + 40], 1.0, "ones plane");
+        assert_eq!(x[ONES_PLANE * n + 40], 1.0, "ones plane");
+        // The last move (Black a2) shows on the first history plane.
+        assert_eq!(x[HIST0 * n + a2], 1.0, "last move on the history plane");
 
         let visible: f32 = x[6 * n..7 * n].iter().sum();
         assert_eq!(visible, 0.0, "no illegal empties this early");

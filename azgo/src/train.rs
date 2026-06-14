@@ -15,10 +15,11 @@ use tch::{Device, Kind, Tensor};
 
 use crate::net::{Net, NetConfig, PLANE_COUNT};
 
-/// The first 7 of the 9 encoding planes are position-dependent bitsets;
-/// plane 7 (stm-is-white) and plane 8 (ones) are constant fills
-/// reconstructed at expansion, so only these are packed.
-const PACKED_PLANES: usize = 7;
+/// Every plane except the last two is a position-dependent bitset (stones,
+/// liberties, illegal points, move history, ladders); the final two — the
+/// signed-komi scalar and the ones plane — are constant fills reconstructed at
+/// expansion, so only the bitset planes are packed.
+const PACKED_PLANES: usize = PLANE_COUNT - 2;
 
 /// Weight of the auxiliary ownership MSE in the total loss. KataGo-ish: large
 /// enough to shape the trunk, small enough not to swamp policy/value.

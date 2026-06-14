@@ -36,6 +36,11 @@ use game_core::{Game, Turn};
 /// Default komi (White's compensation for moving second), area scoring.
 pub const KOMI: f64 = 7.5;
 
+/// Number of recent move locations kept for the encoder's move-history planes.
+pub const HISTORY: usize = 5;
+/// History sentinel: a pass, or a slot not yet filled.
+const NO_MOVE: u16 = u16::MAX;
+
 const BLACK: u8 = 0;
 const WHITE: u8 = 1;
 const EMPTY: u8 = 2;
@@ -70,6 +75,9 @@ pub struct GoState {
     prev_key: u64,
     plies: u32,
     over: bool,
+    /// Locations of the last [`HISTORY`] moves, most-recent first; [`NO_MOVE`]
+    /// for a pass or an unfilled slot. Feeds the encoder's move-history planes.
+    recent: [u16; HISTORY],
 }
 
 impl GoState {
@@ -180,6 +188,7 @@ impl Go {
             prev_key,
             plies: 0,
             over: false,
+            recent: [NO_MOVE; HISTORY],
         }
     }
 
@@ -342,6 +351,7 @@ impl Game for Go {
             prev_key: 0,
             plies: 0,
             over: false,
+            recent: [NO_MOVE; HISTORY],
         }
     }
 
@@ -392,6 +402,14 @@ impl Game for Go {
                 state.passes = 0;
             }
         }
+        // Slide the move-history ring and record this move's location.
+        for i in (1..HISTORY).rev() {
+            state.recent[i] = state.recent[i - 1];
+        }
+        state.recent[0] = match action {
+            GoAction::Place(p) => p,
+            GoAction::Pass => NO_MOVE,
+        };
         state.prev_key = before;
         state.to_move ^= 1;
         state.plies += 1;

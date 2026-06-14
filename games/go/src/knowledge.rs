@@ -143,6 +143,93 @@ pub(crate) fn is_eyelike(cells: &[u8], size: usize, p: usize, color: u8) -> bool
     if off_board > 0 { opp == 0 } else { opp < 2 }
 }
 
+/// The empty liberty points of the group given by `stones`.
+fn liberty_points(cells: &[u8], size: usize, stones: &[usize]) -> Vec<usize> {
+    let mut seen = vec![false; cells.len()];
+    let mut libs = Vec::new();
+    for &s in stones {
+        for n in neighbors(size, s) {
+            if cells[n] == EMPTY && !seen[n] {
+                seen[n] = true;
+                libs.push(n);
+            }
+        }
+    }
+    libs
+}
+
+/// Whether the group of `cells[start]` is captured in a ladder when the
+/// opponent hunts it (opponent to move first). A static tactical feature for
+/// the net: a group that looks alive (two liberties) but is dead to the
+/// diagonal capture-chase that nets and shallow search read poorly. Total work
+/// is capped by a node budget (`~4·size`) so it can never blow up; an
+/// unresolved chase is reported as *not* laddered (a safe false negative).
+/// Meant for two-liberty groups (one-liberty groups are already the atari
+/// planes).
+pub(crate) fn laddered(cells: &[u8], size: usize, start: usize) -> bool {
+    let color = cells[start];
+    if color == EMPTY {
+        return false;
+    }
+    let (stones, _) = group(cells, size, start);
+    let mut budget: i32 = 4 * size as i32;
+    ladder_hunter(cells, size, &stones, color, &mut budget)
+}
+
+/// Hunter (`color ^ 1`) to move — ataris the prey. True if the prey is caught.
+fn ladder_hunter(cells: &[u8], size: usize, stones: &[usize], color: u8, budget: &mut i32) -> bool {
+    if *budget <= 0 {
+        return false;
+    }
+    let libs = liberty_points(cells, size, stones);
+    match libs.len() {
+        0 | 1 => return true, // gone, or in atari (hunter just captures)
+        2 => {}
+        _ => return false, // three+ liberties: not ladderable
+    }
+    *budget -= 1;
+    let hunter = color ^ 1;
+    for &lib in &libs {
+        let mut b = cells.to_vec();
+        if place(&mut b[..], size, lib, hunter).is_none() {
+            continue; // illegal atari (suicide)
+        }
+        match stones.iter().find(|&&s| b[s] == color) {
+            None => return true, // prey captured by the atari itself
+            Some(&ps) => {
+                let (g, _) = group(&b[..], size, ps);
+                if ladder_prey(&b[..], size, &g, color, budget) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Prey (`color`) to move — must extend out of atari. True if caught anyway.
+fn ladder_prey(cells: &[u8], size: usize, stones: &[usize], color: u8, budget: &mut i32) -> bool {
+    if *budget <= 0 {
+        return false;
+    }
+    let libs = liberty_points(cells, size, stones);
+    match libs.len() {
+        0 => return true,
+        1 => {}
+        _ => return false, // two+ liberties on its own move: escaped
+    }
+    *budget -= 1;
+    let lib = libs[0];
+    let mut b = cells.to_vec();
+    match place(&mut b[..], size, lib, color) {
+        None => true, // extension is suicide → caught
+        Some(_) => {
+            let (g, _) = group(&b[..], size, lib);
+            ladder_hunter(&b[..], size, &g, color, budget)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +237,57 @@ mod tests {
 
     fn cells(g: &Go, rows: &[&str]) -> Vec<u8> {
         g.parse_state(rows, 0).cells
+    }
+
+    #[test]
+    fn working_ladder_is_caught() {
+        let g = Go::new(7);
+        // A White stone with two liberties, boxed by Black toward a corner.
+        let c = cells(
+            &g,
+            &[
+                ". X . . . . .",
+                ". O X . . . .",
+                ". . . . . . .",
+                ". . . . . . .",
+                ". . . . . . .",
+                ". . . . . . .",
+                ". . . . . . .",
+            ],
+        );
+        let white = c.iter().position(|&x| x == 1).unwrap();
+        let (stones, _) = group(&c, 7, white);
+        assert_eq!(
+            group_liberties(&c, 7, &stones),
+            2,
+            "setup has two liberties"
+        );
+        assert!(
+            laddered(&c, 7, white),
+            "the running stone dies in the corner"
+        );
+    }
+
+    #[test]
+    fn open_stone_is_not_laddered() {
+        let g = Go::new(7);
+        let c = cells(
+            &g,
+            &[
+                ". . . . . . .",
+                ". . . . . . .",
+                ". . . . . . .",
+                ". . . O . . .",
+                ". . . . . . .",
+                ". . . . . . .",
+                ". . . . . . .",
+            ],
+        );
+        let white = c.iter().position(|&x| x == 1).unwrap();
+        assert!(
+            !laddered(&c, 7, white),
+            "a four-liberty stone is not ladderable"
+        );
     }
 
     #[test]
