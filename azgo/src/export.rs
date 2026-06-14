@@ -27,7 +27,7 @@ pub fn export(args: &[String]) {
 
     let mut vs = tch::nn::VarStore::new(Device::Cpu);
     let _net = net::Net::new(&vs.root(), cfg);
-    vs.load(&net_path).unwrap_or_else(|e| {
+    net::load_inference_weights(&mut vs, &net_path).unwrap_or_else(|e| {
         eprintln!("failed to load {}: {e}", net_path.display());
         std::process::exit(1);
     });

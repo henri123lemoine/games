@@ -10,6 +10,29 @@
 use tch::nn;
 use tch::{Device, Kind, Tensor};
 
+/// Load weights for inference/export, tolerating a missing ownership head.
+///
+/// The ownership head (`o1.*`) is a training-only auxiliary — never exported,
+/// never read during inference — so checkpoints saved before it existed (the
+/// 9×9 `run1` net) lack it. Strict `load` is tried first; only an `o1`-only
+/// shortfall is tolerated, so a genuine architecture mismatch still fails loud.
+pub(crate) fn load_inference_weights(
+    vs: &mut nn::VarStore,
+    path: &std::path::Path,
+) -> Result<(), tch::TchError> {
+    match vs.load(path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let missing = vs.load_partial(path)?;
+            if missing.iter().all(|n| n.starts_with("o1")) {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
 pub const PLANES: i64 = go::encode::PLANES as i64;
 pub const PLANE_COUNT: usize = go::encode::PLANES;
 
@@ -187,7 +210,7 @@ impl Infer {
     ) -> Result<Infer, tch::TchError> {
         let mut vs = nn::VarStore::new(device);
         let net = Net::new(&vs.root(), cfg);
-        vs.load(path)?;
+        load_inference_weights(&mut vs, path)?;
         if kind == Kind::Half {
             vs.half();
         }
