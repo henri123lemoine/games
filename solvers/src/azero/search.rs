@@ -41,6 +41,13 @@ pub struct PuctConfig {
     /// path. Game knowledge:
     /// enable where repetition means a draw (chess), leave off elsewhere.
     pub cycle_draws: bool,
+    /// KataGo forced playouts: at the root, every child that has been visited
+    /// at least once is forced up to `sqrt(k · prior · total_root_visits)`
+    /// visits, widening exploration of plausible moves. 0 disables it (the
+    /// default everywhere except Go self-play). Pair with policy-target
+    /// pruning at the call site, which subtracts these forced visits back out
+    /// of the recorded policy target.
+    pub forced_playouts_k: f32,
 }
 
 impl Default for PuctConfig {
@@ -53,6 +60,7 @@ impl Default for PuctConfig {
             root_noise: 0.25,
             max_leaves: 8,
             cycle_draws: false,
+            forced_playouts_k: 0.0,
         }
     }
 }
@@ -229,7 +237,12 @@ impl<G: Game> Search<G> {
                 self.backup(&path, Leaf::Exact(v));
                 return None;
             }
-            let e = select_edge(node, (cfg.c_puct, cfg.fpu));
+            let forced_k = if cur == self.tree.root {
+                cfg.forced_playouts_k
+            } else {
+                0.0
+            };
+            let e = select_edge(node, (cfg.c_puct, cfg.fpu), forced_k);
             path.push((cur, e));
 
             let child = self.tree.nodes[cur].child[e];
@@ -361,6 +374,13 @@ impl<G: Game> Search<G> {
         &self.tree.nodes[self.tree.root].actions
     }
 
+    /// Net priors over the root's actions, aligned with `root_actions` /
+    /// `root_visits`. Lets the caller reconstruct each child's forced-playout
+    /// count for policy-target pruning.
+    pub fn root_priors(&self) -> &[f32] {
+        &self.tree.nodes[self.tree.root].prior
+    }
+
     /// Visit-weighted mean value of the root position (player to move):
     /// the search's estimate of the position itself, for value targets.
     pub fn root_value(&self) -> f64 {
@@ -476,7 +496,12 @@ fn eval_request<G: Game, E: PolicyValueEncoder<G>>(
     }
 }
 
-fn select_edge<G: Game>(node: &Node<G>, (c_puct, fpu): (f32, f32)) -> usize {
+/// Selection bonus that lifts a forced child above every non-forced one;
+/// far larger than any PUCT score (q+u is O(1)), so forced children win and
+/// their PUCT scores only break ties among themselves.
+const FORCED_PLAYOUT_BONUS: f64 = 1e9;
+
+fn select_edge<G: Game>(node: &Node<G>, (c_puct, fpu): (f32, f32), forced_k: f32) -> usize {
     let total = node.visits();
     let sqrt_total = f64::from(total + 1).sqrt();
     let fpu_q = f64::from(node.value) - f64::from(fpu);
@@ -490,8 +515,19 @@ fn select_edge<G: Game>(node: &Node<G>, (c_puct, fpu): (f32, f32)) -> usize {
         };
         let u = f64::from(c_puct) * f64::from(node.prior[i]) * sqrt_total
             / (1.0 + f64::from(node.n[i]));
-        if q + u > best_score {
-            best_score = q + u;
+        let mut score = q + u;
+        // Forced playouts (root only, forced_k > 0): a visited child below its
+        // forced floor jumps the queue; the PUCT score breaks ties among forced
+        // children so the search still prioritizes the better ones.
+        if forced_k > 0.0 && node.n[i] >= 1 {
+            let n_forced =
+                (f64::from(forced_k) * f64::from(node.prior[i]) * f64::from(total)).sqrt();
+            if f64::from(node.n[i]) < n_forced {
+                score += FORCED_PLAYOUT_BONUS;
+            }
+        }
+        if score > best_score {
+            best_score = score;
             best = i;
         }
     }

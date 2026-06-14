@@ -69,6 +69,7 @@ impl Search {
             root_noise: cfg.root_noise,
             max_leaves: cfg.max_leaves,
             cycle_draws: true,
+            forced_playouts_k: 0.0,
         };
         self.0
             .advance(&Chess, &PlanesEncoder, board, &cfg, rng, results, &|key| {

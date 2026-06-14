@@ -54,6 +54,7 @@ impl<'a, G: Game, E: PolicyValueEncoder<G>> Puct<'a, G, E> {
             root_noise: self.root_noise,
             max_leaves: 1,
             cycle_draws: false,
+            forced_playouts_k: 0.0,
         };
         let mut search = Search::new(None);
         let mut results = Vec::new();

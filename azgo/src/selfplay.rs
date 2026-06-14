@@ -252,11 +252,29 @@ impl Worker {
         // Only full (recorded) moves become training targets; fast moves are
         // played to advance the game cheaply (Playout Cap Randomization).
         if self.record_move {
+            // Policy target pruning: subtract the forced-playout visits back
+            // out (the played move — max visits — is never pruned) so the
+            // recorded target reflects PUCT's preference, not the forced
+            // exploration that produced those extra visits. No-op when
+            // `forced_playouts_k == 0`.
+            let mut tvisits = visits.clone();
+            let k = cfg.puct.forced_playouts_k;
+            if k > 0.0 {
+                let priors = self.search.root_priors();
+                let total = f64::from(tvisits.iter().sum::<u32>());
+                let best = argmax(&tvisits);
+                for i in 0..tvisits.len() {
+                    if i != best && tvisits[i] > 0 {
+                        let n_forced = (f64::from(k) * f64::from(priors[i]) * total).sqrt() as u32;
+                        tvisits[i] = tvisits[i].saturating_sub(n_forced);
+                    }
+                }
+            }
             let dist: Vec<(u16, f32)> = {
-                let total: u32 = visits.iter().sum();
+                let total: u32 = tvisits.iter().sum();
                 actions
                     .iter()
-                    .zip(&visits)
+                    .zip(&tvisits)
                     .map(|(&a, &n)| {
                         (
                             enc.action_index(game, &self.state, a) as u16,

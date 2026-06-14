@@ -194,6 +194,9 @@ fn run(args: &[String]) {
     let fast_sims: u32 = arg(args, "--fast-sims", 100);
     let full_sims: u32 = arg(args, "--full-sims", sims.max(600));
     let full_prob: f64 = arg(args, "--full-prob", 0.0);
+    // KataGo forced playouts at the root (0 = off); pairs with policy-target
+    // pruning in self-play. ~2.0 is a sensible on value.
+    let forced_k: f32 = arg(args, "--forced-k", 0.0);
     let batch: usize = arg(args, "--batch", 1024);
     let reuse: f64 = arg(args, "--reuse", 1.8);
     let replay_cap: usize = arg(args, "--replay", 500_000);
@@ -213,6 +216,7 @@ fn run(args: &[String]) {
             sims,
             max_leaves: leaves,
             dirichlet_alpha: alpha,
+            forced_playouts_k: forced_k,
             ..PuctConfig::default()
         },
         concurrent,
@@ -276,6 +280,7 @@ fn run(args: &[String]) {
             "eval_every": eval_every, "eval_pairs": eval_pairs,
             "eval_sims": eval_sims, "value_mix": value_mix,
             "fast_sims": fast_sims, "full_sims": full_sims, "full_prob": full_prob,
+            "forced_k": forced_k,
             "resign_fp_target": resign_fp_target, "alpha": alpha,
             "threads": rayon::current_num_threads(),
         })
