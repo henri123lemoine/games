@@ -513,6 +513,16 @@ button {
   margin-bottom: 16px;
 }
 
+@media (max-width: 560px) {
+  .match-bar {
+    flex-wrap: wrap;
+  }
+  .match-title {
+    order: -1;
+    flex-basis: 100%;
+  }
+}
+
 .match-title {
   font-weight: 600;
   font-size: 1.1em;
