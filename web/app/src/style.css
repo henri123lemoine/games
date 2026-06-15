@@ -549,17 +549,20 @@ button {
   color: var(--text-dim);
 }
 
-.seat select {
+/* The per-seat selector the shell injects into a board's slot (or the
+   fallback bar). Compact and quiet so it reads as a control on the panel. */
+.seat-select {
   background: var(--bg-inset);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 5px 8px;
+  padding: 4px 6px;
   font: inherit;
-  font-size: 0.88rem;
+  font-size: 0.85rem;
+  cursor: pointer;
 }
 
-.seat select:focus {
+.seat-select:focus {
   outline: none;
   border-color: var(--accent);
 }

@@ -184,13 +184,13 @@ class GoFrontend implements GameFrontend {
         <div class="go-hud">
           <div class="go-player" data-seat="0">
             <span class="go-stone-icon go-stone-icon-b"></span>
-            <span class="go-pinfo"><span class="go-pname">Black</span><span class="go-psub"></span></span>
+            <span class="go-pinfo"><span class="go-pname">Black</span><span class="go-psub"></span><span class="seat-slot" data-seat="0"></span></span>
             <span class="go-pcaps"><b>0</b>captures</span>
           </div>
           <div class="go-turn-chip"><span class="go-turn-dot"></span><span class="go-turn-text"></span></div>
           <div class="go-player" data-seat="1">
             <span class="go-stone-icon go-stone-icon-w"></span>
-            <span class="go-pinfo"><span class="go-pname">White</span><span class="go-psub"></span></span>
+            <span class="go-pinfo"><span class="go-pname">White</span><span class="go-psub"></span><span class="seat-slot" data-seat="1"></span></span>
             <span class="go-pcaps"><b>0</b>captures</span>
           </div>
         </div>

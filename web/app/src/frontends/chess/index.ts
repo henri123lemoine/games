@@ -157,6 +157,7 @@ class ChessFrontend implements GameFrontend {
     const bar = `
       <span class="chess-turn-dot"></span>
       <span class="chess-bar-name"></span>
+      <span class="seat-slot"></span>
       <span class="chess-tray"></span>
       <span class="chess-score"></span>`;
     host.innerHTML = `
@@ -188,13 +189,15 @@ class ChessFrontend implements GameFrontend {
     this.bars = this.flipped
       ? { w: barEls(topBar), b: barEls(bottomBar) }
       : { w: barEls(bottomBar), b: barEls(topBar) };
-    const name = (color: 'w' | 'b') => {
-      const colorName = color === 'w' ? 'White' : 'Black';
-      const seat = color === 'w' ? 0 : 1;
-      return seat === ctx.humanSeat ? `You · ${colorName}` : `Bot · ${colorName}`;
-    };
+    // The seat name; who plays it (You / a bot) is the slot's selector, filled
+    // by the shell — so the bar names the side once and the strip is gone.
     for (const color of ['w', 'b'] as const) {
-      this.bars[color].root.querySelector('.chess-bar-name')!.textContent = name(color);
+      const root = this.bars[color].root;
+      root.querySelector('.chess-bar-name')!.textContent =
+        color === 'w' ? 'White' : 'Black';
+      root
+        .querySelector('.seat-slot')!
+        .setAttribute('data-seat', color === 'w' ? '0' : '1');
     }
 
     const ranks = host.querySelector<HTMLElement>('.chess-ranks')!;

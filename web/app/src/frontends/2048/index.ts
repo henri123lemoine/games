@@ -293,6 +293,7 @@ class G2048Frontend implements GameFrontend {
       <div class="g2048">
         <div class="g2048-top">
           <span class="g2048-logo">2048</span>
+          <span class="seat-slot" data-seat="0"></span>
           <div class="g2048-scorebox g2048-scorebox-score">
             <small>score</small><b class="g2048-score">0</b>
           </div>

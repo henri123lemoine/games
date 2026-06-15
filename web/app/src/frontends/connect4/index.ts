@@ -267,9 +267,9 @@ class Connect4Frontend implements GameFrontend {
     host.innerHTML = `
       <div class="c4-root">
         <div class="c4-bar">
-          <div class="c4-chip c4-chip-0"><span class="c4-swatch"></span><span></span></div>
+          <div class="c4-chip c4-chip-0"><span class="c4-swatch"></span><span class="c4-name"></span><span class="seat-slot" data-seat="0"></span></div>
           <div class="c4-msg"></div>
-          <div class="c4-chip c4-chip-1"><span class="c4-swatch"></span><span></span></div>
+          <div class="c4-chip c4-chip-1"><span class="c4-swatch"></span><span class="c4-name"></span><span class="seat-slot" data-seat="1"></span></div>
         </div>
         <div class="c4-board">
           <div class="c4-layer c4-backdrop"></div>
@@ -286,7 +286,7 @@ class Connect4Frontend implements GameFrontend {
     this.fallbackEl = host.querySelector('.c4-fallback')!;
     this.chips = [host.querySelector('.c4-chip-0')!, host.querySelector('.c4-chip-1')!];
     for (let seat = 0; seat < 2; seat++) {
-      this.chips[seat].lastElementChild!.textContent = COLOR_NAMES[seat];
+      this.chips[seat].querySelector('.c4-name')!.textContent = COLOR_NAMES[seat];
     }
     for (let col = 0; col < COLS; col++) {
       const hit = document.createElement('div');

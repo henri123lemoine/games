@@ -83,3 +83,23 @@ export function botSpec(gameId: string, bot: string, levelValue?: string): strin
   const diff = difficultyFor(gameId, bot);
   return diff && levelValue ? `${bot}:${diff.key}=${levelValue}` : bot;
 }
+
+/** The middle difficulty value for a bot, or '' if it has no difficulty knob.
+ * Used as the default when a bot enters a heterogeneous match via the roster. */
+export function mediumLevel(gameId: string, bot: string): string {
+  const d = difficultyFor(gameId, bot);
+  return d ? (d.levels[1] ?? d.levels[0])[1] : "";
+}
+
+/** JS twin of the lab's `split_specs`: split a `bots=` list on commas while
+ * keeping commas that belong to one spec's own options (a segment with `=`
+ * but no `:` continues the previous spec). */
+export function splitSpecs(s: string): string[] {
+  const out: string[] = [];
+  for (const seg of s.split(",")) {
+    if (seg.includes("=") && !seg.includes(":") && out.length)
+      out[out.length - 1] += `,${seg}`;
+    else out.push(seg);
+  }
+  return out;
+}
