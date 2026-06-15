@@ -94,6 +94,73 @@ function effectiveBot(game: GameInfo, opts: Record<string, string>): string {
   return opts.bot ?? (game.solo ? "" : spec.value.split("|")[0]);
 }
 
+/** Seat names per game, matching what each board draws; `Seat N` otherwise. */
+const SEAT_LABELS: Record<string, string[]> = {
+  chess: ["White", "Black"],
+  othello: ["Black", "White"],
+  go: ["Black", "White"],
+  connect4: ["Red", "Yellow"],
+  twentyone: ["Player 1", "Player 2"],
+};
+
+function seatLabelFor(gameId: string, i: number): string {
+  return SEAT_LABELS[gameId]?.[i] ?? `Seat ${i + 1}`;
+}
+
+/** Human-facing names for the registry's terse bot ids. */
+const BOT_LABELS: Record<string, string> = {
+  alphabeta: "Alpha-Beta",
+  "alphabeta-rich": "Alpha-Beta (rich)",
+  azero: "AlphaZero",
+  "azero-gpu": "AlphaZero (GPU)",
+  mcts: "MCTS",
+  "mcts-eval": "MCTS (eval)",
+  "mcts-spec": "MCTS (spec)",
+  rollout: "Rollout",
+  belief: "Belief",
+  random: "Random",
+};
+
+/** The synthetic roster value for the only opponent a game offers when it
+ * has no selectable `bot` (Twenty-One's solver). `sendsBot:false` means the
+ * engine seats that opponent itself, so no `bot` option is sent. */
+const SOLVER_OPPONENT = { value: "__solver__", label: "CFR solver", sendsBot: false };
+
+interface RosterBot {
+  value: string;
+  label: string;
+  sendsBot: boolean;
+}
+
+/** Opponents a seat can be filled with. Reads the game's `bot` schema (real
+ * bots), or the synthetic solver for games without one. GPU-only bots drop
+ * out where WebGPU is missing, so the roster never offers a dead choice. */
+function rosterBots(game: GameInfo): RosterBot[] {
+  const spec = game.optsSchema.find((o) => o.key === "bot");
+  if (!spec) return [SOLVER_OPPONENT];
+  const gpu = "gpu" in navigator;
+  return spec.value
+    .split("|")
+    .filter((b) => gpu || b !== "azero-gpu")
+    .map((b) => ({ value: b, label: BOT_LABELS[b] ?? b, sendsBot: true }));
+}
+
+/** The roster value currently filling the bot seats. */
+function currentBotValue(game: GameInfo, opts: Record<string, string>): string {
+  const spec = game.optsSchema.find((o) => o.key === "bot");
+  return spec ? effectiveBot(game, opts) : SOLVER_OPPONENT.value;
+}
+
+/** Seats in the current configuration: 1 (solo), the `players` count (e.g.
+ * Liar's Dice), or 2 for the head-to-head games. */
+function seatCount(game: GameInfo, opts: Record<string, string>): number {
+  if (game.solo) return 1;
+  const players = game.optsSchema.find((o) => o.key === "players");
+  if (players)
+    return Number(opts.players ?? players.value.split("|")[0]) || 2;
+  return 2;
+}
+
 function randomSeed(): number {
   return (Math.floor(Math.random() * 0x7fff_ffff) | 1) >>> 0;
 }
@@ -337,7 +404,6 @@ export class App {
     mode: Mode,
     opts: Record<string, string>,
   ): void {
-    const modeLabel = mode === "watch" ? "take a seat" : "watch bots";
     this.root.innerHTML = `
       <div class="match">
         <header class="match-bar">
@@ -352,10 +418,10 @@ export class App {
               <option value="0">instant</option>
             </select>
           </label>
-          <button type="button" class="link mode-toggle">${modeLabel}</button>
           <button type="button" class="link again">rematch</button>
           <button type="button" class="link gear" title="Match settings">⚙</button>
         </header>
+        ${this.rosterHtml(game, opts)}
         <div class="match-body">
           <section class="board"></section>
           <aside class="side">
@@ -384,10 +450,6 @@ export class App {
       this.navTo("/");
     this.root.querySelector<HTMLButtonElement>(".again")!.onclick = () =>
       void this.startMatch(game, mode, { ...opts, seed: String(randomSeed()) });
-    this.root.querySelector<HTMLButtonElement>(".mode-toggle")!.onclick = () =>
-      void this.startMatch(game, mode === "watch" ? "play" : "watch", {
-        seed: String(randomSeed()),
-      });
     this.root.querySelector<HTMLSelectElement>(".speed")!.onchange = (e) => {
       this.speedScale = Number((e.target as HTMLSelectElement).value);
     };
@@ -400,7 +462,118 @@ export class App {
         input.value = "";
       }
     };
+    this.wireRoster(game, opts);
     this.wireDrawer(game, opts);
+  }
+
+  /** The seat roster: one control per chair, each `You` or an opponent bot.
+   * It replaces the old seat field + bot dropdown + watch toggle — picking
+   * who sits where is the whole configuration. Changing any control restarts
+   * the match. The engine seats one bot type across all bot seats, so a
+   * two-bot board is that bot playing itself (watch); two humans isn't a
+   * thing the engine offers, so selecting `You` twice can't happen. */
+  private rosterHtml(game: GameInfo, opts: Record<string, string>): string {
+    const o = (value: string, label: string, sel: boolean) =>
+      `<option value="${esc(value)}"${sel ? " selected" : ""}>${esc(label)}</option>`;
+    const seat = (name: string, sel: string) =>
+      `<label class="seat"><span class="seat-name">${esc(name)}</span>${sel}</label>`;
+    const bots = rosterBots(game);
+
+    if (game.solo) {
+      const cur = opts.bot ?? "__you__";
+      const options = [o("__you__", "You", cur === "__you__")].concat(
+        bots.map((b) => o(b.value, b.label, cur === b.value)),
+      );
+      return `<div class="roster">${seat(
+        "Player",
+        `<select class="seat-sel" data-seat="0">${options.join("")}</select>`,
+      )}</div>`;
+    }
+
+    const human = opts.seat === "watch" ? -1 : Number(opts.seat ?? "0");
+    const curBot = currentBotValue(game, opts);
+
+    if (game.optsSchema.some((s) => s.key === "players")) {
+      const n = seatCount(game, opts);
+      const youOpts = [o("watch", "Watch", human < 0)].concat(
+        Array.from({ length: n }, (_, i) => o(String(i), `Seat ${i + 1}`, human === i)),
+      );
+      const botOpts = bots.map((b) => o(b.value, b.label, curBot === b.value));
+      return `<div class="roster">
+        ${seat("You", `<select class="seat-you">${youOpts.join("")}</select>`)}
+        ${seat("Opponents", `<select class="seat-bot">${botOpts.join("")}</select>`)}
+      </div>`;
+    }
+
+    const rows = [0, 1].map((i) => {
+      const isYou = human === i;
+      const options = [o("__you__", "You", isYou)].concat(
+        bots.map((b) => o(b.value, b.label, !isYou && curBot === b.value)),
+      );
+      return seat(
+        seatLabelFor(game.id, i),
+        `<select class="seat-sel" data-seat="${i}">${options.join("")}</select>`,
+      );
+    });
+    return `<div class="roster">${rows.join("")}</div>`;
+  }
+
+  private wireRoster(game: GameInfo, opts: Record<string, string>): void {
+    // Carry the current game-level + difficulty options across the restart,
+    // dropping the seat/bot (the roster sets them) and the seed (a roster
+    // change starts a fresh game).
+    const carry = { ...opts };
+    delete carry.seat;
+    delete carry.bot;
+    delete carry.seed;
+    const restart = (mode: Mode, changes: Record<string, string>): void =>
+      void this.startMatch(game, mode, { ...carry, ...changes });
+    // Only real bots are sent as a `bot` option; the synthetic solver seat is
+    // seated by the engine itself, so it contributes no option.
+    const bots = rosterBots(game);
+    const botChange = (name: string): Record<string, string> => {
+      const b = bots.find((x) => x.value === name);
+      return b?.sendsBot ? { bot: name } : {};
+    };
+
+    if (game.solo) {
+      const sel = this.root.querySelector<HTMLSelectElement>(".seat-sel");
+      if (sel)
+        sel.onchange = () => {
+          if (sel.value === "__you__") restart("play", {});
+          else restart("watch", { bot: sel.value });
+        };
+      return;
+    }
+
+    if (game.optsSchema.some((s) => s.key === "players")) {
+      const youSel = this.root.querySelector<HTMLSelectElement>(".seat-you")!;
+      const botSel = this.root.querySelector<HTMLSelectElement>(".seat-bot")!;
+      const apply = () => {
+        const changes = botChange(botSel.value);
+        if (youSel.value === "watch") restart("watch", changes);
+        else restart("play", { ...changes, seat: youSel.value });
+      };
+      youSel.onchange = apply;
+      botSel.onchange = apply;
+      return;
+    }
+
+    const human = opts.seat === "watch" ? -1 : Number(opts.seat ?? "0");
+    const curBot = currentBotValue(game, opts);
+    for (const sel of this.root.querySelectorAll<HTMLSelectElement>(".seat-sel")) {
+      const i = Number(sel.dataset.seat);
+      sel.onchange = () => {
+        const v = sel.value;
+        if (v === "__you__") {
+          restart("play", { ...botChange(curBot), seat: String(i) });
+        } else if (human >= 0 && human !== i) {
+          restart("play", { ...botChange(v), seat: String(human) });
+        } else {
+          restart("watch", botChange(v));
+        }
+      };
+    }
   }
 
   private wireDrawer(game: GameInfo, opts: Record<string, string>): void {
@@ -408,38 +581,18 @@ export class App {
     const fieldsEl = drawer.querySelector<HTMLElement>(".drawer-fields")!;
     const note = (text: string) =>
       text ? `<small class="opt-note">${esc(text)}</small>` : "";
+    // Who plays each seat lives in the roster now; the drawer holds the game
+    // settings and the chosen bot's difficulty knobs (those the effective bot
+    // actually uses), plus the seed.
     const open = () => {
-      const botSpec = game.optsSchema.find((o) => o.key === "bot");
-      const botNames = botSpec ? botSpec.value.split("|") : [];
       const curBot = effectiveBot(game, opts);
-      const seatSpec = game.optsSchema.find((o) => o.key === "seat");
-      const seatRow = game.solo
-        ? ""
-        : `<label class="opt-row"><span>seat</span>
-             <input name="d-seat" value="${esc(opts.seat ?? "0")}" autocomplete="off" />
-             ${note(seatSpec?.note ?? "")}</label>`;
-      const botRow = botSpec
-        ? `<label class="opt-row"><span>bot</span>
-             <select name="d-bot">
-               ${game.solo ? `<option value=""${curBot === "" ? " selected" : ""}>— you play —</option>` : ""}
-               ${botNames
-                 .map(
-                   (b) =>
-                     `<option value="${esc(b)}"${b === curBot ? " selected" : ""}>${esc(b)}</option>`,
-                 )
-                 .join("")}
-             </select>
-             ${note(game.solo ? "" : botSpec.note)}</label>`
-        : "";
-      const fields = optFields(game.optsSchema, opts);
+      const fields = optFields(game.optsSchema, opts).filter(
+        (f) => f.bots.length === 0 || f.bots.includes(curBot),
+      );
       fieldsEl.innerHTML = `
-        ${seatRow}
-        ${botRow}
         ${fields
           .map(
-            (
-              f,
-            ) => `<label class="opt-row"${f.bots.length ? ` data-bots="${esc(f.bots.join(" "))}"` : ""}>
+            (f) => `<label class="opt-row">
               <span>${esc(f.key)}</span>
               <input name="d-${esc(f.key)}" value="${esc(f.value)}" autocomplete="off" />
               ${note(f.note)}</label>`,
@@ -447,19 +600,6 @@ export class App {
           .join("")}
         <label class="opt-row"><span>seed</span>
           <input name="d-seed" value="${esc(String(opts.seed ?? randomSeed()))}" autocomplete="off" /></label>`;
-      const botSel = fieldsEl.querySelector<HTMLSelectElement>(
-        'select[name="d-bot"]',
-      );
-      const syncRows = () => {
-        const bot = botSel?.value ?? "";
-        for (const row of fieldsEl.querySelectorAll<HTMLElement>(
-          ".opt-row[data-bots]",
-        )) {
-          row.hidden = !row.dataset.bots!.split(" ").includes(bot);
-        }
-      };
-      if (botSel) botSel.onchange = syncRows;
-      syncRows();
       drawer.hidden = false;
     };
     this.root.querySelector<HTMLButtonElement>(".gear")!.onclick = open;
@@ -470,23 +610,25 @@ export class App {
       if (e.target === drawer) drawer.hidden = true;
     };
     drawer.querySelector<HTMLButtonElement>(".drawer-apply")!.onclick = () => {
+      // Keep the roster's seat/bot; the drawer only edits settings and knobs.
       const overrides: Record<string, string> = {};
+      if (opts.seat !== undefined) overrides.seat = opts.seat;
+      if (opts.bot !== undefined) overrides.bot = opts.bot;
       const controls = fieldsEl.querySelectorAll<
         HTMLInputElement | HTMLSelectElement
       >("input, select");
       for (const el of controls) {
-        if (el.closest<HTMLElement>(".opt-row")?.hidden) continue;
         const key = el.name.replace(/^d-/, "");
         if (el.value.trim() !== "") overrides[key] = el.value.trim();
       }
-      const nextMode: Mode = game.solo
-        ? overrides.bot
+      const mode: Mode = game.solo
+        ? opts.bot
           ? "watch"
           : "play"
-        : overrides.seat === "watch"
+        : opts.seat === "watch"
           ? "watch"
           : "play";
-      void this.startMatch(game, nextMode, overrides);
+      void this.startMatch(game, mode, overrides);
     };
   }
 
