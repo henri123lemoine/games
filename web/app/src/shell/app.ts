@@ -25,8 +25,13 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   connect4: { depth: "7" },
   go: { size: "9", sims: "1500" },
   "2048": {},
-  snake: {},
 };
+
+/** Games registered in the lab but not surfaced on the site. Snake is solo
+ * and too easy to fit the "play the lab's bots" thesis; it returns once it
+ * is a competitive 1v1 game — see games/snake/REDESIGN.md. The Rust crate
+ * and CLI keep it. */
+const HIDDEN_GAMES = new Set(["snake"]);
 
 /** Trained artifacts fetched as static assets, keyed by the path the
  * registry asks for. */
@@ -119,8 +124,6 @@ function miniFor(id: string): string {
       return `<div class="mini mini-go"><span class="mini-stone mini-stone-b" style="left:30%;top:30%"></span><span class="mini-stone mini-stone-w" style="left:55%;top:47%"></span><span class="mini-stone mini-stone-b" style="left:38%;top:63%"></span></div>`;
     case "2048":
       return `<div class="mini mini-2048"><span>2</span><span class="v4">4</span><span class="v8">8</span><span class="v16">16</span></div>`;
-    case "snake":
-      return `<div class="mini mini-snake"><span class="mini-seg" style="left:18%;top:55%"></span><span class="mini-seg" style="left:33%;top:55%"></span><span class="mini-seg" style="left:48%;top:55%"></span><span class="mini-seg mini-head" style="left:48%;top:38%"></span><span class="mini-food" style="left:72%;top:25%"></span></div>`;
     default:
       return `<div class="mini"></div>`;
   }
@@ -145,6 +148,9 @@ export class App {
   async start(): Promise<void> {
     this.root.innerHTML = '<div class="boot">Waking the engine…</div>';
     this.manifest = await this.host.manifest();
+    this.manifest.games = this.manifest.games.filter(
+      (g) => !HIDDEN_GAMES.has(g.id),
+    );
     this.renderHome();
   }
 

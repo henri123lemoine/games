@@ -464,36 +464,6 @@ button {
   color: #fff;
 }
 
-.mini-snake {
-  background:
-    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-    #0d120d;
-  background-size: 18px 18px;
-}
-
-.mini-seg {
-  position: absolute;
-  width: 15px;
-  height: 15px;
-  background: #8fae6e;
-  border-radius: 4px;
-  box-shadow: 0 0 8px rgba(143, 174, 110, 0.5);
-}
-
-.mini-head {
-  background: #b5d489;
-}
-
-.mini-food {
-  position: absolute;
-  width: 11px;
-  height: 11px;
-  background: #d96a5a;
-  border-radius: 50%;
-  box-shadow: 0 0 8px rgba(217, 106, 90, 0.7);
-}
-
 .home-foot {
   margin-top: 28px;
 }
