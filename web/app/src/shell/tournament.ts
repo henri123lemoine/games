@@ -3,24 +3,21 @@
 // and a Bradley-Terry Elo table that updates as results stream in.
 
 import { EngineHost } from '../engine/host';
-import type { CompareInfo, Wdl } from '../engine/protocol';
+import type { CompareInfo, GameInfo, Wdl } from '../engine/protocol';
+import { botLabel, botSpec, difficultyFor, tourneyBots } from './config';
 
-interface Preset {
-  bots: string[];
-  opts: Record<string, string>;
-}
-
-const PRESETS: Record<string, Preset> = {
-  chess: { bots: ['alphabeta:depth=4', 'alphabeta-rich:depth=4'], opts: {} },
-  othello: { bots: ['alphabeta:depth=5', 'mcts:sims=2000'], opts: {} },
-  connect4: { bots: ['alphabeta:depth=7', 'alphabeta:depth=5', 'mcts:sims=2000'], opts: {} },
-  go: { bots: ['mcts:sims=800', 'mcts-eval:sims=800'], opts: { size: '9' } },
-  'liars-dice': {
-    bots: ['rollout:rollouts=300', 'belief', 'random'],
-    // The web tournament is head-to-head; pin the 2-player configuration.
-    opts: { players: '2', dice: '5' },
-  },
+/** Fixed per-game options the tournament needs. It is head-to-head, so
+ * Liar's Dice is pinned to two seats. */
+const TOURNEY_OPTS: Record<string, Record<string, string>> = {
+  go: { size: '9' },
+  'liars-dice': { players: '2', dice: '5' },
 };
+
+interface Entrant {
+  bot: string;
+  /** The chosen difficulty knob value, or '' for bots with no difficulty. */
+  level: string;
+}
 
 interface PairTask {
   i: number;
@@ -32,10 +29,12 @@ export class TournamentScreen {
   private hosts: EngineHost[] = [];
   private running = false;
   private gen = 0;
+  private entrants: Entrant[] = [];
 
   constructor(
     private root: HTMLElement,
     private compare: CompareInfo[],
+    private games: GameInfo[],
     private statsHost: EngineHost,
     private onBack: () => void,
   ) {}
@@ -48,18 +47,20 @@ export class TournamentScreen {
       <div class="tourney">
         <button type="button" class="link back">&larr; arcade</button>
         <h2>Tournament lab</h2>
-        <p class="muted">Round-robin between bot specs, paired seat-swapped games on a pool of
-           engine workers, Bradley-Terry Elo fitted live. Same statistics as the lab's CLI.</p>
+        <p class="muted">Round-robin between bots, paired seat-swapped games on a pool of engine
+           workers, Bradley-Terry Elo fitted live. Same statistics as the lab's CLI.</p>
         <div class="tourney-form">
           <label class="opt-row"><span>game</span>
             <select class="t-game">${options}</select></label>
-          <label class="opt-row"><span>bots</span>
-            <textarea class="t-bots" rows="4" spellcheck="false"></textarea></label>
-          <div class="bots-help muted"></div>
+          <div class="t-entrants"></div>
+          <button type="button" class="link t-add">+ add bot</button>
           <label class="opt-row"><span>games / pairing</span>
-            <input class="t-games" value="8" /></label>
-          <label class="opt-row"><span>seed</span>
-            <input class="t-seed" value="${(Math.floor(Math.random() * 0x7fffffff) | 1) >>> 0}" /></label>
+            <select class="t-games">
+              <option value="4">4</option>
+              <option value="8" selected>8</option>
+              <option value="16">16</option>
+              <option value="32">32</option>
+            </select></label>
           <button type="button" class="primary t-run">Run tournament</button>
         </div>
         <div class="t-progress"></div>
@@ -71,17 +72,86 @@ export class TournamentScreen {
       this.onBack();
     };
     const gameSel = this.root.querySelector<HTMLSelectElement>('.t-game')!;
-    const applyPreset = () => {
-      const preset = PRESETS[gameSel.value] ?? { bots: [], opts: {} };
-      this.root.querySelector<HTMLTextAreaElement>('.t-bots')!.value = preset.bots.join('\n');
-      const info = this.compare.find((c) => c.id === gameSel.value);
-      this.root.querySelector('.bots-help')!.textContent = info
-        ? `available: ${info.bots}`
-        : '';
+    gameSel.onchange = () => {
+      this.entrants = this.defaultEntrants(gameSel.value);
+      this.renderEntrants();
     };
-    gameSel.onchange = applyPreset;
-    applyPreset();
+    this.root.querySelector<HTMLButtonElement>('.t-add')!.onclick = () => {
+      const bots = this.botsFor(gameSel.value);
+      const bot = bots[0] ?? '';
+      this.entrants.push({ bot, level: this.mediumLevel(gameSel.value, bot) });
+      this.renderEntrants();
+    };
+    this.entrants = this.defaultEntrants(gameSel.value);
+    this.renderEntrants();
     this.root.querySelector<HTMLButtonElement>('.t-run')!.onclick = () => void this.run();
+  }
+
+  private botsFor(gameId: string): string[] {
+    const g = this.games.find((x) => x.id === gameId);
+    return g ? tourneyBots(g) : [];
+  }
+
+  private mediumLevel(gameId: string, bot: string): string {
+    const d = difficultyFor(gameId, bot);
+    return d ? (d.levels[1] ?? d.levels[0])[1] : '';
+  }
+
+  private defaultEntrants(gameId: string): Entrant[] {
+    return this.botsFor(gameId).map((bot) => ({
+      bot,
+      level: this.mediumLevel(gameId, bot),
+    }));
+  }
+
+  /** Renders the entrant rows (bot + difficulty) and wires their controls.
+   * Re-rendered on every change so a bot switch reflows its difficulty list. */
+  private renderEntrants(): void {
+    const gameId = this.root.querySelector<HTMLSelectElement>('.t-game')!.value;
+    const bots = this.botsFor(gameId);
+    const container = this.root.querySelector<HTMLElement>('.t-entrants')!;
+    container.innerHTML = this.entrants
+      .map((e, idx) => {
+        const botOpts = bots
+          .map(
+            (b) =>
+              `<option value="${b}"${b === e.bot ? ' selected' : ''}>${escapeHtml(botLabel(b))}</option>`,
+          )
+          .join('');
+        const diff = difficultyFor(gameId, e.bot);
+        const level = diff
+          ? `<select class="t-level" data-i="${idx}">${diff.levels
+              .map(
+                ([l, v]) =>
+                  `<option value="${v}"${v === e.level ? ' selected' : ''}>${l}</option>`,
+              )
+              .join('')}</select>`
+          : `<span class="t-nolevel">—</span>`;
+        return `<div class="t-entrant">
+          <select class="t-bot" data-i="${idx}">${botOpts}</select>
+          ${level}
+          <button type="button" class="link t-remove" data-i="${idx}" title="remove">×</button>
+        </div>`;
+      })
+      .join('');
+    for (const sel of container.querySelectorAll<HTMLSelectElement>('.t-bot')) {
+      sel.onchange = () => {
+        const i = Number(sel.dataset.i);
+        this.entrants[i] = { bot: sel.value, level: this.mediumLevel(gameId, sel.value) };
+        this.renderEntrants();
+      };
+    }
+    for (const sel of container.querySelectorAll<HTMLSelectElement>('.t-level')) {
+      sel.onchange = () => {
+        this.entrants[Number(sel.dataset.i)].level = sel.value;
+      };
+    }
+    for (const btn of container.querySelectorAll<HTMLButtonElement>('.t-remove')) {
+      btn.onclick = () => {
+        this.entrants.splice(Number(btn.dataset.i), 1);
+        this.renderEntrants();
+      };
+    }
   }
 
   private async run(): Promise<void> {
@@ -94,16 +164,15 @@ export class TournamentScreen {
     }
     const gen = ++this.gen;
     const game = this.root.querySelector<HTMLSelectElement>('.t-game')!.value;
-    const bots = this.root
-      .querySelector<HTMLTextAreaElement>('.t-bots')!
-      .value.split('\n')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const gamesPer = Math.max(2, Number(this.root.querySelector<HTMLInputElement>('.t-games')!.value) || 8);
-    const seed = Number(this.root.querySelector<HTMLInputElement>('.t-seed')!.value) >>> 0 || 1;
-    const opts = PRESETS[game]?.opts ?? {};
+    const bots = this.entrants.map((e) => botSpec(game, e.bot, e.level || undefined));
+    const gamesPer = Math.max(
+      2,
+      Number(this.root.querySelector<HTMLSelectElement>('.t-games')!.value) || 8,
+    );
+    const seed = (Math.floor(Math.random() * 0x7fffffff) | 1) >>> 0;
+    const opts = TOURNEY_OPTS[game] ?? {};
     if (bots.length < 2) {
-      this.progress('Need at least two bot specs (one per line).');
+      this.progress('Add at least two bots.');
       return;
     }
     this.running = true;

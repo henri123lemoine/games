@@ -14,6 +14,7 @@ import type {
 } from "../engine/protocol";
 import { frontendFor, hasFrontend } from "../frontends";
 import type { FrontendCtx, GameFrontend } from "../frontends/types";
+import { DIFFICULTY, OPT_CHOICES, botLabel } from "./config";
 import { TournamentScreen } from "./tournament";
 
 /** What clicking a card starts: browser-tuned, no questions asked. */
@@ -107,20 +108,6 @@ function seatLabelFor(gameId: string, i: number): string {
   return SEAT_LABELS[gameId]?.[i] ?? `Seat ${i + 1}`;
 }
 
-/** Human-facing names for the registry's terse bot ids. */
-const BOT_LABELS: Record<string, string> = {
-  alphabeta: "Alpha-Beta",
-  "alphabeta-rich": "Alpha-Beta (rich)",
-  azero: "AlphaZero",
-  "azero-gpu": "AlphaZero (GPU)",
-  mcts: "MCTS",
-  "mcts-eval": "MCTS (eval)",
-  "mcts-spec": "MCTS (spec)",
-  rollout: "Rollout",
-  belief: "Belief",
-  random: "Random",
-};
-
 /** The synthetic roster value for the only opponent a game offers when it
  * has no selectable `bot` (Twenty-One's solver). `sendsBot:false` means the
  * engine seats that opponent itself, so no `bot` option is sent. */
@@ -142,7 +129,7 @@ function rosterBots(game: GameInfo): RosterBot[] {
   return spec.value
     .split("|")
     .filter((b) => gpu || b !== "azero-gpu")
-    .map((b) => ({ value: b, label: BOT_LABELS[b] ?? b, sendsBot: true }));
+    .map((b) => ({ value: b, label: botLabel(b), sendsBot: true }));
 }
 
 /** The roster value currently filling the bot seats. */
@@ -160,43 +147,6 @@ function seatCount(game: GameInfo, opts: Record<string, string>): number {
     return Number(opts.players ?? players.value.split("|")[0]) || 2;
   return 2;
 }
-
-interface Difficulty {
-  /** The bot knob this difficulty drives (depth / sims / rollouts). */
-  key: string;
-  /** Easy → Hard, as `[label, value]`; the value is what the knob is set to. */
-  levels: [string, string][];
-}
-
-/** Difficulty presets per `game/bot`: the roster picks the opponent, this
- * picks how hard it plays — so a visitor never types a raw search depth. */
-const DIFFICULTY: Record<string, Difficulty> = {
-  "chess/alphabeta": { key: "depth", levels: [["Easy", "2"], ["Medium", "4"], ["Hard", "6"]] },
-  "chess/alphabeta-rich": { key: "depth", levels: [["Easy", "2"], ["Medium", "4"], ["Hard", "6"]] },
-  "chess/azero": { key: "sims", levels: [["Easy", "64"], ["Medium", "256"], ["Hard", "800"]] },
-  "chess/azero-gpu": { key: "sims", levels: [["Easy", "64"], ["Medium", "256"], ["Hard", "800"]] },
-  "othello/alphabeta": { key: "depth", levels: [["Easy", "3"], ["Medium", "5"], ["Hard", "7"]] },
-  "othello/mcts": { key: "sims", levels: [["Easy", "500"], ["Medium", "2000"], ["Hard", "6000"]] },
-  "connect4/alphabeta": { key: "depth", levels: [["Easy", "5"], ["Medium", "7"], ["Hard", "9"]] },
-  "connect4/mcts": { key: "sims", levels: [["Easy", "500"], ["Medium", "2000"], ["Hard", "6000"]] },
-  "go/mcts": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
-  "go/mcts-eval": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
-  "go/mcts-spec": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
-  "go/azero-gpu": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
-  "liars-dice/rollout": { key: "rollouts", levels: [["Easy", "100"], ["Medium", "400"], ["Hard", "1000"]] },
-  "2048/mcts": { key: "sims", levels: [["Easy", "100"], ["Medium", "200"], ["Hard", "600"]] },
-  "2048/mcts-eval": { key: "sims", levels: [["Easy", "100"], ["Medium", "200"], ["Hard", "600"]] },
-};
-
-/** Discrete choices for the small count options, so the drawer offers a
- * dropdown rather than a free-text field. Hearts is limited to the shipped
- * solver artifacts. */
-const OPT_CHOICES: Record<string, string[]> = {
-  players: ["2", "3", "4", "5", "6"],
-  dice: ["3", "4", "5", "6"],
-  hearts: ["3", "6"],
-  size: ["9", "13", "19"],
-};
 
 function randomSeed(): number {
   return (Math.floor(Math.random() * 0x7fff_ffff) | 1) >>> 0;
@@ -323,13 +273,11 @@ export class App {
           <h1>Games Room</h1>
         </header>
         <div class="card-grid">${cards}</div>
-        <div class="home-foot">
-          <button type="button" class="link tourney-link">Bot tournament lab &rarr;</button>
-        </div>
         <footer class="home-footer">
           <nav>
             <a href="https://github.com/henri123lemoine/games">GitHub</a>
             <a href="https://henrilemoine.com/">henrilemoine.com</a>
+            <button type="button" class="link tourney-link">tournament lab</button>
           </nav>
           <span class="muted">Runs entirely in your browser.</span>
         </footer>
@@ -359,6 +307,7 @@ export class App {
     this.tourney = new TournamentScreen(
       this.root,
       this.manifest.compare,
+      this.manifest.games,
       this.host,
       () => this.navTo("/"),
     );

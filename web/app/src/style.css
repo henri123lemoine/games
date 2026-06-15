@@ -793,8 +793,7 @@ button {
   margin: 18px 0;
 }
 
-.tourney-form select,
-.tourney-form textarea {
+.tourney-form select {
   flex: 1;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -804,15 +803,44 @@ button {
   font: inherit;
 }
 
-.tourney-form textarea {
-  font-family: var(--mono);
-  font-size: 0.85rem;
-  resize: vertical;
+.t-entrants {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.bots-help {
-  font-size: 0.78rem;
-  margin: -2px 0 6px 106px;
+.t-entrant {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 106px;
+}
+
+.t-entrant .t-bot {
+  flex: 1;
+}
+
+.t-entrant .t-level {
+  width: 110px;
+}
+
+.t-nolevel {
+  width: 110px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.t-remove {
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 2px 6px;
+  text-decoration: none;
+}
+
+.t-add {
+  align-self: flex-start;
+  margin-left: 106px;
+  text-decoration: none;
 }
 
 .tourney-form .primary {
