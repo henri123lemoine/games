@@ -605,13 +605,9 @@ button {
 }
 
 .board {
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px;
   min-height: 460px;
   display: flex;
-  align-items: stretch;
+  align-items: flex-start;
   justify-content: center;
 }
 
