@@ -167,7 +167,7 @@ export class App {
     this.root.innerHTML = `
       <div class="home">
         <header class="home-head">
-          <h1><a href="https://henrilemoine.com/">Games Room</a></h1>
+          <h1>Games Room</h1>
         </header>
         <div class="card-grid">${cards}</div>
         <div class="home-foot">
@@ -178,7 +178,7 @@ export class App {
             <a href="https://github.com/henri123lemoine/games">GitHub</a>
             <a href="https://henrilemoine.com/">henrilemoine.com</a>
           </nav>
-          <span class="muted">Rust compiled to WebAssembly — everything runs on your device.</span>
+          <span class="muted">Runs entirely in your browser.</span>
         </footer>
       </div>`;
     for (const el of this.root.querySelectorAll<HTMLElement>(".card")) {

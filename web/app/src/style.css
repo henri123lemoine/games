@@ -88,6 +88,32 @@ body {
   transform: scale(1.1);
 }
 
+.home-link {
+  position: fixed;
+  top: 1rem;
+  left: 1rem;
+  z-index: 50;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  text-decoration: none;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 12px;
+  transition: all 0.2s ease;
+}
+
+.home-link:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+@media (max-width: 720px) {
+  #app {
+    padding-top: 52px;
+  }
+}
+
 .boot {
   padding: 80px 0;
   text-align: center;
