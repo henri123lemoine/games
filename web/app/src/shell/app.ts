@@ -441,20 +441,27 @@ export class App {
     mode: Mode,
     opts: Record<string, string>,
   ): void {
-    this.root.innerHTML = `
-      <div class="match">
-        <header class="match-bar">
-          <button type="button" class="link back">&larr; games</button>
-          <span class="match-title">${esc(game.name || game.id)}</span>
-          <span class="spacer"></span>
-          <label class="speed-label">speed
+    // Pacing only matters while spectating; a human-vs-bot game has nothing to
+    // pace. Reset to normal each match and show the control only when watching.
+    this.speedScale = 1;
+    const speedControl =
+      mode === "watch"
+        ? `<label class="speed-label">speed
             <select class="speed">
               <option value="2">slow</option>
               <option value="1" selected>normal</option>
               <option value="0.4">fast</option>
               <option value="0">instant</option>
             </select>
-          </label>
+          </label>`
+        : "";
+    this.root.innerHTML = `
+      <div class="match">
+        <header class="match-bar">
+          <button type="button" class="link back">&larr; games</button>
+          <span class="match-title">${esc(game.name || game.id)}</span>
+          <span class="spacer"></span>
+          ${speedControl}
           <button type="button" class="link again">rematch</button>
           <button type="button" class="link gear" title="Match settings">⚙</button>
         </header>
@@ -487,9 +494,11 @@ export class App {
       this.navTo("/");
     this.root.querySelector<HTMLButtonElement>(".again")!.onclick = () =>
       void this.startMatch(game, mode, { ...opts, seed: String(randomSeed()) });
-    this.root.querySelector<HTMLSelectElement>(".speed")!.onchange = (e) => {
-      this.speedScale = Number((e.target as HTMLSelectElement).value);
-    };
+    const speed = this.root.querySelector<HTMLSelectElement>(".speed");
+    if (speed)
+      speed.onchange = (e) => {
+        this.speedScale = Number((e.target as HTMLSelectElement).value);
+      };
     const form = this.root.querySelector<HTMLFormElement>(".free-input")!;
     form.onsubmit = (e) => {
       e.preventDefault();
