@@ -286,8 +286,7 @@ class Connect4Frontend implements GameFrontend {
     this.fallbackEl = host.querySelector('.c4-fallback')!;
     this.chips = [host.querySelector('.c4-chip-0')!, host.querySelector('.c4-chip-1')!];
     for (let seat = 0; seat < 2; seat++) {
-      const who = ctx.humanSeat === seat ? 'You' : 'Bot';
-      this.chips[seat].lastElementChild!.textContent = `${COLOR_NAMES[seat]} · ${who}`;
+      this.chips[seat].lastElementChild!.textContent = COLOR_NAMES[seat];
     }
     for (let col = 0; col < COLS; col++) {
       const hit = document.createElement('div');

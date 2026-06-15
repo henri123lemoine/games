@@ -319,7 +319,7 @@ class OthelloFrontend implements GameFrontend {
     const score = (p: number) => `
       <div class="ot-score ot-score-${p}">
         <span class="ot-mini ot-mini-${p === 0 ? 'b' : 'w'}"></span>
-        <span>${PLAYER_NAMES[p]} · ${ctx.humanSeat === p ? 'You' : 'Bot'}</span>
+        <span>${PLAYER_NAMES[p]}</span>
         <span class="ot-count">0</span>
       </div>`;
     host.innerHTML = `
