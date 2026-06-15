@@ -16,7 +16,7 @@ use twentyone::game::{Action as T21Action, T21State, TwentyOne};
 
 use crate::compare::{
     BotBuilder, BotParser, BotSpec, BoxedAgent, CompareArgs, TourneyArgs, head_to_head,
-    round_robin, run_field, run_pairs, vs_field,
+    parse_spec, round_robin, run_field, run_pairs, split_specs, vs_field,
 };
 use crate::runner::{AnyMatch, TypedMatch};
 
@@ -258,14 +258,41 @@ fn make_versus<G: game_core::GameUi + Sync + 'static>(
     let seats = game.num_players();
     let seat = parse_seat(o, seats)?;
     let seed = o.get("seed", default_seed())?;
-    let spec = BotSpec {
-        name: o.str("bot", default_bot),
-        opts: o.clone(),
+    // `bots=` gives one spec per seat (the human seat's is ignored), so distinct
+    // bots can share a board — e.g. watching AlphaBeta vs MCTS. Each spec is
+    // parsed into its own isolated options, so per-bot knobs never collide.
+    // `bot=` (one type for every bot seat) stays the default.
+    let bots_list = o.str("bots", "");
+    let bots: Vec<Option<BoxedAgent<G>>> = if bots_list.is_empty() {
+        let spec = BotSpec {
+            name: o.str("bot", default_bot),
+            opts: o.clone(),
+        };
+        let builder = parse(&spec, o)?;
+        (0..seats)
+            .map(|p| (Some(p) != seat).then(|| builder(hash::combine(seed, p as u64))))
+            .collect()
+    } else {
+        let specs = split_specs(&bots_list);
+        if specs.len() != seats {
+            return Err(format!(
+                "bots= needs one spec per seat ({seats}), got {}",
+                specs.len()
+            ));
+        }
+        let builders = specs
+            .iter()
+            .map(|s| {
+                let spec = parse_spec(s)?;
+                let builder = parse(&spec, o)?;
+                spec.opts.ensure_consumed(&format!("bot '{s}'"))?;
+                Ok::<_, String>(builder)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        (0..seats)
+            .map(|p| (Some(p) != seat).then(|| builders[p](hash::combine(seed, p as u64))))
+            .collect()
     };
-    let builder = parse(&spec, o)?;
-    let bots = (0..seats)
-        .map(|p| (Some(p) != seat).then(|| builder(hash::combine(seed, p as u64))))
-        .collect();
     Ok(TypedMatch::new(game, bots, seat, seed).boxed())
 }
 
