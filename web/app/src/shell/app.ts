@@ -161,6 +161,43 @@ function seatCount(game: GameInfo, opts: Record<string, string>): number {
   return 2;
 }
 
+interface Difficulty {
+  /** The bot knob this difficulty drives (depth / sims / rollouts). */
+  key: string;
+  /** Easy → Hard, as `[label, value]`; the value is what the knob is set to. */
+  levels: [string, string][];
+}
+
+/** Difficulty presets per `game/bot`: the roster picks the opponent, this
+ * picks how hard it plays — so a visitor never types a raw search depth. */
+const DIFFICULTY: Record<string, Difficulty> = {
+  "chess/alphabeta": { key: "depth", levels: [["Easy", "2"], ["Medium", "4"], ["Hard", "6"]] },
+  "chess/alphabeta-rich": { key: "depth", levels: [["Easy", "2"], ["Medium", "4"], ["Hard", "6"]] },
+  "chess/azero": { key: "sims", levels: [["Easy", "64"], ["Medium", "256"], ["Hard", "800"]] },
+  "chess/azero-gpu": { key: "sims", levels: [["Easy", "64"], ["Medium", "256"], ["Hard", "800"]] },
+  "othello/alphabeta": { key: "depth", levels: [["Easy", "3"], ["Medium", "5"], ["Hard", "7"]] },
+  "othello/mcts": { key: "sims", levels: [["Easy", "500"], ["Medium", "2000"], ["Hard", "6000"]] },
+  "connect4/alphabeta": { key: "depth", levels: [["Easy", "5"], ["Medium", "7"], ["Hard", "9"]] },
+  "connect4/mcts": { key: "sims", levels: [["Easy", "500"], ["Medium", "2000"], ["Hard", "6000"]] },
+  "go/mcts": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
+  "go/mcts-eval": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
+  "go/mcts-spec": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
+  "go/azero-gpu": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
+  "liars-dice/rollout": { key: "rollouts", levels: [["Easy", "100"], ["Medium", "400"], ["Hard", "1000"]] },
+  "2048/mcts": { key: "sims", levels: [["Easy", "100"], ["Medium", "200"], ["Hard", "600"]] },
+  "2048/mcts-eval": { key: "sims", levels: [["Easy", "100"], ["Medium", "200"], ["Hard", "600"]] },
+};
+
+/** Discrete choices for the small count options, so the drawer offers a
+ * dropdown rather than a free-text field. Hearts is limited to the shipped
+ * solver artifacts. */
+const OPT_CHOICES: Record<string, string[]> = {
+  players: ["2", "3", "4", "5", "6"],
+  dice: ["3", "4", "5", "6"],
+  hearts: ["3", "6"],
+  size: ["9", "13", "19"],
+};
+
 function randomSeed(): number {
   return (Math.floor(Math.random() * 0x7fff_ffff) | 1) >>> 0;
 }
@@ -581,25 +618,41 @@ export class App {
     const fieldsEl = drawer.querySelector<HTMLElement>(".drawer-fields")!;
     const note = (text: string) =>
       text ? `<small class="opt-note">${esc(text)}</small>` : "";
-    // Who plays each seat lives in the roster now; the drawer holds the game
-    // settings and the chosen bot's difficulty knobs (those the effective bot
-    // actually uses), plus the seed.
+    const row = (label: string, control: string, hint = "") =>
+      `<label class="opt-row"><span>${esc(label)}</span>${control}${note(hint)}</label>`;
+    const option = (value: string, label: string, sel: boolean) =>
+      `<option value="${esc(value)}"${sel ? " selected" : ""}>${esc(label)}</option>`;
+    const selectRow = (key: string, label: string, pairs: [string, string][], cur: string) => {
+      const known = pairs.some(([, v]) => v === cur);
+      const opts_ = pairs.map(([l, v]) => option(v, l, v === cur));
+      if (!known) opts_.unshift(option(cur, `Custom (${cur})`, true));
+      return row(label, `<select name="d-${esc(key)}">${opts_.join("")}</select>`);
+    };
+
+    // Who plays each seat lives in the roster; the drawer holds game settings
+    // and difficulty. Knobs become levels/dropdowns — no raw search depths,
+    // and no seed (matches are always randomly seeded).
     const open = () => {
       const curBot = effectiveBot(game, opts);
+      const diff = DIFFICULTY[`${game.id}/${curBot}`];
       const fields = optFields(game.optsSchema, opts).filter(
-        (f) => f.bots.length === 0 || f.bots.includes(curBot),
+        (f) =>
+          (f.bots.length === 0 || f.bots.includes(curBot)) &&
+          !(diff && f.key === diff.key),
       );
-      fieldsEl.innerHTML = `
-        ${fields
-          .map(
-            (f) => `<label class="opt-row">
-              <span>${esc(f.key)}</span>
-              <input name="d-${esc(f.key)}" value="${esc(f.value)}" autocomplete="off" />
-              ${note(f.note)}</label>`,
-          )
-          .join("")}
-        <label class="opt-row"><span>seed</span>
-          <input name="d-seed" value="${esc(String(opts.seed ?? randomSeed()))}" autocomplete="off" /></label>`;
+      const diffRow = diff
+        ? selectRow("difficulty-target", "difficulty", diff.levels, opts[diff.key] ?? diff.levels[1][1])
+        : "";
+      const fieldRows = fields.map((f) => {
+        const choices = OPT_CHOICES[f.key];
+        return choices
+          ? selectRow(f.key, f.key, choices.map((c) => [c, c]), f.value)
+          : row(f.key, `<input name="d-${esc(f.key)}" value="${esc(f.value)}" autocomplete="off" />`, f.note);
+      });
+      const body = diffRow + fieldRows.join("");
+      fieldsEl.innerHTML = body || `<p class="muted">No settings for this game.</p>`;
+      // The difficulty control writes the bot's actual knob on apply.
+      fieldsEl.dataset.diffKey = diff ? diff.key : "";
       drawer.hidden = false;
     };
     this.root.querySelector<HTMLButtonElement>(".gear")!.onclick = open;
@@ -614,11 +667,16 @@ export class App {
       const overrides: Record<string, string> = {};
       if (opts.seat !== undefined) overrides.seat = opts.seat;
       if (opts.bot !== undefined) overrides.bot = opts.bot;
+      const diffKey = fieldsEl.dataset.diffKey ?? "";
       const controls = fieldsEl.querySelectorAll<
         HTMLInputElement | HTMLSelectElement
       >("input, select");
       for (const el of controls) {
-        const key = el.name.replace(/^d-/, "");
+        let key = el.name.replace(/^d-/, "");
+        if (key === "difficulty-target") {
+          if (!diffKey) continue;
+          key = diffKey;
+        }
         if (el.value.trim() !== "") overrides[key] = el.value.trim();
       }
       const mode: Mode = game.solo
