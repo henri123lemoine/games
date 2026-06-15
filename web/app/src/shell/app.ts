@@ -143,7 +143,9 @@ export class App {
   private logEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
 
-  constructor(private root: HTMLElement) {}
+  constructor(private root: HTMLElement) {
+    window.addEventListener("hashchange", () => this.route());
+  }
 
   async start(): Promise<void> {
     this.root.innerHTML = '<div class="boot">Waking the engine…</div>';
@@ -151,7 +153,48 @@ export class App {
     this.manifest.games = this.manifest.games.filter(
       (g) => !HIDDEN_GAMES.has(g.id),
     );
+    this.route();
+  }
+
+  // ---------- routing ----------
+  // The screen is a function of the URL hash: `#/` home, `#/g/<id>` a match
+  // (`?mode=watch` to spectate), `#/lab` the tournament. Navigation sets the
+  // hash; the hashchange listener renders — so the browser back button just
+  // works, and matches are deep-linkable.
+
+  private route(): void {
+    const [path, query] = location.hash.replace(/^#/, "").split("?");
+    const segs = path.split("/").filter(Boolean);
+    const params = new URLSearchParams(query ?? "");
+    if (segs[0] === "lab") {
+      this.renderTournament();
+      return;
+    }
+    if (segs[0] === "g" && segs[1]) {
+      const game = this.manifest.games.find((g) => g.id === segs[1]);
+      if (game) {
+        const mode: Mode = params.get("mode") === "watch" ? "watch" : "play";
+        void this.startMatch(game, mode);
+        return;
+      }
+      history.replaceState(null, "", "#/");
+    }
     this.renderHome();
+  }
+
+  /** Navigate by setting the hash (adds a history entry; renders via the
+   * hashchange listener). Re-renders in place when already on the target. */
+  private navTo(path: string): void {
+    const target = `#${path}`;
+    if (location.hash === target) this.route();
+    else location.hash = target;
+  }
+
+  /** Keep the URL in step with the live match without adding history — an
+   * in-place rematch or mode flip should not stack back-button entries. */
+  private syncMatchUrl(game: GameInfo, mode: Mode): void {
+    const q = mode === "watch" ? "?mode=watch" : "";
+    history.replaceState(null, "", `#/g/${game.id}${q}`);
   }
 
   // ---------- home ----------
@@ -190,7 +233,7 @@ export class App {
     for (const el of this.root.querySelectorAll<HTMLElement>(".card")) {
       const game = this.manifest.games.find((g) => g.id === el.dataset.game);
       if (!game) continue;
-      const play = () => void this.startMatch(game, "play");
+      const play = () => this.navTo(`/g/${game.id}`);
       el.onclick = play;
       el.onkeydown = (e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -200,11 +243,11 @@ export class App {
       };
       el.querySelector<HTMLButtonElement>(".card-watch")!.onclick = (e) => {
         e.stopPropagation();
-        void this.startMatch(game, "watch");
+        this.navTo(`/g/${game.id}?mode=watch`);
       };
     }
     this.root.querySelector<HTMLButtonElement>(".tourney-link")!.onclick = () =>
-      this.renderTournament();
+      this.navTo("/lab");
   }
 
   private renderTournament(): void {
@@ -213,7 +256,7 @@ export class App {
       this.root,
       this.manifest.compare,
       this.host,
-      () => this.renderHome(),
+      () => this.navTo("/"),
     );
     this.tourney.render();
   }
@@ -253,6 +296,7 @@ export class App {
     const gen = ++this.gen;
     this.teardownMatch();
     const opts = this.buildOpts(game, mode, overrides);
+    this.syncMatchUrl(game, mode);
     this.renderMatchSkeleton(game, mode, opts);
     if (opts.bot === "azero-gpu" && !("gpu" in navigator)) {
       this.setStatus(
@@ -337,7 +381,7 @@ export class App {
     this.logEl = this.root.querySelector(".log");
     this.statusEl = this.root.querySelector(".status");
     this.root.querySelector<HTMLButtonElement>(".back")!.onclick = () =>
-      this.renderHome();
+      this.navTo("/");
     this.root.querySelector<HTMLButtonElement>(".again")!.onclick = () =>
       void this.startMatch(game, mode, { ...opts, seed: String(randomSeed()) });
     this.root.querySelector<HTMLButtonElement>(".mode-toggle")!.onclick = () =>
