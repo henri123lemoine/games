@@ -29,3 +29,10 @@ export function frontendFor(gameId: string): GameFrontend {
   const factory = registry[gameId];
   return factory ? factory() : new GenericFrontend();
 }
+
+/** Whether a game has a custom frontend (vs falling back to the generic one).
+ * The shell only offers the type-a-move input where there is no board-native
+ * input — i.e. the generic fallback. */
+export function hasFrontend(gameId: string): boolean {
+  return gameId in registry;
+}

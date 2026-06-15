@@ -12,7 +12,7 @@ import type {
   MatchEventData,
   ViewState,
 } from "../engine/protocol";
-import { frontendFor } from "../frontends";
+import { frontendFor, hasFrontend } from "../frontends";
 import type { FrontendCtx, GameFrontend } from "../frontends/types";
 import { TournamentScreen } from "./tournament";
 
@@ -466,16 +466,9 @@ export class App {
           <button type="button" class="link gear" title="Match settings">⚙</button>
         </header>
         ${this.rosterHtml(game, opts)}
-        <div class="match-body">
+        <div class="match-body${game.solo ? " match-body--solo" : ""}">
           <section class="board"></section>
-          <aside class="side">
-            <div class="status">Starting…</div>
-            <div class="log" aria-live="polite"></div>
-            <form class="free-input">
-              <input placeholder="or type a move…" autocomplete="off" />
-              <button type="submit">send</button>
-            </form>
-          </aside>
+          ${this.sideHtml(game)}
         </div>
         <div class="drawer" hidden>
           <div class="drawer-panel">
@@ -499,17 +492,37 @@ export class App {
       speed.onchange = (e) => {
         this.speedScale = Number((e.target as HTMLSelectElement).value);
       };
-    const form = this.root.querySelector<HTMLFormElement>(".free-input")!;
-    form.onsubmit = (e) => {
-      e.preventDefault();
-      const input = form.querySelector("input")!;
-      if (input.value.trim()) {
-        this.submit(input.value.trim());
-        input.value = "";
-      }
-    };
+    const form = this.root.querySelector<HTMLFormElement>(".free-input");
+    if (form)
+      form.onsubmit = (e) => {
+        e.preventDefault();
+        const input = form.querySelector("input")!;
+        if (input.value.trim()) {
+          this.submit(input.value.trim());
+          input.value = "";
+        }
+      };
     this.wireRoster(game, opts);
     this.wireDrawer(game, opts);
+  }
+
+  /** The match side panel: status + move log for the turn-based versus games,
+   * and a type-a-move input only for the generic fallback (custom frontends
+   * have board-native input). Solo games render their own score and game-over
+   * overlay, so they get no side panel — the board takes the full width. */
+  private sideHtml(game: GameInfo): string {
+    if (game.solo) return "";
+    const freeInput = hasFrontend(game.id)
+      ? ""
+      : `<form class="free-input">
+          <input placeholder="or type a move…" autocomplete="off" />
+          <button type="submit">send</button>
+        </form>`;
+    return `<aside class="side">
+        <div class="status">Starting…</div>
+        <div class="log" aria-live="polite"></div>
+        ${freeInput}
+      </aside>`;
   }
 
   /** The seat roster: one control per chair, each `You` or an opponent bot.

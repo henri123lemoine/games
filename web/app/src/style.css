@@ -594,6 +594,10 @@ button {
   gap: 18px;
 }
 
+.match-body--solo {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 @media (max-width: 800px) {
   .match-body {
     grid-template-columns: 1fr;
