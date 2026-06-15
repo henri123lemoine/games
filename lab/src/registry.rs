@@ -582,6 +582,13 @@ fn snake_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<snake::Snake>, Stri
     )
 }
 
+/// Root Dirichlet-noise weight for AlphaZero play. AlphaZero disables noise at
+/// evaluation, but the arcade plays seeded one-offs people also *watch*, and
+/// pure argmax with no noise makes every same-net game identical. A modest
+/// root noise keyed off the per-match seed diversifies games at a negligible
+/// strength cost (the search still concentrates visits on strong moves).
+const AZERO_ROOT_NOISE: f32 = 0.25;
+
 /// Shares the net (compare builders clone it per game) and runs a fresh PUCT
 /// search per move.
 struct AzeroBot {
@@ -604,13 +611,9 @@ impl Agent<chess::Chess> for AzeroBot {
         player: usize,
         rng: &mut game_core::Rng,
     ) -> usize {
-        PuctAgent(Puct::new(
-            game,
-            &chess::encode::FlatEncoder,
-            &self.net,
-            self.sims,
-        ))
-        .act(game, state, player, rng)
+        let mut puct = Puct::new(game, &chess::encode::FlatEncoder, &self.net, self.sims);
+        puct.root_noise = AZERO_ROOT_NOISE;
+        PuctAgent(puct).act(game, state, player, rng)
     }
 }
 
