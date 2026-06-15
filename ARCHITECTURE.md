@@ -56,14 +56,14 @@ Concretely: chess ships piece-square tables (`MaterialEval`, plus the tapered `R
 - **Returns are bounded by `Game::max_return`** (default 1.0). Anything that mixes static evaluations with returns or detects proven wins (MCTS-Solver) keys on that bound instead of assuming the win/loss convention.
 - **Measure one change at a time.** Evaluation is win share against a *field* with the hero rotated through seats (fair = 1/players); single runs can be ~2σ lucky (it happened — see `games/liars-dice/examples/ab.rs`).
 
-## The path to the website
+## Serving: terminal and web
 
-The full client-side web design (wasm engine, per-game frontends, tournaments in the browser) is specified in [WEB.md](WEB.md). The short version: `lab` already contains the two pieces any serving layer needs, deliberately separated from the terminal:
+`lab` exposes exactly two serving interfaces, deliberately separated from the terminal client:
 
 1. **The registry** (`lab/src/registry.rs`): `game id + options + bot id → Box<dyn AnyMatch>` — the catalog of what can be played.
 2. **`AnyMatch`** (`lab/src/runner.rs`): a type-erased match with a uniform, string/index-based surface — `advance()` (chance + bot moves, narrated), `view()` (the human's information only), `legal_labels()`, `apply_human()`, `result_text()`.
 
-A web service is a thin loop over exactly these calls: `POST /match {game, opts}` → store the `AnyMatch` in a session → return `view + labels` → `POST /match/:id/move {index|text}` → `apply_human` + `advance` → repeat. Hidden information is already respected because `view`/narration are viewer-scoped. What to add when that day comes: serde on the messages, a structured (JSON) variant of `render` for rich clients, and artifact loading (trained solvers from disk) instead of train-at-startup. None of it touches `game-core`, `solvers`, or any game.
+The CLI and the browser arcade are two thin frontends over exactly these calls; hidden information is respected everywhere because `view`/narration are viewer-scoped. The full client-side web design (wasm engine, per-game frontends, in-browser tournaments) is in [web/DESIGN.md](web/DESIGN.md).
 
 ## Current algorithm/game matrix
 

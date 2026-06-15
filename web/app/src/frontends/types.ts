@@ -1,4 +1,4 @@
-// The per-game frontend contract (see WEB.md). Each game ships its own
+// The per-game frontend contract (see web/DESIGN.md). Each game ships its own
 // package with its own visual identity; the shell only drives this interface.
 // View/event `data` payloads are game-private JSON shared with the game's
 // Rust crate — the shell never interprets them.

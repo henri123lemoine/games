@@ -2,7 +2,7 @@
 name = "web-engine"
 version = "0.1.0"
 edition = "2024"
-description = "wasm-bindgen bindings over the lab's registry and matches: the browser engine for the games arcade (see WEB.md)"
+description = "wasm-bindgen bindings over the lab's registry and matches: the browser engine for the games arcade (see web/DESIGN.md)"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

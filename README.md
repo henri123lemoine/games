@@ -1,6 +1,6 @@
 # Games lab
 
-Game-playing algorithms (CFR variants, alpha-beta search, determinized Monte-Carlo rollouts) written **once** against a shared `Game` trait, applied to many games — the OpenSpiel idea, scoped to a personal lab. Games contribute only their rules and knowledge (an evaluator, a determinizer, a UI surface); they never contain algorithm code. See [ARCHITECTURE.md](ARCHITECTURE.md); the in-browser arcade (everything compiled to wasm, per-game frontends) is designed in [WEB.md](WEB.md).
+Game-playing algorithms (CFR variants, alpha-beta search, determinized Monte-Carlo rollouts) written **once** against a shared `Game` trait, applied to many games — the OpenSpiel idea, scoped to a personal lab. Games contribute only their rules and knowledge (an evaluator, a determinizer, a UI surface); they never contain algorithm code. See [ARCHITECTURE.md](ARCHITECTURE.md); the in-browser arcade (everything compiled to wasm, per-game frontends) is designed in [web/DESIGN.md](web/DESIGN.md).
 
 ```
 game-core/           foundations: Game trait, Agent, capability traits
@@ -52,4 +52,11 @@ cargo test --release        # perft suite, Kuhn→Nash, rules invariants, search
 cargo clippy --release --all-targets
 ```
 
-Research harnesses live as examples in each game crate (`liars-dice`: `evaluate`, `league`, `rollout_eval`, `ab`, `exploitability`; `twentyone`: `solve`). Results and per-game docs are in each game's README; `games/twentyone/BAKEOFF.md` records the Twenty-One technique shoot-out.
+Research harnesses live as examples in each game crate (`liars-dice`: `evaluate`, `league`, `rollout_eval`, `ab`, `exploitability`; `twentyone`: `solve`).
+
+## Docs
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — the design: layering, the capability-trait contract, identity choices, the algorithm/game matrix. Read this before restructuring anything.
+- [BENCHMARKS.md](BENCHMARKS.md) — cross-game strength results (SPRT/Elo); a dated snapshot of one benchmark round.
+- [web/README.md](web/README.md) — build, run, and deploy the browser arcade. [web/DESIGN.md](web/DESIGN.md) — its design contract.
+- Per-game knowledge: [game-core/README.md](game-core/README.md), [games/liars-dice/README.md](games/liars-dice/README.md), [games/twentyone/README.md](games/twentyone/README.md) (+ [BAKEOFF.md](games/twentyone/BAKEOFF.md), the Twenty-One technique shoot-out).

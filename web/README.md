@@ -1,6 +1,6 @@
 # The web arcade
 
-The lab compiled to WebAssembly behind one page: pick a game, pick opponents, play the bots or watch them play each other, and run live bot tournaments — all on the visitor's device. Design in [../WEB.md](../WEB.md).
+The lab compiled to WebAssembly behind one page: pick a game, pick opponents, play the bots or watch them play each other, and run live bot tournaments — all on the visitor's device. Design in [DESIGN.md](DESIGN.md).
 
 ```
 engine/   wasm-bindgen cdylib over the lab's registry + matches (Rust)
@@ -57,7 +57,7 @@ CI automates the personal-site embed: every push to main rebuilds the arcade and
 
 ## Adding a game's frontend
 
-The Rust recipe (ARCHITECTURE.md) plus one JSON method makes a game playable here via the generic fallback frontend. The polished frontend is one folder:
+The Rust recipe ([../ARCHITECTURE.md](../ARCHITECTURE.md)) plus one JSON method (`view_data`) makes a game playable here via the generic fallback frontend; [DESIGN.md](DESIGN.md) is the full contract. The polished frontend is one folder:
 
 1. `web/app/src/frontends/<id>/index.ts` implementing `GameFrontend` (`src/frontends/types.ts`) against the game's own `view_data` schema.
 2. Register it in `web/app/src/frontends/index.ts`.

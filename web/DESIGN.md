@@ -2,16 +2,16 @@
 
 One page on a personal website where visitors pick a game, pick opponents, and play against the lab's bots — or watch bots play each other and run live tournaments. **Everything runs on the visitor's device**: the Rust workspace (rules, search, learned policies) compiles to WebAssembly; there is no game server. Each game gets its own polished, animated frontend with its own visual identity — the page should read like a team of game developers each shipped their game, not like one engine wearing eight skins.
 
-This document is the contract for that build. It extends [ARCHITECTURE.md](ARCHITECTURE.md); the dependency rules there still hold.
+This is the design contract every game's web port follows. It extends [../ARCHITECTURE.md](../ARCHITECTURE.md); the dependency rules there still hold. Build, run, and deploy steps live in [README.md](README.md).
 
-## Why this is mostly already built
+## Built on the lab's serving interfaces
 
-The lab's two serving interfaces were designed for this day:
+The arcade reuses the two interfaces `lab` already exposes (see [../ARCHITECTURE.md](../ARCHITECTURE.md)):
 
 - **the registry** (`lab/src/registry.rs`): `game id + opts + bot specs → type-erased match` — the catalog.
-- **`AnyMatch`** (`lab/src/runner.rs`): a uniform, viewer-scoped match surface (`advance / view / legal actions / apply input / result`), already hiding private information per seat.
+- **`AnyMatch`** (`lab/src/runner.rs`): a uniform, viewer-scoped match surface (`advance / view / legal actions / apply input / result`), hiding private information per seat.
 
-The web build wraps these in wasm instead of a terminal loop. No algorithm, no game rule, and no registry logic is rewritten.
+The web engine wraps these in wasm instead of a terminal loop — no algorithm, game rule, or registry logic is rewritten.
 
 ## The three contracts
 
@@ -110,16 +110,3 @@ The engine lives in a **Web Worker**: bot search (seconds of CPU) never freezes 
 Nothing else changes — not the shell, not the engine crate, not other games. Adding an *algorithm* still touches only `solvers` + registry bot specs, and every game's web page picks it up as a selectable bot.
 
 The one exception is a bot whose evaluation cannot live inside the sync wasm engine — the WebGPU azero net. Those register an *externally driven* match seat (a registry entry whose seats have no engine-side agent) plus a client-side driver in `web/app/src/bots/`, keyed by `game/bot`. The shell drives such seats through the same loop: when one is to act it asks the driver for a move and feeds it back through `applyHuman`; the driver mirrors every event. `chess/azero-gpu` is the reference: the wasm `AzChessBot` runs the park/resume PUCT search and the page answers its leaf batches with the WebGPU net (`frontends/chess/azgpu.ts`, validated by `/azero-test.html` against `azinfer`'s reference forward).
-
-## Build phases
-
-1. **Rust groundwork**: lab lib/bin split; `MatchEvent` + `view_data`; `parallel` feature + `web-time`; `web/engine` with the API above; artifact loading. Gate: terminal client byte-identical behavior, all tests green.
-2. **Shell + generic frontend**: Vite app, worker host, game/bot pickers, match screen. Gate: all eight games playable in a browser (ugly but working), dice bot strength verified in wasm.
-3. **Polished frontends**, roughly in order of payoff: liars-dice (the flagship), chess, connect4, othello, go, 2048, snake, twentyone. Each is an independent package — this phase parallelizes perfectly across agents.
-4. **Spectate + tournaments**: pacing controls, live Elo table, match URLs with seeds (shareable replays).
-5. **Site integration + performance**: embed as one page/ES module in the personal site; wasm size pass (`wasm-opt`, feature-trim); optional `wasm-bindgen-rayon` if the host allows COOP/COEP headers.
-
-## Open questions for the site owner
-
-- What is the personal website built with, and where is it hosted? This decides the embed form (ES module vs iframe vs route in the site's own framework) and whether COOP/COEP headers (browser threading) are available.
-- Visual direction: one shared dark "arcade" shell with per-game identity inside the board area is the default assumption.

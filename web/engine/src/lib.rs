@@ -1,5 +1,5 @@
 //! The browser engine: wasm-bindgen bindings over the lab's registry and
-//! type-erased matches (see WEB.md). Designed to run inside a Web Worker;
+//! type-erased matches (see web/DESIGN.md). Designed to run inside a Web Worker;
 //! every value crossing the boundary is a JSON string, so the JS side stays
 //! game-schema-free.
 
