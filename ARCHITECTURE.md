@@ -1,9 +1,6 @@
 # Architecture
 
-The lab exists to answer one question well: **how do game-playing algorithms
-generalize across games?** Everything below follows from refusing to let either
-side own the other — algorithms must not be rewritten per game, and games must
-not import algorithm internals.
+The lab exists to answer one question well: **how do game-playing algorithms generalize across games?** Everything below follows from refusing to let either side own the other — algorithms must not be rewritten per game, and games must not import algorithm internals.
 
 ## The layers
 
@@ -27,17 +24,11 @@ not import algorithm internals.
                  └─────────────────────────────────────┘
 ```
 
-Dependency rule: `game-core` depends on nothing; `solvers` and `games/*` depend
-only on `game-core` (games may use `solvers` in dev-dependencies for tests and
-experiments); `lab` binds everything. Games never depend on solvers at the
-library level, so adding an algorithm never recompiles a game and vice versa.
+Dependency rule: `game-core` depends on nothing; `solvers` and `games/*` depend only on `game-core` (games may use `solvers` in dev-dependencies for tests and experiments); `lab` binds everything. Games never depend on solvers at the library level, so adding an algorithm never recompiles a game and vice versa.
 
 ## The contract: capability traits
 
-A game implements `Game` (rules: chance/decision nodes, legal actions, terminal
-returns, information-set keys). That alone earns it the arena, CFR/MCCFR (if
-small enough), and exploitability. Every further power is unlocked by declaring
-*knowledge*, never by writing an algorithm:
+A game implements `Game` (rules: chance/decision nodes, legal actions, terminal returns, information-set keys). That alone earns it the arena, CFR/MCCFR (if small enough), and exploitability. Every further power is unlocked by declaring *knowledge*, never by writing an algorithm:
 
 | the game declares | in trait | which unlocks |
 |---|---|---|
@@ -46,78 +37,33 @@ small enough), and exploitability. Every further power is unlocked by declaring
 | how to sample hidden info | `Determinizer` | `solvers::Rollout` (determinized Monte-Carlo with common random numbers) |
 | per-player view, action labels/parsing, transition narration | `GameUi` | the universal client in `lab` — no game writes a play loop |
 
-Concretely: chess ships piece-square tables (`MaterialEval`, plus the tapered
-`RichEval` it grew later) and "captures are noisy, MVV-LVA first"
-(`ChessSpec`) — a few hundred lines of evaluation knowledge and zero lines of
-search — and receives a full tournament-shaped engine. Liar's Dice ships
-"bidders plausibly hold the face they bid" (`BidConditioned`) and receives
-parallel determinized rollouts. Neither contains a line of search machinery.
+Concretely: chess ships piece-square tables (`MaterialEval`, plus the tapered `RichEval` it grew later) and "captures are noisy, MVV-LVA first" (`ChessSpec`) — a few hundred lines of evaluation knowledge and zero lines of search — and receives a full tournament-shaped engine. Liar's Dice ships "bidders plausibly hold the face they bid" (`BidConditioned`) and receives parallel determinized rollouts. Neither contains a line of search machinery.
 
-**Bespoke algorithms are allowed but live with their game.** Twenty-One's
-round-decomposed CFR+ solver exploits structure (rounds linked only by public
-hearts) that no generic interface should pretend to capture; it stays in
-`games/twentyone` and is exposed to the rest of the lab as an ordinary `Agent`.
+**Bespoke algorithms are allowed but live with their game.** Twenty-One's round-decomposed CFR+ solver exploits structure (rounds linked only by public hearts) that no generic interface should pretend to capture; it stays in `games/twentyone` and is exposed to the rest of the lab as an ordinary `Agent`.
 
 ## Adding things
 
-**A game** (the acid test of the design): implement `Game` + `GameUi`, register
-one entry in `lab/src/registry.rs`. It immediately gets the arena, the CLI, and
-(for perfect-information games) alpha-beta the moment you write a ~30-line
-`Eval`. Nothing else in the repo changes.
+**A game** (the acid test of the design): implement `Game` + `GameUi`, register one entry in `lab/src/registry.rs`. It immediately gets the arena, the CLI, and (for perfect-information games) alpha-beta the moment you write a ~30-line `Eval`. Nothing else in the repo changes.
 
-**An algorithm**: write it once in `solvers` against `Game` plus whatever
-capability traits it needs. It immediately runs on every game that has them. If
-it needs knowledge no trait captures yet, add a trait to `game-core` with a
-sane default — never reach into a specific game.
+**An algorithm**: write it once in `solvers` against `Game` plus whatever capability traits it needs. It immediately runs on every game that has them. If it needs knowledge no trait captures yet, add a trait to `game-core` with a sane default — never reach into a specific game.
 
 ## Identity choices worth knowing
 
-- **Actions are indices.** Agents return an index into `legal_actions(state)`,
-  which must be stably ordered per information set. This keeps `Action` types
-  fully game-private, makes tabular methods line up, and gives serving a
-  wire-format for free (index + label). For cross-state identity
-  (killer/history/RAVE tables), `Game::action_id` gives every action a stable
-  u64 — defaulted via its `Debug` form, overridden cheaply by games search
-  cares about.
-- **Information sets are u64 keys** (hashes of sufficient statistics).
-  Collision odds at tens of millions of infosets are negligible (~2⁻²⁵); the
-  payoff is flat, fast tables.
-- **One randomness contract.** `Agent::act` receives `&mut Rng` — a private,
-  seeded stream for mixed strategies and stochastic search; deterministic
-  agents ignore it. Matches are reproducible from the arena seed, and agents
-  stay `&self` so they can be shared across seats and parallel games.
-- **Draws are first-class.** `play` returns the actual utility, `win_rate`
-  scores draws ½, and N-player ties split `win_share` so an all-draw field
-  reads exactly the fair `1/players` — never a phantom win for seat 0.
-- **Returns are bounded by `Game::max_return`** (default 1.0). Anything that
-  mixes static evaluations with returns or detects proven wins (MCTS-Solver)
-  keys on that bound instead of assuming the win/loss convention.
-- **Measure one change at a time.** Evaluation is win share against a *field*
-  with the hero rotated through seats (fair = 1/players); single runs can be
-  ~2σ lucky (it happened — see `games/liars-dice/examples/ab.rs`).
+- **Actions are indices.** Agents return an index into `legal_actions(state)`, which must be stably ordered per information set. This keeps `Action` types fully game-private, makes tabular methods line up, and gives serving a wire-format for free (index + label). For cross-state identity (killer/history/RAVE tables), `Game::action_id` gives every action a stable u64 — defaulted via its `Debug` form, overridden cheaply by games search cares about.
+- **Information sets are u64 keys** (hashes of sufficient statistics). Collision odds at tens of millions of infosets are negligible (~2⁻²⁵); the payoff is flat, fast tables.
+- **One randomness contract.** `Agent::act` receives `&mut Rng` — a private, seeded stream for mixed strategies and stochastic search; deterministic agents ignore it. Matches are reproducible from the arena seed, and agents stay `&self` so they can be shared across seats and parallel games.
+- **Draws are first-class.** `play` returns the actual utility, `win_rate` scores draws ½, and N-player ties split `win_share` so an all-draw field reads exactly the fair `1/players` — never a phantom win for seat 0.
+- **Returns are bounded by `Game::max_return`** (default 1.0). Anything that mixes static evaluations with returns or detects proven wins (MCTS-Solver) keys on that bound instead of assuming the win/loss convention.
+- **Measure one change at a time.** Evaluation is win share against a *field* with the hero rotated through seats (fair = 1/players); single runs can be ~2σ lucky (it happened — see `games/liars-dice/examples/ab.rs`).
 
 ## The path to the website
 
-The full client-side web design (wasm engine, per-game frontends, tournaments
-in the browser) is specified in [WEB.md](WEB.md). The short version: `lab`
-already contains the two pieces any serving layer needs, deliberately
-separated from the terminal:
+The full client-side web design (wasm engine, per-game frontends, tournaments in the browser) is specified in [WEB.md](WEB.md). The short version: `lab` already contains the two pieces any serving layer needs, deliberately separated from the terminal:
 
-1. **The registry** (`lab/src/registry.rs`): `game id + options + bot id →
-   Box<dyn AnyMatch>` — the catalog of what can be played.
-2. **`AnyMatch`** (`lab/src/runner.rs`): a type-erased match with a uniform,
-   string/index-based surface — `advance()` (chance + bot moves, narrated),
-   `view()` (the human's information only), `legal_labels()`, `apply_human()`,
-   `result_text()`.
+1. **The registry** (`lab/src/registry.rs`): `game id + options + bot id → Box<dyn AnyMatch>` — the catalog of what can be played.
+2. **`AnyMatch`** (`lab/src/runner.rs`): a type-erased match with a uniform, string/index-based surface — `advance()` (chance + bot moves, narrated), `view()` (the human's information only), `legal_labels()`, `apply_human()`, `result_text()`.
 
-A web service is a thin loop over exactly these calls: `POST /match {game,
-opts}` → store the `AnyMatch` in a session → return `view + labels` → `POST
-/match/:id/move {index|text}` → `apply_human` + `advance` → repeat. Hidden
-information is already respected because `view`/narration are viewer-scoped.
-What to add when that day comes: serde on the messages, a structured
-(JSON) variant of `render` for rich clients, and artifact loading (trained
-solvers from disk) instead of train-at-startup. None of it touches `game-core`,
-`solvers`, or any game.
+A web service is a thin loop over exactly these calls: `POST /match {game, opts}` → store the `AnyMatch` in a session → return `view + labels` → `POST /match/:id/move {index|text}` → `apply_human` + `advance` → repeat. Hidden information is already respected because `view`/narration are viewer-scoped. What to add when that day comes: serde on the messages, a structured (JSON) variant of `render` for rich clients, and artifact loading (trained solvers from disk) instead of train-at-startup. None of it touches `game-core`, `solvers`, or any game.
 
 ## Current algorithm/game matrix
 
@@ -131,20 +77,4 @@ solvers from disk) instead of train-at-startup. None of it touches `game-core`,
 | `Rollout` | possible | possible | possible | possible | ✓ (the bot) | possible | — |
 | bespoke | — | — | — | — | belief policy | decomposed CFR+ (the bot) | — |
 
-The dashes are honest: tabular CFR can't fit big games, search can't see hidden
-information, Go has no hand-written eval. Notable measured facts: outcome-sampling
-MCCFR runs a 200-deep ladder in milliseconds/iteration where external sampling
-would need ~1e41 nodes; CFR+ regret flooring provably stalls outcome sampling
-(documented in `solvers/src/os_mccfr.rs`); the azero loop's checkpoint beats
-random at chess within minutes of CPU self-play, while real chess *strength*
-remains a GPU-scale endeavor — which is what `azt/` is for: a deliberately
-*standalone* crate (not a workspace member, so libtorch never touches the
-main build) that trains an AlphaZero resnet on Apple-GPU via tch-rs, batching
-leaf evaluations across hundreds of concurrent games. The search itself is
-not bespoke: there is exactly one PUCT implementation, the batched
-park/resume `solvers::azero::Search` (generic over `Game` +
-`PolicyValueEncoder`), which the MLP trainer drives synchronously, `azt`
-drives with GPU batches through `azinfer`'s chess instantiation, and the
-browser drives with WebGPU through the same `azinfer` surface. `azt` keeps
-the same run-dir contract (metrics.jsonl + dashboard + STOP) as the CPU
-harness.
+The dashes are honest: tabular CFR can't fit big games, search can't see hidden information, Go has no hand-written eval. Notable measured facts: outcome-sampling MCCFR runs a 200-deep ladder in milliseconds/iteration where external sampling would need ~1e41 nodes; CFR+ regret flooring provably stalls outcome sampling (documented in `solvers/src/os_mccfr.rs`); the azero loop's checkpoint beats random at chess within minutes of CPU self-play, while real chess *strength* remains a GPU-scale endeavor — which is what `azt/` is for: a deliberately *standalone* crate (not a workspace member, so libtorch never touches the main build) that trains an AlphaZero resnet on Apple-GPU via tch-rs, batching leaf evaluations across hundreds of concurrent games. The search itself is not bespoke: there is exactly one PUCT implementation, the batched park/resume `solvers::azero::Search` (generic over `Game` + `PolicyValueEncoder`), which the MLP trainer drives synchronously, `azt` drives with GPU batches through `azinfer`'s chess instantiation, and the browser drives with WebGPU through the same `azinfer` surface. `azt` keeps the same run-dir contract (metrics.jsonl + dashboard + STOP) as the CPU harness.

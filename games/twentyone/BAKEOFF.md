@@ -1,15 +1,8 @@
 # Technique bake-off (historical record)
 
-A controlled comparison of the strength levers, each given an **equal 5-minute
-wall-clock training budget** and required to play in **< 0.1 s/move**. Strength
-was measured two ways: head-to-head win rate (parallel gauntlet, 1500
-games/pairing, draws = half) and exact best-response exploitability on the small
-1-heart variant (lower = closer to unbeatable). Machine: 18 cores, CPU only.
+A controlled comparison of the strength levers, each given an **equal 5-minute wall-clock training budget** and required to play in **< 0.1 s/move**. Strength was measured two ways: head-to-head win rate (parallel gauntlet, 1500 games/pairing, draws = half) and exact best-response exploitability on the small 1-heart variant (lower = closer to unbeatable). Machine: 18 cores, CPU only.
 
-These runs were driven by a since-deleted Python harness (`twentyone-rl`, in git
-history); the solver, exploitability, and all techniques below live in this
-crate (`twentyone::Solver`), and `examples/solve.rs` reproduces the
-train-and-measure loop.
+These runs were driven by a since-deleted Python harness (`twentyone-rl`, in git history); the solver, exploitability, and all techniques below live in this crate (`twentyone::Solver`), and `examples/solve.rs` reproduces the train-and-measure loop.
 
 ## Ranking (best → worst)
 
@@ -31,33 +24,13 @@ train-and-measure loop.
 
 ## Takeaways
 
-- **For a game this size, the simple tabular CFR+ with abstraction wins.** It is
-  exact, embarrassingly parallel, and does so many updates/second that the fancier
-  methods can't catch up in equal wall-clock.
-- **Recursive continuations** is theoretically cleaner (no continuation
-  approximation) and competitive per-budget, but the multiplicative cost of a
-  full-game traversal makes it slower per iteration; it neither beat the win-rate
-  champion nor the exploitability floor here.
-- **Abstraction is a net win at a fixed budget** — the lossless model spends its
-  whole budget discovering 44M information sets it can't train, while the
-  abstracted model converges on ~5M and plays them well.
-- **Inference-time search hurts** — two independent methods (determinized PIMC
-  and a strategy-fusion-free 1-ply blueprint lookahead) both lose to simply
-  trusting the equilibrium table, because the table already encodes the correct
-  belief-conditioned play. Only full imperfect-information re-solving with proper
-  ranges (DeepStack/Libratus) could plausibly help, and it has little to gain
-  while the blueprint is already near-optimal within a round.
-- **The real frontier is exploitability, not win-rate** — the threshold
-  heuristics are already near-optimal within a round, so win-rate against them
-  saturates near 55–60% for any competent solver. The differences that matter
-  show up in best-response exploitability.
+- **For a game this size, the simple tabular CFR+ with abstraction wins.** It is exact, embarrassingly parallel, and does so many updates/second that the fancier methods can't catch up in equal wall-clock.
+- **Recursive continuations** is theoretically cleaner (no continuation approximation) and competitive per-budget, but the multiplicative cost of a full-game traversal makes it slower per iteration; it neither beat the win-rate champion nor the exploitability floor here.
+- **Abstraction is a net win at a fixed budget** — the lossless model spends its whole budget discovering 44M information sets it can't train, while the abstracted model converges on ~5M and plays them well.
+- **Inference-time search hurts** — two independent methods (determinized PIMC and a strategy-fusion-free 1-ply blueprint lookahead) both lose to simply trusting the equilibrium table, because the table already encodes the correct belief-conditioned play. Only full imperfect-information re-solving with proper ranges (DeepStack/Libratus) could plausibly help, and it has little to gain while the blueprint is already near-optimal within a round.
+- **The real frontier is exploitability, not win-rate** — the threshold heuristics are already near-optimal within a round, so win-rate against them saturates near 55–60% for any competent solver. The differences that matter show up in best-response exploitability.
 
 ## What would actually push it further (beyond a 5-min CPU budget)
 
-- Full imperfect-information **continual re-solving** (the correct version of #4):
-  refine the current round subgame online against the opponent *range* (not a
-  determinization), using the blueprint's value table at the leaves. Avoids
-  strategy fusion; needs careful range bookkeeping.
-- **Deep CFR with a Rust-side traversal + batched GPU inference**, for a fair shot
-  at the neural approach — only worth it on a larger variant where the table
-  stops fitting in memory.
+- Full imperfect-information **continual re-solving** (the correct version of #4): refine the current round subgame online against the opponent *range* (not a determinization), using the blueprint's value table at the leaves. Avoids strategy fusion; needs careful range bookkeeping.
+- **Deep CFR with a Rust-side traversal + batched GPU inference**, for a fair shot at the neural approach — only worth it on a larger variant where the table stops fitting in memory.

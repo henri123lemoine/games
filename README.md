@@ -1,12 +1,6 @@
 # Games lab
 
-Game-playing algorithms (CFR variants, alpha-beta search, determinized
-Monte-Carlo rollouts) written **once** against a shared `Game` trait, applied to
-many games — the OpenSpiel idea, scoped to a personal lab. Games contribute only
-their rules and knowledge (an evaluator, a determinizer, a UI surface); they
-never contain algorithm code. See [ARCHITECTURE.md](ARCHITECTURE.md); the
-in-browser arcade (everything compiled to wasm, per-game frontends) is
-designed in [WEB.md](WEB.md).
+Game-playing algorithms (CFR variants, alpha-beta search, determinized Monte-Carlo rollouts) written **once** against a shared `Game` trait, applied to many games — the OpenSpiel idea, scoped to a personal lab. Games contribute only their rules and knowledge (an evaluator, a determinizer, a UI surface); they never contain algorithm code. See [ARCHITECTURE.md](ARCHITECTURE.md); the in-browser arcade (everything compiled to wasm, per-game frontends) is designed in [WEB.md](WEB.md).
 
 ```
 game-core/           foundations: Game trait, Agent, capability traits
@@ -42,8 +36,7 @@ cargo run --release -p lab -- play liars-dice players=5 dice=5 rollouts=1000
 cargo run --release -p lab -- play twentyone hearts=6 iters=100000
 ```
 
-One client drives every game: menus by number, or game-native input (`e2e4`,
-`open 2x4`, `d`/`s`). Hidden information is viewer-scoped throughout.
+One client drives every game: menus by number, or game-native input (`e2e4`, `open 2x4`, `d`/`s`). Hidden information is viewer-scoped throughout.
 
 Or in a browser — the whole lab compiles to wasm:
 
@@ -59,7 +52,4 @@ cargo test --release        # perft suite, Kuhn→Nash, rules invariants, search
 cargo clippy --release --all-targets
 ```
 
-Research harnesses live as examples in each game crate (`liars-dice`:
-`evaluate`, `league`, `rollout_eval`, `ab`, `exploitability`; `twentyone`:
-`solve`). Results and per-game docs are in each game's README;
-`games/twentyone/BAKEOFF.md` records the Twenty-One technique shoot-out.
+Research harnesses live as examples in each game crate (`liars-dice`: `evaluate`, `league`, `rollout_eval`, `ab`, `exploitability`; `twentyone`: `solve`). Results and per-game docs are in each game's README; `games/twentyone/BAKEOFF.md` records the Twenty-One technique shoot-out.
