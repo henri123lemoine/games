@@ -31,7 +31,6 @@ const KEY_DIRS: Record<string, Dir> = {
   D: 'right',
 };
 
-const PAD_ARROWS: Record<Dir, string> = { up: '↑', down: '↓', left: '←', right: '→' };
 
 const SLIDE_MS = 110;
 const POP_MS = 140;
@@ -263,31 +262,6 @@ const STYLE = `
 .g2048-overlay.g2048-show { display: flex; }
 .g2048-overlay-title { font-size: 1.5rem; font-weight: 800; }
 .g2048-overlay-sub { color: var(--text-dim); }
-.g2048-pad {
-  display: grid;
-  grid-template-columns: repeat(3, 56px);
-  grid-template-rows: repeat(2, 42px);
-  gap: 6px;
-  justify-content: center;
-}
-.g2048-pad.g2048-hidden { display: none; }
-.g2048-btn {
-  background: var(--bg-inset);
-  border: 1px solid var(--border);
-  border-radius: calc(var(--radius) - 2px);
-  color: var(--text);
-  font-size: 1.05rem;
-  transition: border-color 0.12s, color 0.12s;
-}
-.g2048-btn-up { grid-column: 2; grid-row: 1; }
-.g2048-btn-left { grid-column: 1; grid-row: 2; }
-.g2048-btn-down { grid-column: 2; grid-row: 2; }
-.g2048-btn-right { grid-column: 3; grid-row: 2; }
-.g2048-btn:not(:disabled):hover { border-color: var(--accent); color: var(--accent); }
-.g2048-btn:disabled { opacity: 0.32; cursor: default; }
-@media (max-width: 480px) {
-  .g2048-pad { grid-template-columns: repeat(3, 48px); grid-template-rows: repeat(2, 38px); }
-}
 `;
 
 function injectStyle(): void {
@@ -310,7 +284,7 @@ class G2048Frontend implements GameFrontend {
   private bestEl!: HTMLElement;
   private overlayEl!: HTMLElement;
   private overlaySubEl!: HTMLElement;
-  private padBtns = new Map<Dir, HTMLButtonElement>();
+  private touchStart: { x: number; y: number } | null = null;
 
   mount(host: HTMLElement, ctx: FrontendCtx): void {
     this.ctx = ctx;
@@ -334,7 +308,6 @@ class G2048Frontend implements GameFrontend {
             <span class="g2048-overlay-sub"></span>
           </div>
         </div>
-        <div class="g2048-pad"></div>
       </div>`;
     this.boardEl = host.querySelector('.g2048-board')!;
     this.tilesEl = host.querySelector('.g2048-tiles')!;
@@ -353,23 +326,14 @@ class G2048Frontend implements GameFrontend {
       cellsEl.append(cell);
     }
 
-    const pad = host.querySelector<HTMLElement>('.g2048-pad')!;
-    if (ctx.humanSeat < 0) {
-      pad.classList.add('g2048-hidden');
-    } else {
-      for (const dir of ['up', 'left', 'down', 'right'] as Dir[]) {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = `g2048-btn g2048-btn-${dir}`;
-        b.textContent = PAD_ARROWS[dir];
-        b.title = dir;
-        b.disabled = true;
-        b.onclick = () => this.trySubmit(dir);
-        pad.append(b);
-        this.padBtns.set(dir, b);
-      }
-    }
+    // Input: arrow/WASD keys on desktop, swipe on touch. No on-screen pad —
+    // there is never a reason to tap a direction button.
     window.addEventListener('keydown', this.onKey);
+    if (ctx.humanSeat >= 0) {
+      this.boardEl.addEventListener('touchstart', this.onTouchStart, { passive: true });
+      this.boardEl.addEventListener('touchmove', this.onTouchMove, { passive: false });
+      this.boardEl.addEventListener('touchend', this.onTouchEnd);
+    }
   }
 
   render(state: ViewState): void {
@@ -445,6 +409,9 @@ class G2048Frontend implements GameFrontend {
 
   unmount(): void {
     window.removeEventListener('keydown', this.onKey);
+    this.boardEl.removeEventListener('touchstart', this.onTouchStart);
+    this.boardEl.removeEventListener('touchmove', this.onTouchMove);
+    this.boardEl.removeEventListener('touchend', this.onTouchEnd);
   }
 
   private onKey = (e: KeyboardEvent): void => {
@@ -455,6 +422,27 @@ class G2048Frontend implements GameFrontend {
     if (!dir) return;
     e.preventDefault();
     this.trySubmit(dir);
+  };
+
+  private onTouchStart = (e: TouchEvent): void => {
+    const t = e.changedTouches[0];
+    this.touchStart = { x: t.clientX, y: t.clientY };
+  };
+
+  private onTouchMove = (e: TouchEvent): void => {
+    if (this.touchStart) e.preventDefault();
+  };
+
+  private onTouchEnd = (e: TouchEvent): void => {
+    if (!this.touchStart) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - this.touchStart.x;
+    const dy = t.clientY - this.touchStart.y;
+    this.touchStart = null;
+    const adx = Math.abs(dx);
+    const ady = Math.abs(dy);
+    if (Math.max(adx, ady) < 24) return;
+    this.trySubmit(adx > ady ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up');
   };
 
   private trySubmit(dir: Dir): void {
@@ -470,7 +458,6 @@ class G2048Frontend implements GameFrontend {
 
   private setPending(labels: string[] | null): void {
     this.pending = labels;
-    for (const [dir, btn] of this.padBtns) btn.disabled = !labels || !labels.includes(dir);
   }
 
   private eventDir(event: MatchEventData): Dir | null {
