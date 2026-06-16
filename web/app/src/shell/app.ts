@@ -376,7 +376,7 @@ export class App {
     this.renderMatchSkeleton(game, mode, opts);
     if (opts.bot === "azero-gpu" && !("gpu" in navigator)) {
       this.setStatus(
-        "WebGPU is unavailable in this browser — pick another bot in settings (azero runs the same net on CPU).",
+        "AlphaZero (GPU) needs WebGPU, which this browser doesn't have — pick another bot.",
         "error",
       );
       return;
