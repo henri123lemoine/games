@@ -15,8 +15,8 @@ use solvers::{AlphaBeta, Rollout};
 use twentyone::game::{Action as T21Action, T21State, TwentyOne};
 
 use crate::compare::{
-    BotBuilder, BotParser, BotSpec, BoxedAgent, CompareArgs, TourneyArgs, head_to_head,
-    parse_spec, round_robin, run_field, run_pairs, split_specs, vs_field,
+    BotBuilder, BotParser, BotSpec, BoxedAgent, CompareArgs, TourneyArgs, head_to_head, parse_spec,
+    round_robin, run_field, run_pairs, split_specs, vs_field,
 };
 use crate::runner::{AnyMatch, TypedMatch};
 
@@ -301,7 +301,9 @@ fn make_versus<G: game_core::GameUi + Sync + 'static>(
                 if Some(p) == seat {
                     return None;
                 }
-                builders[p].as_ref().map(|b| b(hash::combine(seed, p as u64)))
+                builders[p]
+                    .as_ref()
+                    .map(|b| b(hash::combine(seed, p as u64)))
             })
             .collect()
     };
