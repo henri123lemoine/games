@@ -30,10 +30,9 @@ pub struct AzGoBot {
 
 #[wasm_bindgen]
 impl AzGoBot {
-    /// A fresh bot at the empty `size`×`size` board. The played move is argmax
-    /// over visit counts, but a modest root Dirichlet noise keyed off `seed`
-    /// diversifies games (otherwise every same-net game is identical) at a
-    /// negligible strength cost.
+    /// A fresh bot at the empty `size`×`size` board. Play is deterministic
+    /// argmax over visit counts with no root noise — full strength; `seed` only
+    /// feeds chance-free tie paths.
     #[wasm_bindgen(constructor)]
     pub fn new(sims: u32, max_leaves: u32, seed: u32, size: usize) -> AzGoBot {
         let game = Go::new(size);
@@ -46,7 +45,7 @@ impl AzGoBot {
             cfg: PuctConfig {
                 sims,
                 max_leaves,
-                root_noise: 0.25,
+                root_noise: 0.0,
                 ..PuctConfig::default()
             },
             rng: Rng::new(u64::from(seed)),

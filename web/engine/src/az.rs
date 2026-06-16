@@ -30,10 +30,9 @@ pub struct AzChessBot {
 
 #[wasm_bindgen]
 impl AzChessBot {
-    /// A fresh bot at the standard start position. The played move is argmax
-    /// over visit counts, but a modest root Dirichlet noise keyed off `seed`
-    /// diversifies games (otherwise every same-net game is identical) at a
-    /// negligible strength cost.
+    /// A fresh bot at the standard start position. Play is deterministic argmax
+    /// over visit counts with no root noise — it plays at full strength; `seed`
+    /// only feeds chance-free tie paths.
     #[wasm_bindgen(constructor)]
     pub fn new(sims: u32, max_leaves: u32, seed: u32) -> AzChessBot {
         let board = Board::start();
@@ -46,7 +45,7 @@ impl AzChessBot {
             cfg: MctsConfig {
                 sims,
                 max_leaves,
-                root_noise: 0.25,
+                root_noise: 0.0,
                 ..MctsConfig::default()
             },
             rng: Rng::new(u64::from(seed)),
