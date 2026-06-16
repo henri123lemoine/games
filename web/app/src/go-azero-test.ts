@@ -36,7 +36,7 @@ const log = (html: string): void => {
     let maxDp = 0;
     let maxDv = 0;
     for (const fx of fixtures) {
-      const { logits, values } = await gpu.forward(new Float32Array(fx.planes), 1);
+      const { logits, values } = await gpu.forward(new Float32Array(fx.planes), 1, fx.size);
       const priors = softmaxOver(logits, fx.support);
       fx.priors.forEach((p, i) => {
         maxDp = Math.max(maxDp, Math.abs(p - priors[i]));
@@ -57,10 +57,10 @@ const log = (html: string): void => {
     const area = gpu.model.size * gpu.model.size;
     const planes = new Float32Array(B * PLANES * area);
     for (let b = 0; b < B; b++) planes.set(fixtures[b % fixtures.length].planes, b * PLANES * area);
-    await gpu.forward(planes, B);
+    await gpu.forward(planes, B, gpu.model.size);
     const t0 = performance.now();
     const iters = 100;
-    for (let i = 0; i < iters; i++) await gpu.forward(planes, B);
+    for (let i = 0; i < iters; i++) await gpu.forward(planes, B, gpu.model.size);
     const dt = (performance.now() - t0) / 1000;
     log(
       `throughput: <span class="brass">${Math.round((B * iters) / dt)}</span> evals/s ` +

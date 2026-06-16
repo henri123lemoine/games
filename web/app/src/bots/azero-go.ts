@@ -1,6 +1,6 @@
 // The azero-gpu go bot: the wasm engine runs the park/resume PUCT search and
 // mirrors the game; this driver evaluates each parked leaf batch with the
-// WebGPU net (weights from the AZWEBGO1 export) and feeds the results back
+// WebGPU net (weights from the AZWEBGO2 export) and feeds the results back
 // until the search is done.
 
 import type { EngineHost } from '../engine/host';
@@ -38,8 +38,9 @@ class AzeroGo implements ClientBot {
   constructor(
     private host: EngineHost,
     private gpu: GoGpu,
+    private size: number,
   ) {
-    this.stride = policyLen(gpu.model.size);
+    this.stride = policyLen(size);
   }
 
   onMove(ev: MatchEventData): Promise<void> {
@@ -54,7 +55,7 @@ class AzeroGo implements ClientBot {
       const batch = await this.host.azAdvance(priors, values);
       if (batch.n === 0) break;
       if (this.cancelled) throw new Error('cancelled');
-      const { logits, values: v } = await this.gpu.forward(batch.features, batch.n);
+      const { logits, values: v } = await this.gpu.forward(batch.features, batch.n, this.size);
       const flat: number[] = [];
       for (let i = 0; i < batch.n; i++) {
         const support = batch.support.subarray(batch.offsets[i], batch.offsets[i + 1]);
@@ -78,10 +79,9 @@ export async function createAzeroGo(
   const gpu = await getGpu();
   const sims = Number(opts.sims) > 0 ? Number(opts.sims) : DEFAULT_SIMS;
   const seed = Number(opts.seed) >>> 0 || 1;
+  // The pooled net is board-size-agnostic; play at the requested size (≤ the
+  // export's max), no per-size weights needed.
   const size = Number(opts.size) > 0 ? Number(opts.size) : gpu.model.size;
-  if (size !== gpu.model.size) {
-    throw new Error(`azero-go net is ${gpu.model.size}×${gpu.model.size}, not ${size}×${size}`);
-  }
   await host.goNew(sims, LEAVES, seed, size);
-  return new AzeroGo(host, gpu);
+  return new AzeroGo(host, gpu, size);
 }
