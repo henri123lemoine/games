@@ -374,9 +374,14 @@ export class App {
     const opts = this.buildOpts(game, mode, overrides);
     this.syncMatchUrl(game, mode);
     this.renderMatchSkeleton(game, mode, opts);
-    if (opts.bot === "azero-gpu" && !("gpu" in navigator)) {
+    // A GPU AlphaZero seat (single bot, or one seat of a heterogeneous board)
+    // is driven page-side via WebGPU.
+    const usesGpu =
+      opts.bot === "azero-gpu" ||
+      splitSpecs(opts.bots ?? "").some((s) => s.split(":")[0] === "azero-gpu");
+    if (usesGpu && !("gpu" in navigator)) {
       this.setStatus(
-        "AlphaZero (GPU) needs WebGPU, which this browser doesn't have — pick another bot.",
+        "AlphaZero needs WebGPU, which this browser doesn't have — pick another bot.",
         "error",
       );
       return;
@@ -385,7 +390,7 @@ export class App {
       await this.loadArtifacts(game, opts);
       const st = await this.host.create(game.id, opts);
       if (gen !== this.gen) return;
-      const makeBot = clientBotFor(game.id, opts.bot);
+      const makeBot = clientBotFor(game.id, usesGpu ? "azero-gpu" : opts.bot);
       this.clientBot = makeBot ? await makeBot(this.host, opts) : null;
       if (gen !== this.gen) return;
       const boardEl = this.root.querySelector<HTMLElement>(".board")!;
@@ -609,12 +614,6 @@ export class App {
       const fallback = bots[0]?.value ?? "__solver__";
       for (let j = 0; j < n; j++)
         if (j !== i && next[j] === "__you__") next[j] = fallback;
-    } else {
-      // AlphaZero (GPU) is externally driven and can't share a board with a
-      // different bot, so picking it (or away from it) makes the bots uniform.
-      const vals = next.filter((x) => x !== "__you__");
-      if (vals.includes("azero-gpu") && !vals.every((x) => x === vals[0]))
-        for (let j = 0; j < n; j++) if (next[j] !== "__you__") next[j] = value;
     }
     const human = next.indexOf("__you__");
     const vals = next.filter((x) => x !== "__you__");

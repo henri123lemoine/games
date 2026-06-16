@@ -280,17 +280,29 @@ fn make_versus<G: game_core::GameUi + Sync + 'static>(
                 specs.len()
             ));
         }
-        let builders = specs
+        let builders: Vec<Option<BotBuilder<G>>> = specs
             .iter()
             .map(|s| {
                 let spec = parse_spec(s)?;
+                // The GPU AlphaZero seat is driven by the client (page-side
+                // WebGPU), not the engine — leave it empty so step() yields to
+                // the driver, exactly as make_external_versus does. This lets a
+                // GPU seat share a board with an in-engine bot.
+                if spec.name == "azero-gpu" {
+                    return Ok::<_, String>(None);
+                }
                 let builder = parse(&spec, o)?;
                 spec.opts.ensure_consumed(&format!("bot '{s}'"))?;
-                Ok::<_, String>(builder)
+                Ok(Some(builder))
             })
             .collect::<Result<Vec<_>, _>>()?;
         (0..seats)
-            .map(|p| (Some(p) != seat).then(|| builders[p](hash::combine(seed, p as u64))))
+            .map(|p| {
+                if Some(p) == seat {
+                    return None;
+                }
+                builders[p].as_ref().map(|b| b(hash::combine(seed, p as u64)))
+            })
             .collect()
     };
     Ok(TypedMatch::new(game, bots, seat, seed).boxed())
