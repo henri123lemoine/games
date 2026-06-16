@@ -9,8 +9,8 @@ import type { GameInfo } from "../engine/protocol";
 export const BOT_LABELS: Record<string, string> = {
   alphabeta: "Alpha-Beta",
   "alphabeta-rich": "Alpha-Beta (rich)",
-  azero: "AlphaZero",
-  "azero-gpu": "AlphaZero (GPU)",
+  azero: "AlphaZero (CPU)",
+  "azero-gpu": "AlphaZero",
   mcts: "MCTS",
   "mcts-eval": "MCTS (eval)",
   "mcts-spec": "MCTS (spec)",
