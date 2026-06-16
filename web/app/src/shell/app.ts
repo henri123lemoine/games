@@ -128,16 +128,22 @@ interface RosterBot {
   sendsBot: boolean;
 }
 
+/** Bots the web hides from selection: the wasm CPU `azero` plays at random
+ * strength (the validated inference is the GPU path; only `azero-gpu` is kept),
+ * so it is dropped everywhere on the site. */
+const HIDDEN_BOTS = new Set(["azero"]);
+
 /** Opponents a seat can be filled with. Reads the game's `bot` schema (real
- * bots), or the synthetic solver for games without one. GPU-only bots drop
- * out where WebGPU is missing, so the roster never offers a dead choice. */
+ * bots), or the synthetic solver for games without one. Hidden bots and, where
+ * WebGPU is missing, GPU-only bots drop out so the roster never offers a dead
+ * choice. */
 function rosterBots(game: GameInfo): RosterBot[] {
   const spec = game.optsSchema.find((o) => o.key === "bot");
   if (!spec) return [SOLVER_OPPONENT];
   const gpu = "gpu" in navigator;
   return spec.value
     .split("|")
-    .filter((b) => gpu || b !== "azero-gpu")
+    .filter((b) => !HIDDEN_BOTS.has(b) && (gpu || b !== "azero-gpu"))
     .map((b) => ({ value: b, label: botLabel(b), sendsBot: true }));
 }
 
