@@ -82,10 +82,12 @@ function handle(req: EngineRequest): unknown {
     case 'azNew':
       azBot?.free();
       azBot = new AzChessBot(req.sims, req.leaves, req.seed);
+      if (req.weights) azBot.load_weights(new Uint8Array(req.weights));
       return null;
     case 'goNew':
       azBot?.free();
       azBot = new AzGoBot(req.sims, req.leaves, req.seed, req.size);
+      if (req.weights) azBot.load_weights(new Uint8Array(req.weights));
       return null;
     case 'azPush': {
       if (!azBot) throw new Error('no az bot');
@@ -101,6 +103,10 @@ function handle(req: EngineRequest): unknown {
         support: n > 0 ? azBot.batch_support() : new Uint16Array(0),
         offsets: n > 0 ? azBot.batch_offsets() : new Uint32Array(0),
       };
+    }
+    case 'azPlayCpu': {
+      if (!azBot) throw new Error('no az bot');
+      return { uci: azBot.play_cpu(), stats: JSON.parse(azBot.stats()) };
     }
     case 'azBest': {
       if (!azBot) throw new Error('no az bot');

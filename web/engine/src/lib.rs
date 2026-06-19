@@ -98,6 +98,74 @@ pub fn load_artifact(id: &str, bytes: &[u8]) {
     lab::artifacts::put(id, bytes.to_vec());
 }
 
+/// One batch's reference-forward output: flat policy `logits` (per-position
+/// stride is game-fixed) and one `value` per position. The CPU bots play
+/// against exactly this forward; the calibration test pages call it to compare
+/// the WebGPU kernels against it live (the same check the committed fixtures
+/// encode, but against the engine the browser actually runs).
+#[wasm_bindgen]
+pub struct RefForward {
+    logits: Vec<f32>,
+    values: Vec<f32>,
+}
+
+#[wasm_bindgen]
+impl RefForward {
+    #[wasm_bindgen(getter)]
+    pub fn logits(&self) -> Vec<f32> {
+        self.logits.clone()
+    }
+    #[wasm_bindgen(getter)]
+    pub fn values(&self) -> Vec<f32> {
+        self.values.clone()
+    }
+}
+
+/// `goinfer`'s reference forward over `n` go positions (`features` flat, each
+/// `PLANES·size²`). Logit stride is `size²+1` (placements then pass).
+#[wasm_bindgen]
+pub fn go_reference_forward(
+    weights: &[u8],
+    features: &[f32],
+    n: usize,
+    size: usize,
+) -> Result<RefForward, JsError> {
+    let model = goinfer::model::Model::parse(weights).map_err(|e| JsError::new(&e))?;
+    let stride_in = go::encode::PLANES * size * size;
+    let mut out = RefForward {
+        logits: Vec::with_capacity(n * (size * size + 1)),
+        values: Vec::with_capacity(n),
+    };
+    for i in 0..n {
+        let (logits, value) = model.forward_at(&features[i * stride_in..(i + 1) * stride_in], size);
+        out.logits.extend_from_slice(&logits);
+        out.values.push(value);
+    }
+    Ok(out)
+}
+
+/// `azinfer`'s reference forward over `n` chess positions (`features` flat,
+/// each `PLANE_COUNT·64`). Logit stride is `AZ_POLICY_LEN` (`square·73+plane`).
+#[wasm_bindgen]
+pub fn chess_reference_forward(
+    weights: &[u8],
+    features: &[f32],
+    n: usize,
+) -> Result<RefForward, JsError> {
+    let model = azinfer::model::Model::parse(weights).map_err(|e| JsError::new(&e))?;
+    let stride_in = chess::encode::PLANE_COUNT * 64;
+    let mut out = RefForward {
+        logits: Vec::with_capacity(n * chess::encode::AZ_POLICY_LEN),
+        values: Vec::with_capacity(n),
+    };
+    for i in 0..n {
+        let (logits, value) = model.forward(&features[i * stride_in..(i + 1) * stride_in]);
+        out.logits.extend_from_slice(&logits);
+        out.values.push(value);
+    }
+    Ok(out)
+}
+
 #[wasm_bindgen]
 pub struct WebMatch {
     inner: Box<dyn AnyMatch>,

@@ -1,13 +1,18 @@
 //! The AlphaZero chess bot's wasm surface. The batched park/resume PUCT
-//! search runs here, weight-free; the page evaluates parked leaves with
-//! WebGPU and feeds the results back (`advance` → `batch_*` → `advance` …
-//! until it returns 0, then `best`). One instance mirrors one game: `push`
-//! every applied move — both sides' — so repetition awareness sees the real
-//! game history and the searched subtree carries over between turns.
+//! search runs here. With a GPU the page evaluates parked leaves with WebGPU
+//! and feeds the results back (`advance` → `batch_*` → `advance` … until it
+//! returns 0, then `best`). Without a GPU, `load_weights` hands the same
+//! `.azweb` net to this bot and `play_cpu` runs the whole search in-wasm
+//! against `azinfer`'s reference forward — identical net and search, no
+//! WebGPU (so it stays at the trivial visit budget to keep moves responsive).
+//! One instance mirrors one game: `push` every applied move — both sides' — so
+//! repetition awareness sees the real game history and the searched subtree
+//! carries over between turns.
 
 use std::collections::HashMap;
 
-use azinfer::mcts::{Gather, MctsConfig, Search};
+use azinfer::mcts::{Gather, MctsConfig, Search, run_to_done};
+use azinfer::model::Model;
 use azinfer::{EvalRequest, EvalResult, argmax};
 use chess::{Board, Move, legal_moves};
 use game_core::Rng;
@@ -22,6 +27,8 @@ pub struct AzChessBot {
     rng: Rng,
     /// Requests parked by the last `advance`, awaiting page-side evaluation.
     batch: Vec<EvalRequest>,
+    /// The reference net for the CPU path; `None` until `load_weights`.
+    model: Option<Model>,
     /// The tree holds at least an expanded root (safe to read/extract).
     has_tree: bool,
     /// The last search ran to its visit budget (best move is readable).
@@ -50,9 +57,42 @@ impl AzChessBot {
             },
             rng: Rng::new(u64::from(seed)),
             batch: Vec::new(),
+            model: None,
             has_tree: false,
             done: false,
         }
+    }
+
+    /// Loads the `AZWEB001` weights for the CPU path (`play_cpu`). Only needed
+    /// when the page has no WebGPU; the GPU path never calls this.
+    pub fn load_weights(&mut self, weights: &[u8]) -> Result<(), JsError> {
+        self.model = Some(Model::parse(weights).map_err(|e| JsError::new(&e))?);
+        Ok(())
+    }
+
+    /// Runs the whole search to its visit budget in-wasm, evaluating every
+    /// parked leaf with the reference forward, and returns the chosen move
+    /// (UCI). Shares one search and tree with the GPU `advance`/`best` loop, so
+    /// `push` reuse works the same either way.
+    pub fn play_cpu(&mut self) -> Result<String, JsError> {
+        if !self.batch.is_empty() {
+            return Err(JsError::new("play_cpu while evaluations are in flight"));
+        }
+        let model = self
+            .model
+            .as_ref()
+            .ok_or_else(|| JsError::new("CPU weights not loaded"))?;
+        run_to_done(
+            &mut self.search,
+            &self.board,
+            &self.history,
+            &self.cfg,
+            &mut self.rng,
+            |reqs| model.eval(reqs),
+        );
+        self.has_tree = true;
+        self.done = true;
+        self.best()
     }
 
     /// Mirrors an applied move (either side's): advances the internal board,

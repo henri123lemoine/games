@@ -109,12 +109,20 @@ export class EngineHost {
     return this.call({ op: 'fitElo', records }) as Promise<number[]>;
   }
 
-  azNew(sims: number, leaves: number, seed: number): Promise<void> {
-    return this.call({ op: 'azNew', sims, leaves, seed }) as Promise<void>;
+  /** `weights` (the `.azweb` bytes) enables the in-wasm CPU path (`azPlayCpu`)
+   * for the no-GPU fallback; omit it for the WebGPU path. */
+  azNew(sims: number, leaves: number, seed: number, weights?: ArrayBuffer): Promise<void> {
+    return this.call({ op: 'azNew', sims, leaves, seed, weights }) as Promise<void>;
   }
 
-  goNew(sims: number, leaves: number, seed: number, size: number): Promise<void> {
-    return this.call({ op: 'goNew', sims, leaves, seed, size }) as Promise<void>;
+  goNew(
+    sims: number,
+    leaves: number,
+    seed: number,
+    size: number,
+    weights?: ArrayBuffer,
+  ): Promise<void> {
+    return this.call({ op: 'goNew', sims, leaves, seed, size, weights }) as Promise<void>;
   }
 
   azPush(uci: string): Promise<void> {
@@ -123,6 +131,13 @@ export class EngineHost {
 
   azAdvance(priors: Float32Array, values: Float32Array): Promise<AzBatch> {
     return this.call({ op: 'azAdvance', priors, values }) as Promise<AzBatch>;
+  }
+
+  /** Runs the whole search in-wasm against the reference forward (no WebGPU)
+   * and returns the chosen move; requires `weights` to have been passed to
+   * `azNew`/`goNew`. */
+  azPlayCpu(): Promise<AzBest> {
+    return this.call({ op: 'azPlayCpu' }) as Promise<AzBest>;
   }
 
   azBest(): Promise<AzBest> {

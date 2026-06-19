@@ -95,10 +95,19 @@ export type EngineRequest =
     }
   | { id: number; op: 'elo'; w: number; d: number; l: number }
   | { id: number; op: 'fitElo'; records: [number, number, number][][] }
-  | { id: number; op: 'azNew'; sims: number; leaves: number; seed: number }
-  | { id: number; op: 'goNew'; sims: number; leaves: number; seed: number; size: number }
+  | { id: number; op: 'azNew'; sims: number; leaves: number; seed: number; weights?: ArrayBuffer }
+  | {
+      id: number;
+      op: 'goNew';
+      sims: number;
+      leaves: number;
+      seed: number;
+      size: number;
+      weights?: ArrayBuffer;
+    }
   | { id: number; op: 'azPush'; uci: string }
   | { id: number; op: 'azAdvance'; priors: Float32Array; values: Float32Array }
+  | { id: number; op: 'azPlayCpu' }
   | { id: number; op: 'azBest' };
 
 /** One gathered leaf batch from the wasm AZ search (empty when done). */
