@@ -17,12 +17,9 @@ use goinfer::model::Model;
 use goinfer::{EvalRequest, EvalResult, Gather, PuctConfig, Search, argmax};
 use wasm_bindgen::prelude::*;
 
-/// A stone must read at least this confidently alive-or-dead, and a one-color
-/// empty region this confidently owned, for the board to count as settled.
-const TAU_STONE: f32 = 0.85;
-const TAU_TERR: f32 = 0.85;
-/// Ownership past this magnitude assigns a point to a color when adjudicating.
-const TAU_COUNT: f32 = 0.5;
+/// Ownership past this magnitude assigns a point to a color (for the
+/// literal-board agreement check and for adjudicated scoring).
+const TAU: f32 = 0.5;
 
 #[wasm_bindgen]
 pub struct AzGoBot {
@@ -157,7 +154,7 @@ impl AzGoBot {
 
     fn settled(&self) -> bool {
         self.ownership_abs()
-            .is_some_and(|own| self.game.settled(&self.state, &own, TAU_STONE, TAU_TERR))
+            .is_some_and(|own| self.game.ownership_resolved(&self.state, &own, TAU))
     }
 
     /// The adjudicated final result (dead stones scored by ownership) as display
@@ -167,10 +164,10 @@ impl AzGoBot {
         let Some(own) = self.ownership_abs() else {
             return String::new();
         };
-        if !self.game.settled(&self.state, &own, TAU_STONE, TAU_TERR) {
+        if !self.game.ownership_resolved(&self.state, &own, TAU) {
             return String::new();
         }
-        let (b, w) = self.game.adjudicated_area(&own, TAU_COUNT);
+        let (b, w) = self.game.adjudicated_area(&own, TAU);
         let komi = self.game.komi();
         let margin = b as f64 - w as f64 - komi;
         let (winner, by) = if margin > 0.0 {

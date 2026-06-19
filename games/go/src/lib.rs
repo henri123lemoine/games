@@ -305,57 +305,37 @@ impl Go {
         (score[0], score[1])
     }
 
-    /// Whether `s` is resolved enough to score from `own` (absolute,
-    /// Black-positive): every stone is confidently alive or dead
-    /// (`|own| ≥ tau_stone`), and every empty region is a both-color dame or
-    /// confidently the territory of its sole bordering color (`own` past
-    /// `tau_terr` with the matching sign at every point). An empty board, or a
-    /// region bordered by neither color, is never settled.
-    pub fn settled(&self, s: &GoState, own: &[f32], tau_stone: f32, tau_terr: f32) -> bool {
-        let n = self.size * self.size;
-        if own.len() != n {
+    /// Whether the absolute (Black-positive) ownership map `own` agrees with the
+    /// literal board everywhere — every point's thresholded owner (`own` past
+    /// `tau`, else neutral) equals [`Go::ownership`] of the stones as they sit —
+    /// and the board is substantially decided (at most `size` neutral points).
+    /// True means the literal board already scores correctly: no dead stones the
+    /// map would reassign, no point still contested. A dead stone (the map owns
+    /// it for the opponent of the stone) or an unsure stone/region makes it
+    /// false, so the bot plays the position out before agreeing to end it; the
+    /// neutral cap rejects an empty or barely-played board (where everything is
+    /// neutral and would trivially "agree"), which would otherwise let a move-1
+    /// pass be reciprocated into a komi loss.
+    pub fn ownership_resolved(&self, s: &GoState, own: &[f32], tau: f32) -> bool {
+        let literal = self.ownership(s);
+        if own.len() != literal.len() {
             return false;
         }
-        for (&cell, &o) in s.cells.iter().zip(own) {
-            if cell != EMPTY && o.abs() < tau_stone {
-                return false;
-            }
-        }
-        let mut seen = vec![false; n];
-        for p in 0..n {
-            if s.cells[p] != EMPTY || seen[p] {
-                continue;
-            }
-            let mut region = vec![p];
-            seen[p] = true;
-            let mut borders = [false; 2];
-            let mut i = 0;
-            while i < region.len() {
-                let q = region[i];
-                i += 1;
-                for nb in neighbors(self.size, q) {
-                    match s.cells[nb] {
-                        EMPTY => {
-                            if !seen[nb] {
-                                seen[nb] = true;
-                                region.push(nb);
-                            }
-                        }
-                        c => borders[c as usize] = true,
-                    }
-                }
-            }
-            let want = match (borders[0], borders[1]) {
-                (true, true) => continue,
-                (true, false) => 1.0,
-                (false, true) => -1.0,
-                (false, false) => return false,
+        let mut neutral = 0usize;
+        for (&o, &l) in own.iter().zip(&literal) {
+            let owner = if o > tau {
+                1.0
+            } else if o < -tau {
+                -1.0
+            } else {
+                neutral += 1;
+                0.0
             };
-            if region.iter().any(|&q| own[q] * want < tau_terr) {
+            if owner != l {
                 return false;
             }
         }
-        true
+        neutral <= self.size
     }
 
     /// Final area-score margin from Black's view: `black − white − komi`,
@@ -603,64 +583,58 @@ pub(crate) fn col_index(letter: char) -> Option<usize> {
 mod scoring_tests {
     use super::*;
 
-    const STONE: f32 = 0.85;
-    const TERR: f32 = 0.85;
+    const TAU: f32 = 0.5;
 
     #[test]
     fn adjudicated_area_counts_by_ownership_sign() {
         let go = Go::new(3);
         let own = [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, -1.0, -1.0, -1.0];
-        assert_eq!(go.adjudicated_area(&own, 0.5), (3, 3));
+        assert_eq!(go.adjudicated_area(&own, TAU), (3, 3));
         // A dead stone is scored for whoever the map owns the point — counting
         // is purely over `own`, never the literal board.
-        assert_eq!(go.adjudicated_area(&[1.0; 9], 0.5), (9, 0));
+        assert_eq!(go.adjudicated_area(&[1.0; 9], TAU), (9, 0));
     }
 
     #[test]
-    fn settled_when_every_stone_and_region_is_confident() {
+    fn resolved_when_the_map_matches_a_decided_board() {
         let go = Go::new(3);
         let s = go.parse_state(&["XXX", "XXX", "XXX"], 0);
-        assert!(go.settled(&s, &[1.0; 9], STONE, TERR));
+        assert!(go.ownership_resolved(&s, &go.ownership(&s), TAU));
     }
 
     #[test]
-    fn dame_between_live_walls_is_settled() {
+    fn dame_does_not_block_resolution() {
         let go = Go::new(3);
         let s = go.parse_state(&["X.O", "X.O", "X.O"], 0);
-        let own = [1.0, 0.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, -1.0];
-        assert!(go.settled(&s, &own, STONE, TERR));
-        assert_eq!(go.adjudicated_area(&own, 0.5), (3, 3));
+        let own = go.ownership(&s); // left +1, middle dame 0, right -1
+        assert!(go.ownership_resolved(&s, &own, TAU));
+        assert_eq!(go.adjudicated_area(&own, TAU), (3, 3));
     }
 
     #[test]
-    fn unsure_stone_is_not_settled() {
+    fn a_dead_stone_blocks_until_captured() {
+        let go = Go::new(3);
+        let s = go.parse_state(&["XXX", "XOX", "XXX"], 0);
+        let mut own = go.ownership(&s); // center white stone reads -1 literally
+        own[4] = 1.0; // the net knows the lone white stone is dead → Black's
+        assert!(!go.ownership_resolved(&s, &own, TAU));
+    }
+
+    #[test]
+    fn an_unsure_stone_blocks_resolution() {
         let go = Go::new(3);
         let s = go.parse_state(&["XXX", "XXX", "XXX"], 0);
-        let mut own = [1.0; 9];
-        own[4] = 0.4; // a stone whose life the net is unsure of
-        assert!(!go.settled(&s, &own, STONE, TERR));
+        let mut own = go.ownership(&s);
+        own[4] = 0.3; // a stone whose life the net is unsure of
+        assert!(!go.ownership_resolved(&s, &own, TAU));
     }
 
     #[test]
-    fn unsettled_moyo_is_not_settled() {
-        let go = Go::new(3);
-        let s = go.parse_state(&["X..", "X..", "X.."], 0);
-        let loose = [1.0, 0.3, 0.3, 1.0, 0.3, 0.3, 1.0, 0.3, 0.3];
-        assert!(
-            !go.settled(&s, &loose, STONE, TERR),
-            "fuzzy single-color region"
-        );
-        let firm = [1.0; 9];
-        assert!(
-            go.settled(&s, &firm, STONE, TERR),
-            "confident black territory"
-        );
-    }
-
-    #[test]
-    fn empty_board_is_never_settled() {
+    fn empty_board_is_not_resolved() {
         let go = Go::new(3);
         let s = go.parse_state(&["...", "...", "..."], 0);
-        assert!(!go.settled(&s, &[0.0; 9], STONE, TERR));
+        // Everything is neutral, so the map trivially "agrees" — but the neutral
+        // cap rejects it so a move-1 pass can't be reciprocated.
+        assert!(!go.ownership_resolved(&s, &go.ownership(&s), TAU));
     }
 }
