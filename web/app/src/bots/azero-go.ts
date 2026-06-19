@@ -5,7 +5,7 @@
 // `play_cpu` run the whole search in-wasm against goinfer's reference forward —
 // same net, so anyone can play, GPU or not.
 
-import { isCpuFallback, TRIVIAL_SIMS } from '../shell/azero';
+import { CPU_MAX_SIMS, isCpuFallback, TRIVIAL_SIMS } from '../shell/azero';
 import type { EngineHost } from '../engine/host';
 import type { MatchEventData, ViewState } from '../engine/protocol';
 import { GoGpu, policyLen, softmaxOver } from '../frontends/go/azgpu';
@@ -129,8 +129,9 @@ export async function createAzeroGo(
       // fall through to the CPU forward
     }
   }
-  // CPU: locked to the trivial visit budget so moves stay responsive.
+  // CPU: the chosen level, capped so moves stay responsive without a GPU.
   const size = Number(opts.size) > 0 ? Number(opts.size) : 19;
-  await host.goNew(TRIVIAL_SIMS, LEAVES, seed, size, await getWeights());
+  const sims = Math.min(Number(opts.sims) > 0 ? Number(opts.sims) : TRIVIAL_SIMS, CPU_MAX_SIMS);
+  await host.goNew(sims, LEAVES, seed, size, await getWeights());
   return new AzeroGoCpu(host);
 }

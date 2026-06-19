@@ -14,7 +14,7 @@ import type {
 } from "../engine/protocol";
 import { frontendFor, hasFrontend } from "../frontends";
 import type { FrontendCtx, GameFrontend } from "../frontends/types";
-import { isCpuFallback, TRIVIAL_SIMS } from "./azero";
+import { CPU_LEVELS, isCpuFallback, TRIVIAL_SIMS } from "./azero";
 import {
   DIFFICULTY,
   OPT_CHOICES,
@@ -37,10 +37,6 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   go: { size: "9", bot: "azero-gpu", sims: "1500" },
   "2048": {},
 };
-
-/** The single, locked level shown for AlphaZero on the CPU forward — there is
- * no other level without a GPU, and the control says so. */
-const CPU_LEVEL_LABEL = "Trivial (only level without a GPU)";
 
 /** Games registered in the lab but not surfaced on the site. Snake is solo
  * and too easy to fit the "play the lab's bots" thesis; it returns once it
@@ -380,12 +376,14 @@ export class App {
       for (const o of game.optsSchema) {
         if (o.bots.length > 0 && !o.bots.includes(bot)) delete opts[o.key];
       }
-      // AlphaZero on the CPU forward (no WebGPU) is pinned to the trivial budget
-      // so moves stay responsive — resolve it once here so the drawer, the quick
-      // controls, and the bot all agree, rather than each clamping separately.
+      // AlphaZero on the CPU forward (no WebGPU) offers only the responsive
+      // levels — snap anything off that list (e.g. the GPU default) to Trivial,
+      // resolved once here so the drawer, the quick controls, and the bot agree.
       const diff = DIFFICULTY[`${game.id}/${bot}`];
-      if (bot === "azero-gpu" && isCpuFallback() && diff)
-        opts[diff.key] = String(TRIVIAL_SIMS);
+      if (bot === "azero-gpu" && isCpuFallback() && diff) {
+        const allowed = new Set(CPU_LEVELS.map(([, v]) => v));
+        if (!allowed.has(opts[diff.key] ?? "")) opts[diff.key] = String(TRIVIAL_SIMS);
+      }
     }
     opts.seed ||= String(randomSeed());
     return opts;
@@ -530,14 +528,12 @@ export class App {
     }
     const diff = DIFFICULTY[`${game.id}/${bot}`];
     if (diff) {
-      // CPU AlphaZero is pinned to the trivial budget (resolved in buildOpts);
-      // lock the control to a single, self-explaining option rather than a
-      // disabled dropdown that just reads "Trivial".
-      if (bot === "azero-gpu" && isCpuFallback()) {
-        cells.push(cell(diff.key, "level", [[CPU_LEVEL_LABEL, String(TRIVIAL_SIMS)]], String(TRIVIAL_SIMS), true));
-      } else {
-        cells.push(cell(diff.key, "level", diff.levels, opts[diff.key] ?? mediumLevel(game.id, bot), false));
-      }
+      // Without a GPU only the two responsive CPU levels are offered; otherwise
+      // the full ladder.
+      const cpu = bot === "azero-gpu" && isCpuFallback();
+      const levels = cpu ? CPU_LEVELS : diff.levels;
+      const cur = opts[diff.key] ?? (cpu ? String(TRIVIAL_SIMS) : mediumLevel(game.id, bot));
+      cells.push(cell(diff.key, "level", levels, cur, false));
     }
     return cells.length ? `<div class="match-controls">${cells.join("")}</div>` : "";
   }
@@ -565,13 +561,13 @@ export class App {
     }
   }
 
-  /** Surfaces, in-match, that AlphaZero is on the CPU forward (no WebGPU) and
-   * pinned to the trivial budget — the honest "it'll be slower" note. */
+  /** Surfaces, in-match, that AlphaZero is on the CPU forward (no WebGPU) — the
+   * honest "it'll be slower, fewer levels" note. */
   private showCpuNote(): void {
     const note = this.root.querySelector<HTMLElement>(".cpu-note");
     if (!note) return;
     note.textContent =
-      "No GPU detected — AlphaZero is running on the CPU at the Trivial level (1 simulation, ≈ the network's instinct) so moves stay quick. Open it in a WebGPU browser (recent Chrome/Edge) for full-strength play.";
+      "No GPU detected — AlphaZero is running on the CPU, which is much slower, so only the Trivial and Light levels are offered. Open it in a WebGPU browser (recent Chrome/Edge) for the full difficulty ladder.";
     note.hidden = false;
   }
 
@@ -767,17 +763,17 @@ export class App {
           (f.bots.length === 0 || (!opts.bots && f.bots.includes(curBot))) &&
           !(diff && f.key === diff.key),
       );
-      // On the CPU forward only Trivial exists; lock the row and say so,
+      // Without a GPU the difficulty offers only the responsive CPU levels,
       // matching the always-visible level control.
-      const cpuLocked = curBot === "azero-gpu" && isCpuFallback();
+      const cpu = curBot === "azero-gpu" && isCpuFallback();
       const diffRow = !diff
         ? ""
-        : cpuLocked
-          ? row(
-              "difficulty",
-              `<select name="d-difficulty-target" disabled><option value="${TRIVIAL_SIMS}" selected>${esc(CPU_LEVEL_LABEL)}</option></select>`,
-            )
-          : selectRow("difficulty-target", "difficulty", diff.levels, opts[diff.key] ?? diff.levels[1][1]);
+        : selectRow(
+            "difficulty-target",
+            "difficulty",
+            cpu ? CPU_LEVELS : diff.levels,
+            opts[diff.key] ?? (cpu ? String(TRIVIAL_SIMS) : diff.levels[1][1]),
+          );
       const fieldRows = fields.map((f) => {
         const choices = OPT_CHOICES[f.key];
         return choices

@@ -5,7 +5,7 @@
 // `play_cpu` run the whole search in-wasm against azinfer's reference forward —
 // same net, so anyone can play, GPU or not.
 
-import { isCpuFallback, TRIVIAL_SIMS } from '../shell/azero';
+import { CPU_MAX_SIMS, isCpuFallback, TRIVIAL_SIMS } from '../shell/azero';
 import type { EngineHost } from '../engine/host';
 import type { MatchEventData, ViewState } from '../engine/protocol';
 import { AzGpu, POLICY_LEN, softmaxOver } from '../frontends/chess/azgpu';
@@ -122,7 +122,8 @@ export async function createAzeroChess(
       // fall through to the CPU forward
     }
   }
-  // CPU: locked to the trivial visit budget so moves stay responsive.
-  await host.azNew(TRIVIAL_SIMS, LEAVES, seed, await getWeights());
+  // CPU: the chosen level, capped so moves stay responsive without a GPU.
+  const sims = Math.min(Number(opts.sims) > 0 ? Number(opts.sims) : TRIVIAL_SIMS, CPU_MAX_SIMS);
+  await host.azNew(sims, LEAVES, seed, await getWeights());
   return new AzeroChessCpu(host);
 }
