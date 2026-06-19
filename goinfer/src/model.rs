@@ -49,6 +49,9 @@ pub struct Model {
     pub v1: Conv,
     pub vf1: Linear,
     pub vf2: Linear,
+    /// `AZWEBGO3` only: the `o1` ownership head (1×1 `C`→1, no bias), applied to
+    /// the trunk then `tanh`, mover's-view per point. `None` for `AZWEBGO2`.
+    pub ownership: Option<Conv>,
 }
 
 struct Reader<'a> {
@@ -103,8 +106,13 @@ impl Reader<'_> {
 
 impl Model {
     pub fn parse(data: &[u8]) -> Result<Model, String> {
-        if data.len() < 20 || &data[..8] != b"AZWEBGO2" {
-            return Err("not an AZWEBGO2 export".into());
+        let with_ownership = match data.get(..8) {
+            Some(b"AZWEBGO3") => true,
+            Some(b"AZWEBGO2") => false,
+            _ => return Err("not an AZWEBGO2/AZWEBGO3 export".into()),
+        };
+        if data.len() < 20 {
+            return Err("truncated header".into());
         }
         let u32_at = |i: usize| u32::from_le_bytes(data[i..i + 4].try_into().unwrap()) as usize;
         let (blocks, c, size) = (u32_at(8), u32_at(12), u32_at(16));
@@ -127,6 +135,7 @@ impl Model {
         let v1 = r.conv(c, c, 1)?;
         let vf1 = r.linear(3 * c, 128)?;
         let vf2 = r.linear(128, 1)?;
+        let ownership = with_ownership.then(|| r.conv_nobias(c, 1, 1)).transpose()?;
         if r.pos != data.len() {
             return Err(format!("{} trailing bytes in export", data.len() - r.pos));
         }
@@ -143,6 +152,7 @@ impl Model {
             v1,
             vf1,
             vf2,
+            ownership,
         })
     }
 
@@ -158,16 +168,7 @@ impl Model {
     /// any `size ≤ self.size`, matching the WebGPU path's per-call sizing.
     pub fn forward_at(&self, planes: &[f32], size: usize) -> (Vec<f32>, f32) {
         let area = size * size;
-        debug_assert_eq!(planes.len(), PLANES * area);
-        let mut t = conv_fwd(&self.stem, planes, size, true);
-        for (c1, c2) in &self.tower {
-            let y = conv_fwd(c1, &t, size, true);
-            let mut y = conv_fwd(c2, &y, size, false);
-            for (yv, tv) in y.iter_mut().zip(&t) {
-                *yv = (*yv + *tv).max(0.0);
-            }
-            t = y;
-        }
+        let t = self.trunk(planes, size);
         // Policy: per-point conv features biased by their global-pool summary;
         // placement logits from a bias-less 1×1 conv, pass from the pool.
         let pol = conv_fwd(&self.p1, &t, size, true);
@@ -190,6 +191,34 @@ impl Model {
         let h = linear_fwd(&self.vf1, &v_g, true);
         let out = linear_fwd(&self.vf2, &h, false);
         (logits, out[0].tanh())
+    }
+
+    /// The residual-tower output `[channels, size²]` shared by every head.
+    fn trunk(&self, planes: &[f32], size: usize) -> Vec<f32> {
+        debug_assert_eq!(planes.len(), PLANES * size * size);
+        let mut t = conv_fwd(&self.stem, planes, size, true);
+        for (c1, c2) in &self.tower {
+            let y = conv_fwd(c1, &t, size, true);
+            let mut y = conv_fwd(c2, &y, size, false);
+            for (yv, tv) in y.iter_mut().zip(&t) {
+                *yv = (*yv + *tv).max(0.0);
+            }
+            t = y;
+        }
+        t
+    }
+
+    /// Per-point ownership in `(-1, 1)` from the mover's view (`+1` ≈ the side
+    /// to move ends up owning the point), or `None` when the export carries no
+    /// ownership head (`AZWEBGO2`).
+    pub fn ownership_at(&self, planes: &[f32], size: usize) -> Option<Vec<f32>> {
+        let o1 = self.ownership.as_ref()?;
+        let t = self.trunk(planes, size);
+        let mut o = conv_fwd(o1, &t, size, false);
+        for v in &mut o {
+            *v = v.tanh();
+        }
+        Some(o)
     }
 
     /// Evaluates requests one by one (reference path; no batching). Each
@@ -309,6 +338,52 @@ mod tests {
             b.extend_from_slice(&fill.to_le_bytes());
         }
         b
+    }
+
+    /// An `AZWEBGO2` buffer with the `o1` ownership head (`c` floats) appended
+    /// and the magic bumped — a synthetic `AZWEBGO3`.
+    fn buf3(blocks: usize, c: usize, size: usize, fill: f32, o1: f32) -> Vec<u8> {
+        let mut b = buf(blocks, c, size, fill);
+        b[..8].copy_from_slice(b"AZWEBGO3");
+        for _ in 0..c {
+            b.extend_from_slice(&o1.to_le_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn azwebgo2_has_no_ownership_head() {
+        let model = Model::parse(&buf(2, 8, 9, 0.1)).expect("parse");
+        assert!(model.ownership.is_none());
+        assert!(model.ownership_at(&vec![0.5; PLANES * 81], 9).is_none());
+    }
+
+    #[test]
+    fn azwebgo3_ownership_head_round_trips() {
+        let model = Model::parse(&buf3(2, 8, 9, 0.0, 0.0)).expect("parse");
+        let own = model
+            .ownership_at(&vec![0.5; PLANES * 81], 9)
+            .expect("ownership");
+        assert_eq!(own.len(), 81);
+        assert!(
+            own.iter().all(|&o| o == 0.0),
+            "zero net → tanh(0) ownership"
+        );
+    }
+
+    #[test]
+    fn ownership_is_tanh_of_o1_over_the_trunk() {
+        let model = Model::parse(&buf3(2, 6, 9, 0.05, 0.2)).expect("parse");
+        let planes: Vec<f32> = (0..PLANES * 81).map(|i| (i % 5) as f32 * 0.1).collect();
+        let t = model.trunk(&planes, 9);
+        let o1 = model.ownership.as_ref().unwrap();
+        let expected: Vec<f32> = conv_fwd(o1, &t, 9, false)
+            .iter()
+            .map(|x| x.tanh())
+            .collect();
+        let got = model.ownership_at(&planes, 9).unwrap();
+        assert_eq!(got, expected);
+        assert!(got.iter().all(|o| o.abs() <= 1.0 && o.is_finite()));
     }
 
     #[test]
