@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>azero — full benchmark matrix</title>
+<style>
+  body { font-family: ui-monospace, Menlo, monospace; background: #15271d; color: #e9e2d0;
+         padding: 32px; font-size: 13px; line-height: 1.6; }
+  h1 { font-size: 18px; color: #c9a25c; }
+  .ok { color: #8da588; } .bad { color: #c97b4f; } .brass { color: #c9a25c; }
+  .muted { color: #7d8a7d; }
+  #status { margin: 12px 0; }
+  table { border-collapse: collapse; margin: 18px 0; }
+  th, td { padding: 4px 10px; text-align: right; border: 1px solid #2c4034; }
+  th { color: #c9a25c; }
+  td.cfg, th.cfg { text-align: left; color: #e9e2d0; }
+  td.proj { color: #7d8a7d; font-style: italic; }
+  td.slow { color: #c97b4f; }
+  caption { text-align: left; color: #c9a25c; padding-bottom: 6px; font-weight: bold; }
+</style>
+</head>
+<body>
+<h1>azero — full benchmark matrix</h1>
+<p class="muted">Actual search-move timings, GPU (WebGPU) vs CPU (in-wasm reference forward),
+across chess + go 9/13/19, 1 → 16384 sims. Measured where a move stays under budget;
+the slow tail is <span class="proj">projected</span> from the measured per-forward rate
+(the search is linear in sims). Open in a WebGPU browser.</p>
+<div id="status">booting…</div>
+<div id="out"></div>
+<script type="module" src="./src/bench.ts"></script>
+</body>
+</html>

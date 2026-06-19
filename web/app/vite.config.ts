@@ -11,6 +11,7 @@ export default defineConfig({
         main: resolve(import.meta.dirname, 'index.html'),
         azeroTest: resolve(import.meta.dirname, 'azero-test.html'),
         goAzeroTest: resolve(import.meta.dirname, 'go-azero-test.html'),
+        bench: resolve(import.meta.dirname, 'bench.html'),
       },
     },
   },
