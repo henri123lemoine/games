@@ -254,6 +254,21 @@ impl Infer {
         })
     }
 
+    /// The ownership head's mover-view per-point output for one position —
+    /// used by `verify_export` to check the exported `o1` head against tch.
+    pub fn ownership(&self, features: &[f32]) -> Vec<f32> {
+        tch::no_grad(|| {
+            let x = Tensor::from_slice(features)
+                .reshape([1, PLANES, self.size, self.size])
+                .to_device(self.device)
+                .to_kind(self.kind);
+            let (_p, _v, own, _score) = self.net.forward(&x, false);
+            own.reshape([-1]).to_kind(Kind::Float).to_device(Device::Cpu)
+        })
+        .try_into()
+        .expect("ownership to vec")
+    }
+
     /// Evaluates a batch of requests in one GPU round trip. Only the legal
     /// (`support`) logits come back from the GPU.
     pub fn forward_batch(&self, reqs: &[EvalRequest]) -> Vec<EvalResult> {

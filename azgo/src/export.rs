@@ -5,9 +5,11 @@
 //! `AZWEBGO2` matches the global-pooling, board-size-agnostic net: a conv
 //! stem + residual tower, then a policy head (1×1 conv biased by a global
 //! pool, plus a pooled pass logit) and a value head (1×1 conv → global pool →
-//! MLP). The ownership and score auxiliary heads are training-only and not
-//! exported. Global pooling collapses `[C,H,W]` to `[3C]` (mean, size-scaled
-//! mean, max) — the runtime implements that; the file is only weights.
+//! MLP). `AZWEBGO3` additionally appends the ownership head (the bias-less 1×1
+//! `o1` conv → tanh) for the serving pass/scoring decision; the score head
+//! stays training-only. Global pooling collapses `[C,H,W]` to `[3C]` (mean,
+//! size-scaled mean, max) — the runtime implements that; the file is only
+//! weights.
 
 use std::path::PathBuf;
 
@@ -64,8 +66,12 @@ pub fn export(args: &[String]) {
     let plain =
         |name: &str| -> Vec<f32> { Vec::<f32>::try_from(get(name).flatten(0, -1)).unwrap() };
 
+    // Checkpoints predating the ownership head lack `o1`; those still export as
+    // AZWEBGO2 (no ownership). With `o1` present the format is AZWEBGO3, which
+    // appends the (bias-less 1×1 C→1) ownership conv after the value head.
+    let has_ownership = vars.contains_key("o1.weight");
     let mut buf: Vec<u8> = Vec::new();
-    buf.extend_from_slice(b"AZWEBGO2");
+    buf.extend_from_slice(if has_ownership { b"AZWEBGO3" } else { b"AZWEBGO2" });
     buf.extend_from_slice(&(cfg.blocks as u32).to_le_bytes());
     buf.extend_from_slice(&(cfg.channels as u32).to_le_bytes());
     buf.extend_from_slice(&(cfg.size as u32).to_le_bytes());
@@ -103,6 +109,11 @@ pub fn export(args: &[String]) {
     push(&plain("vf1.bias"));
     push(&plain("vf2.weight"));
     push(&plain("vf2.bias"));
+    // Ownership head (AZWEBGO3 only): the bias-less 1×1 `o1` conv applied to the
+    // trunk then tanh, mover's-view per point.
+    if has_ownership {
+        push(&plain("o1.weight"));
+    }
 
     std::fs::write(&out, &buf).expect("write export");
     println!(
@@ -138,7 +149,7 @@ pub fn verify_export(args: &[String]) {
     let enc = GoEncoder::new(cfg.size as usize);
     let mut rng = game_core::Rng::new(7);
     let mut state = game.initial_state();
-    let (mut max_dp, mut max_dv) = (0.0f32, 0.0f32);
+    let (mut max_dp, mut max_dv, mut max_do) = (0.0f32, 0.0f32, 0.0f32);
     for _ in 0..120 {
         if game.is_terminal(&state) {
             state = game.initial_state();
@@ -158,10 +169,21 @@ pub fn verify_export(args: &[String]) {
             max_dp = max_dp.max((pa - pb).abs());
         }
         max_dv = max_dv.max((a.value - b.value).abs());
+        if let Some(own_ref) = model.ownership_at(&req.features, cfg.size as usize) {
+            for (oa, ob) in infer.ownership(&req.features).iter().zip(&own_ref) {
+                max_do = max_do.max((oa - ob).abs());
+            }
+        }
         let i = rng.below(actions.len());
         game.apply(&mut state, actions[i]);
     }
-    println!("max |prior diff| {max_dp:.2e}, max |value diff| {max_dv:.2e} over 120 positions");
-    assert!(max_dp < 1e-3 && max_dv < 1e-3, "export does not match tch");
+    println!(
+        "max |prior diff| {max_dp:.2e}, max |value diff| {max_dv:.2e}, \
+         max |ownership diff| {max_do:.2e} over 120 positions"
+    );
+    assert!(
+        max_dp < 1e-3 && max_dv < 1e-3 && max_do < 1e-3,
+        "export does not match tch"
+    );
     println!("export verified");
 }
