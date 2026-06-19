@@ -10,6 +10,7 @@ export default defineConfig({
       input: {
         main: resolve(import.meta.dirname, 'index.html'),
         azeroTest: resolve(import.meta.dirname, 'azero-test.html'),
+        goAzeroTest: resolve(import.meta.dirname, 'go-azero-test.html'),
       },
     },
   },
