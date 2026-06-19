@@ -852,8 +852,11 @@ export class App {
       if (gen !== this.gen) return;
       this.frontend!.render(st);
       if (st.isOver) {
-        this.setStatus(st.result ?? "Game over", "result");
-        this.logText(`— ${st.result ?? "game over"}`);
+        const adjudicated = (await this.clientBot?.finalResult?.()) || "";
+        if (gen !== this.gen) return;
+        const result = adjudicated || st.result || "Game over";
+        this.setStatus(result, "result");
+        this.logText(`— ${result}`);
         return;
       }
       if (this.clientBot && st.toAct >= 0 && st.toAct !== st.humanSeat) {

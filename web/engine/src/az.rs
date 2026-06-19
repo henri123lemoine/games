@@ -219,6 +219,11 @@ impl AzChessBot {
         Ok(moves[argmax(self.search.root_visits())].to_string())
     }
 
+    /// Chess has no ownership adjudication; the engine's result stands.
+    pub fn final_result(&self) -> String {
+        String::new()
+    }
+
     /// `{"value":…,"sims":…}` — the root's searched value (side to move)
     /// and total visits, for a thinking readout.
     pub fn stats(&self) -> String {

@@ -81,6 +81,10 @@ class AzeroGoGpu implements ClientBot {
     return (await this.host.azBest()).uci;
   }
 
+  finalResult(): Promise<string> {
+    return this.host.azFinalResult();
+  }
+
   cancel(): void {
     this.cancelled = true;
   }
@@ -104,6 +108,10 @@ class AzeroGoCpu implements ClientBot {
     return uci;
   }
 
+  finalResult(): Promise<string> {
+    return this.host.azFinalResult();
+  }
+
   cancel(): void {
     this.cancelled = true;
   }
@@ -123,7 +131,9 @@ export async function createAzeroGo(
       // The pooled net is board-size-agnostic; play at the requested size (≤
       // the export's max), no per-size weights needed.
       const size = Number(opts.size) > 0 ? Number(opts.size) : gpu.model.size;
-      await host.goNew(sims, LEAVES, seed, size);
+      // Weights also go to the wasm bot so it can run the ownership head for
+      // the pass decision; leaf evaluation still happens on the GPU.
+      await host.goNew(sims, LEAVES, seed, size, await getWeights());
       return new AzeroGoGpu(host, gpu, size);
     } catch {
       // fall through to the CPU forward

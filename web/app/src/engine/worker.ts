@@ -112,6 +112,10 @@ function handle(req: EngineRequest): unknown {
       if (!azBot) throw new Error('no az bot');
       return { uci: azBot.best(), stats: JSON.parse(azBot.stats()) };
     }
+    case 'azFinalResult': {
+      if (!azBot) throw new Error('no az bot');
+      return azBot.final_result();
+    }
   }
 }
 

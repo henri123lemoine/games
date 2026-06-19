@@ -108,6 +108,7 @@ export type EngineRequest =
   | { id: number; op: 'azPush'; uci: string }
   | { id: number; op: 'azAdvance'; priors: Float32Array; values: Float32Array }
   | { id: number; op: 'azPlayCpu' }
+  | { id: number; op: 'azFinalResult' }
   | { id: number; op: 'azBest' };
 
 /** One gathered leaf batch from the wasm AZ search (empty when done). */

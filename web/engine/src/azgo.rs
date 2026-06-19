@@ -10,25 +10,38 @@
 //! chess there is no repetition history: go's ko lives in the state and cycle
 //! draws are off.
 
-use game_core::{Game, GameUi, Rng};
+use game_core::{Game, GameUi, PolicyValueEncoder, Rng};
 use go::encode::GoEncoder;
-use go::{Go, GoState};
+use go::{Go, GoAction, GoState};
 use goinfer::model::Model;
 use goinfer::{EvalRequest, EvalResult, Gather, PuctConfig, Search, argmax};
 use wasm_bindgen::prelude::*;
+
+/// A stone must read at least this confidently alive-or-dead, and a one-color
+/// empty region this confidently owned, for the board to count as settled.
+const TAU_STONE: f32 = 0.85;
+const TAU_TERR: f32 = 0.85;
+/// Ownership past this magnitude assigns a point to a color when adjudicating.
+const TAU_COUNT: f32 = 0.5;
 
 #[wasm_bindgen]
 pub struct AzGoBot {
     game: Go,
     enc: GoEncoder,
+    size: usize,
     state: GoState,
     search: Search<Go>,
     cfg: PuctConfig,
     rng: Rng,
     /// Requests parked by the last `advance`, awaiting page-side evaluation.
     batch: Vec<EvalRequest>,
-    /// The reference net for the CPU path; `None` until `load_weights`.
+    /// The reference net, loaded in both modes: CPU play uses it for leaf
+    /// evaluations, and either mode uses its ownership head for the pass
+    /// decision. `None` until `load_weights` (and ownership-less for `AZWEBGO2`).
     model: Option<Model>,
+    /// Whether the last mirrored move was a pass — the bot only agrees to end
+    /// the game in response to the opponent passing, never on its own.
+    opponent_passed: bool,
     /// The tree holds at least an expanded root (safe to read/extract).
     has_tree: bool,
     /// The last search ran to its visit budget (best move is readable).
@@ -47,6 +60,7 @@ impl AzGoBot {
         AzGoBot {
             game,
             enc: GoEncoder::new(size),
+            size,
             state,
             search: Search::new(None),
             cfg: PuctConfig {
@@ -58,13 +72,14 @@ impl AzGoBot {
             rng: Rng::new(u64::from(seed)),
             batch: Vec::new(),
             model: None,
+            opponent_passed: false,
             has_tree: false,
             done: false,
         }
     }
 
-    /// Loads the `AZWEBGO2` weights for the CPU path (`play_cpu`). Only needed
-    /// when the page has no WebGPU; the GPU path never calls this.
+    /// Loads the `.azweb` net (CPU leaf evaluation and the ownership pass
+    /// decision both need it, so both modes call this).
     pub fn load_weights(&mut self, weights: &[u8]) -> Result<(), JsError> {
         self.model = Some(Model::parse(weights).map_err(|e| JsError::new(&e))?);
         Ok(())
@@ -125,8 +140,45 @@ impl AzGoBot {
         self.has_tree = reuse.is_some();
         self.search = Search::new(reuse);
         self.done = false;
+        self.opponent_passed = matches!(action, GoAction::Pass);
         self.game.apply(&mut self.state, action);
         Ok(())
+    }
+
+    /// Absolute (Black-positive) ownership of the current position from the
+    /// net's mover-view head, or `None` without an ownership-carrying net.
+    fn ownership_abs(&self) -> Option<Vec<f32>> {
+        let model = self.model.as_ref()?;
+        let planes = self.enc.encode_state(&self.game, &self.state);
+        let mover = model.ownership_at(&planes, self.size)?;
+        let sign = if self.state.to_move() == 0 { 1.0 } else { -1.0 };
+        Some(mover.iter().map(|o| o * sign).collect())
+    }
+
+    fn settled(&self) -> bool {
+        self.ownership_abs()
+            .is_some_and(|own| self.game.settled(&self.state, &own, TAU_STONE, TAU_TERR))
+    }
+
+    /// The adjudicated final result (dead stones scored by ownership) as display
+    /// text, or `""` when there is no ownership net or the board is not settled
+    /// enough to trust — in which case the engine's literal score stands.
+    pub fn final_result(&self) -> String {
+        let Some(own) = self.ownership_abs() else {
+            return String::new();
+        };
+        if !self.game.settled(&self.state, &own, TAU_STONE, TAU_TERR) {
+            return String::new();
+        }
+        let (b, w) = self.game.adjudicated_area(&own, TAU_COUNT);
+        let komi = self.game.komi();
+        let margin = b as f64 - w as f64 - komi;
+        let (winner, by) = if margin > 0.0 {
+            ("Black", margin)
+        } else {
+            ("White", -margin)
+        };
+        format!("Black {b} — White {w} (+{komi} komi). {winner} wins by {by:.1}.")
     }
 
     /// Resumes the search with the page's evaluations for the previous batch
@@ -221,8 +273,12 @@ impl AzGoBot {
     }
 
     /// The searched move as a board label (`"c3"` / `"pass"`), argmax over
-    /// root visits.
+    /// root visits — except when the opponent has passed and the ownership head
+    /// reads the board as settled, in which case the bot agrees to end the game.
     pub fn best(&self) -> Result<String, JsError> {
+        if self.opponent_passed && self.settled() {
+            return Ok(self.game.action_label(&self.state, GoAction::Pass));
+        }
         if !self.done {
             return Err(JsError::new("search is not done"));
         }
@@ -249,5 +305,97 @@ impl AzGoBot {
             0.0
         };
         format!("{{\"value\":{value},\"sims\":{sims}}}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use go::encode::PLANES;
+
+    /// A synthetic net of the right shape (heads are uniform fill, ownership
+    /// head `0.1`). `AZWEBGO3` when `ownership`, else `AZWEBGO2`.
+    fn synth_net(blocks: usize, c: usize, size: usize, ownership: bool) -> Vec<u8> {
+        let floats = c * PLANES * 9
+            + c
+            + blocks * 2 * (c * c * 9 + c)
+            + (c * c + c)
+            + (3 * c * c + c)
+            + c
+            + (3 * c + 1)
+            + (c * c + c)
+            + (128 * 3 * c + 128)
+            + (128 + 1);
+        let mut b = Vec::new();
+        b.extend_from_slice(if ownership { b"AZWEBGO3" } else { b"AZWEBGO2" });
+        b.extend_from_slice(&(blocks as u32).to_le_bytes());
+        b.extend_from_slice(&(c as u32).to_le_bytes());
+        b.extend_from_slice(&(size as u32).to_le_bytes());
+        for _ in 0..floats {
+            b.extend_from_slice(&0.02f32.to_le_bytes());
+        }
+        if ownership {
+            for _ in 0..c {
+                b.extend_from_slice(&0.1f32.to_le_bytes());
+            }
+        }
+        b
+    }
+
+    #[test]
+    fn opponent_passed_tracks_the_last_push() {
+        let mut bot = AzGoBot::new(4, 8, 7, 3);
+        assert!(!bot.opponent_passed);
+        bot.push("b2").unwrap();
+        assert!(!bot.opponent_passed, "a stone is not a pass");
+        bot.push("pass").unwrap();
+        assert!(bot.opponent_passed);
+        bot.push("a1").unwrap();
+        assert!(!bot.opponent_passed);
+    }
+
+    #[test]
+    fn ownership_abs_flips_with_the_side_to_move() {
+        let mut bot = AzGoBot::new(4, 8, 7, 3);
+        bot.load_weights(&synth_net(2, 6, 3, true)).unwrap();
+        let mover = |bot: &AzGoBot| {
+            bot.model
+                .as_ref()
+                .unwrap()
+                .ownership_at(&bot.enc.encode_state(&bot.game, &bot.state), bot.size)
+                .unwrap()
+        };
+        assert_eq!(bot.state.to_move(), 0);
+        let abs0 = bot.ownership_abs().unwrap();
+        assert_eq!(abs0, mover(&bot), "Black to move: absolute == mover view");
+        bot.push("b2").unwrap();
+        assert_eq!(bot.state.to_move(), 1);
+        let abs1 = bot.ownership_abs().unwrap();
+        let m1 = mover(&bot);
+        assert!(
+            abs1.iter().zip(&m1).all(|(a, m)| *a == -*m),
+            "White to move: negated"
+        );
+    }
+
+    #[test]
+    fn azwebgo2_net_offers_no_ownership() {
+        let mut bot = AzGoBot::new(4, 8, 7, 3);
+        bot.load_weights(&synth_net(2, 6, 3, false)).unwrap();
+        assert!(bot.ownership_abs().is_none());
+        assert_eq!(bot.final_result(), "");
+    }
+
+    #[test]
+    fn does_not_agree_to_pass_an_unsettled_board() {
+        let mut bot = AzGoBot::new(8, 8, 7, 9);
+        bot.load_weights(&synth_net(2, 6, 9, true)).unwrap();
+        bot.push("pass").unwrap();
+        assert!(bot.opponent_passed);
+        // An empty board has a region bordered by neither colour, so it is never
+        // settled — the ownership pass-check refuses to reciprocate, and there
+        // is no adjudicated result to show.
+        assert!(!bot.settled());
+        assert_eq!(bot.final_result(), "");
     }
 }

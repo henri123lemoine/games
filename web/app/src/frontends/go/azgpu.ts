@@ -92,7 +92,7 @@ export interface GoModel {
 /** Parses an AZWEBGO2 export (see azgo's export and goinfer's reference). */
 export function parseModel(buf: ArrayBuffer): GoModel {
   const magic = new TextDecoder().decode(buf.slice(0, 8));
-  if (magic !== 'AZWEBGO2') throw new Error('bad magic: ' + magic);
+  if (magic !== 'AZWEBGO2' && magic !== 'AZWEBGO3') throw new Error('bad magic: ' + magic);
   const dv = new DataView(buf);
   const blocks = dv.getUint32(8, true);
   const C = dv.getUint32(12, true);
@@ -134,6 +134,9 @@ export function parseModel(buf: ArrayBuffer): GoModel {
   const v1 = conv(C, C, 1);
   const vf1 = linear(3 * C, 128);
   const vf2 = linear(128, 1);
+  // AZWEBGO3 carries the ownership head (o1: C→1 conv); the GPU path scores
+  // leaves with policy+value only and skips it.
+  if (magic === 'AZWEBGO3') floats(C);
   if (pos !== buf.byteLength) throw new Error('trailing bytes: ' + (buf.byteLength - pos));
   return { blocks, C, size, stem, tower, p1, pgb, pfc, ppass, v1, vf1, vf2 };
 }

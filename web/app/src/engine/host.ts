@@ -144,6 +144,12 @@ export class EngineHost {
     return this.call({ op: 'azBest' }) as Promise<AzBest>;
   }
 
+  /** The bot's adjudicated final result text, or `''` if it has none (no
+   * ownership net, or the board isn't settled enough to trust). */
+  azFinalResult(): Promise<string> {
+    return this.call({ op: 'azFinalResult' }) as Promise<string>;
+  }
+
   terminate(): void {
     this.worker.terminate();
     this.rejectAll('engine terminated');

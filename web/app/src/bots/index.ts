@@ -17,6 +17,9 @@ export interface ClientBot {
   /** Abandon any in-flight work; the bot will not be called again. A stale
    * chooseMove loop left running would corrupt the next match's search. */
   cancel(): void;
+  /** A result string to show in place of the engine's at game over (e.g. an
+   * ownership-adjudicated go score), or `''`/absent to keep the engine's. */
+  finalResult?(): Promise<string>;
 }
 
 export type ClientBotFactory = (
