@@ -14,6 +14,7 @@ import type {
 } from "../engine/protocol";
 import { frontendFor, hasFrontend } from "../frontends";
 import type { FrontendCtx, GameFrontend } from "../frontends/types";
+import { isCpuFallback, TRIVIAL_SIMS } from "./azero";
 import {
   DIFFICULTY,
   OPT_CHOICES,
@@ -24,16 +25,22 @@ import {
 } from "./config";
 import { TournamentScreen } from "./tournament";
 
-/** What clicking a card starts: browser-tuned, no questions asked. */
+/** What clicking a card starts: browser-tuned, no questions asked. Chess and
+ * Go open against AlphaZero (Medium); with no WebGPU the driver runs the same
+ * net on the CPU at the trivial budget. `sims` here is the AlphaZero budget. */
 const DEFAULT_OPTS: Record<string, Record<string, string>> = {
-  chess: { depth: "4" },
+  chess: { bot: "azero-gpu", sims: "256" },
   "liars-dice": { players: "5", dice: "5", rollouts: "400" },
   twentyone: { hearts: "3" },
   othello: { depth: "5" },
   connect4: { depth: "7" },
-  go: { size: "9", sims: "1500" },
+  go: { size: "9", bot: "azero-gpu", sims: "1500" },
   "2048": {},
 };
+
+/** The single, locked level shown for AlphaZero on the CPU forward — there is
+ * no other level without a GPU, and the control says so. */
+const CPU_LEVEL_LABEL = "Trivial (only level without a GPU)";
 
 /** Games registered in the lab but not surfaced on the site. Snake is solo
  * and too easy to fit the "play the lab's bots" thesis; it returns once it
@@ -128,22 +135,23 @@ interface RosterBot {
   sendsBot: boolean;
 }
 
-/** Bots the web hides from selection: the wasm CPU `azero` plays at random
- * strength (the validated inference is the GPU path; only `azero-gpu` is kept),
- * so it is dropped everywhere on the site. */
-const HIDDEN_BOTS = new Set(["azero"]);
+/** Bots the web hides from selection. `azero` is the old CPU MLP net (random
+ * strength — superseded by `azero-gpu`, which now also runs on the CPU via the
+ * reference forward). `mcts-eval`/`mcts-spec` are research variants of plain
+ * `mcts` that only clutter a play page (kept in the registry for the lab); the
+ * site offers one "MCTS". */
+const HIDDEN_BOTS = new Set(["azero", "mcts-eval", "mcts-spec"]);
 
 /** Opponents a seat can be filled with. Reads the game's `bot` schema (real
- * bots), or the synthetic solver for games without one. Hidden bots and, where
- * WebGPU is missing, GPU-only bots drop out so the roster never offers a dead
- * choice. */
+ * bots), or the synthetic solver for games without one. AlphaZero (`azero-gpu`)
+ * is always offered — it falls back to the in-wasm CPU forward where WebGPU is
+ * missing, so it is never a dead choice. */
 function rosterBots(game: GameInfo): RosterBot[] {
   const spec = game.optsSchema.find((o) => o.key === "bot");
   if (!spec) return [SOLVER_OPPONENT];
-  const gpu = "gpu" in navigator;
   return spec.value
     .split("|")
-    .filter((b) => !HIDDEN_BOTS.has(b) && (gpu || b !== "azero-gpu"))
+    .filter((b) => !HIDDEN_BOTS.has(b))
     .map((b) => ({ value: b, label: botLabel(b), sendsBot: true }));
 }
 
@@ -170,6 +178,19 @@ function randomSeed(): number {
 /** For interpolating user-editable values into markup (drawer fields). */
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
+/** `<option>` markup for `[label, value]` pairs, marking `cur` selected and
+ * prepending it as a "Custom" option when it isn't one of the pairs. Shared by
+ * the drawer and the quick-controls strip. */
+function optionList(pairs: [string, string][], cur: string): string {
+  const opts = pairs.map(
+    ([l, v]) =>
+      `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(l)}</option>`,
+  );
+  if (!pairs.some(([, v]) => v === cur))
+    opts.unshift(`<option value="${esc(cur)}" selected>Custom (${esc(cur)})</option>`);
+  return opts.join("");
 }
 
 /** Static mini-board previews on the home cards — each game introduces
@@ -359,6 +380,12 @@ export class App {
       for (const o of game.optsSchema) {
         if (o.bots.length > 0 && !o.bots.includes(bot)) delete opts[o.key];
       }
+      // AlphaZero on the CPU forward (no WebGPU) is pinned to the trivial budget
+      // so moves stay responsive — resolve it once here so the drawer, the quick
+      // controls, and the bot all agree, rather than each clamping separately.
+      const diff = DIFFICULTY[`${game.id}/${bot}`];
+      if (bot === "azero-gpu" && isCpuFallback() && diff)
+        opts[diff.key] = String(TRIVIAL_SIMS);
     }
     opts.seed ||= String(randomSeed());
     return opts;
@@ -374,23 +401,17 @@ export class App {
     const opts = this.buildOpts(game, mode, overrides);
     this.syncMatchUrl(game, mode);
     this.renderMatchSkeleton(game, mode, opts);
-    // A GPU AlphaZero seat (single bot, or one seat of a heterogeneous board)
-    // is driven page-side via WebGPU.
-    const usesGpu =
+    // An AlphaZero seat (single bot, or one seat of a heterogeneous board) is
+    // driven page-side: WebGPU when present, otherwise the in-wasm CPU forward.
+    const usesAzero =
       opts.bot === "azero-gpu" ||
       splitSpecs(opts.bots ?? "").some((s) => s.split(":")[0] === "azero-gpu");
-    if (usesGpu && !("gpu" in navigator)) {
-      this.setStatus(
-        "AlphaZero needs WebGPU, which this browser doesn't have — pick another bot.",
-        "error",
-      );
-      return;
-    }
+    if (usesAzero && isCpuFallback()) this.showCpuNote();
     try {
       await this.loadArtifacts(game, opts);
       const st = await this.host.create(game.id, opts);
       if (gen !== this.gen) return;
-      const makeBot = clientBotFor(game.id, usesGpu ? "azero-gpu" : opts.bot);
+      const makeBot = clientBotFor(game.id, usesAzero ? "azero-gpu" : opts.bot);
       this.clientBot = makeBot ? await makeBot(this.host, opts) : null;
       if (gen !== this.gen) return;
       const boardEl = this.root.querySelector<HTMLElement>(".board")!;
@@ -441,8 +462,10 @@ export class App {
           <span class="spacer"></span>
           ${speedControl}
           <button type="button" class="link again">rematch</button>
-          <button type="button" class="link gear" title="Match settings">⚙</button>
+          <button type="button" class="link gear" title="Match settings">⚙ settings</button>
         </header>
+        ${this.quickControlsHtml(game, opts)}
+        <div class="cpu-note" hidden></div>
         <div class="match-body${game.solo ? " match-body--solo" : ""}">
           <section class="board"></section>
           ${this.sideHtml(game)}
@@ -480,6 +503,76 @@ export class App {
         }
       };
     this.wireDrawer(game, opts);
+    this.wireQuickControls(game, opts);
+  }
+
+  /** The always-visible controls strip: the game-level dropdowns a visitor is
+   * most likely to change (board size, player count) and, for a single-bot
+   * match, a difficulty selector — so the common settings are one click away
+   * on the board, not hidden in the drawer. Empty for solo / heterogeneous
+   * matches (their settings stay in the drawer). */
+  private quickControlsHtml(
+    game: GameInfo,
+    opts: Record<string, string>,
+  ): string {
+    if (game.solo || opts.bots) return "";
+    const bot = effectiveBot(game, opts);
+    const cells: string[] = [];
+    const cell = (key: string, label: string, pairs: [string, string][], cur: string, locked: boolean) =>
+      `<label class="qc"><span class="qc-name">${esc(label)}</span><select class="qc-select" data-key="${esc(key)}"${locked ? " disabled" : ""}>${optionList(pairs, cur)}</select></label>`;
+    for (const o of game.optsSchema) {
+      if (o.bots.length || o.key === "seat" || o.key === "seed" || o.nativeOnly)
+        continue;
+      const choices = OPT_CHOICES[o.key];
+      if (!choices) continue;
+      const cur = opts[o.key] ?? o.value.split("|")[0];
+      cells.push(cell(o.key, o.key, choices.map((c) => [c, c]), cur, false));
+    }
+    const diff = DIFFICULTY[`${game.id}/${bot}`];
+    if (diff) {
+      // CPU AlphaZero is pinned to the trivial budget (resolved in buildOpts);
+      // lock the control to a single, self-explaining option rather than a
+      // disabled dropdown that just reads "Trivial".
+      if (bot === "azero-gpu" && isCpuFallback()) {
+        cells.push(cell(diff.key, "level", [[CPU_LEVEL_LABEL, String(TRIVIAL_SIMS)]], String(TRIVIAL_SIMS), true));
+      } else {
+        cells.push(cell(diff.key, "level", diff.levels, opts[diff.key] ?? mediumLevel(game.id, bot), false));
+      }
+    }
+    return cells.length ? `<div class="match-controls">${cells.join("")}</div>` : "";
+  }
+
+  private wireQuickControls(
+    game: GameInfo,
+    opts: Record<string, string>,
+  ): void {
+    for (const sel of this.root.querySelectorAll<HTMLSelectElement>(
+      ".match-controls .qc-select",
+    )) {
+      sel.onchange = () => {
+        const overrides: Record<string, string> = {};
+        if (opts.seat !== undefined) overrides.seat = opts.seat;
+        if (opts.bot !== undefined) overrides.bot = opts.bot;
+        for (const el of this.root.querySelectorAll<HTMLSelectElement>(
+          ".match-controls .qc-select",
+        )) {
+          const key = el.dataset.key;
+          if (key && el.value.trim() !== "") overrides[key] = el.value.trim();
+        }
+        const mode: Mode = opts.seat === "watch" ? "watch" : "play";
+        void this.startMatch(game, mode, overrides);
+      };
+    }
+  }
+
+  /** Surfaces, in-match, that AlphaZero is on the CPU forward (no WebGPU) and
+   * pinned to the trivial budget — the honest "it'll be slower" note. */
+  private showCpuNote(): void {
+    const note = this.root.querySelector<HTMLElement>(".cpu-note");
+    if (!note) return;
+    note.textContent =
+      "No GPU detected — AlphaZero is running on the CPU at the Trivial level (1 simulation, ≈ the network's instinct) so moves stay quick. Open it in a WebGPU browser (recent Chrome/Edge) for full-strength play.";
+    note.hidden = false;
   }
 
   /** The match side panel: status + move log for the turn-based versus games,
@@ -658,14 +751,8 @@ export class App {
       text ? `<small class="opt-note">${esc(text)}</small>` : "";
     const row = (label: string, control: string, hint = "") =>
       `<label class="opt-row"><span>${esc(label)}</span>${control}${note(hint)}</label>`;
-    const option = (value: string, label: string, sel: boolean) =>
-      `<option value="${esc(value)}"${sel ? " selected" : ""}>${esc(label)}</option>`;
-    const selectRow = (key: string, label: string, pairs: [string, string][], cur: string) => {
-      const known = pairs.some(([, v]) => v === cur);
-      const opts_ = pairs.map(([l, v]) => option(v, l, v === cur));
-      if (!known) opts_.unshift(option(cur, `Custom (${cur})`, true));
-      return row(label, `<select name="d-${esc(key)}">${opts_.join("")}</select>`);
-    };
+    const selectRow = (key: string, label: string, pairs: [string, string][], cur: string) =>
+      row(label, `<select name="d-${esc(key)}">${optionList(pairs, cur)}</select>`);
 
     // Who plays each seat lives in the roster; the drawer holds game settings
     // and difficulty. Knobs become levels/dropdowns — no raw search depths,
@@ -680,9 +767,17 @@ export class App {
           (f.bots.length === 0 || (!opts.bots && f.bots.includes(curBot))) &&
           !(diff && f.key === diff.key),
       );
-      const diffRow = diff
-        ? selectRow("difficulty-target", "difficulty", diff.levels, opts[diff.key] ?? diff.levels[1][1])
-        : "";
+      // On the CPU forward only Trivial exists; lock the row and say so,
+      // matching the always-visible level control.
+      const cpuLocked = curBot === "azero-gpu" && isCpuFallback();
+      const diffRow = !diff
+        ? ""
+        : cpuLocked
+          ? row(
+              "difficulty",
+              `<select name="d-difficulty-target" disabled><option value="${TRIVIAL_SIMS}" selected>${esc(CPU_LEVEL_LABEL)}</option></select>`,
+            )
+          : selectRow("difficulty-target", "difficulty", diff.levels, opts[diff.key] ?? diff.levels[1][1]);
       const fieldRows = fields.map((f) => {
         const choices = OPT_CHOICES[f.key];
         return choices

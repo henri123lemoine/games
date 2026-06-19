@@ -333,7 +333,7 @@ const CHESS_OPTS: &[OptSpec] = &[
     opt("seat", "0|1|watch", "(0=White)"),
     opt(
         "bot",
-        "alphabeta|alphabeta-rich|azero|azero-gpu",
+        "azero-gpu|alphabeta|alphabeta-rich|azero",
         "(azero-gpu: browser only)",
     ),
     bot_opt("depth", "5", "", &["alphabeta", "alphabeta-rich"]),
@@ -384,14 +384,14 @@ const GO_OPTS: &[OptSpec] = &[
     opt("seat", "0|1|watch", "(0=Black)"),
     opt(
         "bot",
-        "mcts|mcts-eval|mcts-spec|azero-gpu",
+        "azero-gpu|mcts|mcts-eval|mcts-spec",
         "(azero-gpu: browser only)",
     ),
     bot_opt(
         "sims",
         "6000",
         "",
-        &["mcts", "mcts-eval", "mcts-spec", "azero-gpu"],
+        &["azero-gpu", "mcts", "mcts-eval", "mcts-spec"],
     ),
     bot_opt("depth", "...", "(default size²)", &["mcts-eval"]),
     opt("seed", "...", ""),
