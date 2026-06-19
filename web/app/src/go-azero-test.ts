@@ -1,7 +1,11 @@
 // Validation harness for the go WebGPU evaluator (the /go-azero-test.html
 // page): checks the kernels against goinfer's reference forward over the
-// committed fixtures, then measures throughput at an MCTS-ish batch.
+// committed fixtures, compares the WebGPU and in-wasm CPU forwards head-to-head
+// (the exact two backends the bot picks between at runtime), then measures
+// throughput at an MCTS-ish batch.
 
+import init, { go_reference_forward } from 'web-engine';
+import wasmUrl from 'web-engine/web_engine_bg.wasm?url';
 import { GoGpu, PLANES, policyLen, softmaxOver } from './frontends/go/azgpu';
 
 interface Fixture {
@@ -50,6 +54,33 @@ const log = (html: string): void => {
         `max |Δvalue| = <span class="brass">${maxDv.toExponential(2)}</span> → ` +
         (pass
           ? '<span class="ok">PASS — kernels agree with the reference forward</span>'
+          : '<span class="bad">FAIL</span>'),
+    );
+
+    // Live GPU-vs-CPU calibration: the no-GPU fallback plays this same net
+    // through the wasm reference forward, so confirm the two backends a real
+    // visitor's browser picks between agree on the same positions.
+    await init({ module_or_path: wasmUrl });
+    const weights = new Uint8Array(bin);
+    let maxGpuCpuP = 0;
+    let maxGpuCpuV = 0;
+    for (const fx of fixtures) {
+      const planes = new Float32Array(fx.planes);
+      const g = await gpu.forward(planes, 1, fx.size);
+      const c = go_reference_forward(weights, planes, 1, fx.size);
+      const gp = softmaxOver(g.logits, fx.support);
+      const cp = softmaxOver(c.logits, fx.support);
+      gp.forEach((p, i) => {
+        maxGpuCpuP = Math.max(maxGpuCpuP, Math.abs(p - cp[i]));
+      });
+      maxGpuCpuV = Math.max(maxGpuCpuV, Math.abs(g.values[0] - c.values[0]));
+    }
+    const calPass = maxGpuCpuP < 1e-3 && maxGpuCpuV < 1e-3;
+    log(
+      `GPU vs CPU (live): max |Δprior| = <span class="brass">${maxGpuCpuP.toExponential(2)}</span>, ` +
+        `max |Δvalue| = <span class="brass">${maxGpuCpuV.toExponential(2)}</span> → ` +
+        (calPass
+          ? '<span class="ok">PASS — the CPU fallback matches the GPU bot</span>'
           : '<span class="bad">FAIL</span>'),
     );
 

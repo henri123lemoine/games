@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "chess",
  "game-core",
+ "serde_json",
  "solvers",
 ]
 
@@ -130,6 +131,7 @@ version = "0.1.0"
 dependencies = [
  "game-core",
  "go",
+ "serde_json",
  "solvers",
 ]
 

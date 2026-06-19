@@ -116,4 +116,25 @@ while (!m.is_over() && plies < 30) {
 assert(plies >= 30 || m.is_over(), 'azero-gpu match advanced');
 console.log('azero-gpu seam:', plies, 'plies, ok');
 
+// The no-GPU fallback: the same externally driven seat, but the leaves are
+// evaluated in-wasm by the reference forward (load_weights + play_cpu) instead
+// of WebGPU — the exact path a visitor without a GPU hits. Locked to 1 sim.
+const goWeights = await readFile(new URL('../app/public/azero/azero-go.azweb', import.meta.url));
+const gm = engine.create_match('go', JSON.stringify({ bot: 'azero-gpu', size: 9, seat: 0, seed: 5 }));
+assert(gm.step() === '', 'no engine-side bot moves in an externally driven go match');
+const goBot = new engine.AzGoBot(1, 8, 5, 9);
+goBot.load_weights(new Uint8Array(goWeights));
+let goPlies = 0;
+while (!gm.is_over() && goPlies < 4) {
+  const turn = gm.to_act();
+  const want = JSON.parse(gm.legal_labels());
+  const input = turn === gm.human_seat() ? (want.find((l) => l !== 'pass') ?? want[0]) : goBot.play_cpu();
+  if (turn !== gm.human_seat()) assert(want.includes(input), `cpu move ${input} is legal`);
+  const mev = JSON.parse(gm.apply_human(input));
+  goBot.push(mev.label);
+  goPlies++;
+}
+assert(goPlies >= 4, 'go CPU fallback advanced');
+console.log('azero CPU fallback:', goPlies, 'plies, ok');
+
 console.log('SMOKE OK');

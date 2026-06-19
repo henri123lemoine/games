@@ -12,3 +12,6 @@ path = "src/lib.rs"
 go = { path = "../games/go" }
 game-core = { path = "../game-core" }
 solvers = { path = "../solvers", default-features = false }
+
+[dev-dependencies]
+serde_json = "1"

@@ -58,7 +58,7 @@ loadArtifact(id, bytes)          // trained nets / solver tables, fetched as sta
 runPairs(spec): string           // paired bot-vs-bot games + Elo/SPRT verdicts (reuses game-core::stats)
 ```
 
-Seeds come from JS; matches stay reproducible (shareable replays for free). Trained artifacts (`data/azero/chess.bin`, Twenty-One tables) ship as static files and load via `loadArtifact` — no train-at-startup in the browser. The WebGPU azero net is the exception that proves the rule: its weights never enter the wasm engine at all (the page evaluates leaves), so they ship as `public/azero/azero-chess.azweb` and stay page-side.
+Seeds come from JS; matches stay reproducible (shareable replays for free). Trained artifacts (`data/azero/chess.bin`, Twenty-One tables) ship as static files and load via `loadArtifact` — no train-at-startup in the browser. The WebGPU azero net is the exception that proves the rule: with a GPU its weights never enter the wasm engine (the page evaluates leaves), so they ship as `public/azero/azero-chess.azweb` and stay page-side. Without a GPU the same bytes are handed to the engine (`load_weights`) and `play_cpu` runs the whole search in-wasm against the reference forward — locked to a trivial visit budget, since that forward is built for correctness, not speed.
 
 Two portability fixes, both mechanical:
 
