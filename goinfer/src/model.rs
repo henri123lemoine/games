@@ -147,14 +147,22 @@ impl Model {
     }
 
     /// Policy logits (`size²+1`, placements then pass) and value for one
-    /// position (`PLANES·size²` flat features).
+    /// position at the export's stored board size.
     pub fn forward(&self, planes: &[f32]) -> (Vec<f32>, f32) {
-        let area = self.size * self.size;
+        self.forward_at(planes, self.size)
+    }
+
+    /// Forward at an arbitrary board `size` (`PLANES·size²` flat features). The
+    /// global-pooling net is board-size-agnostic — the convolution weights are
+    /// shared across sizes and only the spatial extent changes — so this serves
+    /// any `size ≤ self.size`, matching the WebGPU path's per-call sizing.
+    pub fn forward_at(&self, planes: &[f32], size: usize) -> (Vec<f32>, f32) {
+        let area = size * size;
         debug_assert_eq!(planes.len(), PLANES * area);
-        let mut t = conv_fwd(&self.stem, planes, self.size, true);
+        let mut t = conv_fwd(&self.stem, planes, size, true);
         for (c1, c2) in &self.tower {
-            let y = conv_fwd(c1, &t, self.size, true);
-            let mut y = conv_fwd(c2, &y, self.size, false);
+            let y = conv_fwd(c1, &t, size, true);
+            let mut y = conv_fwd(c2, &y, size, false);
             for (yv, tv) in y.iter_mut().zip(&t) {
                 *yv = (*yv + *tv).max(0.0);
             }
@@ -162,7 +170,7 @@ impl Model {
         }
         // Policy: per-point conv features biased by their global-pool summary;
         // placement logits from a bias-less 1×1 conv, pass from the pool.
-        let pol = conv_fwd(&self.p1, &t, self.size, true);
+        let pol = conv_fwd(&self.p1, &t, size, true);
         let pol_g = global_pool(&pol, self.channels, area);
         let bias = linear_fwd(&self.pgb, &pol_g, false);
         let mut pol_biased = pol;
@@ -172,23 +180,26 @@ impl Model {
                 *v = (*v + b).max(0.0);
             }
         }
-        let placement = conv_fwd(&self.pfc, &pol_biased, self.size, false); // [1, area]
+        let placement = conv_fwd(&self.pfc, &pol_biased, size, false); // [1, area]
         let pass = linear_fwd(&self.ppass, &pol_g, false);
         let mut logits = placement;
         logits.push(pass[0]);
         // Value: conv → global pool → MLP.
-        let v = conv_fwd(&self.v1, &t, self.size, true);
+        let v = conv_fwd(&self.v1, &t, size, true);
         let v_g = global_pool(&v, self.channels, area);
         let h = linear_fwd(&self.vf1, &v_g, true);
         let out = linear_fwd(&self.vf2, &h, false);
         (logits, out[0].tanh())
     }
 
-    /// Evaluates requests one by one (reference path; no batching).
+    /// Evaluates requests one by one (reference path; no batching). Each
+    /// request's board size is read from its feature length, so a batch may
+    /// mix sizes — and play at 9×9 uses the same 19×19-trained weights.
     pub fn eval(&self, reqs: &[EvalRequest]) -> Vec<EvalResult> {
         reqs.iter()
             .map(|r| {
-                let (logits, value) = self.forward(&r.features);
+                let size = isqrt_planes(r.features.len());
+                let (logits, value) = self.forward_at(&r.features, size);
                 let mut priors: Vec<f32> =
                     r.support.iter().map(|&s| logits[usize::from(s)]).collect();
                 crate::softmax(&mut priors);
@@ -253,6 +264,11 @@ fn global_pool(x: &[f32], c: usize, area: usize) -> Vec<f32> {
         out[2 * c + ch] = mx;
     }
     out
+}
+
+/// Board size from a flat feature length (`PLANES·size²`).
+fn isqrt_planes(features_len: usize) -> usize {
+    (features_len / PLANES).isqrt()
 }
 
 fn linear_fwd(l: &Linear, x: &[f32], relu: bool) -> Vec<f32> {
