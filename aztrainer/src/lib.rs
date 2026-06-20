@@ -9,6 +9,7 @@
 
 pub mod export;
 pub mod net;
+pub mod rundir;
 pub mod train;
 pub mod verify;
 
