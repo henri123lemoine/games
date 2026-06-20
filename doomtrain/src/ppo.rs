@@ -13,12 +13,17 @@ pub const CLIP: f64 = 0.2;
 // not explore away from it. A high entropy bonus washed the BC policy out.
 pub const ENT_COEF: f64 = 0.002;
 pub const VF_COEF: f64 = 0.5;
+// BC anchor: a small DAgger-style imitation term during PPO that keeps the
+// policy near the scripted hunter's competent aim, so RL refines (frags climb)
+// instead of drifting back to the no-kill local optimum.
+pub const BC_ANCHOR_COEF: f64 = 0.3;
 pub const WINDOW: usize = 32;
 
 /// One learner step of experience (seat 0). value/logp recorded at action time.
 pub struct Step {
     pub obs: [f32; OBS_DIM],
     pub action: i64,
+    pub expert: i64, // the scripted hunter's action for this obs (BC anchor)
     pub logp: f32,
     pub value: f32,
     pub reward: f32,
@@ -105,10 +110,12 @@ pub fn collect(
         let cur1 = env.player_state(1);
         let reward = shaped_reward(&prev0, &cur0, &prev1, &cur1);
         let done = (prev0.alive != 0 && cur0.alive == 0) as i32 as f32;
+        let expert = crate::env::encode_action(&scripted_hunter(&st0)) as i64;
 
         steps_v.push(Step {
             obs,
             action,
+            expert,
             logp,
             value,
             reward,
@@ -188,6 +195,7 @@ pub fn update(
             let base = win * WINDOW;
             let mut obs_v = Vec::with_capacity(WINDOW * OBS_DIM);
             let mut act_v = Vec::with_capacity(WINDOW);
+            let mut exp_v = Vec::with_capacity(WINDOW);
             let mut oldlp_v = Vec::with_capacity(WINDOW);
             let mut adv_v = Vec::with_capacity(WINDOW);
             let mut ret_v = Vec::with_capacity(WINDOW);
@@ -195,6 +203,7 @@ pub fn update(
                 let s = &roll.steps[base + i];
                 obs_v.extend_from_slice(&s.obs);
                 act_v.push(s.action);
+                exp_v.push(s.expert);
                 oldlp_v.push(s.logp);
                 adv_v.push((roll.adv[base + i] - mean) / std);
                 ret_v.push(roll.ret[base + i]);
@@ -204,6 +213,7 @@ pub fn update(
                 .view([1, w, OBS_DIM as i64])
                 .to_device(device);
             let act = Tensor::from_slice(&act_v).view([w]).to_device(device);
+            let expert = Tensor::from_slice(&exp_v).view([w]).to_device(device);
             let oldlp = Tensor::from_slice(&oldlp_v).view([w]).to_device(device);
             let adv = Tensor::from_slice(&adv_v).view([w]).to_device(device);
             let ret = Tensor::from_slice(&ret_v).view([w]).to_device(device);
@@ -229,7 +239,12 @@ pub fn update(
                 .sum_dim_intlist(-1, false, Kind::Float)
                 .mean(Kind::Float);
 
-            let loss = &pi_loss + VF_COEF * &v_loss - ENT_COEF * &entropy;
+            // BC anchor: keep imitating the hunter (DAgger-style) so PPO refines
+            // rather than drifts off the cloned competent aim.
+            let bc_loss = logits.cross_entropy_for_logits(&expert);
+
+            let loss =
+                &pi_loss + VF_COEF * &v_loss - ENT_COEF * &entropy + BC_ANCHOR_COEF * &bc_loss;
             opt.backward_step(&loss);
 
             last = (
