@@ -19,10 +19,12 @@
 #include "doomstat.h"
 #include "d_main.h"
 #include "d_loop.h"
+#include "g_game.h"
 #include "info.h"
 #include "r_main.h"
 
 extern thinker_t thinkercap;
+extern boolean netdemo;
 
 static uint32_t s_clock_ms = 0;
 static const doomrl_action_t *s_pending_action = NULL;
@@ -68,24 +70,29 @@ static int clamp8(int v)
     return v;
 }
 
+static void action_to_ticcmd(const doomrl_action_t *a, ticcmd_t *cmd)
+{
+    cmd->forwardmove = (signed char)clamp8(a->forward);
+    cmd->sidemove = (signed char)clamp8(a->side);
+    cmd->angleturn = (short)a->turn;
+    cmd->buttons = 0;
+    if (a->fire)
+        cmd->buttons |= BT_ATTACK;
+    if (a->use)
+        cmd->buttons |= BT_USE;
+    if (a->weapon > 0)
+    {
+        cmd->buttons |= BT_CHANGE;
+        cmd->buttons |= ((a->weapon - 1) << BT_WEAPONSHIFT) & BT_WEAPONMASK;
+    }
+}
+
 void DGRL_OverrideTiccmd(ticcmd_t *cmd)
 {
     if (s_pending_action == NULL)
         return;
 
-    cmd->forwardmove = (signed char)clamp8(s_pending_action->forward);
-    cmd->sidemove = (signed char)clamp8(s_pending_action->side);
-    cmd->angleturn = (short)s_pending_action->turn;
-    cmd->buttons = 0;
-    if (s_pending_action->fire)
-        cmd->buttons |= BT_ATTACK;
-    if (s_pending_action->use)
-        cmd->buttons |= BT_USE;
-    if (s_pending_action->weapon > 0)
-    {
-        cmd->buttons |= BT_CHANGE;
-        cmd->buttons |= ((s_pending_action->weapon - 1) << BT_WEAPONSHIFT) & BT_WEAPONMASK;
-    }
+    action_to_ticcmd(s_pending_action, cmd);
 }
 
 void doomrl_init(int argc, char **argv)
@@ -241,4 +248,229 @@ void doomrl_get_state(doomrl_state_t *out)
     out->target.ticks_since_seen = s_target.ticks_since_seen;
     out->target.last_bearing_deg = s_target.last_bearing_deg;
     out->target.last_dist = s_target.last_dist;
+}
+
+static int s_dm_players = 0;
+
+static struct {
+    const doomrl_action_t *pending[DOOMRL_MAX_PLAYERS];
+
+    int   prev_frags[DOOMRL_MAX_PLAYERS];
+    int   prev_deaths[DOOMRL_MAX_PLAYERS];
+    int   prev_health[DOOMRL_MAX_PLAYERS];
+    int   prev_armor[DOOMRL_MAX_PLAYERS];
+    int   was_dead[DOOMRL_MAX_PLAYERS];
+    int   deaths[DOOMRL_MAX_PLAYERS];
+    float reward[DOOMRL_MAX_PLAYERS];
+
+    int   opp_start_tic[DOOMRL_MAX_PLAYERS];
+    int   opp_valid[DOOMRL_MAX_PLAYERS];
+    int   opp_ticks_since_seen[DOOMRL_MAX_PLAYERS];
+    float opp_last_bearing[DOOMRL_MAX_PLAYERS];
+    float opp_last_dist[DOOMRL_MAX_PLAYERS];
+} s_dm;
+
+void DGRL_OverrideSet(ticcmd_t *cmds, boolean *ingame)
+{
+    if (s_dm_players < 2)
+        return;
+
+    for (int i = 0; i < s_dm_players; i++)
+    {
+        ingame[i] = true;
+        memset(&cmds[i], 0, sizeof(ticcmd_t));
+        if (players[i].playerstate == PST_DEAD)
+            cmds[i].buttons = BT_USE;
+        else if (s_dm.pending[i])
+            action_to_ticcmd(s_dm.pending[i], &cmds[i]);
+        cmds[i].consistancy = 0;
+    }
+}
+
+static void dm_setup_match(void)
+{
+    netgame = true;
+    netdemo = true;
+    deathmatch = 1;
+    consoleplayer = 0;
+    displayplayer = 0;
+    for (int i = 0; i < MAXPLAYERS; i++)
+        playeringame[i] = (i < s_dm_players);
+
+    G_InitNew(startskill, startepisode, startmap);
+
+    for (int t = 0; t < 16 && gamestate != GS_LEVEL; t++)
+    {
+        for (int i = 0; i < DOOMRL_MAX_PLAYERS; i++)
+            s_dm.pending[i] = NULL;
+        doomgeneric_Tick();
+    }
+
+    memset(&s_dm, 0, sizeof(s_dm));
+    memset(&s_dm.pending, 0, sizeof(s_dm.pending));
+    for (int i = 0; i < s_dm_players; i++)
+    {
+        s_dm.prev_health[i] = players[i].health;
+        s_dm.prev_armor[i] = players[i].armorpoints;
+        s_dm.opp_start_tic[i] = levelstarttic;
+    }
+}
+
+void doomrl_dm_init(int argc, char **argv)
+{
+    extern boolean singletics;
+    singletics = true;
+    s_clock_ms = 0;
+    s_pending_action = NULL;
+    s_dm_players = DOOMRL_MAX_PLAYERS;
+    memset(&s_dm, 0, sizeof(s_dm));
+
+    doomgeneric_Create(argc, argv);
+    dm_setup_match();
+}
+
+void doomrl_reset(void)
+{
+    if (s_dm_players < 2)
+        return;
+    dm_setup_match();
+}
+
+int doomrl_num_players(void)
+{
+    return s_dm_players;
+}
+
+static int player_kills_of_opponent(int seat)
+{
+    int opp = seat ^ 1;
+    return players[seat].frags[opp];
+}
+
+void doomrl_dm_step(const doomrl_action_t *a0, const doomrl_action_t *a1)
+{
+    s_dm.pending[0] = a0;
+    s_dm.pending[1] = a1;
+
+    for (int i = 0; i < s_dm_players; i++)
+        s_dm.reward[i] = 0.0f;
+
+    int prev_dead[DOOMRL_MAX_PLAYERS];
+    for (int i = 0; i < s_dm_players; i++)
+        prev_dead[i] = s_dm.was_dead[i];
+
+    doomgeneric_Tick();
+
+    for (int i = 0; i < s_dm_players; i++)
+    {
+        player_t *pl = &players[i];
+
+        int kills = player_kills_of_opponent(i);
+        s_dm.reward[i] += (float)(kills - s_dm.prev_frags[i]);
+        s_dm.prev_frags[i] = kills;
+
+        int dead = (pl->playerstate == PST_DEAD) || (pl->health <= 0);
+        if (dead && !s_dm.was_dead[i])
+        {
+            s_dm.deaths[i]++;
+            s_dm.reward[i] -= 1.0f;
+        }
+        s_dm.was_dead[i] = dead;
+
+        if (!dead && !prev_dead[i])
+        {
+            int dh = pl->health - s_dm.prev_health[i];
+            int da = pl->armorpoints - s_dm.prev_armor[i];
+            s_dm.reward[i] += 0.01f * (float)dh + 0.005f * (float)da;
+        }
+        s_dm.prev_health[i] = pl->health;
+        s_dm.prev_armor[i] = pl->armorpoints;
+    }
+
+    s_dm.pending[0] = NULL;
+    s_dm.pending[1] = NULL;
+}
+
+void doomrl_get_player_state(int seat, doomrl_player_state_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (seat < 0 || seat >= s_dm_players)
+        return;
+
+    out->seat = seat;
+    out->reward = s_dm.reward[seat];
+    out->deaths = s_dm.deaths[seat];
+    out->frags = player_kills_of_opponent(seat);
+
+    player_t *pl = &players[seat];
+    out->health = pl->health;
+    out->armor = pl->armorpoints;
+    out->armortype = pl->armortype;
+    out->ready_weapon = pl->readyweapon;
+    for (int k = 0; k < 4; k++)
+        out->ammo[k] = pl->ammo[k];
+
+    mobj_t *mo = pl->mo;
+    if (mo == NULL || gamestate != GS_LEVEL)
+    {
+        out->alive = 0;
+        return;
+    }
+
+    out->alive = (pl->playerstate == PST_LIVE && pl->health > 0) ? 1 : 0;
+    out->x = fx2f(mo->x);
+    out->y = fx2f(mo->y);
+    out->z = fx2f(mo->z);
+    out->angle_deg = ang2deg(mo->angle);
+    out->momx = fx2f(mo->momx);
+    out->momy = fx2f(mo->momy);
+
+    if (s_dm.opp_start_tic[seat] != levelstarttic)
+    {
+        s_dm.opp_start_tic[seat] = levelstarttic;
+        s_dm.opp_valid[seat] = 0;
+        s_dm.opp_ticks_since_seen[seat] = 0;
+    }
+
+    int opp = seat ^ 1;
+    player_t *op = &players[opp];
+    mobj_t *omo = op->mo;
+
+    int visible = 0;
+    if (omo != NULL && op->playerstate == PST_LIVE && op->health > 0)
+    {
+        int saved_validcount = validcount;
+        visible = P_CheckSight(mo, omo) ? 1 : 0;
+        validcount = saved_validcount;
+    }
+
+    if (visible)
+    {
+        float dx = fx2f(omo->x) - out->x;
+        float dy = fx2f(omo->y) - out->y;
+        float dist = sqrtf(dx * dx + dy * dy);
+        float abs_bearing = atan2f(dy, dx) * 180.0f / (float)M_PI;
+        float bearing = wrap180(abs_bearing - out->angle_deg);
+
+        out->opponent_visible = 1;
+        out->opp_bearing_deg = bearing;
+        out->opp_dist = dist;
+        out->opp_rel_vx = fx2f(omo->momx) - out->momx;
+        out->opp_rel_vy = fx2f(omo->momy) - out->momy;
+        out->opp_health = op->health;
+
+        s_dm.opp_valid[seat] = 1;
+        s_dm.opp_ticks_since_seen[seat] = 0;
+        s_dm.opp_last_bearing[seat] = bearing;
+        s_dm.opp_last_dist[seat] = dist;
+    }
+    else if (s_dm.opp_valid[seat])
+    {
+        s_dm.opp_ticks_since_seen[seat]++;
+    }
+
+    out->opp_memory.valid = s_dm.opp_valid[seat];
+    out->opp_memory.ticks_since_seen = s_dm.opp_ticks_since_seen[seat];
+    out->opp_memory.last_bearing_deg = s_dm.opp_last_bearing[seat];
+    out->opp_memory.last_dist = s_dm.opp_last_dist[seat];
 }

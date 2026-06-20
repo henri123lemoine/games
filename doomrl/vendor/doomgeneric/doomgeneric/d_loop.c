@@ -37,6 +37,11 @@
 #include "net_io.h"
 
 __attribute__((weak)) void DGRL_OverrideTiccmd(ticcmd_t *cmd) { (void)cmd; }
+__attribute__((weak)) void DGRL_OverrideSet(ticcmd_t *cmds, boolean *ingame)
+{
+    (void)cmds;
+    (void)ingame;
+}
 #include "net_query.h"
 #include "net_server.h"
 #include "net_sdl.h"
@@ -804,6 +809,8 @@ void TryRunTics (void)
         {
             SinglePlayerClear(set);
         }
+
+        DGRL_OverrideSet(set->cmds, set->ingame);
 
 	for (i=0 ; i<ticdup ; i++)
 	{

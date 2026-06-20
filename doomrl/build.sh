@@ -36,7 +36,10 @@ for f in doomrl doomrl_sound_null; do
 done
 
 $CC $CFLAGS -I"$DG" -c "$HERE/driver.c" -o "$OUT/driver.o"
-OBJS+=("$OUT/driver.o")
+$CC $CFLAGS -I"$DG" -c "$HERE/dm_driver.c" -o "$OUT/dm_driver.o"
 
-$CC $CFLAGS "${OBJS[@]}" -lm -o "$OUT/doomrl_driver"
+$CC $CFLAGS "${OBJS[@]}" "$OUT/driver.o" -lm -o "$OUT/doomrl_driver"
 echo "built: $OUT/doomrl_driver"
+
+$CC $CFLAGS "${OBJS[@]}" "$OUT/dm_driver.o" -lm -o "$OUT/doomrl_dm"
+echo "built: $OUT/doomrl_dm"
