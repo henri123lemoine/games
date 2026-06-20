@@ -36,7 +36,7 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   othello: { depth: "5" },
   connect4: { depth: "7" },
   go: { size: "9", bot: "azero-gpu", sims: "1500" },
-  snake: { bot: "azero", sims: "128" },
+  snake: { bot: "azero-gpu", sims: "256" },
   "2048": {},
 };
 
@@ -113,7 +113,6 @@ const SEAT_LABELS: Record<string, string[]> = {
   go: ["Black", "White"],
   connect4: ["Red", "Yellow"],
   twentyone: ["Player 1", "Player 2"],
-  snake: ["Snake A", "Snake B"],
 };
 
 function seatLabelFor(gameId: string, i: number): string {

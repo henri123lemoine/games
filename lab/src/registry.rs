@@ -406,8 +406,8 @@ const G2048_OPTS: &[OptSpec] = &[
 
 const SNAKE_OPTS: &[OptSpec] = &[
     opt("seat", "0|1|watch", "(0=Snake A)"),
-    opt("bot", "azero|mcts-eval|mcts", "(azero: browser only)"),
-    bot_opt("sims", "200", "", &["azero", "mcts", "mcts-eval"]),
+    opt("bot", "azero-gpu|mcts|mcts-eval", "(azero-gpu: browser only)"),
+    bot_opt("sims", "200", "", &["azero-gpu", "mcts", "mcts-eval"]),
     bot_opt("depth", "16", "", &["mcts-eval"]),
     opt("seed", "...", ""),
 ];
@@ -534,13 +534,13 @@ pub fn entries() -> Vec<Entry> {
             name: "Snake",
             solo: false,
             watch_bot: "",
-            summary: "Competitive 1v1 Snake (20x20) vs MCTS",
+            summary: "Competitive 1v1 Snake (20x20) vs AlphaZero",
             opts: SNAKE_OPTS,
             make: Box::new(|o| {
                 // The AlphaZero seat is driven client-side (in-wasm search +
                 // snakeinfer forward, no GPU); leave it externally driven so
                 // step() yields to the page, like go/chess azero-gpu.
-                if o.str("bot", "mcts-eval") == "azero" {
+                if o.str("bot", "mcts-eval") == "azero-gpu" {
                     return make_external_versus(o, snake::Duel::new(), &["sims"]);
                 }
                 make_versus(o, snake::Duel::new(), "mcts-eval", snake_bot)
@@ -634,8 +634,8 @@ fn snake_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<snake::Duel>, Strin
                 Box::new(Mcts::with_eval(sims, snake::DuelEval, depth)) as BoxedAgent<snake::Duel>
             })
         }
-        "azero" => {
-            return Err("the snake 'azero' bot runs client-side (browser only)".into());
+        "azero-gpu" => {
+            return Err("the snake 'azero-gpu' bot runs client-side (browser only)".into());
         }
         other => {
             return Err(format!("unknown snake bot '{other}' (mcts-eval|mcts)"));

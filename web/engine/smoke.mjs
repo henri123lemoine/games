@@ -169,7 +169,7 @@ console.log('azero CPU fallback:', goPlies, 'plies, ok');
 // (play_cpu) — the exact path the snake card hits. Snake stays hidden on the
 // live cards, but the engine path is validated here.
 const snakeWeights = await readFile(new URL('../app/public/azero/azero-snake.azweb', import.meta.url));
-const sm = engine.create_match('snake', JSON.stringify({ bot: 'azero', seat: 0, seed: 9 }));
+const sm = engine.create_match('snake', JSON.stringify({ bot: 'azero-gpu', seat: 0, seed: 9 }));
 assert(sm.step() === '', 'no engine-side bot moves in an externally driven snake match');
 const snakeBot = new engine.AzSnakeBot(8, 8, 9);
 snakeBot.load_weights(new Uint8Array(snakeWeights));

@@ -31,7 +31,7 @@ export type ClientBotFactory = (
 const factories = new Map<string, ClientBotFactory>([
   ['chess/azero-gpu', createAzeroChess],
   ['go/azero-gpu', createAzeroGo],
-  ['snake/azero', createAzeroSnake],
+  ['snake/azero-gpu', createAzeroSnake],
 ]);
 
 export function clientBotFor(gameId: string, bot: string | undefined): ClientBotFactory | null {
