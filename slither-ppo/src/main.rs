@@ -208,31 +208,41 @@ fn compare(args: &[String]) {
     let steps: usize = get("steps").and_then(|v| v.parse().ok()).unwrap_or(400);
     let seed: u64 = get("seed").and_then(|v| v.parse().ok()).unwrap_or(777);
 
-    let eval_one = |path: &str| -> eval::EvalResult {
+    // Evaluate each net at both configs: symmetric is the TRUE deployment number
+    // (no learner head-start), favorable is the old oversized-vs-prey setup shown
+    // only to expose how much the head-start inflated the headline.
+    let eval_one = |path: &str, symmetric: bool| -> eval::EvalResult {
         let mut vs = nn::VarStore::new(device);
         let policy = Policy::new(&vs.root());
         vs.load(path).unwrap_or_else(|e| panic!("load {path}: {e}"));
-        eval::evaluate(&policy, device, games, steps, Opp::Heuristic, seed)
+        eval::evaluate(
+            &policy,
+            device,
+            games,
+            steps,
+            Opp::Heuristic,
+            seed,
+            symmetric,
+        )
     };
 
     let print = |label: &str, r: &eval::EvalResult| {
         println!(
-            "{label:>40}  win {:.3}  kill-win {:.3}  learner-kills/g {:.3}  deaths-to-opp/g {:.3}  lifespan {:.0}  final-len {:.1}",
+            "{label:>44}  win {:.3}  kill-win {:.3}  learner-kills/g {:.3}  deaths-to-opp/g {:.3}  final-len {:.1}",
             r.winrate,
             r.kill_winrate,
             r.learner_kills_per_game,
             r.opp_kills_per_game,
-            r.mean_lifespan,
             r.mean_final_len
         );
     };
 
     println!("compare vs HEURISTIC  device={device:?}  games={games}  steps={steps}  seed={seed}");
-    if let Some(a) = get("net") {
-        print(a, &eval_one(a));
-    }
-    if let Some(b) = get("net2") {
-        print(b, &eval_one(b));
+    for (tag, net) in [("net", get("net")), ("net2", get("net2"))] {
+        let Some(path) = net else { continue };
+        let _ = tag;
+        print(&format!("{path} [SYMMETRIC/deploy]"), &eval_one(path, true));
+        print(&format!("{path} [favorable]"), &eval_one(path, false));
     }
 }
 
@@ -388,6 +398,9 @@ fn train() {
         let mut ev_rand = None;
         let mut ev_heur = None;
         if iter % args.eval_every == 0 || iter == args.iters - 1 {
+            // SYMMETRIC (true deployment, no learner head-start) is the gating
+            // eval — keep-best uses `h` below. The favorable number is logged too
+            // so the gap between "looks good" and "real" stays visible.
             let r = eval::evaluate(
                 &policy,
                 args.device,
@@ -395,6 +408,7 @@ fn train() {
                 400,
                 Opp::Random,
                 args.seed ^ 0x11,
+                true,
             );
             let h = eval::evaluate(
                 &policy,
@@ -403,9 +417,19 @@ fn train() {
                 400,
                 Opp::Heuristic,
                 args.seed ^ 0x22,
+                true,
+            );
+            let h_fav = eval::evaluate(
+                &policy,
+                args.device,
+                args.eval_games,
+                400,
+                Opp::Heuristic,
+                args.seed ^ 0x22,
+                false,
             );
             println!(
-                "  [iter {iter:>4}] r/step {reward_per_step:+.4}  ent {:.3}  kl {:.4}  clip {:.2}  ev {:+.2}  vloss {:.3}  shaping {shaping:.2}  | vs RAND win {:.2} k {:.2}  | vs HEUR win {:.2} kill-win {:.2} k {:.2}  opp-k {:.2}  {dt:.1}s",
+                "  [iter {iter:>4}] r/step {reward_per_step:+.4}  ent {:.3}  kl {:.4}  clip {:.2}  ev {:+.2}  vloss {:.3}  shaping {shaping:.2}  | vs RAND win {:.2} k {:.2}  | SYM vs HEUR win {:.2} kill-win {:.2} k {:.2} opp-k {:.2}  (fav win {:.2})  {dt:.1}s",
                 stats.entropy,
                 stats.approx_kl,
                 stats.clip_frac,
@@ -417,6 +441,7 @@ fn train() {
                 h.kill_winrate,
                 h.learner_kills_per_game,
                 h.opp_kills_per_game,
+                h_fav.winrate,
             );
             ev_rand = Some(r);
             ev_heur = Some(h);

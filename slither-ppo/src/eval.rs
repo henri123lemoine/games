@@ -39,9 +39,15 @@ pub enum Opp {
 }
 
 /// Evaluate the greedy learner over `games` independent 1-v-rest arenas against
-/// `opp`. Learner is seat 0; all other seats run `opp`. Arenas are even-sized
-/// (no curriculum handicap) so the score is honest. Forwards are batched across
-/// all still-alive games each step — one GPU call per step total.
+/// `opp`. Learner is seat 0; all other seats run `opp`. Forwards are batched
+/// across all still-alive games each step — one GPU call per step total.
+///
+/// `symmetric` picks the world: `true` is the TRUE deployment config — every worm
+/// the same `START_LENGTH`, no jitter — so the score is the real win-share a human
+/// faces, with NO size head-start for the learner. `false` keeps the old favorable
+/// config (learner oversized +30, opponents small) — reported alongside only to
+/// show how much the head-start inflated the headline. Keep-best must gate on the
+/// symmetric number.
 pub fn evaluate(
     policy: &Policy,
     device: Device,
@@ -49,12 +55,22 @@ pub fn evaluate(
     steps: usize,
     opp: Opp,
     seed: u64,
+    symmetric: bool,
 ) -> EvalResult {
-    let cfg = WorldConfig {
-        worms: 6,
-        seat0_length: START_LENGTH + 30.0,
-        prey_jitter: 40.0,
-        ..WorldConfig::default()
+    let cfg = if symmetric {
+        WorldConfig {
+            worms: 6,
+            seat0_length: START_LENGTH,
+            prey_jitter: 0.0,
+            ..WorldConfig::default()
+        }
+    } else {
+        WorldConfig {
+            worms: 6,
+            seat0_length: START_LENGTH + 30.0,
+            prey_jitter: 40.0,
+            ..WorldConfig::default()
+        }
     };
 
     let mut envs: Vec<Env> = Vec::with_capacity(games);
