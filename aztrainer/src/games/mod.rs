@@ -3,4 +3,6 @@
 //! drives the shared `aztrainer` core. The generic algorithm lives in the
 //! crate root; only game knowledge lives here.
 
+pub mod chess;
+pub mod go;
 pub mod snake;
