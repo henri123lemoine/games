@@ -219,6 +219,37 @@ impl Net {
         }
     }
 
+    /// The PUCT leaf-eval bridge: forward over `planes` (size inferred from the
+    /// feature length for the size-agnostic heads), restrict the policy to the
+    /// legal `support` indices, and softmax that subset — returning the
+    /// priors-over-support and the value an `azero::Search` leaf wants. Mirrors
+    /// the old `Model::eval` per request, so a search driven by this is identical
+    /// to one driven by the per-game forwards. `scalars` is empty for the AZ games.
+    pub fn forward_support(
+        &self,
+        planes: &[f32],
+        scalars: &[f32],
+        support: &[u16],
+    ) -> (Vec<f32>, f32) {
+        let size = self.infer_size(planes.len());
+        let out = self.forward_at(planes, scalars, size);
+        let mut priors: Vec<f32> = support
+            .iter()
+            .map(|&s| out.policy[usize::from(s)])
+            .collect();
+        softmax(&mut priors);
+        (priors, out.value)
+    }
+
+    /// Board size implied by a flat feature length (`planes·size²`). For the
+    /// board-fixed flat head this is always `arch.size`.
+    fn infer_size(&self, features_len: usize) -> usize {
+        match self.arch.head {
+            HeadKind::FlatConv => self.arch.size,
+            _ => (features_len / self.arch.planes).isqrt(),
+        }
+    }
+
     /// Residual-tower output `[channels, area]` shared by every head.
     fn trunk(&self, planes: &[f32], size: usize) -> Vec<f32> {
         let mut t = conv_fwd_vec(&self.stem, planes, size, true);

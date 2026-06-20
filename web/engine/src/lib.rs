@@ -6,6 +6,7 @@
 mod az;
 mod azgo;
 mod azsnake;
+mod mcts;
 
 use lab::registry::{Opts, entries};
 use lab::runner::{AnyMatch, MatchEvent};
@@ -147,6 +148,23 @@ fn ref_forward(
         out.values.push(res.value);
     }
     Ok(out)
+}
+
+/// The in-wasm CPU leaf evaluator: answers a batch of `EvalRequest`s with the
+/// generic forward, restricting and softmaxing the policy to each request's
+/// legal support. The AZ games carry no scalar side-input. Bit-identical to the
+/// per-game `Model::eval` the old crates supplied, so the in-wasm search is
+/// unchanged.
+pub(crate) fn eval_batch(
+    net: &nn_infer::Net,
+    reqs: &[solvers::azero::EvalRequest],
+) -> Vec<solvers::azero::EvalResult> {
+    reqs.iter()
+        .map(|r| {
+            let (priors, value) = net.forward_support(&r.features, &[], &r.support);
+            solvers::azero::EvalResult { priors, value }
+        })
+        .collect()
 }
 
 /// The go reference forward over `n` positions (`features` flat, each

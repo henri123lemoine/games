@@ -136,6 +136,18 @@ fn go_spatial_with_ownership_matches_goinfer_bit_for_bit() {
             let leg = via_legacy.forward_at(&feats, &[], s);
             assert_eq!(leg.policy, rp, "legacy adapter policy @ {s}");
             assert_eq!(leg.ownership, ro, "legacy adapter ownership @ {s}");
+
+            // The PUCT bridge (forward_support) must match Model::eval over a
+            // legal support exactly — this is the path the in-wasm search uses.
+            let support: Vec<u16> = (0..=(s * s) as u16).step_by(3).collect();
+            let req = goinfer::EvalRequest {
+                features: feats.clone(),
+                support: support.clone(),
+            };
+            let re = &reference.eval(std::slice::from_ref(&req))[0];
+            let (priors, value) = net.forward_support(&feats, &[], &support);
+            assert_eq!(priors, re.priors, "forward_support priors @ {s}");
+            assert_eq!(value, re.value, "forward_support value @ {s}");
         }
     }
 }

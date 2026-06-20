@@ -9,9 +9,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 nn-infer = { path = "../../nn-infer" }
-azinfer = { path = "../../azinfer" }
-goinfer = { path = "../../goinfer" }
-snakeinfer = { path = "../../snakeinfer" }
+solvers = { path = "../../solvers", default-features = false }
 chess = { path = "../../games/chess" }
 go = { path = "../../games/go" }
 snake = { path = "../../games/snake" }

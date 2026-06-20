@@ -1,7 +1,7 @@
 //! The AlphaZero snake bot's wasm surface. The batched park/resume PUCT search
 //! runs in-wasm; leaf evaluation runs either on the GPU (the page answers each
 //! parked batch via WebGPU — `set_state` → `advance`/`batch_*` → `advance` … →
-//! `best`) or in-wasm against `snakeinfer`'s reference forward (`play_cpu`),
+//! `best`) or in-wasm against `nn-infer`'s reference forward (`play_cpu`),
 //! the no-GPU fallback. Same net and same search either way, like go and chess.
 //!
 //! Snake's food placement is a chance node the match engine resolves with its
@@ -14,12 +14,14 @@
 //! pending heading.
 
 use game_core::{Game, GameUi, Rng, Turn};
+use nn_infer::{Legacy, Net};
 use snake::duel::{Dir, MAX_HEALTH, Worm};
-use snake::encode::SnakeEncoder;
+use snake::encode::{PLANES, SnakeEncoder};
 use snake::{Duel, DuelState};
-use snakeinfer::model::Model;
-use snakeinfer::{EvalRequest, EvalResult, Gather, PuctConfig, Search, argmax};
+use solvers::azero::{EvalRequest, EvalResult, Gather, PuctConfig, Search, argmax};
 use wasm_bindgen::prelude::*;
+
+use crate::eval_batch;
 
 #[wasm_bindgen]
 pub struct AzSnakeBot {
@@ -31,7 +33,7 @@ pub struct AzSnakeBot {
     rng: Rng,
     /// The reference net; `None` until `load_weights`. The CPU path needs it for
     /// every leaf evaluation; the GPU path never loads it.
-    model: Option<Model>,
+    model: Option<Net>,
     /// Requests parked by the last `advance`, awaiting page-side (GPU)
     /// evaluation. Empty between moves and on the CPU path.
     batch: Vec<EvalRequest>,
@@ -69,7 +71,13 @@ impl AzSnakeBot {
     /// Loads the `.azweb` net; only the in-wasm CPU leaf evaluation needs it
     /// (the GPU path evaluates page-side).
     pub fn load_weights(&mut self, weights: &[u8]) -> Result<(), JsError> {
-        self.model = Some(Model::parse(weights).map_err(|e| JsError::new(&e))?);
+        let net = Legacy::SnakeDense {
+            planes: PLANES,
+            policy_len: 4,
+        }
+        .load(weights)
+        .map_err(|e| JsError::new(&e))?;
+        self.model = Some(net);
         Ok(())
     }
 
@@ -113,7 +121,7 @@ impl AzSnakeBot {
             std::mem::take(&mut results),
             &|_| false,
         ) {
-            results = model.eval(&reqs);
+            results = eval_batch(model, &reqs);
         }
         self.done = true;
         self.best()

@@ -431,17 +431,15 @@ dependencies = [
 name = "web-engine"
 version = "0.1.0"
 dependencies = [
- "azinfer",
  "chess",
  "console_error_panic_hook",
  "game-core",
  "go",
- "goinfer",
  "lab",
  "nn-infer",
  "serde_json",
  "snake",
- "snakeinfer",
+ "solvers",
  "wasm-bindgen",
 ]
 

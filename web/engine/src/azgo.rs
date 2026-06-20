@@ -3,7 +3,7 @@
 //! feeds the results back (`advance` → `batch_*` → `advance` … until it
 //! returns 0, then `best`). Without a GPU, `load_weights` hands the same
 //! `.azweb` net to this bot and `play_cpu` runs the whole search in-wasm
-//! against `goinfer`'s reference forward — identical net, identical search,
+//! against `nn-infer`'s reference forward — identical net, identical search,
 //! just no WebGPU (so it stays at the trivial visit budget to keep moves
 //! responsive). One instance mirrors one game: `push` every applied move —
 //! both sides' — so the searched subtree carries over between turns. Unlike
@@ -11,11 +11,13 @@
 //! draws are off.
 
 use game_core::{Game, GameUi, PolicyValueEncoder, Rng};
-use go::encode::GoEncoder;
+use go::encode::{GoEncoder, PLANES};
 use go::{Go, GoAction, GoState};
-use goinfer::model::Model;
-use goinfer::{EvalRequest, EvalResult, Gather, PuctConfig, Search, argmax};
+use nn_infer::{Legacy, Net};
+use solvers::azero::{EvalRequest, EvalResult, Gather, PuctConfig, Search, argmax};
 use wasm_bindgen::prelude::*;
+
+use crate::eval_batch;
 
 /// Ownership past this magnitude assigns a point to a color (for the
 /// literal-board agreement check and for adjudicated scoring).
@@ -35,7 +37,7 @@ pub struct AzGoBot {
     /// The reference net, loaded in both modes: CPU play uses it for leaf
     /// evaluations, and either mode uses its ownership head for the pass
     /// decision. `None` until `load_weights` (and ownership-less for `AZWEBGO2`).
-    model: Option<Model>,
+    model: Option<Net>,
     /// The tree holds at least an expanded root (safe to read/extract).
     has_tree: bool,
     /// The last search ran to its visit budget (best move is readable).
@@ -74,7 +76,10 @@ impl AzGoBot {
     /// Loads the `.azweb` net (CPU leaf evaluation and the ownership pass
     /// decision both need it, so both modes call this).
     pub fn load_weights(&mut self, weights: &[u8]) -> Result<(), JsError> {
-        self.model = Some(Model::parse(weights).map_err(|e| JsError::new(&e))?);
+        let net = Legacy::GoSpatial { planes: PLANES }
+            .load(weights)
+            .map_err(|e| JsError::new(&e))?;
+        self.model = Some(net);
         Ok(())
     }
 
@@ -100,7 +105,7 @@ impl AzGoBot {
             std::mem::take(&mut results),
             &|_| false,
         ) {
-            results = model.eval(&reqs);
+            results = eval_batch(model, &reqs);
         }
         self.has_tree = true;
         self.done = true;
@@ -142,7 +147,7 @@ impl AzGoBot {
     fn ownership_abs(&self) -> Option<Vec<f32>> {
         let model = self.model.as_ref()?;
         let planes = self.enc.encode_state(&self.game, &self.state);
-        let mover = model.ownership_at(&planes, self.size)?;
+        let mover = model.forward_at(&planes, &[], self.size).ownership?;
         let sign = if self.state.to_move() == 0 { 1.0 } else { -1.0 };
         Some(mover.iter().map(|o| o * sign).collect())
     }
@@ -280,7 +285,7 @@ impl AzGoBot {
         // so the deployed bot doesn't hand a human the game on a sparse board.
         let mut visits = self.search.root_visits().to_vec();
         let actions = self.search.root_actions();
-        goinfer::mask_pass_visits(&self.game, &self.state, actions, &mut visits);
+        mask_pass_visits(&self.game, &self.state, actions, &mut visits);
         let action = actions[argmax(&visits)];
         Ok(self.game.action_label(&self.state, action))
     }
@@ -302,10 +307,33 @@ impl AzGoBot {
     }
 }
 
+/// Zeroes the pass action's visits when the mover still has a productive move
+/// (see [`Go::has_productive_move`]), so the deployed bot never favors passing
+/// early on a sparse board — the guard against area scoring's "pass for the
+/// komi win" degenerate equilibrium. A no-op once only eye-filling moves remain,
+/// so finished games still end by passing; leaves visits untouched if pass is
+/// the only visited action.
+fn mask_pass_visits(game: &Go, state: &GoState, actions: &[GoAction], visits: &mut [u32]) {
+    if !game.has_productive_move(state) {
+        return;
+    }
+    let Some(pass_i) = actions.iter().position(|a| matches!(a, GoAction::Pass)) else {
+        return;
+    };
+    let others: u32 = visits
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != pass_i)
+        .map(|(_, &v)| v)
+        .sum();
+    if others > 0 {
+        visits[pass_i] = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use go::encode::PLANES;
 
     /// A synthetic net of the right shape (heads are uniform fill, ownership
     /// head `0.1`). `AZWEBGO3` when `ownership`, else `AZWEBGO2`.
@@ -341,10 +369,12 @@ mod tests {
         let mut bot = AzGoBot::new(4, 8, 7, 3);
         bot.load_weights(&synth_net(2, 6, 3, true)).unwrap();
         let mover = |bot: &AzGoBot| {
+            let planes = bot.enc.encode_state(&bot.game, &bot.state);
             bot.model
                 .as_ref()
                 .unwrap()
-                .ownership_at(&bot.enc.encode_state(&bot.game, &bot.state), bot.size)
+                .forward_at(&planes, &[], bot.size)
+                .ownership
                 .unwrap()
         };
         assert_eq!(bot.state.to_move(), 0);

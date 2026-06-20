@@ -3,7 +3,7 @@
 //! and feeds the results back (`advance` → `batch_*` → `advance` … until it
 //! returns 0, then `best`). Without a GPU, `load_weights` hands the same
 //! `.azweb` net to this bot and `play_cpu` runs the whole search in-wasm
-//! against `azinfer`'s reference forward — identical net and search, no
+//! against `nn-infer`'s reference forward — identical net and search, no
 //! WebGPU (so it stays at the trivial visit budget to keep moves responsive).
 //! One instance mirrors one game: `push` every applied move — both sides' — so
 //! repetition awareness sees the real game history and the searched subtree
@@ -11,12 +11,15 @@
 
 use std::collections::HashMap;
 
-use azinfer::mcts::{Gather, MctsConfig, Search, run_to_done};
-use azinfer::model::Model;
-use azinfer::{EvalRequest, EvalResult, argmax};
+use chess::encode::PLANE_COUNT;
 use chess::{Board, Move, legal_moves};
 use game_core::Rng;
+use nn_infer::{Legacy, Net};
+use solvers::azero::{EvalRequest, EvalResult, argmax};
 use wasm_bindgen::prelude::*;
+
+use crate::eval_batch;
+use crate::mcts::{Gather, MctsConfig, Search, run_to_done};
 
 #[wasm_bindgen]
 pub struct AzChessBot {
@@ -28,7 +31,7 @@ pub struct AzChessBot {
     /// Requests parked by the last `advance`, awaiting page-side evaluation.
     batch: Vec<EvalRequest>,
     /// The reference net for the CPU path; `None` until `load_weights`.
-    model: Option<Model>,
+    model: Option<Net>,
     /// The tree holds at least an expanded root (safe to read/extract).
     has_tree: bool,
     /// The last search ran to its visit budget (best move is readable).
@@ -66,7 +69,13 @@ impl AzChessBot {
     /// Loads the `AZWEB001` weights for the CPU path (`play_cpu`). Only needed
     /// when the page has no WebGPU; the GPU path never calls this.
     pub fn load_weights(&mut self, weights: &[u8]) -> Result<(), JsError> {
-        self.model = Some(Model::parse(weights).map_err(|e| JsError::new(&e))?);
+        let net = Legacy::FlatConv {
+            planes: PLANE_COUNT,
+            policy_len: chess::encode::AZ_POLICY_LEN,
+        }
+        .load(weights)
+        .map_err(|e| JsError::new(&e))?;
+        self.model = Some(net);
         Ok(())
     }
 
@@ -88,7 +97,7 @@ impl AzChessBot {
             &self.history,
             &self.cfg,
             &mut self.rng,
-            |reqs| model.eval(reqs),
+            |reqs| eval_batch(model, reqs),
         );
         self.has_tree = true;
         self.done = true;
