@@ -26,8 +26,13 @@ const TICK_MS = 1000 / TICK_HZ;
 /** Cap catch-up so a backgrounded tab doesn't fast-forward a burst on return. */
 const MAX_TICKS_PER_FRAME = 4;
 
-const WORMS = 8;
-const PELLETS = 700;
+// Match the world the net trained on: 6 worms and the conservative
+// pellet_target=250 (+ slow trickle). At 700 pellets the field was ~3x denser
+// than training — essentially the old pre-conservation food faucet — so the bot
+// ran its sparse-food "hunt, don't farm" policy in a food-soaked world it never
+// saw, and the human could just vacuum food and out-grow it.
+const WORMS = 6;
+const PELLETS = 250;
 const LEADERBOARD_ROWS = 10;
 
 // --- slither.io palette (saturated wheel hues) -----------------------------

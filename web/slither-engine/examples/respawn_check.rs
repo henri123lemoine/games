@@ -1,41 +1,88 @@
-//! Headless check that killed bots respawn: build the real `SlitherGame`, force
-//! a bot to die, tick once, and confirm the seat comes back alive at the start
-//! size with the living-worm count restored.
+//! Headless deploy-parity check for the in-browser slither world: confirms the
+//! served engine matches the world the net trained on (6 worms, conservative
+//! pellet_target=250 + trickle), that killed bots respawn, and that the body
+//! radius follows the cube-root law. Built with `--features debug-hooks`.
 
 use slither_engine::SlitherGame;
+
+const WORMS: usize = 6;
+const PELLETS: usize = 250;
 
 fn main() {
     let weights = std::fs::read("../app/public/slither/slither.weights")
         .or_else(|_| std::fs::read("web/app/public/slither/slither.weights"))
         .expect("slither.weights not found");
 
-    let mut game = SlitherGame::new(&weights, 8, 700, 12345).expect("construct game");
+    // Construct exactly as the page does: WORMS worms, PELLETS pellet target.
+    let mut game = SlitherGame::new(&weights, WORMS, PELLETS, 12345).expect("construct game");
 
+    // --- config parity: population and pellet target match the trainer ---
     let n = game.worm_count();
-    let alive0 = game.alive_count();
-    println!("worms={n} alive_at_start={alive0}");
-    assert_eq!(alive0, n, "everyone alive at start");
-
-    // Kill bot seat 1 directly, then tick: the engine should respawn it.
-    game.debug_kill(1);
-    let alive_after_kill = game.alive_count();
-    println!("alive_after_kill(before tick)={alive_after_kill}");
+    assert_eq!(n, WORMS, "deploy world must have the trained worm count");
     assert_eq!(
-        alive_after_kill,
-        n - 1,
-        "one bot dead before the respawn tick"
+        game.debug_pellet_target(),
+        PELLETS,
+        "deploy pellet target must match the conservative trainer default"
+    );
+    println!("worms={n} pellet_target={}", game.debug_pellet_target());
+
+    // --- cube-root radius law (the shipped Rust dynamics) ---
+    game.debug_set_length(1, 22.0);
+    let r_start = game.debug_worm_radius(1);
+    game.debug_set_length(1, 300.0);
+    let r_mid = game.debug_worm_radius(1);
+    game.debug_set_length(1, 3000.0);
+    let r_big = game.debug_worm_radius(1);
+    println!("radius: len22={r_start:.2} len300={r_mid:.2} len3000={r_big:.2}");
+    assert!(
+        (r_start - (5.0 + 3.6_f32)).abs() < 0.01,
+        "len==START_LENGTH should give base+growth (cube-root law), got {r_start}"
+    );
+    assert!(
+        r_big < 2.0 * r_mid,
+        "10x length must less than double the radius (sublinear), got {r_mid}->{r_big}"
+    );
+    game.debug_set_length(1, 22.0);
+
+    // --- pellet density settles near the conservative target, not ~3x it ---
+    for _ in 0..400 {
+        game.tick(0.0, false);
+    }
+    let pc = game.debug_pellet_count();
+    println!("pellet_count_after_400_ticks={pc} (target {PELLETS})");
+    assert!(
+        pc <= (PELLETS as f32 * 1.6) as usize + 5,
+        "pellet field must stay near the conservative target, got {pc}"
     );
 
-    game.tick(0.0, false);
-    let alive_after_tick = game.alive_count();
-    let seat1_len = game.debug_worm_length(1);
-    let seat1_dead = game.debug_worm_dead(1);
-    println!("alive_after_tick={alive_after_tick} seat1_dead={seat1_dead} seat1_len={seat1_len}");
-    assert!(!seat1_dead, "seat 1 must be alive again");
-    assert_eq!(alive_after_tick, n, "population recovered after respawn");
+    // --- decision rate: every living bot decides every tick (30 Hz == training) ---
+    for _ in 0..30 {
+        game.tick(0.0, false);
+        assert_eq!(
+            game.debug_decided_last_tick(),
+            game.debug_living_bots(),
+            "every living bot must run a forward every tick (no throttle)"
+        );
+    }
+    println!(
+        "decision_rate ok: decided {} bots/tick == living bots",
+        game.debug_decided_last_tick()
+    );
 
-    // Hammer it: kill a bunch over many ticks and confirm the count never collapses.
-    let mut min_alive = alive_after_tick;
+    // --- respawn: a killed bot returns alive next tick, population recovers ---
+    let alive0 = game.alive_count();
+    game.debug_kill(1);
+    assert_eq!(game.alive_count(), alive0 - 1, "kill removed one bot");
+    game.tick(0.0, false);
+    assert!(!game.debug_worm_dead(1), "seat 1 respawned");
+    assert_eq!(game.alive_count(), alive0, "population recovered");
+    println!(
+        "respawn ok: seat1 back at len={}",
+        game.debug_worm_length(1)
+    );
+
+    // --- hammer: kill a bot every 25 ticks for a long run; never empties ---
+    let mut min_alive = game.alive_count();
     for t in 0..2000u32 {
         if t % 25 == 0 {
             let victim = 1 + (t as usize % (n - 1));
@@ -47,8 +94,10 @@ fn main() {
     println!("min_alive_over_run={min_alive} (n={n})");
     assert!(
         min_alive >= n - 1,
-        "with steady respawns the arena should never drop more than the just-killed worm"
+        "arena should never collapse under respawns"
     );
 
-    println!("OK: bots respawn and the population is maintained");
+    println!(
+        "OK: deploy world matches training (worms=6, pellets=250), respawn works, cube-root radius"
+    );
 }

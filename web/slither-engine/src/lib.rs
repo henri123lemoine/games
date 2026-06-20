@@ -18,16 +18,6 @@ use slitherinfer::Model;
 use slitherinfer::obs::{ObsMemory, act};
 use wasm_bindgen::prelude::*;
 
-/// How many bot net-forwards run per sim tick. The dominant per-tick cost is the
-/// CNN forward (~6 ms native, more in wasm); running every bot every tick is what
-/// crippled the framerate. Instead the bots are decided round-robin — a small
-/// budget per tick, each bot's action cached until its next turn — so a tick
-/// costs a bounded number of forwards regardless of population. At 30 Hz with a
-/// budget of 2, ~8 bots each re-decide every ~4 ticks (~7.5 Hz), well inside
-/// their reaction needs (a worm turns at most `TURN_RATE*DT` ≈ 8°/tick), and the
-/// sim stays real-time even while the browser does other work.
-const BOT_BUDGET_PER_TICK: usize = 2;
-
 #[wasm_bindgen(start)]
 pub fn start() {
     console_error_panic_hook::set_once();
@@ -91,17 +81,21 @@ pub struct SlitherGame {
     model: Model,
     /// Per-worm observation scratch (delta channels); index 0 (human) unused.
     mem: Vec<ObsMemory>,
-    /// Last action each bot decided, replayed on the ticks between its (throttled)
-    /// re-decisions. Index 0 (human) unused. Updated round-robin from `bot_cursor`.
-    cached: Vec<Action>,
-    /// Next bot index to re-decide this tick; walks the worm range round-robin.
-    bot_cursor: usize,
+    /// Each bot's action this tick. Every living bot re-decides every tick (to
+    /// match the 30 Hz decision rate the net trained and was evaluated at), so
+    /// this is rewritten in full each tick rather than cached across ticks. Index
+    /// 0 (human) unused.
+    actions: Vec<Action>,
     /// Whether each worm actually boosted on the last tick (control boost gated by
     /// `can_boost`) — drives the boost glow in the renderer.
     boosting: Vec<bool>,
     /// Dedicated RNG for picking respawn positions, kept off the world's pellet
     /// RNG so respawns don't perturb the food stream.
     respawn_rng: Rng,
+    /// How many bots ran a net forward on the last tick — equals the living-bot
+    /// count, since every living bot now decides every tick. Read by the parity
+    /// check to assert the deploy decision rate matches training.
+    decided_last_tick: usize,
     /// Cached so a fresh game reuses the same population/pellet density.
     cfg: WorldConfig,
     seed: u64,
@@ -132,10 +126,10 @@ impl SlitherGame {
             world,
             model,
             mem,
-            cached: vec![Action::default(); n],
-            bot_cursor: HUMAN + 1,
+            actions: vec![Action::default(); n],
             boosting: vec![false; n],
             respawn_rng: Rng::new(seed ^ 0x5151_5151_5151_5151),
+            decided_last_tick: 0,
             cfg,
             seed,
         })
@@ -147,10 +141,10 @@ impl SlitherGame {
         self.world = build_world(self.seed, self.cfg.worms - 1, self.cfg.pellet_target);
         let n = self.world.worms.len();
         self.mem = (0..n).map(|_| ObsMemory::new()).collect();
-        self.cached = vec![Action::default(); n];
-        self.bot_cursor = HUMAN + 1;
+        self.actions = vec![Action::default(); n];
         self.boosting = vec![false; n];
         self.respawn_rng = Rng::new(self.seed ^ 0x5151_5151_5151_5151);
+        self.decided_last_tick = 0;
     }
 
     /// Advance one fixed `DT` tick. The human worm aims its head at
@@ -160,31 +154,20 @@ impl SlitherGame {
     pub fn tick(&mut self, human_aim: f32, human_boost: bool) {
         let n = self.world.worms.len();
 
-        // Re-decide a bounded budget of living bots this tick (round-robin over
-        // seats 1..n). A bot's net forward reads `self.world` and writes its own
-        // `self.mem[i]`; both are decided here and cached. Every other bot replays
-        // its last cached action — that's the throttle that keeps the framerate up
-        // without changing the policy (each bot still runs the trained net, just a
-        // few Hz instead of every tick).
-        if n > 1 {
-            let mut decided = 0;
-            // Scan at most `n-1` seats so a tick can't spin forever if every bot
-            // happens to be dead.
-            for _ in 0..(n - 1) {
-                if decided >= BOT_BUDGET_PER_TICK {
-                    break;
-                }
-                let i = self.bot_cursor;
-                self.bot_cursor += 1;
-                if self.bot_cursor >= n {
-                    self.bot_cursor = HUMAN + 1;
-                }
-                if i != HUMAN && !self.world.worms[i].dead {
-                    self.cached[i] = act(&self.model, &self.world, i, &mut self.mem[i]);
-                    decided += 1;
-                }
+        // Decide every living bot every tick, the same 30 Hz rate the net trained
+        // and was evaluated at. (An earlier round-robin throttle re-decided each
+        // bot only every few ticks to save forwards at 8 worms; that stale ~133 ms
+        // reaction was a reflex handicap the human could exploit, and the deploy
+        // policy no longer matched training. With the trained population of 6 the
+        // per-tick forward cost is small enough to run them all.)
+        let mut decided = 0;
+        for i in (HUMAN + 1)..n {
+            if !self.world.worms[i].dead {
+                self.actions[i] = act(&self.model, &self.world, i, &mut self.mem[i]);
+                decided += 1;
             }
         }
+        self.decided_last_tick = decided;
 
         let controls: Vec<WormControl> = (0..n)
             .map(|i| {
@@ -197,7 +180,7 @@ impl SlitherGame {
                         boost: human_boost,
                     }
                 } else {
-                    self.cached[i].control(w.angle)
+                    self.actions[i].control(w.angle)
                 }
             })
             .collect();
@@ -230,7 +213,7 @@ impl SlitherGame {
             let (pos, angle) = self.pick_respawn(i);
             self.world.worms[i] = Worm::spawn(pos, angle, RESPAWN_LENGTH);
             self.mem[i] = ObsMemory::new();
-            self.cached[i] = Action::default();
+            self.actions[i] = Action::default();
             self.boosting[i] = false;
         }
     }
@@ -391,5 +374,32 @@ impl SlitherGame {
 
     pub fn debug_worm_length(&self, idx: usize) -> f32 {
         self.world.worms[idx].length
+    }
+
+    pub fn debug_pellet_count(&self) -> usize {
+        self.world.pellets.len()
+    }
+
+    pub fn debug_pellet_target(&self) -> usize {
+        self.cfg.pellet_target
+    }
+
+    pub fn debug_worm_radius(&self, idx: usize) -> f32 {
+        self.world.worms[idx].radius()
+    }
+
+    pub fn debug_set_length(&mut self, idx: usize, length: f32) {
+        self.world.worms[idx].length = length;
+    }
+
+    pub fn debug_decided_last_tick(&self) -> usize {
+        self.decided_last_tick
+    }
+
+    pub fn debug_living_bots(&self) -> usize {
+        self.world.worms[(HUMAN + 1)..]
+            .iter()
+            .filter(|w| !w.dead)
+            .count()
     }
 }
