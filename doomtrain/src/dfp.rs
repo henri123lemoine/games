@@ -181,6 +181,9 @@ pub fn eval_episode(
     let goal = Tensor::from_slice(&goal_full()).to_device(device);
     let mut state = DfpNet::zero_state(1, device);
 
+    let mut fires = 0i64;
+    let mut aimed_fires = 0i64;
+    let mut visible_steps = 0i64;
     for _ in 0..steps {
         let st0 = env.player_state(0);
         let obs = observation(&st0);
@@ -193,10 +196,27 @@ pub fn eval_episode(
         state = new_state;
         let a0 = greedy_action(&pred, &goal);
 
+        let act = decode_action(a0);
+        if act.fire != 0 {
+            fires += 1;
+            if st0.opponent_visible != 0 && st0.opp_bearing_deg.abs() < 15.0 {
+                aimed_fires += 1;
+            }
+        }
+        if st0.opponent_visible != 0 {
+            visible_steps += 1;
+        }
+
         let st1 = env.player_state(1);
         let a1 = crate::env::scripted_hunter(&st1);
 
         env.step(decode_action(a0), a1);
+    }
+
+    if std::env::var("DOOMTRAIN_DEBUG_EVAL").is_ok() {
+        eprintln!(
+            "  [eval-dbg] fires={fires}/{steps} aimed_fires={aimed_fires} visible_steps={visible_steps}"
+        );
     }
 
     let s0 = env.player_state(0);
