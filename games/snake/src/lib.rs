@@ -18,10 +18,12 @@
 
 pub mod duel;
 mod duel_ui;
+pub mod encode;
 mod eval;
 mod ui;
 
 pub use duel::{Duel, DuelAction, DuelState, Outcome, Worm};
+pub use encode::SnakeEncoder;
 pub use eval::DuelEval;
 
 use std::collections::VecDeque;
