@@ -153,17 +153,19 @@ head-start, vs a human), where the true strength is ~0.14. The fix: eval (and th
 keep-best gate) now run at the symmetric deployment config; `compare` reports both.
 
 Gating on the honest symmetric number, successive warm-start fine-tunes lift the
-real deployment strength. Two more changes pushed it further: the even-self-play
+real deployment strength. Three changes pushed it further: the even-self-play
 training world was made **symmetric too** (`START_LENGTH`, no head-start — the
 training distribution should *be* the deployment distribution, not a softer one),
-and the close-encounter practice cluster was made **equal-size** (worms packed
-against a wall at `START_LENGTH`, so the cut-off is on the table without a size
-advantage). The lineage on the honest symmetric/deploy metric (512 games × 4 seeds
-vs the heuristic): ft1 ≈0.12 → kill1 ≈0.15 → sym1 ≈0.19 → **sym2 ≈0.22 win,
-≈0.22 kills/game** — each leg beats the prior on every seed, now solidly above fair
-share (1/6 ≈ 0.167). Absolute numbers are modest because the symmetric game against
-a competent encircler is genuinely hard, but this is the real win-share a human
-faces, optimized directly rather than flattered by a head-start — and the symmetric-
-matched + shorter (200-iter) run no longer regresses in the back half (the earlier
-legs peaked then degraded; this one holds its plateau). (Value loss briefly spikes
-on the bigger kill rewards at warm-start, then settles — watched, no anneal needed.)
+the close-encounter practice cluster was made **equal-size**, and the opponent
+field was made **diverse** (a forced mix of heuristic + fleeing prey + random +
+PFSP snapshots, so the policy gets winnable cut-offs to learn from instead of
+bouncing off the lone strong heuristic). The lineage on the honest symmetric/deploy
+metric (512 games × 4 seeds vs the heuristic): ft1 ≈0.12 → kill1 ≈0.15 →
+sym1 ≈0.19 → sym2 ≈0.22 → **sym4 ≈0.26 win, ≈0.26 kills/game** — each leg beats the
+prior on every seed, now well above fair share (1/6 ≈ 0.167). Absolute numbers are
+modest because the symmetric game against a competent encircler is genuinely hard,
+but this is the real win-share a human faces, optimized directly rather than
+flattered by a head-start. The runs still peak-then-regress (sym4 peaked ~iter 130
+of a 500-iter run, then degraded — longer is NOT simply better; keep-best holds the
+peak), so the gate captures the best net while the late drift is discarded. (Value
+loss briefly spikes on the bigger kill rewards at warm-start, then settles.)

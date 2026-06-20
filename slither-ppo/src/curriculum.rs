@@ -14,13 +14,23 @@ use slither_rl::world::{START_LENGTH, WORLD, World, WorldConfig, Worm};
 use crate::opponent::{Pool, PoolKind};
 use crate::rollout::prey_cluster_world;
 
-/// Fraction of even-self-play seats forced to the heuristic regardless of its
-/// PFSP weight, so the gating opponent never falls out of the pool.
-const HEURISTIC_FLOOR: f32 = 0.35;
+/// Even-self-play opponent field: a deliberate DIVERSE blend rather than a
+/// heuristic-dominated one. Training mostly against the single strong heuristic
+/// makes the policy bounce off it without learning a cut-off skill that lands;
+/// mixing in fleeing prey and weak/random foes gives WINNABLE cut-offs so the
+/// encircle skill gets reinforced and transfers. The heuristic stays prominent
+/// (so it can't forget how to beat the gating opponent) but no longer crowds out
+/// the instructive easier matchups. The remainder is PFSP over the pool
+/// (snapshots + the scripted teachers), the AlphaStar near-even-matchup idea.
+/// Fractions are cumulative cutoffs over a uniform draw; the rest -> `pool.sample`.
+const FIELD_HEURISTIC: f32 = 0.30; // strong gating opponent, kept prominent
+const FIELD_PREY: f32 = 0.20; // fleeing prey - landable cut-offs that teach the skill
+const FIELD_RANDOM: f32 = 0.12; // weak/uneven foe - more winnable encounters
+// remaining ~0.38 -> PFSP self-play (snapshots + teachers by near-even weight)
 
 /// Fraction of even-self-play *arenas* that spawn as a tight equal-size cluster
 /// against a wall (the encircle/cut-off practice geometry) rather than scattered.
-const CLOSE_ENCOUNTER_FRAC: f32 = 0.4;
+const CLOSE_ENCOUNTER_FRAC: f32 = 0.25;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
@@ -91,20 +101,28 @@ impl Stage {
                 &[0.4, 0.6],
             ),
             Stage::EvenSelfPlay => {
-                // Reserve a fixed fraction of seats for the heuristic every
-                // iteration. Pure PFSP drops it once the learner beats it (its
-                // `p*(1-p)` weight collapses as p→1), and the learner then trains
-                // only against its own snapshots and *forgets how to beat the
-                // heuristic* — the regression we saw (0.88→0.66). A guaranteed
-                // floor keeps the gating opponent always present so winrate-vs-
-                // heuristic climbs-or-plateaus instead of regressing.
-                if rng.unit() < HEURISTIC_FLOOR {
-                    pool.entries
-                        .iter()
-                        .position(|e| e.kind == PoolKind::Heuristic)
-                        .unwrap_or(0)
+                // A diverse field: a forced fraction each of the heuristic (strong
+                // gating opponent, so it can't be forgotten - the regression we saw
+                // when pure PFSP dropped it), fleeing prey and random (winnable
+                // cut-offs that reinforce the encircle skill), and the rest PFSP
+                // self-play over snapshots + teachers.
+                let r = rng.unit();
+                let kind = if r < FIELD_HEURISTIC {
+                    Some(PoolKind::Heuristic)
+                } else if r < FIELD_HEURISTIC + FIELD_PREY {
+                    Some(PoolKind::Prey)
+                } else if r < FIELD_HEURISTIC + FIELD_PREY + FIELD_RANDOM {
+                    Some(PoolKind::Random)
                 } else {
-                    pool.sample()
+                    None
+                };
+                match kind {
+                    Some(k) => pool
+                        .entries
+                        .iter()
+                        .position(|e| e.kind == k)
+                        .unwrap_or_else(|| pool.sample()),
+                    None => pool.sample(),
                 }
             }
         }
