@@ -6,9 +6,9 @@
 
 use game_core::{Game, GameUi, PolicyValueEncoder, Rng};
 use go::encode::GoEncoder;
-use go::{Go, GoAction, GoState};
-use goinfer::model::Model;
-use goinfer::{Gather, PuctConfig, Search, argmax, mask_pass_visits};
+use go::{Go, GoAction, GoState, mask_pass_visits};
+use nn_infer::{Legacy, Net};
+use solvers::azero::{EvalResult, Gather, PuctConfig, Search, argmax};
 
 use super::eval::gnugo_path;
 use super::gtp::Gtp;
@@ -17,16 +17,15 @@ use super::run::parse_arg as arg;
 const TAU: f32 = 0.5;
 const SIZE: usize = 9;
 
-fn own_abs(model: &Model, game: &Go, enc: &GoEncoder, s: &GoState) -> Vec<f32> {
-    let mover = model
-        .ownership_at(&enc.encode_state(game, s), SIZE)
-        .unwrap();
+fn own_abs(net: &Net, game: &Go, enc: &GoEncoder, s: &GoState) -> Vec<f32> {
+    let out = net.forward_at(&enc.encode_state(game, s), &[], SIZE);
+    let mover = out.ownership.expect("net has an ownership head");
     let sign = if s.to_move() == 0 { 1.0 } else { -1.0 };
     mover.iter().map(|o| o * sign).collect()
 }
 
 fn best_move(
-    model: &Model,
+    net: &Net,
     game: &Go,
     enc: &GoEncoder,
     s: &GoState,
@@ -51,7 +50,13 @@ fn best_move(
         std::mem::take(&mut results),
         &|_| false,
     ) {
-        results = model.eval(&reqs);
+        results = reqs
+            .iter()
+            .map(|r| {
+                let (priors, value) = net.forward_support(&r.features, &[], &r.support);
+                EvalResult { priors, value }
+            })
+            .collect();
     }
     let mut visits = search.root_visits().to_vec();
     let actions = search.root_actions();
@@ -82,7 +87,17 @@ pub fn run(args: &[String]) {
     let games: usize = arg(args, "--games", 4);
     let sims: u32 = arg(args, "--sims", 8);
     let noise: f32 = arg(args, "--noise", 0.35);
-    let model = Model::parse(&std::fs::read(&net_path).expect("read net")).expect("parse net");
+    // Accept either a new AZNET1 export or a legacy `.azweb` (the deployed go
+    // net, `AZWEBGO2/3`), which the generic engine loads via its legacy adapter.
+    let data = std::fs::read(&net_path).expect("read net");
+    let net = Net::parse(&data)
+        .or_else(|_| {
+            Legacy::GoSpatial {
+                planes: go::encode::PLANES,
+            }
+            .load(&data)
+        })
+        .expect("parse net (AZNET1 or legacy AZWEBGO2/3)");
     let game = Go::new(SIZE);
     let enc = GoEncoder::new(SIZE);
 
@@ -99,7 +114,7 @@ pub fn run(args: &[String]) {
         let mut ply = 0;
         let mut decided = false;
         while !game.is_terminal(&s) && ply < 220 {
-            let a = best_move(&model, &game, &enc, &s, sims, noise, &mut rng);
+            let a = best_move(&net, &game, &enc, &s, sims, noise, &mut rng);
             let color = if s.to_move() == 0 { "black" } else { "white" };
             let label = game.action_label(&s, a);
             gtp.cmd(&format!("play {color} {}", label.to_uppercase()))
@@ -107,7 +122,7 @@ pub fn run(args: &[String]) {
             game.apply(&mut s, a);
             ply += 1;
             if !decided {
-                let oa = own_abs(&model, &game, &enc, &s);
+                let oa = own_abs(&net, &game, &enc, &s);
                 if game.result_decided(&oa, TAU) {
                     decided = true;
                     let (b, w) = game.adjudicated_area(&oa, TAU);

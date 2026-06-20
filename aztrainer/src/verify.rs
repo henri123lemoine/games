@@ -1,11 +1,12 @@
 //! The export parity gate: load a checkpoint, export it (legacy + `AZNET1`),
-//! and check that the tch forward agrees with the tch-free reference forwards
-//! over random positions. Guards the BN folding and the layer order.
+//! and check that the tch forward agrees with `nn-infer`'s tch-free `AZNET1`
+//! forward over random positions. Guards the BN folding and the layer order —
+//! the proof that a trained net exports to weights the browser plays identically.
 //!
-//! Two references are checked: the legacy per-game `*infer` crate (the historic
-//! gate, parsing the legacy bytes) and `nn_infer` parsing the `AZNET1` bytes.
-//! Agreement with both proves the dual-write is consistent and that the unified
-//! container reproduces the per-game forwards bit-for-bit.
+//! `nn-infer` is bit-for-bit equal to the old per-game `*infer` forwards (its
+//! own parity tests pin that), so checking tch ≡ `nn-infer` is the enduring form
+//! of the historic tch ≡ `*infer` gate, and it carries no dependency on the
+//! retired per-game inference crates.
 
 use std::path::Path;
 
@@ -13,8 +14,8 @@ use game_core::{Game, PolicyValueEncoder, Rng};
 
 use crate::net::{EvalRequest, Infer, NetConfig};
 
-/// Per-game hooks the parity walk needs: a fresh game and encoder for the
-/// chosen architecture.
+/// Per-game hooks the parity walk needs: a fresh game and encoder for the chosen
+/// architecture.
 pub trait VerifyGame {
     type G: Game;
     type E: PolicyValueEncoder<Self::G>;
@@ -22,38 +23,11 @@ pub trait VerifyGame {
     fn encoder(cfg: &NetConfig) -> Self::E;
 }
 
-/// The legacy reference parsed from the exported bytes — one of the three
-/// `*infer` models, by head kind. All three share `solvers::azero`'s
-/// `EvalRequest`/`EvalResult`, so `eval` is uniform; only go carries ownership.
-pub enum LegacyModel {
-    Chess(azinfer::model::Model),
-    Go(goinfer::model::Model),
-    Snake(snakeinfer::model::Model),
-}
-
-impl LegacyModel {
-    fn eval(&self, req: &EvalRequest) -> (Vec<f32>, f32) {
-        let one = std::slice::from_ref(req);
-        let r = match self {
-            LegacyModel::Chess(m) => m.eval(one),
-            LegacyModel::Go(m) => m.eval(one),
-            LegacyModel::Snake(m) => m.eval(one),
-        };
-        let r0 = &r[0];
-        (r0.priors.clone(), r0.value)
-    }
-
-    fn ownership(&self, features: &[f32], size: usize) -> Option<Vec<f32>> {
-        match self {
-            LegacyModel::Go(m) => m.ownership_at(features, size),
-            _ => None,
-        }
-    }
-}
-
-/// Walks `positions` random legal positions and asserts tch ≡ legacy ≡ nn_infer.
-/// `cfg` is the checkpoint architecture; `net_path` the checkpoint; the export
-/// is written to `legacy_out` / `aznet1_out` first.
+/// Walks `positions` random legal positions and asserts tch ≡ `nn_infer(AZNET1)`
+/// for policy, value, and (go) ownership. `cfg` is the checkpoint architecture;
+/// `net_path` the checkpoint; the export is written to `legacy_out` (legacy
+/// dual-write, kept for the deployed browser nets) and `aznet1_out` first, and
+/// the `AZNET1` file is the one parsed back as the reference.
 pub fn verify<V: VerifyGame>(
     net_path: &Path,
     cfg: NetConfig,
@@ -70,17 +44,14 @@ pub fn verify<V: VerifyGame>(
 
     let infer = Infer::load(net_path, cfg, tch::Device::Cpu, tch::Kind::Float)
         .map_err(|e| format!("load checkpoint: {e}"))?;
-    let legacy_bytes = std::fs::read(legacy_out).map_err(|e| format!("read legacy: {e}"))?;
     let aznet1_bytes = std::fs::read(aznet1_out).map_err(|e| format!("read aznet1: {e}"))?;
-    let legacy = parse_legacy(&legacy_bytes, &cfg)?;
-    let aznet1 = nn_infer::Net::parse(&aznet1_bytes).map_err(|e| format!("nn_infer parse: {e}"))?;
+    let net = nn_infer::Net::parse(&aznet1_bytes).map_err(|e| format!("nn_infer parse: {e}"))?;
 
     let game = V::game(&cfg);
     let enc = V::encoder(&cfg);
     let mut rng = Rng::new(7);
     let mut state = game.initial_state();
     let (mut max_dp, mut max_dv, mut max_do) = (0.0f32, 0.0f32, 0.0f32);
-    let (mut max_dp_az, mut max_dv_az, mut max_do_az) = (0.0f32, 0.0f32, 0.0f32);
     let mut seen = 0;
     while seen < positions {
         if game.is_terminal(&state) {
@@ -104,31 +75,21 @@ pub fn verify<V: VerifyGame>(
         };
 
         let tch_out = &infer.forward_batch(std::slice::from_ref(&req))[0];
-        let (leg_priors, leg_value) = legacy.eval(&req);
-        for (a, b) in tch_out.priors.iter().zip(&leg_priors) {
+
+        // nn_infer's PUCT bridge: forward, restrict to the legal support, softmax
+        // — exactly what `Infer::forward_batch` does on the tch side.
+        let (nn_priors, nn_value) = net.forward_support(&req.features, &[], &support);
+        for (a, b) in tch_out.priors.iter().zip(&nn_priors) {
             max_dp = max_dp.max((a - b).abs());
         }
-        max_dv = max_dv.max((tch_out.value - leg_value).abs());
+        max_dv = max_dv.max((tch_out.value - nn_value).abs());
 
-        // nn_infer: full forward then restrict + softmax over the legal support,
-        // matching forward_batch's gather.
-        let az = aznet1.forward_at(&req.features, &[], cfg.size as usize);
-        let mut az_priors: Vec<f32> = support.iter().map(|&s| az.policy[s as usize]).collect();
-        nn_infer::softmax(&mut az_priors);
-        for (a, b) in tch_out.priors.iter().zip(&az_priors) {
-            max_dp_az = max_dp_az.max((a - b).abs());
-        }
-        max_dv_az = max_dv_az.max((tch_out.value - az.value).abs());
-
-        if let Some(leg_own) = legacy.ownership(&req.features, cfg.size as usize) {
+        // Go ownership head, when present.
+        let out = net.forward_at(&req.features, &[], cfg.size as usize);
+        if let Some(nn_own) = &out.ownership {
             let tch_own = infer.ownership(&req.features);
-            for (a, b) in tch_own.iter().zip(&leg_own) {
+            for (a, b) in tch_own.iter().zip(nn_own) {
                 max_do = max_do.max((a - b).abs());
-            }
-            if let Some(az_own) = &az.ownership {
-                for (a, b) in tch_own.iter().zip(az_own) {
-                    max_do_az = max_do_az.max((a - b).abs());
-                }
             }
         }
 
@@ -138,32 +99,12 @@ pub fn verify<V: VerifyGame>(
     }
 
     println!(
-        "vs legacy:   max |Δprior| {max_dp:.2e}, |Δvalue| {max_dv:.2e}, |Δownership| {max_do:.2e}"
-    );
-    println!(
-        "vs nn_infer: max |Δprior| {max_dp_az:.2e}, |Δvalue| {max_dv_az:.2e}, |Δownership| {max_do_az:.2e}"
+        "tch vs nn_infer(AZNET1): max |Δprior| {max_dp:.2e}, |Δvalue| {max_dv:.2e}, \
+         |Δownership| {max_do:.2e} over {positions} positions"
     );
     if max_dp >= 1e-3 || max_dv >= 1e-3 || max_do >= 1e-3 {
-        return Err("export does not match the legacy reference".into());
+        return Err("AZNET1 export does not match the tch forward".into());
     }
-    if max_dp_az >= 1e-3 || max_dv_az >= 1e-3 || max_do_az >= 1e-3 {
-        return Err("AZNET1 export does not match nn_infer".into());
-    }
-    println!("export verified over {positions} positions");
+    println!("export verified");
     Ok(())
-}
-
-fn parse_legacy(bytes: &[u8], cfg: &NetConfig) -> Result<LegacyModel, String> {
-    use nn_infer::HeadKind;
-    match cfg.head {
-        HeadKind::FlatConv => azinfer::model::Model::parse(bytes)
-            .map(LegacyModel::Chess)
-            .map_err(|e| format!("azinfer parse: {e}")),
-        HeadKind::GlobalPoolSpatial => goinfer::model::Model::parse(bytes)
-            .map(LegacyModel::Go)
-            .map_err(|e| format!("goinfer parse: {e}")),
-        HeadKind::GlobalPoolDense => snakeinfer::model::Model::parse(bytes)
-            .map(LegacyModel::Snake)
-            .map_err(|e| format!("snakeinfer parse: {e}")),
-    }
 }

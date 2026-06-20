@@ -13,9 +13,6 @@ description = "Generic AlphaZero trainer: one tch-rs resnet + self-play/replay/o
 chess = { path = "../games/chess" }
 go = { path = "../games/go" }
 snake = { path = "../games/snake" }
-azinfer = { path = "../azinfer" }
-goinfer = { path = "../goinfer" }
-snakeinfer = { path = "../snakeinfer" }
 nn-infer = { path = "../nn-infer" }
 game-core = { path = "../game-core" }
 solvers = { path = "../solvers" }

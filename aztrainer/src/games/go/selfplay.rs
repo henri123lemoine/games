@@ -281,7 +281,7 @@ impl Worker {
         // Forbid passing while productive moves remain — both for the played
         // move and the recorded policy target — so the net never learns the
         // area-scoring pass-early collapse.
-        goinfer::mask_pass_visits(&go, &self.state, &actions, &mut visits);
+        go::mask_pass_visits(&go, &self.state, &actions, &mut visits);
         let stm = self.state.to_move();
         // Only full (recorded) moves become training targets; fast moves are
         // played to advance the game cheaply (Playout Cap Randomization).

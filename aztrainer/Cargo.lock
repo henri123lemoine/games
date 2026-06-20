@@ -32,28 +32,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
-name = "azinfer"
-version = "0.1.0"
-dependencies = [
- "chess",
- "game-core",
- "solvers",
-]
-
-[[package]]
 name = "aztrainer"
 version = "0.1.0"
 dependencies = [
- "azinfer",
  "chess",
  "game-core",
  "go",
- "goinfer",
  "nn-infer",
  "rayon",
  "serde_json",
  "snake",
- "snakeinfer",
  "solvers",
  "tch",
 ]
@@ -336,15 +324,6 @@ name = "go"
 version = "0.1.0"
 dependencies = [
  "game-core",
-]
-
-[[package]]
-name = "goinfer"
-version = "0.1.0"
-dependencies = [
- "game-core",
- "go",
- "solvers",
 ]
 
 [[package]]
@@ -933,15 +912,6 @@ name = "snake"
 version = "0.1.0"
 dependencies = [
  "game-core",
-]
-
-[[package]]
-name = "snakeinfer"
-version = "0.1.0"
-dependencies = [
- "game-core",
- "snake",
- "solvers",
 ]
 
 [[package]]

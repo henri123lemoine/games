@@ -17,7 +17,8 @@ use tch::{Device, Kind, Tensor, nn};
 use crate::net::{Net, NetConfig};
 
 /// The legacy magic + dim header for a game's pre-`AZNET1` export, matching the
-/// exact bytes `azinfer`/`goinfer`/`snakeinfer` parse.
+/// exact bytes the deployed browser nets (`AZWEB001` / `AZWEBGO2-3` / `AZSNK1`)
+/// carry — kept so re-exporting a checkpoint reproduces those bytes verbatim.
 fn legacy_header(cfg: &NetConfig, has_ownership: bool) -> Vec<u8> {
     let mut b = Vec::new();
     match cfg.head {
