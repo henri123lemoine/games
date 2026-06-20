@@ -37,7 +37,7 @@ pub fn export(args: &[String]) {
     let net_path: PathBuf = arg(
         args,
         "net",
-        PathBuf::from("../data/slither/slither-best-kill1-i70.ot"),
+        PathBuf::from("../data/slither/slither-best-sym1-i110.ot"),
     );
     let out: PathBuf = arg(
         args,
@@ -179,7 +179,7 @@ pub fn verify_export(args: &[String]) {
     let net_path: PathBuf = arg(
         args,
         "net",
-        PathBuf::from("../data/slither/slither-best-kill1-i70.ot"),
+        PathBuf::from("../data/slither/slither-best-sym1-i110.ot"),
     );
     let export_path: PathBuf = arg(
         args,

@@ -145,13 +145,19 @@ death penalty), `LENGTH_DELTA_SCALE` 0.08→0.04 (farming clearly secondary), an
 boost-spam habit; this breaks it), with the death penalty held at −6 so it stays
 fear of dying, not recklessness.
 
-The kill-reward fine-tune (warm-start of the prior net, close-encounter curriculum
-on, kill-aware keep-best) beats it on every axis, common-seed A/B (512 games × 4
-seeds vs the heuristic): **winrate ≈0.40 vs 0.29, kills/game ≈0.41 vs 0.31
-(+~32%)**, kill-win ≈0.36 vs 0.28, while dying slightly *less* (≈0.70 vs ≈0.73)
-and growing *more* (final-len ≈57 vs 47). It hunts more without trading away
-survival or winrate. The keep-best (gated on the combined kill+winrate score) holds
-the peak — the run regressed past it, but the kept net is the peak. (Absolute kill
-rate is still modest: equal-top-speed conversion against a competent encircler is
-genuinely hard, and the value head briefly spikes on the bigger kill rewards before
-settling — watched, no anneal needed.)
+The kill-reward fine-tune does hunt more — but a measurement bug was inflating its
+headline. The eval gave the *learner* a head-start (`seat0_length START_LENGTH+30`,
+small opponents), so "winrate ≈0.40" was a favorable setup, ~2.7× the real
+deployment number. The browser is **symmetric** (every worm `START_LENGTH`, no
+head-start, vs a human), where the true strength is ~0.14. The fix: eval (and the
+keep-best gate) now run at the symmetric deployment config; `compare` reports both.
+
+Gating on the honest symmetric number, a further warm-start fine-tune lifts the
+real deployment strength: common-seed A/B (512 games × 4 seeds vs the heuristic,
+**symmetric/deploy**) — **winrate ≈0.19 vs 0.15, kills/game ≈0.18 vs 0.16**, beating
+the prior net on every seed and clearing fair share (1/6 ≈ 0.167). Absolute numbers
+are modest because the symmetric game against a competent encircler is genuinely
+hard — but this is the real win-share a human faces, optimized directly rather than
+flattered by a head-start. Both kill-reward legs peak then regress in the back half;
+keep-best holds the peak. (Value loss briefly spikes on the bigger kill rewards at
+warm-start, then settles — watched, no anneal needed.)
