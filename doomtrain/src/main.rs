@@ -218,17 +218,19 @@ fn train_ppo(iwad: &str, arena: &str, device: Device, steps: usize, lr: f64) {
     println!("saved ppo checkpoint: {save} (best net_frag_share={best:.3} -> {best_path})");
 }
 
-/// Eval the PPO net over N episodes vs a fixed mid-skill beatable bot.
-fn ppo_eval_avg(
+/// Eval the PPO net over N episodes vs a fixed-skill bot (0.5 = the curriculum
+/// benchmark, 1.0 = the perfect-aim hunter).
+fn ppo_eval_skill(
     env: &DoomEnv,
     net: &ppo_net::PpoNet,
     device: Device,
     episodes: usize,
     steps: usize,
+    skill: f32,
 ) -> (i64, i64, i64, f64) {
     let (mut nf, mut nd, mut bf) = (0i64, 0i64, 0i64);
     for e in 0..episodes {
-        let mut bot = env::BeatableBot::for_skill(0.5, 0xEEE ^ e as u64);
+        let mut bot = env::BeatableBot::for_skill(skill, 0xEEE ^ e as u64);
         let (a, b, c) = ppo::eval(env, net, &mut bot, device, steps, 384.0);
         nf += a;
         nd += b;
@@ -236,6 +238,16 @@ fn ppo_eval_avg(
     }
     let share = nf as f64 / (nf + bf).max(1) as f64;
     (nf, nd, bf, share)
+}
+
+fn ppo_eval_avg(
+    env: &DoomEnv,
+    net: &ppo_net::PpoNet,
+    device: Device,
+    episodes: usize,
+    steps: usize,
+) -> (i64, i64, i64, f64) {
+    ppo_eval_skill(env, net, device, episodes, steps, 0.5)
 }
 
 fn ppo_eval_cmd(iwad: &str, arena: &str, device: Device, steps: usize) {
@@ -246,11 +258,12 @@ fn ppo_eval_cmd(iwad: &str, arena: &str, device: Device, steps: usize) {
         export::load_checkpoint(&mut vs, &PathBuf::from(&ckpt));
     }
     let episodes: usize = arg("episodes", "10").parse().unwrap();
+    let skill: f32 = arg("eval-skill", "0.5").parse().unwrap();
     let env = env_new(iwad, arena);
-    let (nf, nd, bf, share) = ppo_eval_avg(&env, &net, device, episodes, steps);
+    let (nf, nd, bf, share) = ppo_eval_skill(&env, &net, device, episodes, steps, skill);
     println!(
-        "PPO EVAL ({episodes} eps vs beatable bot): net[frags={nf} deaths={nd}] bot[frags={bf}] \
-         net_frag_share={share:.3}"
+        "PPO EVAL ({episodes} eps vs bot skill={skill}): net[frags={nf} deaths={nd}] \
+         bot[frags={bf}] net_frag_share={share:.3}"
     );
 }
 
