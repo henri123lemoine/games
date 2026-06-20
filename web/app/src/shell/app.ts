@@ -39,8 +39,10 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   "2048": {},
 };
 
-/** Games registered in the lab but not surfaced on the site. */
-const HIDDEN_GAMES = new Set<string>([]);
+/** Games registered in the lab but not surfaced on the site. Snake stays
+ * hidden until its AlphaZero net is trained and strong — the lab's MCTS is a
+ * training yardstick, not a shipped opponent. */
+const HIDDEN_GAMES = new Set<string>(["snake"]);
 
 /** Trained artifacts fetched as static assets, keyed by the path the
  * registry asks for. */
