@@ -303,6 +303,8 @@ static void dm_setup_match(int first_time)
     }
     else
     {
+        for (int i = 0; i < s_dm_players; i++)
+            players[i].playerstate = PST_REBORN;
         gameaction = ga_loadlevel;
         for (int t = 0; t < 16 && gameaction != ga_nothing; t++)
         {

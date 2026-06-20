@@ -1,0 +1,19 @@
+[package]
+name = "doomtrain"
+version = "0.1.0"
+edition = "2021"
+description = "DFP/GRU reinforcement-learning trainer for the doomrl 1v1 deathmatch substrate"
+
+# Standalone on purpose: keeps libtorch out of the main workspace so the root
+# `cargo test` stays light. Build from this directory. Links the C substrate's
+# build/libdoomrl.a (see build.rs).
+[workspace]
+
+[dependencies]
+tch = { version = "0.23", features = ["download-libtorch"] }
+rand = "0.8"
+
+[profile.release-dbg]
+inherits = "release"
+debug-assertions = true
+debug = true
