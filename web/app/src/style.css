@@ -511,6 +511,52 @@ button {
   transform: translate(-50%, -50%);
 }
 
+.mini-doom {
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at 50% 42%, #3a0a0a, #0a0303 78%);
+}
+
+.mini-doom-word {
+  font-weight: 900;
+  font-size: 1.9rem;
+  letter-spacing: 0.1em;
+  color: #d3322a;
+  text-shadow:
+    0 0 14px rgba(199, 40, 32, 0.7),
+    0 2px 0 #5a0a0a;
+}
+
+.doom-screen {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 80px);
+}
+
+.doom-screen .doom-frame-wrap {
+  position: relative;
+  width: 100%;
+  flex: 1;
+  min-height: 60vh;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.doom-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
+
+.doom-note {
+  font-size: 0.8rem;
+}
+
 .home-foot {
   margin-top: 28px;
 }

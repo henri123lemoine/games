@@ -211,6 +211,8 @@ function miniFor(id: string): string {
       return `<div class="mini mini-2048"><span>2</span><span class="v4">4</span><span class="v8">8</span><span class="v16">16</span></div>`;
     case "snake":
       return `<div class="mini mini-snake"><span class="mini-seg mini-seg-a" style="left:18%;top:50%"></span><span class="mini-seg mini-seg-a" style="left:34%;top:50%"></span><span class="mini-seg mini-seg-a mini-head-a" style="left:50%;top:50%"></span><span class="mini-seg mini-seg-b mini-head-b" style="left:74%;top:28%"></span><span class="mini-seg mini-seg-b" style="left:74%;top:44%"></span><span class="mini-food" style="left:62%;top:70%"></span></div>`;
+    case "doom":
+      return `<div class="mini mini-doom"><span class="mini-doom-word">DOOM</span></div>`;
     default:
       return `<div class="mini"></div>`;
   }
@@ -257,6 +259,10 @@ export class App {
       this.renderTournament();
       return;
     }
+    if (segs[0] === "doom") {
+      this.renderDoom();
+      return;
+    }
     if (segs[0] === "g" && segs[1]) {
       const game = this.manifest.games.find((g) => g.id === segs[1]);
       if (game) {
@@ -300,12 +306,21 @@ export class App {
         </div>`,
       )
       .join("");
+    // DOOM is not an engine game (a real-time FPS, not a Game-trait match); its
+    // card links to the vendored standalone port instead of starting a match.
+    const doomCard = `
+        <div class="card card-doom" data-special="doom" role="button" tabindex="0">
+          ${miniFor("doom")}
+          <div class="card-text">
+            <span class="card-name">DOOM</span>
+          </div>
+        </div>`;
     this.root.innerHTML = `
       <div class="home">
         <header class="home-head">
           <h1>Games Room</h1>
         </header>
-        <div class="card-grid">${cards}</div>
+        <div class="card-grid">${cards}${doomCard}</div>
         <footer class="home-footer">
           <nav>
             <a href="https://github.com/henri123lemoine/games">GitHub</a>
@@ -331,8 +346,41 @@ export class App {
         this.navTo(`/g/${game.id}?mode=watch`);
       };
     }
+    const doomEl = this.root.querySelector<HTMLElement>('.card[data-special="doom"]');
+    if (doomEl) {
+      const openDoom = () => this.navTo("/doom");
+      doomEl.onclick = openDoom;
+      doomEl.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openDoom();
+        }
+      };
+    }
     this.root.querySelector<HTMLButtonElement>(".tourney-link")!.onclick = () =>
       this.navTo("/lab");
+  }
+
+  /** DOOM: the vendored WebAssembly port runs in its own page (it is not a
+   * Game-trait match), mounted in an iframe with a back bar. */
+  private renderDoom(): void {
+    this.teardown();
+    const src = `${import.meta.env.BASE_URL}doom/doom.html`;
+    this.root.innerHTML = `
+      <div class="match doom-screen">
+        <header class="match-bar">
+          <button type="button" class="link back">&larr; games</button>
+          <span class="match-title">DOOM</span>
+          <span class="spacer"></span>
+          <span class="muted doom-note">shareware · click the frame, then play</span>
+        </header>
+        <div class="doom-frame-wrap">
+          <iframe class="doom-frame" src="${src}" title="DOOM"
+            allow="autoplay; fullscreen"></iframe>
+        </div>
+      </div>`;
+    this.root.querySelector<HTMLButtonElement>(".back")!.onclick = () =>
+      this.navTo("/");
   }
 
   private renderTournament(): void {
