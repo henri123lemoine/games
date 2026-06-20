@@ -349,6 +349,25 @@ int doomrl_num_players(void)
     return s_dm_players;
 }
 
+void doomrl_dm_spawn_near(float dist)
+{
+    if (s_dm_players < 2)
+        return;
+    mobj_t *m0 = players[0].mo;
+    mobj_t *m1 = players[1].mo;
+    if (m0 == NULL || m1 == NULL)
+        return;
+    if (players[0].playerstate != PST_LIVE || players[1].playerstate != PST_LIVE)
+        return;
+
+    fixed_t d = (fixed_t)(dist * (float)FRACUNIT);
+    if (P_TeleportMove(m1, m0->x + d, m0->y))
+    {
+        m0->angle = 0;
+        m1->angle = ANG180;
+    }
+}
+
 static int player_kills_of_opponent(int seat)
 {
     int opp = seat ^ 1;

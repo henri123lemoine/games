@@ -113,6 +113,7 @@ void doomrl_dm_init(int argc, char **argv);
 void doomrl_dm_step(const doomrl_action_t *a0, const doomrl_action_t *a1);
 void doomrl_get_player_state(int seat, doomrl_player_state_t *out);
 void doomrl_reset(void);
+void doomrl_dm_spawn_near(float dist);
 int  doomrl_num_players(void);
 
 #ifdef __cplusplus
