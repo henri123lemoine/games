@@ -262,6 +262,10 @@ export class App {
       this.renderTournament();
       return;
     }
+    if (segs[0] === "doom-ai") {
+      this.renderDoomAi();
+      return;
+    }
     if (segs[0] === "doom") {
       this.renderDoom();
       return;
@@ -330,12 +334,19 @@ export class App {
             <span class="card-name">DOOM</span>
           </div>
         </div>`;
+    const doomAiCard = `
+        <div class="card card-doom" data-special="doom-ai" role="button" tabindex="0">
+          ${miniFor("doom")}
+          <div class="card-text">
+            <span class="card-name">DOOM · 1v1 vs AI</span>
+          </div>
+        </div>`;
     this.root.innerHTML = `
       <div class="home">
         <header class="home-head">
           <h1>Games Room</h1>
         </header>
-        <div class="card-grid">${cards}${slitherCard}${doomCard}</div>
+        <div class="card-grid">${cards}${slitherCard}${doomCard}${doomAiCard}</div>
         <footer class="home-footer">
           <nav>
             <a href="https://github.com/henri123lemoine/games">GitHub</a>
@@ -372,6 +383,17 @@ export class App {
         }
       };
     }
+    const doomAiEl = this.root.querySelector<HTMLElement>('.card[data-special="doom-ai"]');
+    if (doomAiEl) {
+      const openDoomAi = () => this.navTo("/doom-ai");
+      doomAiEl.onclick = openDoomAi;
+      doomAiEl.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openDoomAi();
+        }
+      };
+    }
     const slitherEl = this.root.querySelector<HTMLElement>(
       '.card[data-special="slither"]',
     );
@@ -404,6 +426,30 @@ export class App {
         </header>
         <div class="doom-frame-wrap">
           <iframe class="doom-frame" src="${src}" title="DOOM"
+            allow="autoplay; fullscreen"></iframe>
+        </div>
+      </div>`;
+    this.root.querySelector<HTMLButtonElement>(".back")!.onclick = () =>
+      this.navTo("/");
+  }
+
+  /** DOOM 1v1 vs AI: our doomgeneric RL-deathmatch build (distinct from the
+   * stock chocolate-doom port above). The human plays one seat; the other is
+   * driven by a PPO net trained by self-play, run tch-free in the browser from
+   * the SAME LOS-gated state it trained on. Standalone page in an iframe. */
+  private renderDoomAi(): void {
+    this.teardown();
+    const src = `${import.meta.env.BASE_URL}doom-ai/index.html`;
+    this.root.innerHTML = `
+      <div class="match doom-screen">
+        <header class="match-bar">
+          <button type="button" class="link back">&larr; games</button>
+          <span class="match-title">DOOM · 1v1 vs AI</span>
+          <span class="spacer"></span>
+          <span class="muted doom-note">vs. the self-play RL bot · click the frame, then fight</span>
+        </header>
+        <div class="doom-frame-wrap">
+          <iframe class="doom-frame" src="${src}" title="DOOM 1v1 vs AI"
             allow="autoplay; fullscreen"></iframe>
         </div>
       </div>`;

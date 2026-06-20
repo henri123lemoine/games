@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DOOM — 1v1 vs AI</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0; height: 100%; background: #000; color: #c9b27a;
+        font-family: "Courier New", monospace; overflow: hidden;
+      }
+      #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+      #canvas {
+        background: #000; image-rendering: pixelated;
+        width: min(100vw, 133.33vh); height: min(75vw, 100vh); display: block; outline: none;
+      }
+      #hud {
+        position: fixed; top: 10px; left: 0; right: 0; text-align: center; z-index: 5;
+        font-size: clamp(16px, 3vw, 28px); font-weight: 900; letter-spacing: 0.08em;
+        color: #ffcf6a; text-shadow: 0 0 10px rgba(0,0,0,0.9), 0 2px 0 #000; pointer-events: none;
+      }
+      #overlay {
+        position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 18px; text-align: center;
+        background: radial-gradient(circle at 50% 38%, #2a0707, #000 72%);
+      }
+      #overlay h1 {
+        margin: 0; font-size: clamp(40px, 11vw, 104px); font-weight: 900; letter-spacing: 0.06em;
+        color: #b71c1c; text-shadow: 0 0 18px rgba(183,28,28,0.65), 0 4px 0 #5a0a0a;
+      }
+      #overlay h2 { margin: 0; font-size: clamp(16px, 3vw, 26px); color: #c9b27a; font-weight: 700; }
+      #overlay p { margin: 0; max-width: 40ch; line-height: 1.6; color: #9c8a5e; }
+      #start {
+        margin-top: 8px; padding: 14px 34px; font-family: inherit; font-weight: 900;
+        font-size: clamp(16px, 3vw, 24px); letter-spacing: 0.1em; color: #1a0505;
+        background: #ffcf6a; border: none; border-radius: 6px; cursor: pointer;
+        text-transform: uppercase;
+      }
+      #start:disabled { opacity: 0.4; cursor: wait; }
+      #status { font-size: 14px; color: #6f6244; min-height: 1.2em; }
+      kbd { background: #2a2418; border: 1px solid #5a4d33; border-radius: 4px; padding: 1px 6px; color: #ffcf6a; }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <canvas id="canvas" width="640" height="400" tabindex="0"></canvas>
+    </div>
+    <div id="hud">YOU 0 — AI 0</div>
+    <div id="overlay">
+      <h1>DOOM</h1>
+      <h2>1v1 Deathmatch vs the RL Bot</h2>
+      <p>
+        You face a neural net trained by self-play to fight in this arena.
+        Move with <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>, turn with
+        <kbd>←</kbd><kbd>→</kbd>, fire with <kbd>Ctrl</kbd> or <kbd>Space</kbd>.
+        Most frags wins.
+      </p>
+      <button id="start" disabled>Fight</button>
+      <div id="status">loading…</div>
+    </div>
+    <script type="module" src="./game.js"></script>
+  </body>
+</html>
