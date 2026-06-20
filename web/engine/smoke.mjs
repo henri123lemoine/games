@@ -46,6 +46,28 @@ const ev = JSON.parse(m.apply_human('0'));
 assert(ev.text.startsWith('You:'), `apply_human narration: ${ev.text}`);
 console.log('liars-dice human move:', ev.text);
 
+// Snake: the competitive 1v1 game. Watch a duel to a result, then a human
+// turn — the view JSON carries both snakes and the outcome.
+m = engine.create_match('snake', JSON.stringify({ seat: 'watch', sims: 60, depth: 12, seed: 5 }));
+let snakeSteps = 0;
+while (m.step()) snakeSteps++;
+assert(m.is_over() && snakeSteps >= 3, `snake watch ended after ${snakeSteps} steps`);
+const snakeView = JSON.parse(m.view_data());
+assert(snakeView.side === 20 && snakeView.snakes.length === 2, 'snake view has two snakes on a 20-grid');
+assert(['win0', 'win1', 'draw'].includes(snakeView.outcome), `snake outcome: ${snakeView.outcome}`);
+console.log('snake watch:', snakeSteps, 'moves —', m.result_text());
+
+m = engine.create_match('snake', JSON.stringify({ seat: 0, sims: 60, depth: 12, seed: 6 }));
+while (m.step());
+const snakeLabels = JSON.parse(m.legal_labels());
+assert(
+  m.to_act() === m.human_seat() && snakeLabels.includes('right'),
+  'snake human steers with absolute headings',
+);
+const snakeMove = JSON.parse(m.apply_human('right'));
+assert(snakeMove.text.startsWith('You:'), `snake human move: ${snakeMove.text}`);
+console.log('snake human move:', snakeMove.text);
+
 const pairs = JSON.parse(
   engine.play_pairs('connect4', '{}', 'alphabeta:depth=4', 'alphabeta:depth=2', 123, 0, 4),
 );

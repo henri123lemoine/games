@@ -1,4 +1,8 @@
-//! Snake as a single-player [`game_core::Game`] with chance nodes for food.
+//! Snake as a [`game_core::Game`]: a single-player [`Snake`] (the terminal
+//! client keeps it) and the competitive 1v1 [`Duel`] on a shared 20x20 grid
+//! (the arcade's flagship — see [`duel`]).
+//!
+//! The single-player rules follow.
 //!
 //! The snake starts at length 3, centered, heading right. Actions are
 //! relative — [`SnakeAction::TurnLeft`], [`SnakeAction::Straight`],
@@ -12,7 +16,13 @@
 //! (win), and a starvation cap of `w*h` consecutive moves without eating.
 //! [`Game::returns`] is snake length / board area, in `[0, 1]`.
 
+pub mod duel;
+mod duel_ui;
+mod eval;
 mod ui;
+
+pub use duel::{Duel, DuelAction, DuelState, Outcome, Worm};
+pub use eval::DuelEval;
 
 use std::collections::VecDeque;
 

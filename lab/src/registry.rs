@@ -405,11 +405,10 @@ const G2048_OPTS: &[OptSpec] = &[
 ];
 
 const SNAKE_OPTS: &[OptSpec] = &[
-    opt("width", "10", ""),
-    opt("height", "10", ""),
-    opt("bot", "mcts|mcts-eval", "(omit to play yourself)"),
+    opt("seat", "0|1|watch", "(0=Snake A)"),
+    opt("bot", "mcts-eval|mcts", ""),
     bot_opt("sims", "200", "", &["mcts", "mcts-eval"]),
-    bot_opt("depth", "12", "", &["mcts-eval"]),
+    bot_opt("depth", "16", "", &["mcts-eval"]),
     opt("seed", "...", ""),
 ];
 
@@ -533,15 +532,18 @@ pub fn entries() -> Vec<Entry> {
         Entry {
             id: "snake",
             name: "Snake",
-            solo: true,
-            watch_bot: "mcts-eval",
-            summary: "Snake (single-player) — play it, or watch an MCTS bot",
+            solo: false,
+            watch_bot: "",
+            summary: "Competitive 1v1 Snake (20x20) vs MCTS",
             opts: SNAKE_OPTS,
-            make: Box::new(|o| {
-                let game = snake::Snake::new(o.get("width", 10)?, o.get("height", 10)?);
-                make_solo(o, game, snake_bot)
-            }),
-            eval: None,
+            make: Box::new(|o| make_versus(o, snake::Duel::new(), "mcts-eval", snake_bot)),
+            eval: Some(eval_entry(
+                "mcts-eval[:sims=200,depth=16] | mcts[:sims=200]",
+                0,
+                false,
+                |_| Ok(snake::Duel::new()),
+                snake_bot,
+            )),
         },
     ]
 }
@@ -614,13 +616,20 @@ fn g2048_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<g2048::G2048>, Stri
     )
 }
 
-fn snake_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<snake::Snake>, String> {
-    mcts_solo_bot(
-        spec,
-        12,
-        |sims, depth| Box::new(Mcts::with_eval(sims, snake::SnakeEval, depth)),
-        "snake",
-    )
+fn snake_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<snake::Duel>, String> {
+    let sims: u32 = spec.opts.get("sims", 200)?;
+    Ok(match spec.name.as_str() {
+        "mcts" => Box::new(move |_| Box::new(Mcts::new(sims)) as BoxedAgent<snake::Duel>),
+        "mcts-eval" => {
+            let depth: u32 = spec.opts.get("depth", 16)?;
+            Box::new(move |_| {
+                Box::new(Mcts::with_eval(sims, snake::DuelEval, depth)) as BoxedAgent<snake::Duel>
+            })
+        }
+        other => {
+            return Err(format!("unknown snake bot '{other}' (mcts-eval|mcts)"));
+        }
+    })
 }
 
 /// Shares the net (compare builders clone it per game) and runs a fresh PUCT
