@@ -1,0 +1,21 @@
+[package]
+name = "slither-ppo"
+version = "0.1.0"
+edition = "2024"
+description = "PPO self-play league trainer for the slither encircle bot: a 3-conv CNN policy/value net (tch) over the egocentric semantic grid, vectorized rollouts over many parallel slither-rl arenas, GAE + clipped surrogate, and a PFSP-lite opponent pool seeded with the hand-coded encircle heuristic"
+
+# Standalone on purpose (like azgo/, azt/): an empty workspace table keeps
+# libtorch out of the repo's main cargo workspace, so `cargo test` at the root
+# stays light. Build from this directory.
+[workspace]
+
+[dependencies]
+slither-rl = { path = "../slither-rl" }
+rayon = "1"
+serde_json = "1"
+tch = { version = "0.23", features = ["download-libtorch"] }
+
+[profile.release-dbg]
+inherits = "release"
+debug-assertions = true
+debug = true
