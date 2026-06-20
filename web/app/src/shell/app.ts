@@ -36,7 +36,7 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   othello: { depth: "5" },
   connect4: { depth: "7" },
   go: { size: "9", bot: "azero-gpu", sims: "1500" },
-  snake: { bot: "azero-gpu", sims: "256" },
+  snake: { bot: "azero-gpu", sims: "3" },
   "2048": {},
 };
 

@@ -9,8 +9,8 @@ import type { ViewState } from '../engine/protocol';
 import type { ClientBot } from './index';
 
 const LEAVES = 8;
-const SNAKE_DEFAULT_SIMS = 128;
-const SNAKE_MAX_SIMS = 256;
+const SNAKE_DEFAULT_SIMS = 3;
+const SNAKE_MAX_SIMS = 6;
 const WEIGHTS_URL = `${import.meta.env.BASE_URL}azero/azero-snake.azweb`;
 
 /** The raw export bytes, fetched once per page. */
