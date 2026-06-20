@@ -8,6 +8,7 @@ description = "wasm-bindgen bindings over the lab's registry and matches: the br
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+nn-infer = { path = "../../nn-infer" }
 azinfer = { path = "../../azinfer" }
 goinfer = { path = "../../goinfer" }
 snakeinfer = { path = "../../snakeinfer" }

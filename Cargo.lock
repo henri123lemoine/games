@@ -438,6 +438,7 @@ dependencies = [
  "go",
  "goinfer",
  "lab",
+ "nn-infer",
  "serde_json",
  "snake",
  "snakeinfer",

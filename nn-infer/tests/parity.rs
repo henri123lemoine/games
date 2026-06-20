@@ -6,7 +6,7 @@
 //! the old crate's `forward` *exactly* (`==`, not within a tolerance) over many
 //! random inputs. This is the gate the migration is allowed to cross.
 
-use nn_infer::{Arch, HeadFlags, HeadKind, Net};
+use nn_infer::{Arch, HeadFlags, HeadKind, Legacy, Net};
 
 /// A tiny xorshift RNG so the fixtures are reproducible without a dep.
 struct Rng(u64);
@@ -57,6 +57,13 @@ fn chess_flat_conv_matches_azinfer_bit_for_bit() {
     };
     let reference = azinfer::model::Model::parse(&old).expect("azinfer parse");
     let net = Net::parse(&rewrap(&old, 16, arch)).expect("nn-infer parse");
+    // The adapter web/engine actually calls must produce the same net.
+    let via_legacy = Legacy::FlatConv {
+        planes,
+        policy_len: chess::encode::AZ_POLICY_LEN,
+    }
+    .load(&old)
+    .expect("legacy load");
 
     let mut rng = Rng(0xC0FFEE);
     let mut worst = 0u32;
@@ -66,6 +73,9 @@ fn chess_flat_conv_matches_azinfer_bit_for_bit() {
         let out = net.forward(&feats, &[]);
         assert_eq!(out.policy, rp, "chess policy must match azinfer exactly");
         assert_eq!(out.value, rv, "chess value must match azinfer exactly");
+        let leg = via_legacy.forward(&feats, &[]);
+        assert_eq!(leg.policy, rp, "legacy adapter policy must match");
+        assert_eq!(leg.value, rv, "legacy adapter value must match");
         worst += 1;
     }
     assert_eq!(worst, 32);
@@ -98,6 +108,9 @@ fn go_spatial_with_ownership_matches_goinfer_bit_for_bit() {
         ownership,
         "the committed go net is AZWEBGO3 (ownership head)"
     );
+    let via_legacy = Legacy::GoSpatial { planes }
+        .load(&old)
+        .expect("legacy load");
 
     let mut rng = Rng(0x90D90D);
     // Exercise the trained size and a smaller board (global-pool size-agnostic).
@@ -110,6 +123,9 @@ fn go_spatial_with_ownership_matches_goinfer_bit_for_bit() {
             assert_eq!(out.value, rv, "go value must match goinfer exactly @ {s}");
             let ro = reference.ownership_at(&feats, s);
             assert_eq!(out.ownership, ro, "go ownership must match goinfer @ {s}");
+            let leg = via_legacy.forward_at(&feats, &[], s);
+            assert_eq!(leg.policy, rp, "legacy adapter policy @ {s}");
+            assert_eq!(leg.ownership, ro, "legacy adapter ownership @ {s}");
         }
     }
 }
@@ -136,6 +152,12 @@ fn snake_dense_matches_snakeinfer_bit_for_bit() {
     };
     let reference = snakeinfer::model::Model::parse(&old).expect("snakeinfer parse");
     let net = Net::parse(&rewrap(&old, 18, arch)).expect("nn-infer parse");
+    let via_legacy = Legacy::SnakeDense {
+        planes,
+        policy_len: 4,
+    }
+    .load(&old)
+    .expect("legacy load");
 
     let mut rng = Rng(0x5EED5);
     for &s in &[size, 11] {
@@ -146,6 +168,9 @@ fn snake_dense_matches_snakeinfer_bit_for_bit() {
             assert_eq!(out.policy, rp, "snake policy must match snakeinfer @ {s}");
             assert_eq!(out.value, rv, "snake value must match snakeinfer @ {s}");
             assert!(out.ownership.is_none());
+            let leg = via_legacy.forward_at(&feats, &[], s);
+            assert_eq!(leg.policy, rp, "legacy adapter policy @ {s}");
+            assert_eq!(leg.value, rv, "legacy adapter value @ {s}");
         }
     }
 }

@@ -13,9 +13,11 @@
 //! not parsed here; it shares only the low-level conv/linear primitives.
 
 pub mod format;
+pub mod legacy;
 pub mod math;
 
 pub use format::{Arch, Conv, HeadFlags, HeadKind, Linear, Reader};
+pub use legacy::Legacy;
 
 use math::{POOL_SIZE_REF, conv_fwd, conv_fwd_vec, global_pool, linear_fwd};
 

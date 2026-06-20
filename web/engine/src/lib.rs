@@ -123,7 +123,33 @@ impl RefForward {
     }
 }
 
-/// `goinfer`'s reference forward over `n` go positions (`features` flat, each
+/// Loads a committed `.azweb` net (any of the legacy magics) through the
+/// generic engine. The game supplies the plane count and head topology the
+/// legacy header omits; the weight stream is unchanged, so this is the same net
+/// the per-game forward parsed — now run through `nn-infer`.
+fn ref_forward(
+    legacy: nn_infer::Legacy,
+    weights: &[u8],
+    features: &[f32],
+    n: usize,
+    planes: usize,
+    size: usize,
+) -> Result<RefForward, JsError> {
+    let net = legacy.load(weights).map_err(|e| JsError::new(&e))?;
+    let stride_in = planes * size * size;
+    let mut out = RefForward {
+        logits: Vec::new(),
+        values: Vec::with_capacity(n),
+    };
+    for i in 0..n {
+        let res = net.forward_at(&features[i * stride_in..(i + 1) * stride_in], &[], size);
+        out.logits.extend_from_slice(&res.policy);
+        out.values.push(res.value);
+    }
+    Ok(out)
+}
+
+/// The go reference forward over `n` positions (`features` flat, each
 /// `PLANES·size²`). Logit stride is `size²+1` (placements then pass).
 #[wasm_bindgen]
 pub fn go_reference_forward(
@@ -132,22 +158,19 @@ pub fn go_reference_forward(
     n: usize,
     size: usize,
 ) -> Result<RefForward, JsError> {
-    let model = goinfer::model::Model::parse(weights).map_err(|e| JsError::new(&e))?;
-    let stride_in = go::encode::PLANES * size * size;
-    let mut out = RefForward {
-        logits: Vec::with_capacity(n * (size * size + 1)),
-        values: Vec::with_capacity(n),
-    };
-    for i in 0..n {
-        let (logits, value) = model.forward_at(&features[i * stride_in..(i + 1) * stride_in], size);
-        out.logits.extend_from_slice(&logits);
-        out.values.push(value);
-    }
-    Ok(out)
+    let planes = go::encode::PLANES;
+    ref_forward(
+        nn_infer::Legacy::GoSpatial { planes },
+        weights,
+        features,
+        n,
+        planes,
+        size,
+    )
 }
 
-/// `snakeinfer`'s reference forward over `n` snake positions (`features` flat,
-/// each `PLANES·size²`). Logit stride is 4 (the four absolute headings).
+/// The snake reference forward over `n` positions (`features` flat, each
+/// `PLANES·size²`). Logit stride is 4 (the four absolute headings).
 #[wasm_bindgen]
 pub fn snake_reference_forward(
     weights: &[u8],
@@ -155,40 +178,40 @@ pub fn snake_reference_forward(
     n: usize,
     size: usize,
 ) -> Result<RefForward, JsError> {
-    let model = snakeinfer::model::Model::parse(weights).map_err(|e| JsError::new(&e))?;
-    let stride_in = snake::encode::PLANES * size * size;
-    let mut out = RefForward {
-        logits: Vec::with_capacity(n * 4),
-        values: Vec::with_capacity(n),
-    };
-    for i in 0..n {
-        let (logits, value) = model.forward_at(&features[i * stride_in..(i + 1) * stride_in], size);
-        out.logits.extend_from_slice(&logits);
-        out.values.push(value);
-    }
-    Ok(out)
+    let planes = snake::encode::PLANES;
+    ref_forward(
+        nn_infer::Legacy::SnakeDense {
+            planes,
+            policy_len: 4,
+        },
+        weights,
+        features,
+        n,
+        planes,
+        size,
+    )
 }
 
-/// `azinfer`'s reference forward over `n` chess positions (`features` flat,
-/// each `PLANE_COUNT·64`). Logit stride is `AZ_POLICY_LEN` (`square·73+plane`).
+/// The chess reference forward over `n` positions (`features` flat, each
+/// `PLANE_COUNT·64`). Logit stride is `AZ_POLICY_LEN` (`square·73+plane`).
 #[wasm_bindgen]
 pub fn chess_reference_forward(
     weights: &[u8],
     features: &[f32],
     n: usize,
 ) -> Result<RefForward, JsError> {
-    let model = azinfer::model::Model::parse(weights).map_err(|e| JsError::new(&e))?;
-    let stride_in = chess::encode::PLANE_COUNT * 64;
-    let mut out = RefForward {
-        logits: Vec::with_capacity(n * chess::encode::AZ_POLICY_LEN),
-        values: Vec::with_capacity(n),
-    };
-    for i in 0..n {
-        let (logits, value) = model.forward(&features[i * stride_in..(i + 1) * stride_in]);
-        out.logits.extend_from_slice(&logits);
-        out.values.push(value);
-    }
-    Ok(out)
+    let planes = chess::encode::PLANE_COUNT;
+    ref_forward(
+        nn_infer::Legacy::FlatConv {
+            planes,
+            policy_len: chess::encode::AZ_POLICY_LEN,
+        },
+        weights,
+        features,
+        n,
+        planes,
+        8,
+    )
 }
 
 #[wasm_bindgen]
