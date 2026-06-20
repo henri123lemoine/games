@@ -1571,9 +1571,11 @@ void D_DoomMain (void)
 	};
 	int i;
 	
+#ifndef DOOMRL_ALLOW_FILE_DEFAULT
 	if ( gamemode == shareware && !getenv("DOOMRL_ALLOW_FILE"))
 	    I_Error(DEH_String("\nYou cannot -file with the shareware "
 			       "version. Register!"));
+#endif
 
 	// Check for fake IWAD with right name,
 	// but w/o all the lumps of the registered version. 

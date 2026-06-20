@@ -59,6 +59,10 @@ fn main() {
         ppo_export_cmd(device);
         return;
     }
+    if cmd == "ppo-trace" {
+        ppo_trace_cmd(&iwad, &arena, device, steps);
+        return;
+    }
 
     let mut vs = nn::VarStore::new(device);
     let net = DfpNet::new(&vs.root());
@@ -265,6 +269,49 @@ fn ppo_eval_cmd(iwad: &str, arena: &str, device: Device, steps: usize) {
         "PPO EVAL ({episodes} eps vs bot skill={skill}): net[frags={nf} deaths={nd}] \
          bot[frags={bf}] net_frag_share={share:.3}"
     );
+}
+
+/// Dump (23 state-floats matching doomrl_web web_player_state layout, chosen
+/// greedy action index) per tic as JSONL — the parity reference for the JS
+/// forward. Seat 0 = the net (greedy, GRU state carried), seat 1 = a fixed bot.
+fn ppo_trace_cmd(iwad: &str, arena: &str, device: Device, steps: usize) {
+    use ppo_net::PpoNet;
+    let ckpt = arg("net", "");
+    let mut vs = nn::VarStore::new(device);
+    let net = PpoNet::new(&vs.root());
+    if !ckpt.is_empty() {
+        export::load_checkpoint(&mut vs, &PathBuf::from(&ckpt));
+    }
+    let env = env_new(iwad, arena);
+    env.reset();
+    env.spawn_near(384.0);
+    let mut state = PpoNet::zero_state(1, device);
+    let mut bot = env::BeatableBot::for_skill(0.5, 12345);
+
+    for _ in 0..steps {
+        let s = env.player_state(0);
+        let sf = [
+            s.alive as f32, s.x, s.y, s.z, s.angle_deg, s.momx, s.momy,
+            s.health as f32, s.armor as f32, s.ready_weapon as f32, s.ammo[0] as f32,
+            s.frags as f32, s.deaths as f32, s.opponent_visible as f32,
+            s.opp_bearing_deg, s.opp_dist, s.opp_rel_vx, s.opp_rel_vy, s.opp_health as f32,
+            s.opp_memory.valid as f32, s.opp_memory.ticks_since_seen as f32,
+            s.opp_memory.last_bearing_deg, s.opp_memory.last_dist,
+        ];
+        let obs = env::observation(&s);
+        let obs_t = tch::Tensor::from_slice(&obs).unsqueeze(0).to_device(device);
+        let (a0, ns) = tch::no_grad(|| {
+            let (logits, _v, ns) = net.step(&obs_t, &state);
+            (logits.argmax(-1, false).int64_value(&[0]), ns)
+        });
+        state = ns;
+        let nums: Vec<String> = sf.iter().map(|v| format!("{v}")).collect();
+        println!("{{\"s\":[{}],\"a\":{}}}", nums.join(","), a0);
+
+        let s1 = env.player_state(1);
+        let a1 = bot.act(&s1);
+        env.step(env::decode_action(a0 as usize), a1);
+    }
 }
 
 fn ppo_export_cmd(device: Device) {

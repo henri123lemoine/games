@@ -1,3 +1,5 @@
+#include <stddef.h>
+
 #include "doomtype.h"
 #include "i_sound.h"
 
