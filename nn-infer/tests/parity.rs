@@ -56,7 +56,17 @@ fn chess_flat_conv_matches_azinfer_bit_for_bit() {
         flags: HeadFlags::default(),
     };
     let reference = azinfer::model::Model::parse(&old).expect("azinfer parse");
-    let net = Net::parse(&rewrap(&old, 16, arch)).expect("nn-infer parse");
+    let aznet = rewrap(&old, 16, arch);
+    // The AZNET1 body must be byte-identical to the legacy AZWEB001 body (48-byte
+    // AZNET1 header vs 16-byte legacy header, same weights) — including the
+    // 73-zero policy-conv bias pad. If an exporter dropped the pad this would
+    // diverge and Net::parse's no-trailing-bytes check would also reject it.
+    assert_eq!(
+        aznet[nn_infer::format::HEADER_LEN..],
+        old[16..],
+        "AZNET1 FlatConv body must equal the legacy body (73-zero pad kept)"
+    );
+    let net = Net::parse(&aznet).expect("nn-infer parse");
     // The adapter web/engine actually calls must produce the same net.
     let via_legacy = Legacy::FlatConv {
         planes,
