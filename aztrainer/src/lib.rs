@@ -8,6 +8,7 @@
 //! workspace's `cargo test`.
 
 pub mod export;
+pub mod games;
 pub mod net;
 pub mod rundir;
 pub mod train;

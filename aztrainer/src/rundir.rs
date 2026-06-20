@@ -7,6 +7,35 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use tch::Device;
+
+use crate::train::Trainer;
+
+/// The training device: Metal (MPS) when available, else CPU with a warning.
+pub fn device() -> Device {
+    if tch::utils::has_mps() {
+        Device::Mps
+    } else {
+        eprintln!("warning: MPS unavailable, training on CPU");
+        Device::Cpu
+    }
+}
+
+/// Saves a checkpoint, retrying once after a short pause — a transient
+/// filesystem hiccup shouldn't lose an iteration's weights.
+pub fn save_with_retry(trainer: &Trainer, path: &Path) {
+    for attempt in 1..=2 {
+        match trainer.save(path) {
+            Ok(()) => return,
+            Err(e) => eprintln!(
+                "warning: checkpoint save to {} failed (attempt {attempt}): {e}",
+                path.display()
+            ),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
 /// Seconds since the Unix epoch, for metric timestamps.
 pub fn epoch_secs() -> u64 {
     SystemTime::now()
