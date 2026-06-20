@@ -11,6 +11,7 @@
 //! (auto-resume), periodic `ckpt-NNNNNN.ot` snapshots, `dashboard.html` for
 //! the live view, and a `STOP` file for graceful shutdown.
 
+mod calibrate_pass;
 mod eval;
 mod export;
 mod gauge;
@@ -653,6 +654,7 @@ fn main() {
         Some("calibrate") => gauge::calibrate(&args[1..]),
         Some("export") => export::export(&args[1..]),
         Some("verify-export") => export::verify_export(&args[1..]),
+        Some("calibrate-pass") => calibrate_pass::run(&args[1..]),
         _ => {
             eprintln!(
                 "usage: azgo run   [--dir ../data/azgo/run1] [--hours 5] [--size 9] [--blocks 6] \
