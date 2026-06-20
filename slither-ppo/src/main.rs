@@ -10,7 +10,9 @@
 //!
 //! Usage:
 //!   cargo run --release -- [iters=N] [arenas=N] [steps=N] [device=cpu|mps|cuda]
-//!                          [out=DIR] [eval-every=N] [snapshot-every=N]
+//!                          [out=DIR] [eval-every=N] [eval-games=N] [snapshot-every=N]
+//!
+//! The best net by winrate-vs-heuristic is kept automatically as `<out>/best.ot`.
 
 mod curriculum;
 mod eval;
@@ -43,6 +45,7 @@ struct Args {
     device: Device,
     out: PathBuf,
     eval_every: usize,
+    eval_games: usize,
     snapshot_every: usize,
     lr: f64,
     seed: u64,
@@ -56,6 +59,7 @@ fn parse_args() -> Args {
         device: default_device(),
         out: PathBuf::from("runs/dev"),
         eval_every: 10,
+        eval_games: 128,
         snapshot_every: 25,
         lr: 2.5e-4,
         seed: 1,
@@ -78,6 +82,7 @@ fn parse_args() -> Args {
             }
             "out" => a.out = PathBuf::from(v),
             "eval-every" => a.eval_every = v.parse().unwrap(),
+            "eval-games" => a.eval_games = v.parse().unwrap(),
             "snapshot-every" => a.snapshot_every = v.parse().unwrap(),
             "lr" => a.lr = v.parse().unwrap(),
             "seed" => a.seed = v.parse().unwrap(),
@@ -128,6 +133,33 @@ fn stage_for(iter: usize) -> Stage {
     }
 }
 
+/// Linear LR decay from the configured peak down to a small floor over the run —
+/// the cleanrl default. Late training stabilizes (smaller steps) so the policy
+/// settles at its plateau instead of drifting off it into the regression.
+fn lr_for(iter: usize, iters: usize, base_lr: f64) -> f64 {
+    let frac = iter as f64 / iters.max(1) as f64;
+    let floor = 0.1; // never below 10% of base, so it keeps learning to the end
+    base_lr * (1.0 - (1.0 - floor) * frac)
+}
+
+/// Entropy floor controller: nudge the entropy coefficient up when the policy
+/// has collapsed below `ENTROPY_FLOOR` and back down toward `ENTROPY_COEF_BASE`
+/// when it has room to explore. The long run collapsed to ent≈0.65 and drifted
+/// into reckless aggression; holding a floor keeps the policy from over-sharpening
+/// into the brittle self-play mode that forgot how to beat the heuristic.
+const ENTROPY_FLOOR: f32 = 0.9;
+const ENTROPY_COEF_BASE: f64 = 0.01;
+const ENTROPY_COEF_MAX: f64 = 0.05;
+
+fn adapt_entropy_coef(coef: f64, measured_entropy: f32) -> f64 {
+    let next = if measured_entropy < ENTROPY_FLOOR {
+        coef * 1.5
+    } else {
+        coef * 0.9
+    };
+    next.clamp(ENTROPY_COEF_BASE, ENTROPY_COEF_MAX)
+}
+
 fn main() {
     // Subcommand dispatch: `export` / `verify-export` for the browser net, else
     // the default is a training run (`[k=v]` knobs).
@@ -135,9 +167,49 @@ fn main() {
     match raw.first().map(String::as_str) {
         Some("export") => return export::export(&raw[1..]),
         Some("verify-export") => return export::verify_export(&raw[1..]),
+        Some("compare") => return compare(&raw[1..]),
         _ => {}
     }
     train();
+}
+
+/// `compare net=A.ot [net2=B.ot] [games=N] [steps=N] [seed=S]` — load one or two
+/// checkpoints and run the eval panel (greedy, vs the heuristic, even footing) on
+/// the same seeds, printing winrate + kill/death rates side by side. The honest
+/// apples-to-apples for "is the new net actually better" — both nets see the same
+/// arenas, so the difference isn't a lucky draw.
+fn compare(args: &[String]) {
+    let device = default_device();
+    let get = |k: &str| args.iter().find_map(|a| a.strip_prefix(&format!("{k}=")));
+    let games: usize = get("games").and_then(|v| v.parse().ok()).unwrap_or(512);
+    let steps: usize = get("steps").and_then(|v| v.parse().ok()).unwrap_or(400);
+    let seed: u64 = get("seed").and_then(|v| v.parse().ok()).unwrap_or(777);
+
+    let eval_one = |path: &str| -> eval::EvalResult {
+        let mut vs = nn::VarStore::new(device);
+        let policy = Policy::new(&vs.root());
+        vs.load(path).unwrap_or_else(|e| panic!("load {path}: {e}"));
+        eval::evaluate(&policy, device, games, steps, Opp::Heuristic, seed)
+    };
+
+    let print = |label: &str, r: &eval::EvalResult| {
+        println!(
+            "{label:>40}  win {:.3}  learner-kills/g {:.3}  deaths-to-opp/g {:.3}  lifespan {:.0}  final-len {:.1}",
+            r.winrate,
+            r.learner_kills_per_game,
+            r.opp_kills_per_game,
+            r.mean_lifespan,
+            r.mean_final_len
+        );
+    };
+
+    println!("compare vs HEURISTIC  device={device:?}  games={games}  steps={steps}  seed={seed}");
+    if let Some(a) = get("net") {
+        print(a, &eval_one(a));
+    }
+    if let Some(b) = get("net2") {
+        print(b, &eval_one(b));
+    }
 }
 
 fn train() {
@@ -174,12 +246,12 @@ fn train() {
 
     let mut pool = Pool::seeded(args.seed ^ 0x5151, true, true);
 
-    let ppo_cfg = ppo::PpoConfig {
+    let mut ppo_cfg = ppo::PpoConfig {
         gamma: 0.995,
         lambda: 0.95,
         clip: 0.2,
         value_coef: 0.5,
-        entropy_coef: 0.01,
+        entropy_coef: ENTROPY_COEF_BASE,
         max_grad_norm: 0.5,
         epochs: 4,
         minibatches: 8,
@@ -191,6 +263,13 @@ fn train() {
     let mut buf: Vec<Transition> = Vec::with_capacity(args.steps * args.arenas);
     let mut kills_per_episode_last = 0.0f32;
 
+    // Keep-best by winrate-vs-heuristic: the long run peaked then regressed, and
+    // the deployable net was a manual checkpoint grab. Track the best eval and
+    // persist it to `best.ot` automatically so the shipped net is always the peak.
+    let best_path = args.out.join("best.ot");
+    let mut best_heur_winrate = f32::NEG_INFINITY;
+    let mut best_iter = 0usize;
+
     for iter in 0..args.iters {
         let t0 = Instant::now();
         let new_stage = stage_for(iter);
@@ -199,6 +278,8 @@ fn train() {
             collector.set_stage(stage);
             println!("  [iter {iter}] curriculum -> {stage:?}");
         }
+
+        opt.set_lr(lr_for(iter, args.iters, args.lr));
 
         // Shaping uses the previous iteration's measured kill rate; iter 0 starts
         // at full strength (no kills observed yet).
@@ -256,6 +337,9 @@ fn train() {
 
         let stats = ppo::update(&policy, &mut opt, args.device, &buf, &boot, &ppo_cfg);
 
+        // Adapt the entropy coefficient toward the floor for the *next* update.
+        ppo_cfg.entropy_coef = adapt_entropy_coef(ppo_cfg.entropy_coef, stats.entropy);
+
         // Update PFSP win-rates from the rollout's finished episodes.
         for &(pi, won) in &collector.outcomes {
             pool.entries[pi].update(won);
@@ -276,7 +360,7 @@ fn train() {
             let r = eval::evaluate(
                 &policy,
                 args.device,
-                128,
+                args.eval_games,
                 400,
                 Opp::Random,
                 args.seed ^ 0x11,
@@ -284,7 +368,7 @@ fn train() {
             let h = eval::evaluate(
                 &policy,
                 args.device,
-                128,
+                args.eval_games,
                 400,
                 Opp::Heuristic,
                 args.seed ^ 0x22,
@@ -312,6 +396,21 @@ fn train() {
                 stats.clip_frac,
                 stats.explained_variance,
                 stats.value_loss,
+            );
+        }
+
+        // Eval-gated keep-best: whenever winrate-vs-heuristic sets a new high,
+        // persist these weights to `best.ot`. The deployable net is then always
+        // the peak, automatically — no manual checkpoint grab, and a later
+        // regression can't overwrite it.
+        if let Some(h) = ev_heur.as_ref().filter(|h| h.winrate > best_heur_winrate) {
+            best_heur_winrate = h.winrate;
+            best_iter = iter;
+            net::save(&vs, &best_path).expect("save best");
+            write_best_sidecar(&args.out, iter, h.winrate, &args);
+            println!(
+                "  [iter {iter}] new best vs HEUR win {:.3} -> best.ot",
+                h.winrate
             );
         }
 
@@ -344,7 +443,13 @@ fn train() {
     let final_ckpt = args.out.join("ckpt_final.ot");
     net::save(&vs, &final_ckpt).expect("save final");
     write_sidecar(&args.out, args.iters, &args);
-    println!("done. final checkpoint {}", final_ckpt.display());
+    println!(
+        "done. final checkpoint {}\nbest vs HEUR win {:.3} at iter {} -> {}",
+        final_ckpt.display(),
+        best_heur_winrate,
+        best_iter,
+        best_path.display()
+    );
 }
 
 fn snapshot(train_vs: &nn::VarStore, _policy: &Policy, pool: &mut Pool, iter: u64, device: Device) {
@@ -425,5 +530,24 @@ fn write_sidecar(out: &std::path::Path, iter: usize, args: &Args) {
         "arch": "3conv_cnn[32,64,64]_trunk256",
     });
     let path = out.join("model.json");
+    std::fs::write(path, serde_json::to_string_pretty(&sidecar).unwrap()).ok();
+}
+
+/// Sidecar for `best.ot`: the same arch dims plus the eval that earned it, so a
+/// later export knows which iteration / winrate the deployed net came from.
+fn write_best_sidecar(out: &std::path::Path, iter: usize, heur_winrate: f32, args: &Args) {
+    let sidecar = serde_json::json!({
+        "iter": iter,
+        "heur_winrate": heur_winrate,
+        "arenas": args.arenas,
+        "steps": args.steps,
+        "lr": args.lr,
+        "channels": net::CHANNELS,
+        "grid": net::GRID,
+        "scalars": net::SCALARS,
+        "turn_buckets": net::TURN_BUCKETS,
+        "arch": "3conv_cnn[32,64,64]_trunk256",
+    });
+    let path = out.join("best.json");
     std::fs::write(path, serde_json::to_string_pretty(&sidecar).unwrap()).ok();
 }

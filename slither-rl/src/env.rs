@@ -5,11 +5,11 @@
 //! blueprint's two policy heads.
 //!
 //! Reward stack (per worm, per step):
-//!   + KILL_BONUS * victim_length     when an enemy head dies on your body
-//!   + length delta                   food + absorbed remains (dense, modest)
-//!   - DEATH_PENALTY                   on your own head-collision
-//!   - BOOST_COST                      while boosting (boost burns length)
-//!   + encircle shaping * anneal       shrinking a nearby smaller foe's escape arc
+//!   + KILL_FLAT + KILL_BONUS*victim_len  when an enemy head dies on your body
+//!   + length delta                       food + absorbed remains (dense, modest)
+//!   - DEATH_PENALTY                       on your own head-collision
+//!   - BOOST_COST                         while boosting (boost burns length)
+//!   + encircle shaping * anneal           shrinking a nearby smaller foe's escape arc
 //!
 //! The encircle term is the learnable analog of the heuristic's circle-trap; it
 //! is annealed toward zero by the trainer (`set_shaping`) as real kills appear,
@@ -29,10 +29,18 @@ pub const TURN_BUCKETS: usize = 9;
 /// extreme bucket just means "turn as hard as you can this way".
 const MAX_RELATIVE_TURN: f32 = 1.2;
 
-const KILL_BONUS: f32 = 0.02;
-const DEATH_PENALTY: f32 = 5.0;
-const LENGTH_DELTA_SCALE: f32 = 0.1;
-const BOOST_COST: f32 = 0.01;
+/// A kill pays a flat amount plus a length-scaled bonus. The flat term makes
+/// *any* conversion (even of small prey on equal footing — the project's weak
+/// spot) decisively worth more than the dense length signal, so the policy
+/// learns to finish kills rather than only farm food. The length term keeps
+/// trapping a big snake the bigger prize. A length-50 kill now pays
+/// `1.5 + 0.06*50 = 4.5`, on the same order as a death (`-6.0`), so going for a
+/// kill the bot can land is a clearly positive-EV gamble.
+const KILL_FLAT: f32 = 1.5;
+const KILL_BONUS: f32 = 0.06;
+const DEATH_PENALTY: f32 = 6.0;
+const LENGTH_DELTA_SCALE: f32 = 0.08;
+const BOOST_COST: f32 = 0.008;
 const ENCIRCLE_SCALE: f32 = 1.0;
 /// A foe must be at least this fraction smaller to be worth encircling (the
 /// heuristic's `enCircleThreshold` ≈ 0.56 analog: trap things you can outlast).
@@ -188,7 +196,7 @@ impl Env {
                 reward[i] -= DEATH_PENALTY;
                 done[i] = true;
                 if let Some(killer) = w.killed_by {
-                    reward[killer] += KILL_BONUS * w.length;
+                    reward[killer] += KILL_FLAT + KILL_BONUS * w.length;
                     kills[killer] += 1;
                 }
             }

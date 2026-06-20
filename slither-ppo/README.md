@@ -49,19 +49,45 @@ cargo test --release             # GAE, factored log-prob/entropy, obs packing, 
 ```
 
 Args: `iters` `arenas` `steps` `device=cpu|mps|cuda` `out=DIR` `eval-every`
-`snapshot-every` `lr` `seed`.
+`eval-games` `snapshot-every` `lr` `seed`.
+
+`compare net=A.ot [net2=B.ot] [games=N] [seed=S]` runs the greedy eval panel vs
+the heuristic on common seeds — the honest A/B for "is this net actually better".
 
 ## Does it learn?
 
-Yes. On a 300-iter MPS run (`arenas=256 steps=64`):
+Yes, and it now **stays** learned. On a 600-iter MPS run (`arenas=256 steps=64`):
 
 - **vs random: winrate → ~0.96** (crushes the floor).
-- **vs the heuristic teacher: winrate rises from ~0.05 to ~0.6–0.7** — the learner
-  starts *beating* the competent hand-coded encircler it was seeded against.
-- entropy falls steadily (≈2.87 → ≈1.5: the policy sharpens), explained variance
-  climbs to ≈0.85 (the value head fits), KL and clip-fraction stay in the healthy
-  PPO band. Kills come via cut-off (a foe head dying on the learner's body).
+- **vs the heuristic teacher: winrate rises to ~0.88 and plateaus there** through
+  deep even-self-play — the learner *beats* the competent hand-coded encircler it
+  was seeded against, and holds the level instead of regressing.
+- entropy falls but is held off the floor (the adaptive entropy coef), explained
+  variance ≈0.9, KL/clip in the healthy band, LR decays linearly to a 10% floor.
+  Kills come via cut-off (a foe head dying on the learner's body).
 
 The encircle-shaping prior holds at full strength early (so the behavior can
 emerge), then anneals as the learner kills on its own — the final policy is learned,
 not scripted.
+
+### Keeping it from regressing
+
+An earlier long run *peaked* at ~0.88 vs the heuristic then **collapsed to ~0.66**:
+once even-self-play started, pure PFSP dropped the heuristic from the pool (its
+`p*(1-p)` weight vanishes as the learner beats it), so the learner trained only
+against its own snapshots and forgot how to beat the teacher. Four changes fix it:
+
+1. **Eval-gated keep-best** — winrate-vs-heuristic is tracked every eval and the
+   peak weights are persisted to `best.ot` automatically (no manual grab).
+2. **Heuristic seat floor** — a fixed fraction of even-self-play seats is always the
+   heuristic (`HEURISTIC_FLOOR`), so the gating opponent never leaves the pool.
+3. **LR decay** to a small floor and an **adaptive entropy coef** with a floor —
+   the policy settles at the plateau instead of over-sharpening into the brittle
+   self-play-only mode.
+4. **Reward** weights a kill more decisively (`KILL_FLAT` + a larger length bonus)
+   so conversion is positive-EV, not only food-farming.
+
+Result: stable ~0.88 (best 0.91) all the way to iter 600 — no regression. Equal-
+footing *kill conversion* improved only marginally (≈0.12→0.14 kills/game): turning
+a closed-in prey into a kill on equal top speed is the genuinely hard part the
+blueprint flags, and survival/growth dominance is still the easier path to the win.

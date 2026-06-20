@@ -13,6 +13,10 @@ use slither_rl::world::{START_LENGTH, World, WorldConfig};
 use crate::opponent::{Pool, PoolKind};
 use crate::rollout::prey_cluster_world;
 
+/// Fraction of even-self-play seats forced to the heuristic regardless of its
+/// PFSP weight, so the gating opponent never falls out of the pool.
+const HEURISTIC_FLOOR: f32 = 0.35;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     /// Learner oversized, small fleeing/heuristic prey clustered around it. The
@@ -68,9 +72,21 @@ impl Stage {
                 &[0.4, 0.6],
             ),
             Stage::EvenSelfPlay => {
-                // Full PFSP over the whole pool (heuristic + snapshots), with the
-                // win-rate weighting doing the work.
-                pool.sample()
+                // Reserve a fixed fraction of seats for the heuristic every
+                // iteration. Pure PFSP drops it once the learner beats it (its
+                // `p*(1-p)` weight collapses as p→1), and the learner then trains
+                // only against its own snapshots and *forgets how to beat the
+                // heuristic* — the regression we saw (0.88→0.66). A guaranteed
+                // floor keeps the gating opponent always present so winrate-vs-
+                // heuristic climbs-or-plateaus instead of regressing.
+                if rng.unit() < HEURISTIC_FLOOR {
+                    pool.entries
+                        .iter()
+                        .position(|e| e.kind == PoolKind::Heuristic)
+                        .unwrap_or(0)
+                } else {
+                    pool.sample()
+                }
             }
         }
     }
