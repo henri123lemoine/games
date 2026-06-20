@@ -77,7 +77,7 @@ pub(crate) fn net_config_for(args: &[String], net_path: &Path) -> NetConfig {
     });
     let blocks = arg_opt(args, "--blocks")
         .or(recorded.map(|r| r.0))
-        .unwrap_or(6);
+        .unwrap_or(4);
     let channels = arg_opt(args, "--ch")
         .or(recorded.map(|r| r.1))
         .unwrap_or(64);
@@ -89,6 +89,27 @@ pub(crate) fn net_config_for(args: &[String], net_path: &Path) -> NetConfig {
         channels,
         size,
     }
+}
+
+/// The most recent `pool_size` snapshot checkpoints (`ckpt-NNNNNN.ot`) in
+/// `dir`, oldest-to-newest. The opponent pool draws from these.
+fn snapshot_paths(dir: &Path, pool_size: usize) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut ckpts: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("ckpt-") && n.ends_with(".ot"))
+        })
+        .collect();
+    ckpts.sort();
+    if ckpts.len() > pool_size {
+        ckpts.drain(..ckpts.len() - pool_size);
+    }
+    ckpts
 }
 
 pub(crate) fn append_line(path: &Path, line: &str) {
@@ -162,7 +183,7 @@ fn save_with_retry(trainer: &Trainer, path: &Path) {
 fn run(args: &[String]) {
     let hours: f64 = arg(args, "--hours", 5.0);
     let dir: PathBuf = arg(args, "--dir", PathBuf::from("../data/azsnake/run1"));
-    let sims: u32 = arg(args, "--sims", 128);
+    let sims: u32 = arg(args, "--sims", 320);
     let leaves: u32 = arg(args, "--leaves", 8);
     let concurrent: usize = arg(args, "--concurrent", 256);
     let samples_per_iter: usize = arg(args, "--samples-per-iter", 8192);
@@ -176,6 +197,10 @@ fn run(args: &[String]) {
     let fast_sims: u32 = arg(args, "--fast-sims", 32);
     let full_sims: u32 = arg(args, "--full-sims", sims.max(256));
     let full_prob: f64 = arg(args, "--full-prob", 0.0);
+    let gamma: f32 = arg(args, "--gamma", 0.99);
+    let margin_w: f32 = arg(args, "--margin-w", 0.25);
+    let pool_frac: f64 = arg(args, "--pool-frac", 0.2);
+    let pool_size: usize = arg(args, "--pool-size", 5);
     let forced_k: f32 = arg(args, "--forced-k", 0.0);
     let swa_decay: f64 = arg(args, "--swa-decay", 0.0);
     let use_sgd = arg(args, "--optimizer", String::from("adam")) == "sgd";
@@ -210,6 +235,9 @@ fn run(args: &[String]) {
         fast_sims,
         full_sims,
         full_prob,
+        gamma,
+        margin_w,
+        pool_frac,
     };
 
     std::fs::create_dir_all(&dir).expect("create run dir");
@@ -270,6 +298,8 @@ fn run(args: &[String]) {
             "eval_every": eval_every, "eval_pairs": eval_pairs,
             "eval_sims": eval_sims, "value_mix": value_mix,
             "fast_sims": fast_sims, "full_sims": full_sims, "full_prob": full_prob,
+            "gamma": gamma, "margin_w": margin_w,
+            "pool_frac": pool_frac, "pool_size": pool_size,
             "forced_k": forced_k, "swa_decay": swa_decay,
             "optimizer": if use_sgd { "sgd" } else { "adam" },
             "grad_clip": grad_clip, "warmup_iters": warmup_iters,
@@ -288,8 +318,22 @@ fn run(args: &[String]) {
     let mut work_secs = 0.0f64;
     let start = Instant::now();
     let opponents = [Opponent::Random, Opponent::Greedy, Opponent::Mcts(256)];
+    let mut pool_paths: Vec<PathBuf> = Vec::new();
     loop {
         iter += 1;
+
+        if pool_size > 0 && pool_frac > 0.0 {
+            let latest_paths = snapshot_paths(&dir, pool_size);
+            if latest_paths != pool_paths {
+                let nets: Vec<Infer> = latest_paths
+                    .iter()
+                    .filter_map(|p| Infer::load(p, net_cfg, dev, Kind::Half).ok())
+                    .collect();
+                println!("opponent pool: {} past checkpoints", nets.len());
+                pool.set_pool(nets);
+                pool_paths = latest_paths;
+            }
+        }
         if warmup_iters > 0 {
             if iter <= warmup_iters {
                 trainer.set_lr(current_lr * iter as f64 / warmup_iters as f64);
@@ -429,10 +473,10 @@ fn bench(args: &[String]) {
     use snake::Duel;
     use snake::encode::SnakeEncoder;
 
-    let blocks: usize = arg(args, "--blocks", 6);
+    let blocks: usize = arg(args, "--blocks", 4);
     let channels: i64 = arg(args, "--ch", 64);
     let size: i64 = arg(args, "--size", 20);
-    let sims: u32 = arg(args, "--sims", 128);
+    let sims: u32 = arg(args, "--sims", 320);
     let leaves: u32 = arg(args, "--leaves", 8);
     let concurrent: usize = arg(args, "--concurrent", 256);
     let samples: usize = arg(args, "--samples", 4096);
@@ -556,14 +600,15 @@ fn main() {
         _ => {
             eprintln!(
                 "usage: azsnake run   [--dir ../data/azsnake/run1] [--hours 5] [--size 20] \
-                 [--blocks 6] [--ch 64] [--sims 128] [--leaves 8] [--concurrent 256] \
+                 [--blocks 4] [--ch 64] [--sims 320] [--leaves 8] [--concurrent 256] \
                  [--samples-per-iter 8192] [--temp-plies 12] [--alpha 1.0] [--value-mix 0.3] \
+                 [--gamma 0.99] [--margin-w 0.25] [--pool-frac 0.2] [--pool-size 5] \
                  [--resign-fp-target 0.05] [--resign-q 0.95] [--resign-ply 20] [--resign-off 0.1] \
                  [--batch 512] [--reuse 1.8] [--replay 400000] [--lr 1e-3] [--wd 1e-4] \
                  [--eval-every 4] [--eval-pairs 16] [--eval-sims 128] [--snapshot-every 30]"
             );
             eprintln!(
-                "       azsnake bench [--size 20] [--blocks 6] [--ch 64] [--sims 128] [--leaves 8] \
+                "       azsnake bench [--size 20] [--blocks 4] [--ch 64] [--sims 320] [--leaves 8] \
                  [--concurrent 256] [--samples 4096]"
             );
             eprintln!(
