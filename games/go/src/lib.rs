@@ -305,37 +305,18 @@ impl Go {
         (score[0], score[1])
     }
 
-    /// Whether the absolute (Black-positive) ownership map `own` agrees with the
-    /// literal board everywhere — every point's thresholded owner (`own` past
-    /// `tau`, else neutral) equals [`Go::ownership`] of the stones as they sit —
-    /// and the board is substantially decided (at most `size` neutral points).
-    /// True means the literal board already scores correctly: no dead stones the
-    /// map would reassign, no point still contested. A dead stone (the map owns
-    /// it for the opponent of the stone) or an unsure stone/region makes it
-    /// false, so the bot plays the position out before agreeing to end it; the
-    /// neutral cap rejects an empty or barely-played board (where everything is
-    /// neutral and would trivially "agree"), which would otherwise let a move-1
-    /// pass be reciprocated into a komi loss.
-    pub fn ownership_resolved(&self, s: &GoState, own: &[f32], tau: f32) -> bool {
-        let literal = self.ownership(s);
-        if own.len() != literal.len() {
-            return false;
-        }
-        let mut neutral = 0usize;
-        for (&o, &l) in own.iter().zip(&literal) {
-            let owner = if o > tau {
-                1.0
-            } else if o < -tau {
-                -1.0
-            } else {
-                neutral += 1;
-                0.0
-            };
-            if owner != l {
-                return false;
-            }
-        }
-        neutral <= self.size
+    /// Whether the winner is already locked under the absolute (Black-positive)
+    /// ownership map `own`: the komi-adjusted lead from the confidently-owned
+    /// points (`|own| > tau`) exceeds the number of still-uncertain points, so
+    /// even if every uncertain point went to the trailing side the result would
+    /// not change. Tolerates open territory and dame the net hasn't fully
+    /// committed on — it only needs the *outcome* settled, not every square —
+    /// while an empty or close board (uncertain points outweigh the lead) is not
+    /// decided.
+    pub fn result_decided(&self, own: &[f32], tau: f32) -> bool {
+        let (black, white) = self.adjudicated_area(own, tau);
+        let uncertain = own.len() as f64 - (black + white) as f64;
+        (black as f64 - white as f64 - self.komi()).abs() > uncertain
     }
 
     /// Final area-score margin from Black's view: `black − white − komi`,
@@ -595,46 +576,41 @@ mod scoring_tests {
         assert_eq!(go.adjudicated_area(&[1.0; 9], TAU), (9, 0));
     }
 
-    #[test]
-    fn resolved_when_the_map_matches_a_decided_board() {
-        let go = Go::new(3);
-        let s = go.parse_state(&["XXX", "XXX", "XXX"], 0);
-        assert!(go.ownership_resolved(&s, &go.ownership(&s), TAU));
+    fn own(black: usize, white: usize, uncertain: usize) -> Vec<f32> {
+        let mut v = vec![1.0; black];
+        v.extend(std::iter::repeat_n(-1.0, white));
+        v.extend(std::iter::repeat_n(0.0, uncertain));
+        v
     }
 
     #[test]
-    fn dame_does_not_block_resolution() {
-        let go = Go::new(3);
-        let s = go.parse_state(&["X.O", "X.O", "X.O"], 0);
-        let own = go.ownership(&s); // left +1, middle dame 0, right -1
-        assert!(go.ownership_resolved(&s, &own, TAU));
-        assert_eq!(go.adjudicated_area(&own, TAU), (3, 3));
+    fn decided_when_the_lead_exceeds_the_uncertainty() {
+        let go = Go::new(9);
+        // Black +20 raw, no uncertain points: komi can't flip it.
+        assert!(go.result_decided(&own(45, 25, 0), TAU));
+        // White clearly ahead.
+        assert!(go.result_decided(&own(10, 40, 0), TAU));
     }
 
     #[test]
-    fn a_dead_stone_blocks_until_captured() {
-        let go = Go::new(3);
-        let s = go.parse_state(&["XXX", "XOX", "XXX"], 0);
-        let mut own = go.ownership(&s); // center white stone reads -1 literally
-        own[4] = 1.0; // the net knows the lone white stone is dead → Black's
-        assert!(!go.ownership_resolved(&s, &own, TAU));
+    fn not_decided_when_uncertainty_outweighs_the_lead() {
+        let go = Go::new(9);
+        // Black +10 raw (≈ +2.5 after komi) but 15 points still up for grabs.
+        assert!(!go.result_decided(&own(20, 10, 15), TAU));
     }
 
     #[test]
-    fn an_unsure_stone_blocks_resolution() {
-        let go = Go::new(3);
-        let s = go.parse_state(&["XXX", "XXX", "XXX"], 0);
-        let mut own = go.ownership(&s);
-        own[4] = 0.3; // a stone whose life the net is unsure of
-        assert!(!go.ownership_resolved(&s, &own, TAU));
+    fn empty_board_is_not_decided() {
+        let go = Go::new(9);
+        assert!(!go.result_decided(&own(0, 0, 81), TAU));
     }
 
     #[test]
-    fn empty_board_is_not_resolved() {
-        let go = Go::new(3);
-        let s = go.parse_state(&["...", "...", "..."], 0);
-        // Everything is neutral, so the map trivially "agrees" — but the neutral
-        // cap rejects it so a move-1 pass can't be reciprocated.
-        assert!(!go.ownership_resolved(&s, &go.ownership(&s), TAU));
+    fn tau_thresholds_what_counts_as_owned() {
+        let go = Go::new(9);
+        // A board the net leans on but isn't sure of: at 0.5 nothing counts.
+        let leaning = vec![0.4f32; 81];
+        assert_eq!(go.adjudicated_area(&leaning, 0.5), (0, 0));
+        assert!(!go.result_decided(&leaning, 0.5));
     }
 }

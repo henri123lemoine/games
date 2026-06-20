@@ -36,9 +36,6 @@ pub struct AzGoBot {
     /// evaluations, and either mode uses its ownership head for the pass
     /// decision. `None` until `load_weights` (and ownership-less for `AZWEBGO2`).
     model: Option<Model>,
-    /// Whether the last mirrored move was a pass — the bot only agrees to end
-    /// the game in response to the opponent passing, never on its own.
-    opponent_passed: bool,
     /// The tree holds at least an expanded root (safe to read/extract).
     has_tree: bool,
     /// The last search ran to its visit budget (best move is readable).
@@ -69,7 +66,6 @@ impl AzGoBot {
             rng: Rng::new(u64::from(seed)),
             batch: Vec::new(),
             model: None,
-            opponent_passed: false,
             has_tree: false,
             done: false,
         }
@@ -137,7 +133,6 @@ impl AzGoBot {
         self.has_tree = reuse.is_some();
         self.search = Search::new(reuse);
         self.done = false;
-        self.opponent_passed = matches!(action, GoAction::Pass);
         self.game.apply(&mut self.state, action);
         Ok(())
     }
@@ -152,9 +147,9 @@ impl AzGoBot {
         Some(mover.iter().map(|o| o * sign).collect())
     }
 
-    fn settled(&self) -> bool {
+    fn decided(&self) -> bool {
         self.ownership_abs()
-            .is_some_and(|own| self.game.ownership_resolved(&self.state, &own, TAU))
+            .is_some_and(|own| self.game.result_decided(&own, TAU))
     }
 
     /// The adjudicated final result (dead stones scored by ownership) as display
@@ -164,7 +159,7 @@ impl AzGoBot {
         let Some(own) = self.ownership_abs() else {
             return String::new();
         };
-        if !self.game.ownership_resolved(&self.state, &own, TAU) {
+        if !self.game.result_decided(&own, TAU) {
             return String::new();
         }
         let (b, w) = self.game.adjudicated_area(&own, TAU);
@@ -269,11 +264,13 @@ impl AzGoBot {
         out
     }
 
-    /// The searched move as a board label (`"c3"` / `"pass"`), argmax over
-    /// root visits — except when the opponent has passed and the ownership head
-    /// reads the board as settled, in which case the bot agrees to end the game.
+    /// The searched move as a board label (`"c3"` / `"pass"`), argmax over root
+    /// visits — except once the ownership head says the result is decided (the
+    /// lead exceeds every uncertain point), when the bot passes instead of
+    /// filling settled territory, ending the game rather than playing it to the
+    /// last eye.
     pub fn best(&self) -> Result<String, JsError> {
-        if self.opponent_passed && self.settled() {
+        if self.decided() {
             return Ok(self.game.action_label(&self.state, GoAction::Pass));
         }
         if !self.done {
@@ -340,18 +337,6 @@ mod tests {
     }
 
     #[test]
-    fn opponent_passed_tracks_the_last_push() {
-        let mut bot = AzGoBot::new(4, 8, 7, 3);
-        assert!(!bot.opponent_passed);
-        bot.push("b2").unwrap();
-        assert!(!bot.opponent_passed, "a stone is not a pass");
-        bot.push("pass").unwrap();
-        assert!(bot.opponent_passed);
-        bot.push("a1").unwrap();
-        assert!(!bot.opponent_passed);
-    }
-
-    #[test]
     fn ownership_abs_flips_with_the_side_to_move() {
         let mut bot = AzGoBot::new(4, 8, 7, 3);
         bot.load_weights(&synth_net(2, 6, 3, true)).unwrap();
@@ -384,15 +369,12 @@ mod tests {
     }
 
     #[test]
-    fn does_not_agree_to_pass_an_unsettled_board() {
+    fn does_not_pass_an_undecided_board() {
         let mut bot = AzGoBot::new(8, 8, 7, 9);
         bot.load_weights(&synth_net(2, 6, 9, true)).unwrap();
-        bot.push("pass").unwrap();
-        assert!(bot.opponent_passed);
-        // An empty board has a region bordered by neither colour, so it is never
-        // settled — the ownership pass-check refuses to reciprocate, and there
-        // is no adjudicated result to show.
-        assert!(!bot.settled());
+        // The opening is not decided (no lead exceeds the open board), so the
+        // bot plays rather than passing, and shows no adjudicated result.
+        assert!(!bot.decided());
         assert_eq!(bot.final_result(), "");
     }
 }
