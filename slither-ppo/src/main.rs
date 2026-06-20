@@ -160,6 +160,14 @@ fn adapt_entropy_coef(coef: f64, measured_entropy: f32) -> f64 {
     next.clamp(ENTROPY_COEF_BASE, ENTROPY_COEF_MAX)
 }
 
+/// Keep-best combined score = winrate + KILL_WIN_WEIGHT * kill_winrate. Weight
+/// chosen so a 0.10 gain in kill-win rate (a real encircling improvement) can
+/// outweigh ~0.05 of overall winrate, pulling the kept net toward decisive
+/// predation — but WINRATE_SLACK caps how much overall winrate it may give up, so
+/// the kept net can't regress the stable plateau for a flashier-killer one.
+const KILL_WIN_WEIGHT: f32 = 0.5;
+const WINRATE_SLACK: f32 = 0.04;
+
 fn main() {
     // Subcommand dispatch: `export` / `verify-export` for the browser net, else
     // the default is a training run (`[k=v]` knobs).
@@ -194,8 +202,9 @@ fn compare(args: &[String]) {
 
     let print = |label: &str, r: &eval::EvalResult| {
         println!(
-            "{label:>40}  win {:.3}  learner-kills/g {:.3}  deaths-to-opp/g {:.3}  lifespan {:.0}  final-len {:.1}",
+            "{label:>40}  win {:.3}  kill-win {:.3}  learner-kills/g {:.3}  deaths-to-opp/g {:.3}  lifespan {:.0}  final-len {:.1}",
             r.winrate,
+            r.kill_winrate,
             r.learner_kills_per_game,
             r.opp_kills_per_game,
             r.mean_lifespan,
@@ -262,11 +271,13 @@ fn train() {
     let mut buf: Vec<Transition> = Vec::with_capacity(args.steps * args.arenas);
     let mut kills_per_episode_last = 0.0f32;
 
-    // Keep-best by winrate-vs-heuristic: the long run peaked then regressed, and
-    // the deployable net was a manual checkpoint grab. Track the best eval and
-    // persist it to `best.ot` automatically so the shipped net is always the peak.
+    // Keep-best by a COMBINED score vs the heuristic: overall winrate plus a
+    // weighted kill-win rate, so the kept net is a decisive *encircler*, not just
+    // a survivor — but a winrate floor (a flashy killer that tanks overall winrate
+    // can't win the gate) keeps it from regressing the stable plateau.
     let best_path = args.out.join("best.ot");
-    let mut best_heur_winrate = f32::NEG_INFINITY;
+    let mut best_score = f32::NEG_INFINITY;
+    let mut best_winrate = 0.0f32;
     let mut best_iter = 0usize;
 
     for iter in 0..args.iters {
@@ -373,7 +384,7 @@ fn train() {
                 args.seed ^ 0x22,
             );
             println!(
-                "  [iter {iter:>4}] r/step {reward_per_step:+.4}  ent {:.3}  kl {:.4}  clip {:.2}  ev {:+.2}  vloss {:.3}  shaping {shaping:.2}  | vs RAND win {:.2} k {:.2}  | vs HEUR win {:.2} k {:.2}  opp-k {:.2}  {dt:.1}s",
+                "  [iter {iter:>4}] r/step {reward_per_step:+.4}  ent {:.3}  kl {:.4}  clip {:.2}  ev {:+.2}  vloss {:.3}  shaping {shaping:.2}  | vs RAND win {:.2} k {:.2}  | vs HEUR win {:.2} kill-win {:.2} k {:.2}  opp-k {:.2}  {dt:.1}s",
                 stats.entropy,
                 stats.approx_kl,
                 stats.clip_frac,
@@ -382,6 +393,7 @@ fn train() {
                 r.winrate,
                 r.learner_kills_per_game,
                 h.winrate,
+                h.kill_winrate,
                 h.learner_kills_per_game,
                 h.opp_kills_per_game,
             );
@@ -398,19 +410,24 @@ fn train() {
             );
         }
 
-        // Eval-gated keep-best: whenever winrate-vs-heuristic sets a new high,
-        // persist these weights to `best.ot`. The deployable net is then always
-        // the peak, automatically — no manual checkpoint grab, and a later
-        // regression can't overwrite it.
-        if let Some(h) = ev_heur.as_ref().filter(|h| h.winrate > best_heur_winrate) {
-            best_heur_winrate = h.winrate;
-            best_iter = iter;
-            net::save(&vs, &best_path).expect("save best");
-            write_best_sidecar(&args.out, iter, h.winrate, &args);
-            println!(
-                "  [iter {iter}] new best vs HEUR win {:.3} -> best.ot",
-                h.winrate
-            );
+        // Eval-gated keep-best on the combined score (winrate + weighted
+        // kill-win), with a winrate floor so a flashier killer can't ship at the
+        // cost of overall winrate. The deployable net is then always the peak by
+        // this metric, automatically — and a later regression can't overwrite it.
+        if let Some(h) = ev_heur.as_ref() {
+            let score = h.winrate + KILL_WIN_WEIGHT * h.kill_winrate;
+            let floor_ok = h.winrate >= best_winrate - WINRATE_SLACK;
+            if score > best_score && floor_ok {
+                best_score = score;
+                best_winrate = best_winrate.max(h.winrate);
+                best_iter = iter;
+                net::save(&vs, &best_path).expect("save best");
+                write_best_sidecar(&args.out, iter, h, &args);
+                println!(
+                    "  [iter {iter}] new best  win {:.3}  kill-win {:.3}  score {score:.3} -> best.ot",
+                    h.winrate, h.kill_winrate
+                );
+            }
         }
 
         write_metrics(
@@ -443,9 +460,10 @@ fn train() {
     net::save(&vs, &final_ckpt).expect("save final");
     write_sidecar(&args.out, args.iters, &args);
     println!(
-        "done. final checkpoint {}\nbest vs HEUR win {:.3} at iter {} -> {}",
+        "done. final checkpoint {}\nbest combined score {:.3} (winrate floor {:.3}) at iter {} -> {}",
         final_ckpt.display(),
-        best_heur_winrate,
+        best_score,
+        best_winrate,
         best_iter,
         best_path.display()
     );
@@ -500,6 +518,7 @@ fn write_metrics(
     }
     if let Some(h) = heur {
         o.insert("heur_winrate".into(), (h.winrate as f64).into());
+        o.insert("heur_kill_winrate".into(), (h.kill_winrate as f64).into());
         o.insert(
             "heur_kills".into(),
             (h.learner_kills_per_game as f64).into(),
@@ -533,11 +552,14 @@ fn write_sidecar(out: &std::path::Path, iter: usize, args: &Args) {
 }
 
 /// Sidecar for `best.ot`: the same arch dims plus the eval that earned it, so a
-/// later export knows which iteration / winrate the deployed net came from.
-fn write_best_sidecar(out: &std::path::Path, iter: usize, heur_winrate: f32, args: &Args) {
+/// later export knows which iteration / winrate / kill-rate the deployed net
+/// came from.
+fn write_best_sidecar(out: &std::path::Path, iter: usize, h: &eval::EvalResult, args: &Args) {
     let sidecar = serde_json::json!({
         "iter": iter,
-        "heur_winrate": heur_winrate,
+        "heur_winrate": h.winrate,
+        "heur_kill_winrate": h.kill_winrate,
+        "heur_kills_per_game": h.learner_kills_per_game,
         "arenas": args.arenas,
         "steps": args.steps,
         "lr": args.lr,

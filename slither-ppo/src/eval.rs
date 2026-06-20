@@ -19,7 +19,13 @@ use crate::obs_batch;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EvalResult {
+    /// Overall win share: a kill, or outliving/out-growing the field. The stable
+    /// headline metric, comparable across runs (the guardrail).
     pub winrate: f32,
+    /// Decisive-predation win share: fraction of games with at least one kill.
+    /// This is the encircle/cut-off signal we want to *push* — winning by
+    /// trapping a foe, not by farming food and outlasting.
+    pub kill_winrate: f32,
     pub learner_kills_per_game: f32,
     pub opp_kills_per_game: f32,
     pub mean_lifespan: f32,
@@ -134,7 +140,9 @@ pub fn evaluate(
     }
 
     // Win = learner ended ahead: got a kill, or outlived/out-grew the field.
+    // kill_wins = the decisive-predation subset (at least one kill).
     let mut wins = 0;
+    let mut kill_wins = 0;
     for g in 0..games {
         let me = &envs[g].world().worms[0];
         let biggest_foe = envs[g]
@@ -145,15 +153,20 @@ pub fn evaluate(
             .filter(|(j, w)| *j != 0 && !w.dead)
             .map(|(_, w)| w.length)
             .fold(0.0f32, f32::max);
-        let won = learner_kills[g] > 0 || (!me.dead && me.length > biggest_foe * 1.1);
+        let killed = learner_kills[g] > 0;
+        let won = killed || (!me.dead && me.length > biggest_foe * 1.1);
         if won {
             wins += 1;
+        }
+        if killed {
+            kill_wins += 1;
         }
     }
 
     let gf = games as f32;
     EvalResult {
         winrate: wins as f32 / gf,
+        kill_winrate: kill_wins as f32 / gf,
         learner_kills_per_game: learner_kills.iter().sum::<u32>() as f32 / gf,
         opp_kills_per_game: opp_kills.iter().sum::<u32>() as f32 / gf,
         mean_lifespan: lifespan.iter().sum::<u32>() as f32 / gf,
