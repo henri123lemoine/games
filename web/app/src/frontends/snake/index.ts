@@ -31,6 +31,7 @@
 
 import type { MatchEventData, ViewState } from '../../engine/protocol';
 import type { FrontendCtx, GameFrontend } from '../types';
+import { lastMove, resetTelemetry } from './telemetry';
 
 type Abs = 'n' | 'e' | 's' | 'w';
 
@@ -272,6 +273,26 @@ const CSS = `
   font-size: 0.8rem;
   min-height: 1.1em;
 }
+.snk-debug {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: rgba(4, 10, 20, 0.62);
+  border: 1px solid rgba(120, 180, 255, 0.18);
+  color: #d7e6ff;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  white-space: pre;
+  pointer-events: none;
+  display: none;
+}
+.snk-debug.snk-debug-on {
+  display: block;
+}
 `;
 
 function injectStyle(): void {
@@ -280,6 +301,18 @@ function injectStyle(): void {
   style.id = STYLE_ID;
   style.textContent = CSS;
   document.head.append(style);
+}
+
+/** The perf overlay is opt-in: `?snakeDebug` in the URL, or a sticky
+ * `snakeDebug` localStorage flag, so it never clutters normal play but the
+ * team can flip it on to read backend/ms/sims/trips/FPS in-browser. */
+function debugEnabled(): boolean {
+  try {
+    if (new URLSearchParams(window.location.search).has('snakeDebug')) return true;
+    return window.localStorage.getItem('snakeDebug') === '1';
+  } catch {
+    return false;
+  }
 }
 
 /** A glide between two discrete game states, eased over a real time window. */
@@ -345,6 +378,10 @@ class SnakeFrontend implements GameFrontend {
   private frameTimes: number[] = [];
   private fpsLogAt = 0;
 
+  // Opt-in perf overlay: backend / ms-per-move / sims / GPU round-trips / FPS.
+  private debugEl!: HTMLElement;
+  private showDebug = false;
+
   mount(host: HTMLElement, ctx: FrontendCtx): void {
     this.ctx = ctx;
     this.mySeat = ctx.humanSeat;
@@ -367,6 +404,7 @@ class SnakeFrontend implements GameFrontend {
         </div>
         <div class="snk-stage">
           <canvas class="snk-canvas"></canvas>
+          <div class="snk-debug"></div>
           <div class="snk-overlay"><b></b><small></small></div>
         </div>
         <div class="snk-hint"></div>
@@ -387,6 +425,9 @@ class SnakeFrontend implements GameFrontend {
     this.overlayTitleEl = this.overlayEl.querySelector('b')!;
     this.overlaySubEl = this.overlayEl.querySelector('small')!;
     this.hintEl = host.querySelector('.snk-hint')!;
+    this.debugEl = host.querySelector('.snk-debug')!;
+    this.showDebug = debugEnabled();
+    this.debugEl.classList.toggle('snk-debug-on', this.showDebug);
 
     const stage = host.querySelector<HTMLElement>('.snk-stage')!;
     if (this.mySeat >= 0) {
@@ -476,6 +517,7 @@ class SnakeFrontend implements GameFrontend {
     window.removeEventListener('keydown', this.onKey);
     this.resizeObs?.disconnect();
     this.resizeObs = null;
+    resetTelemetry();
   }
 
   /** Submit the human's heading for this tick: a queued turn if any, else the
@@ -631,6 +673,7 @@ class SnakeFrontend implements GameFrontend {
   private loop = (now: number): void => {
     this.draw(now);
     this.recordFps(now);
+    if (this.showDebug) this.paintDebug(now);
     this.rafId = requestAnimationFrame(this.loop);
   };
 
@@ -642,6 +685,29 @@ class SnakeFrontend implements GameFrontend {
       // eslint-disable-next-line no-console
       console.info(`[snake] ${this.frameTimes.length} FPS`);
     }
+  }
+
+  /** Paint the opt-in perf HUD from the live FPS window and the bot driver's
+   * latest per-move telemetry. `frameTimes` is a 1 s sliding window, so its
+   * length is the current FPS. */
+  private paintDebug(now: number): void {
+    const fps = this.frameTimes.length;
+    const m = lastMove();
+    const lines = [`fps   ${fps}`];
+    if (m) {
+      lines.push(
+        `bot   ${m.backend.toUpperCase()}`,
+        `move  ${m.ms.toFixed(0)} ms`,
+        `sims  ${m.sims}`,
+      );
+      if (m.backend === 'gpu') lines.push(`trips ${m.trips}`);
+      const ageMs = now - m.at;
+      if (ageMs > 2000) lines.push(`(idle ${(ageMs / 1000).toFixed(0)}s)`);
+    } else {
+      lines.push('bot   —');
+    }
+    const text = lines.join('\n');
+    if (this.debugEl.textContent !== text) this.debugEl.textContent = text;
   }
 
   private draw(now: number): void {
