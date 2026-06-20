@@ -18,6 +18,16 @@ use slitherinfer::Model;
 use slitherinfer::obs::{ObsMemory, act};
 use wasm_bindgen::prelude::*;
 
+/// How many bot net-forwards run per sim tick. The dominant per-tick cost is the
+/// CNN forward (~6 ms native, more in wasm); running every bot every tick is what
+/// crippled the framerate. Instead the bots are decided round-robin — a small
+/// budget per tick, each bot's action cached until its next turn — so a tick
+/// costs a bounded number of forwards regardless of population. At 30 Hz with a
+/// budget of 2, ~8 bots each re-decide every ~4 ticks (~7.5 Hz), well inside
+/// their reaction needs (a worm turns at most `TURN_RATE*DT` ≈ 8°/tick), and the
+/// sim stays real-time even while the browser does other work.
+const BOT_BUDGET_PER_TICK: usize = 2;
+
 #[wasm_bindgen(start)]
 pub fn start() {
     console_error_panic_hook::set_once();
@@ -25,18 +35,17 @@ pub fn start() {
 
 /// The human's worm is always seat 0.
 const HUMAN: usize = 0;
-/// The human starts a touch longer than a bare worm — enough to be competitive
-/// in the opening (not the obvious smallest prey) without being a giant. The
-/// bots, scattered, start between `START_LENGTH` and roughly this.
-const HUMAN_START_LENGTH: f32 = 60.0;
 /// Bots spawn at least this far from the human's center spawn, so a fresh human
-/// isn't rammed in the first second.
+/// isn't rammed in the first second — the one concession to spawn fairness. The
+/// human itself spawns *small* (`START_LENGTH`), exactly like the bots and like
+/// real slither.io: no length head-start, so the trained net is a real opponent.
 const SPAWN_CLEARANCE: f32 = 700.0;
 
 /// Build the arena: the human at the center facing a random way (clear of the
 /// walls and of an instant bot ram), and `bot_count` bots scattered with a
-/// margin from the walls and from the human. Keeps play fair at spawn without
-/// changing the trained policy the bots run.
+/// margin from the walls and from the human. Everyone spawns at the same small
+/// `START_LENGTH` (real slither.io has no head-start); the only fairness aid is
+/// the no-instant-ram spawn clearance.
 fn build_world(seed: u64, bot_count: usize, pellet_target: usize) -> World {
     let mut rng = Rng::new(seed);
     let center = Vec2::new(WORLD * 0.5, WORLD * 0.5);
@@ -44,7 +53,7 @@ fn build_world(seed: u64, bot_count: usize, pellet_target: usize) -> World {
     worms.push(Worm::spawn(
         center,
         rng.range(0.0, std::f32::consts::TAU),
-        HUMAN_START_LENGTH,
+        START_LENGTH,
     ));
     let margin = 320.0;
     for _ in 0..bot_count {
@@ -73,6 +82,14 @@ pub struct SlitherGame {
     model: Model,
     /// Per-worm observation scratch (delta channels); index 0 (human) unused.
     mem: Vec<ObsMemory>,
+    /// Last action each bot decided, replayed on the ticks between its (throttled)
+    /// re-decisions. Index 0 (human) unused. Updated round-robin from `bot_cursor`.
+    cached: Vec<Action>,
+    /// Next bot index to re-decide this tick; walks the worm range round-robin.
+    bot_cursor: usize,
+    /// Whether each worm actually boosted on the last tick (control boost gated by
+    /// `can_boost`) — drives the boost glow in the renderer.
+    boosting: Vec<bool>,
     /// Cached so a fresh game reuses the same population/pellet density.
     cfg: WorldConfig,
     seed: u64,
@@ -97,11 +114,15 @@ impl SlitherGame {
         };
         let seed = u64::from(seed);
         let world = build_world(seed, cfg.worms - 1, cfg.pellet_target);
-        let mem = (0..world.worms.len()).map(|_| ObsMemory::new()).collect();
+        let n = world.worms.len();
+        let mem = (0..n).map(|_| ObsMemory::new()).collect();
         Ok(SlitherGame {
             world,
             model,
             mem,
+            cached: vec![Action::default(); n],
+            bot_cursor: HUMAN + 1,
+            boosting: vec![false; n],
             cfg,
             seed,
         })
@@ -111,9 +132,11 @@ impl SlitherGame {
     pub fn reset(&mut self, seed: u32) {
         self.seed = u64::from(seed);
         self.world = build_world(self.seed, self.cfg.worms - 1, self.cfg.pellet_target);
-        self.mem = (0..self.world.worms.len())
-            .map(|_| ObsMemory::new())
-            .collect();
+        let n = self.world.worms.len();
+        self.mem = (0..n).map(|_| ObsMemory::new()).collect();
+        self.cached = vec![Action::default(); n];
+        self.bot_cursor = HUMAN + 1;
+        self.boosting = vec![false; n];
     }
 
     /// Advance one fixed `DT` tick. The human worm aims its head at
@@ -122,10 +145,33 @@ impl SlitherGame {
     /// world ignores their controls).
     pub fn tick(&mut self, human_aim: f32, human_boost: bool) {
         let n = self.world.worms.len();
-        // The net forward for each bot reads `self.world` and writes its own
-        // `self.mem[i]`, so build the controls by index (the borrow checker
-        // can't see those are disjoint through a single iterator). Dead worms
-        // get the default control, which the world ignores.
+
+        // Re-decide a bounded budget of living bots this tick (round-robin over
+        // seats 1..n). A bot's net forward reads `self.world` and writes its own
+        // `self.mem[i]`; both are decided here and cached. Every other bot replays
+        // its last cached action — that's the throttle that keeps the framerate up
+        // without changing the policy (each bot still runs the trained net, just a
+        // few Hz instead of every tick).
+        if n > 1 {
+            let mut decided = 0;
+            // Scan at most `n-1` seats so a tick can't spin forever if every bot
+            // happens to be dead.
+            for _ in 0..(n - 1) {
+                if decided >= BOT_BUDGET_PER_TICK {
+                    break;
+                }
+                let i = self.bot_cursor;
+                self.bot_cursor += 1;
+                if self.bot_cursor >= n {
+                    self.bot_cursor = HUMAN + 1;
+                }
+                if i != HUMAN && !self.world.worms[i].dead {
+                    self.cached[i] = act(&self.model, &self.world, i, &mut self.mem[i]);
+                    decided += 1;
+                }
+            }
+        }
+
         let controls: Vec<WormControl> = (0..n)
             .map(|i| {
                 let w = &self.world.worms[i];
@@ -137,12 +183,21 @@ impl SlitherGame {
                         boost: human_boost,
                     }
                 } else {
-                    let angle = w.angle;
-                    let a: Action = act(&self.model, &self.world, i, &mut self.mem[i]);
-                    a.control(angle)
+                    self.cached[i].control(w.angle)
                 }
             })
             .collect();
+
+        // Record the *effective* boost (control boost gated by `can_boost`) so the
+        // renderer can light up only worms actually spending length.
+        for (slot, (w, ctrl)) in self
+            .boosting
+            .iter_mut()
+            .zip(self.world.worms.iter().zip(&controls))
+        {
+            *slot = !w.dead && ctrl.boost && w.can_boost();
+        }
+
         self.world.step(&controls);
     }
 
@@ -189,19 +244,23 @@ impl SlitherGame {
         self.world.alive_count()
     }
 
-    /// Flat render snapshot of every worm, concatenated. Per worm:
-    /// `[is_human, dead, radius, length, seg_count, x0,y0, x1,y1, …]`. The
-    /// header is fixed-width (5 floats) so the reader can stride worms; segment
-    /// pairs follow. Dead worms report `seg_count = 0` (their remains are
-    /// pellets now).
+    /// Flat render snapshot of every worm, concatenated. Per worm a fixed-width
+    /// 8-float header — `[seat, is_human, dead, boosting, radius, length, angle,
+    /// seg_count]` — followed by `seg_count` `x,y` pairs. `seat` is the worm's
+    /// stable index so the page can match a worm across snapshots (for
+    /// interpolation) even as the population changes. Dead worms report
+    /// `seg_count = 0` (their remains are pellets now).
     pub fn worms_blob(&self) -> Vec<f32> {
         let mut out = Vec::new();
         for (i, w) in self.world.worms.iter().enumerate() {
             let segs = if w.dead { &[][..] } else { &w.segments[..] };
+            out.push(i as f32);
             out.push(if i == HUMAN { 1.0 } else { 0.0 });
             out.push(if w.dead { 1.0 } else { 0.0 });
+            out.push(if self.boosting[i] { 1.0 } else { 0.0 });
             out.push(w.radius());
             out.push(w.length);
+            out.push(w.angle);
             out.push(segs.len() as f32);
             for s in segs {
                 out.push(s.x);
@@ -211,14 +270,37 @@ impl SlitherGame {
         out
     }
 
-    /// Flat pellet positions `[x0,y0, x1,y1, …]`; value is folded into the
-    /// drawing by the page (death pellets are larger but the world doesn't
-    /// distinguish them once dropped, so a single size reads fine).
+    /// Flat pellet snapshot `[x0,y0,value0, x1,y1,value1, …]`. The value lets the
+    /// page draw the bigger, brighter death-snake orbs (value ≈ 2) distinctly
+    /// from natural pellets (value 1).
     pub fn pellets_blob(&self) -> Vec<f32> {
-        let mut out = Vec::with_capacity(self.world.pellets.len() * 2);
+        let mut out = Vec::with_capacity(self.world.pellets.len() * 3);
         for p in &self.world.pellets {
             out.push(p.pos.x);
             out.push(p.pos.y);
+            out.push(p.value);
+        }
+        out
+    }
+
+    /// Leaderboard snapshot: every worm's `[seat, is_human, dead, length]`,
+    /// already sorted by length descending. The page slices the top N and finds
+    /// the human's rank from it.
+    pub fn leaderboard_blob(&self) -> Vec<f32> {
+        let mut order: Vec<usize> = (0..self.world.worms.len()).collect();
+        order.sort_by(|&a, &b| {
+            self.world.worms[b]
+                .length
+                .partial_cmp(&self.world.worms[a].length)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut out = Vec::with_capacity(order.len() * 4);
+        for i in order {
+            let w = &self.world.worms[i];
+            out.push(i as f32);
+            out.push(if i == HUMAN { 1.0 } else { 0.0 });
+            out.push(if w.dead { 1.0 } else { 0.0 });
+            out.push(w.length);
         }
         out
     }

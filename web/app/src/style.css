@@ -602,35 +602,16 @@ button {
 .slr-root {
   display: flex;
   flex-direction: column;
-  gap: 12px;
   flex: 1;
-}
-.slr-hud {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  flex-wrap: wrap;
-  color: var(--text-dim);
-  font-size: 0.9rem;
-}
-.slr-stat b {
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  margin-left: 4px;
-}
-.slr-hint {
-  margin-left: auto;
-  font-size: 0.82rem;
 }
 .slr-stage {
   position: relative;
   flex: 1;
-  min-height: 60vh;
+  min-height: 72vh;
   border-radius: var(--radius);
   overflow: hidden;
   border: 1px solid var(--border);
-  background: #060912;
+  background: #181b22;
   cursor: crosshair;
   touch-action: none;
 }
