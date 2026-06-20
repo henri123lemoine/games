@@ -1,8 +1,12 @@
 # Snake: redesign to a competitive 1v1 game
 
-**Status:** Snake is removed from the web arcade (see `HIDDEN_GAMES` in
-`web/app/src/shell/app.ts`). The Rust crate and the terminal client keep it.
-This note records *why* and *how to bring it back well*.
+**Status:** Done (option 1). The arcade's `snake` entry is the 2-player
+`snake::Duel` (20x20) with the generic MCTS-eval bot as the baseline; the
+polished arrow-key/swipe frontend lives in `web/app/src/frontends/snake/`,
+and the game joins watch mode and the tournament lab via its `eval` entry. The
+single-player `snake::Snake` is retained for the terminal client and its
+tests/examples. This note records *why* it was pulled and *how it came back*;
+the rationale below is the spec that was implemented.
 
 ## Why it was pulled
 

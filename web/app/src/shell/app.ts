@@ -35,14 +35,12 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   othello: { depth: "5" },
   connect4: { depth: "7" },
   go: { size: "9", bot: "azero-gpu", sims: "1500" },
+  snake: { sims: "150" },
   "2048": {},
 };
 
-/** Games registered in the lab but not surfaced on the site. Snake is solo
- * and too easy to fit the "play the lab's bots" thesis; it returns once it
- * is a competitive 1v1 game — see games/snake/REDESIGN.md. The Rust crate
- * and CLI keep it. */
-const HIDDEN_GAMES = new Set(["snake"]);
+/** Games registered in the lab but not surfaced on the site. */
+const HIDDEN_GAMES = new Set<string>([]);
 
 /** Trained artifacts fetched as static assets, keyed by the path the
  * registry asks for. */
@@ -114,6 +112,7 @@ const SEAT_LABELS: Record<string, string[]> = {
   go: ["Black", "White"],
   connect4: ["Red", "Yellow"],
   twentyone: ["Player 1", "Player 2"],
+  snake: ["Snake A", "Snake B"],
 };
 
 function seatLabelFor(gameId: string, i: number): string {
@@ -210,6 +209,8 @@ function miniFor(id: string): string {
       return `<div class="mini mini-go"><span class="mini-stone mini-stone-b" style="left:30%;top:30%"></span><span class="mini-stone mini-stone-w" style="left:55%;top:47%"></span><span class="mini-stone mini-stone-b" style="left:38%;top:63%"></span></div>`;
     case "2048":
       return `<div class="mini mini-2048"><span>2</span><span class="v4">4</span><span class="v8">8</span><span class="v16">16</span></div>`;
+    case "snake":
+      return `<div class="mini mini-snake"><span class="mini-seg mini-seg-a" style="left:18%;top:50%"></span><span class="mini-seg mini-seg-a" style="left:34%;top:50%"></span><span class="mini-seg mini-seg-a mini-head-a" style="left:50%;top:50%"></span><span class="mini-seg mini-seg-b mini-head-b" style="left:74%;top:28%"></span><span class="mini-seg mini-seg-b" style="left:74%;top:44%"></span><span class="mini-food" style="left:62%;top:70%"></span></div>`;
     default:
       return `<div class="mini"></div>`;
   }
