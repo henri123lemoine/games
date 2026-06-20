@@ -4,50 +4,51 @@ M3 of "RL on Doom": a reinforcement-learning trainer over the `doomrl` 1v1
 deathmatch substrate (M1/M2). Standalone `tch` crate, like `azt`/`azgo` — its
 own `[workspace]` so `libtorch` never touches the root `cargo test`.
 
-## STATUS — PARKED 2026-06-20 (resumable; branch `doomrl-m1-substrate`, do not merge)
+## STATUS — WORKING BOT 2026-06-20 (branch `doomrl-m1-substrate`, not merged)
 
-Doom is parked to put effort into snake/slither. The **infrastructure is
-complete and validated; no winning bot exists yet** — training hit a real RL
-wall (below). The branch is not goal-complete, so it is **not merged**. Pick up
-here:
+There is now a **genuinely winning 1v1 deathmatch bot**, trained with the
+research blueprint's proven recipe (PPO self-play + BC warmstart + curriculum).
+Run it with the `ppo` subcommand.
 
-**1. What's validated (works, committed):**
-- Substrate (M1/M2): headless controllable Doom, 1v1 deathmatch, per-seat
-  `P_CheckSight`-gated state, flat DM arena where scripted hunters frag ~65/s.
-- Trainer (M3): truncated **BPTT** over 32-step GRU windows, capped **replay
-  buffer**, **epsilon decay**, **eval** vs the scripted hunter, portable weight
-  **export** (round-trip verified), **self-play** (frozen-snapshot opponent),
-  **eval-gated keep-best**. `smoke`/`train`/`eval`/`export` subcommands; runs on
-  CPU and MPS (`DOOMTRAIN_MPS=1`). The loss trains.
+**The recipe (what made it work):**
+1. **PPO** actor-critic on the GRU trunk (`ppo_net.rs`, `ppo.rs`): GAE(γ.99,
+   λ.95) + clipped surrogate (ε.2) + value + entropy, BPTT over 32-step windows.
+2. **Curriculum** (`env.rs`, `main.rs`): a **BeatableBot** (the scripted hunter
+   weakened with aim noise + reaction delay + fire-prob, skill 0→1); **spawn-near**
+   (`doomrl_dm_spawn_near`, held close for the first 60% so kills happen before
+   navigation matters, then widening); **Arnold-style shaped reward** (+5 frag,
+   −death/−suicide, +damage, +small dist-moved anti-camp); a finer **54-action**
+   space (9 turns) so aim can track; ramp to a frozen **self-play** snapshot.
+3. **BC warmstart + BC anchor** (the keystone): undirected RL can't land the 7+
+   accurate shots a kill needs, so it never frags and never reinforces +frag —
+   the cold-start that pinned `frag_share` at 0 for *both* DFP and raw PPO. Fix:
+   clone the scripted hunter's aim (supervised CE) **before** PPO, and keep a
+   small DAgger-style **BC-anchor** CE term in the PPO loss so RL refines rather
+   than drifts off the cloned aim.
 
-**2. What emerged in the MPS run:** with the `aim_align` measurement, the policy
-learned to **turn-to-face and fire** — `aimed_fires` (|opp_bearing|<15°) went
-from ~0 to **35–86 per episode** (instrument with `DOOMTRAIN_DEBUG_EVAL=1`).
+**Results (live MPS run, eval-gated keep-best):**
+- `frag_share` vs the beatable curriculum bot: BC 0.33 → PPO **~0.70–0.73**,
+  ~50–60 net frags per 12-episode eval (winning ~2.5:1), **holding** (no
+  collapse).
+- The keep-best checkpoint (`runs/.../best.ot`), still mid-training, already
+  scores **0.73 vs the mid bot and ~0.47 vs the PERFECT-aim hunter** (nearly
+  even with flawless aim — the benchmark DFP could never beat, where it scored 0).
 
-**3. The two blockers (why `net_frag_share` stayed 0 after 600 iters):**
-- **Eval target too hard:** the scripted hunter has *perfect* proportional aim;
-  the coarse 5-level turn action can't out-duel it, so the net can never frag the
-  hunter → share can't climb against that benchmark.
-- **Self-play cold-start:** vs a beatable (equally-imperfect) copy of itself, the
-  two nets spawn in opposite arena corners and never learn to **navigate to each
-  other** → self-play collection also yields 0 frags. The net can't chain
-  navigate → aim → fire → kill in this DFP setup/budget.
+**Commands:**
+```bash
+./run.sh ppo --bc-iters=200 --iters=500 --steps=1024 --self-play-at=0.6 \
+             --save=run/final.ot --best=run/best.ot     # train (DOOMTRAIN_MPS=1 for Metal)
+./run.sh ppo-eval  --net=run/best.ot --eval-skill=1.0   # benchmark vs the perfect hunter
+./run.sh ppo-export --net=run/best.ot --out=doom.bin    # portable weights (round-trip verified)
+```
 
-**4. Recommended unblock paths (next session's choice):**
-- *Cheap (~hours, might get DFP over the line):* spawn both agents **near** each
-  other each episode (generalize the substrate's `--duel` teleport) so navigation
-  isn't a prerequisite; train/eval against a **beatable curriculum** opponent
-  (a weakened hunter, or self-play once they actually meet); and use a **finer
-  turn action space** + tighter aimed-fire threshold so aim can track.
-- *Strong (bigger rewrite, the research-flagged answer):* **PPO/APPO self-play**
-  (Sample-Factory style) — better credit assignment than DFP for the multi-skill
-  navigate-aim-fire chain.
-
-**M4 (WASM deploy):** still parked on an **`emsdk` install** (`emcc` not on
-PATH). The `export` flat file (`DOOMDFP1` magic, no-tch read) is the bridge: a
+**M4 (WASM deploy):** still needs an **`emsdk` install** (`emcc` not on PATH).
+The `ppo-export` flat file (`DOOMDFP1` magic, no-tch read) is the bridge: a
 browser forward loads it and drives a `doomrl` WASM build's ticcmd.
 
-Full run findings + recipe are in memory `doom-rl-training`.
+Full run findings + recipe are in memory `doom-rl-training`. (The earlier DFP
+path — `smoke`/`train`/`eval`/`export` subcommands — is retained but superseded;
+its diagnostics are documented in the memory file.)
 
 ---
 
