@@ -9,41 +9,13 @@ import { CPU_MAX_SIMS, isCpuFallback, TRIVIAL_SIMS } from '../shell/azero';
 import type { EngineHost } from '../engine/host';
 import type { MatchEventData, ViewState } from '../engine/protocol';
 import { GoGpu, policyLen, softmaxOver } from '../frontends/go/azgpu';
+import { gpuLoader, weightsLoader } from './azero-net';
 import type { ClientBot } from './index';
 
 const DEFAULT_SIMS = 400;
 const LEAVES = 8;
-const WEIGHTS_URL = `${import.meta.env.BASE_URL}azero/azero-go.azweb`;
-
-/** The raw export bytes, fetched once per page and shared by both backends. */
-let weightsOnce: Promise<ArrayBuffer> | null = null;
-function getWeights(): Promise<ArrayBuffer> {
-  weightsOnce ??= (async () => {
-    const resp = await fetch(WEIGHTS_URL);
-    if (!resp.ok) throw new Error(`weights ${WEIGHTS_URL} missing (HTTP ${resp.status})`);
-    return resp.arrayBuffer();
-  })();
-  weightsOnce.catch(() => {
-    weightsOnce = null;
-  });
-  return weightsOnce;
-}
-
-/** One device + weight upload per page, not per match. */
-let gpuOnce: Promise<GoGpu> | null = null;
-function getGpu(): Promise<GoGpu> {
-  gpuOnce ??= (async () => {
-    const gpu = await GoGpu.init(await getWeights());
-    void gpu.lost.then(() => {
-      gpuOnce = null;
-    });
-    return gpu;
-  })();
-  gpuOnce.catch(() => {
-    gpuOnce = null;
-  });
-  return gpuOnce;
-}
+const getWeights = weightsLoader(`${import.meta.env.BASE_URL}azero/azero-go.azweb`);
+const getGpu = gpuLoader(GoGpu.init, getWeights);
 
 class AzeroGoGpu implements ClientBot {
   private cancelled = false;

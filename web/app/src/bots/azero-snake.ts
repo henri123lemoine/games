@@ -24,6 +24,7 @@ import type { ViewState } from '../engine/protocol';
 import { SnakeGpu, softmaxOver } from '../frontends/snake/azgpu';
 import { reportMove } from '../frontends/snake/telemetry';
 import { isCpuFallback } from '../shell/azero';
+import { gpuLoader, weightsLoader } from './azero-net';
 import type { ClientBot } from './index';
 
 // Each parked leaf batch is one GPU round-trip (a mapAsync readback), and on
@@ -40,37 +41,8 @@ const GPU_MAX_SIMS = 128;
  * ~200 ms/move; anything higher is unplayable without a GPU. */
 const CPU_DEFAULT_SIMS = 4;
 const CPU_MAX_SIMS = 8;
-const WEIGHTS_URL = `${import.meta.env.BASE_URL}azero/azero-snake.azweb`;
-
-/** The raw export bytes, fetched once per page and shared by both backends. */
-let weightsOnce: Promise<ArrayBuffer> | null = null;
-function getWeights(): Promise<ArrayBuffer> {
-  weightsOnce ??= (async () => {
-    const resp = await fetch(WEIGHTS_URL);
-    if (!resp.ok) throw new Error(`weights ${WEIGHTS_URL} missing (HTTP ${resp.status})`);
-    return resp.arrayBuffer();
-  })();
-  weightsOnce.catch(() => {
-    weightsOnce = null;
-  });
-  return weightsOnce;
-}
-
-/** One device + weight upload per page, not per match. */
-let gpuOnce: Promise<SnakeGpu> | null = null;
-function getGpu(): Promise<SnakeGpu> {
-  gpuOnce ??= (async () => {
-    const gpu = await SnakeGpu.init(await getWeights());
-    void gpu.lost.then(() => {
-      gpuOnce = null;
-    });
-    return gpu;
-  })();
-  gpuOnce.catch(() => {
-    gpuOnce = null;
-  });
-  return gpuOnce;
-}
+const getWeights = weightsLoader(`${import.meta.env.BASE_URL}azero/azero-snake.azweb`);
+const getGpu = gpuLoader(SnakeGpu.init, getWeights);
 
 /** WebGPU: the search runs in the wasm worker, the leaves on the GPU. The bot
  * resets its root from the view each move, so applied moves need no mirroring. */
