@@ -812,6 +812,7 @@ dependencies = [
  "rayon",
  "serde_json",
  "slither-rl",
+ "slitherinfer",
  "tch",
 ]
 
@@ -820,6 +821,13 @@ name = "slither-rl"
 version = "0.1.0"
 dependencies = [
  "rayon",
+]
+
+[[package]]
+name = "slitherinfer"
+version = "0.1.0"
+dependencies = [
+ "slither-rl",
 ]
 
 [[package]]

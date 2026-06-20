@@ -13,6 +13,7 @@ import type {
   ViewState,
 } from "../engine/protocol";
 import { frontendFor, hasFrontend } from "../frontends";
+import type { SlitherScreen } from "../frontends/slither";
 import type { FrontendCtx, GameFrontend } from "../frontends/types";
 import { CPU_LEVELS, isCpuFallback, TRIVIAL_SIMS } from "./azero";
 import {
@@ -213,6 +214,8 @@ function miniFor(id: string): string {
       return `<div class="mini mini-2048"><span>2</span><span class="v4">4</span><span class="v8">8</span><span class="v16">16</span></div>`;
     case "snake":
       return `<div class="mini mini-snake"><span class="mini-seg mini-seg-a" style="left:18%;top:50%"></span><span class="mini-seg mini-seg-a" style="left:34%;top:50%"></span><span class="mini-seg mini-seg-a mini-head-a" style="left:50%;top:50%"></span><span class="mini-seg mini-seg-b mini-head-b" style="left:74%;top:28%"></span><span class="mini-seg mini-seg-b" style="left:74%;top:44%"></span><span class="mini-food" style="left:62%;top:70%"></span></div>`;
+    case "slither":
+      return `<div class="mini mini-slither"><span class="mini-worm mini-worm-b" style="left:20%;top:34%"></span><span class="mini-worm mini-worm-b" style="left:34%;top:30%"></span><span class="mini-worm mini-worm-b mini-worm-head-b" style="left:48%;top:30%"></span><span class="mini-worm mini-worm-a" style="left:58%;top:66%"></span><span class="mini-worm mini-worm-a" style="left:70%;top:60%"></span><span class="mini-worm mini-worm-a mini-worm-head-a" style="left:80%;top:50%"></span><span class="mini-pellet" style="left:40%;top:62%"></span><span class="mini-pellet" style="left:66%;top:32%"></span></div>`;
     case "doom":
       return `<div class="mini mini-doom"><span class="mini-doom-word">DOOM</span></div>`;
     default:
@@ -228,6 +231,7 @@ export class App {
   private frontend: GameFrontend | null = null;
   private clientBot: ClientBot | null = null;
   private tourney: TournamentScreen | null = null;
+  private slither: SlitherScreen | null = null;
   private gen = 0;
   private speedScale = 1;
   private submitResolve: ((input: string) => void) | null = null;
@@ -263,6 +267,10 @@ export class App {
     }
     if (segs[0] === "doom") {
       this.renderDoom();
+      return;
+    }
+    if (segs[0] === "slither") {
+      void this.renderSlither();
       return;
     }
     if (segs[0] === "g" && segs[1]) {
@@ -308,8 +316,16 @@ export class App {
         </div>`,
       )
       .join("");
-    // DOOM is not an engine game (a real-time FPS, not a Game-trait match); its
-    // card links to the vendored standalone port instead of starting a match.
+    // DOOM and Slither are not engine games (real-time, not Game-trait matches);
+    // their cards open standalone screens instead of starting a match. Slither
+    // is the lab's own game — its trained encircle bot plays in the browser.
+    const slitherCard = `
+        <div class="card card-slither" data-special="slither" role="button" tabindex="0">
+          ${miniFor("slither")}
+          <div class="card-text">
+            <span class="card-name">Slither</span>
+          </div>
+        </div>`;
     const doomCard = `
         <div class="card card-doom" data-special="doom" role="button" tabindex="0">
           ${miniFor("doom")}
@@ -322,7 +338,7 @@ export class App {
         <header class="home-head">
           <h1>Games Room</h1>
         </header>
-        <div class="card-grid">${cards}${doomCard}</div>
+        <div class="card-grid">${cards}${slitherCard}${doomCard}</div>
         <footer class="home-footer">
           <nav>
             <a href="https://github.com/henri123lemoine/games">GitHub</a>
@@ -359,6 +375,19 @@ export class App {
         }
       };
     }
+    const slitherEl = this.root.querySelector<HTMLElement>(
+      '.card[data-special="slither"]',
+    );
+    if (slitherEl) {
+      const openSlither = () => this.navTo("/slither");
+      slitherEl.onclick = openSlither;
+      slitherEl.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openSlither();
+        }
+      };
+    }
     this.root.querySelector<HTMLButtonElement>(".tourney-link")!.onclick = () =>
       this.navTo("/lab");
   }
@@ -383,6 +412,36 @@ export class App {
       </div>`;
     this.root.querySelector<HTMLButtonElement>(".back")!.onclick = () =>
       this.navTo("/");
+  }
+
+  /** Slither: the lab's own real-time game, played against the PPO-trained
+   * encircle bot. Not a Game-trait match, so it runs standalone on its own
+   * screen (its wasm steps the world and drives the bots each frame). */
+  private async renderSlither(): Promise<void> {
+    this.teardown();
+    this.root.innerHTML = `
+      <div class="match slither-screen">
+        <header class="match-bar">
+          <button type="button" class="link back">&larr; games</button>
+          <span class="match-title">Slither</span>
+          <span class="spacer"></span>
+          <span class="muted">vs. the trained encircle bot · runs in your browser</span>
+        </header>
+        <div class="slither-mount"></div>
+      </div>`;
+    this.root.querySelector<HTMLButtonElement>(".back")!.onclick = () =>
+      this.navTo("/");
+    const mount = this.root.querySelector<HTMLElement>(".slither-mount")!;
+    const { SlitherScreen } = await import("../frontends/slither");
+    // A navigation during the dynamic import bumps `gen`; bail rather than
+    // mounting onto a torn-down screen.
+    const gen = this.gen;
+    this.slither = new SlitherScreen();
+    await this.slither.mount(mount);
+    if (gen !== this.gen) {
+      this.slither.destroy();
+      this.slither = null;
+    }
   }
 
   private renderTournament(): void {
@@ -1013,6 +1072,8 @@ export class App {
     this.gen++;
     this.tourney?.destroy();
     this.tourney = null;
+    this.slither?.destroy();
+    this.slither = null;
     this.teardownMatch();
     this.logEl = null;
     this.statusEl = null;

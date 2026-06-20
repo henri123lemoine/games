@@ -56,10 +56,21 @@ impl Default for Action {
 impl Action {
     /// Signed heading delta this action requests, before the world's turn-rate
     /// cap. Bucket `TURN_BUCKETS/2` is straight ahead.
-    fn relative_turn(self) -> f32 {
+    pub fn relative_turn(self) -> f32 {
         let mid = (TURN_BUCKETS / 2) as f32;
         let t = (self.turn as f32 - mid) / mid;
         t * MAX_RELATIVE_TURN
+    }
+
+    /// The [`WormControl`] this action produces for a worm at `current_angle` —
+    /// the same mapping [`Env::step`] applies (aim = heading + relative turn).
+    /// Lets a caller drive a worm by the net's discrete action outside the env
+    /// (e.g. the browser bot in a mixed human/bot world).
+    pub fn control(self, current_angle: f32) -> crate::world::WormControl {
+        crate::world::WormControl {
+            aim: current_angle + self.relative_turn(),
+            boost: self.boost,
+        }
     }
 }
 
@@ -149,11 +160,7 @@ impl Env {
         let controls: Vec<_> = (0..n)
             .map(|i| {
                 let w = &self.world.worms[i];
-                let a = actions.get(i).copied().unwrap_or_default();
-                crate::world::WormControl {
-                    aim: w.angle + a.relative_turn(),
-                    boost: a.boost,
-                }
+                actions.get(i).copied().unwrap_or_default().control(w.angle)
             })
             .collect();
 

@@ -21,5 +21,6 @@ data/
 # clones get them with no side channel)
 target-wasm/
 web/engine/pkg/
+web/slither-engine/pkg/
 web/app/node_modules/
 web/app/dist/

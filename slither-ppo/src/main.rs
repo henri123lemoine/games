@@ -14,6 +14,7 @@
 
 mod curriculum;
 mod eval;
+mod export;
 mod net;
 mod obs_batch;
 mod opponent;
@@ -128,6 +129,18 @@ fn stage_for(iter: usize) -> Stage {
 }
 
 fn main() {
+    // Subcommand dispatch: `export` / `verify-export` for the browser net, else
+    // the default is a training run (`[k=v]` knobs).
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    match raw.first().map(String::as_str) {
+        Some("export") => return export::export(&raw[1..]),
+        Some("verify-export") => return export::verify_export(&raw[1..]),
+        _ => {}
+    }
+    train();
+}
+
+fn train() {
     let args = parse_args();
     tch::manual_seed(args.seed as i64);
     std::fs::create_dir_all(&args.out).expect("create out dir");

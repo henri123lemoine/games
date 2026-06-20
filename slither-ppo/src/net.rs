@@ -25,6 +25,26 @@ const CONV2: i64 = 64;
 const CONV3: i64 = 64;
 const HIDDEN: i64 = 256;
 
+/// VarStore tensor names in the exact order the `SLNET1` browser export writes
+/// them — the contract `slitherinfer` parses against. Each conv/linear stores
+/// `<path>.weight` then `<path>.bias`; the order matches the forward pass.
+pub const EXPORT_ORDER: [&str; 14] = [
+    "c1.weight",
+    "c1.bias",
+    "c2.weight",
+    "c2.bias",
+    "c3.weight",
+    "c3.bias",
+    "trunk.weight",
+    "trunk.bias",
+    "turn.weight",
+    "turn.bias",
+    "boost.weight",
+    "boost.bias",
+    "value.weight",
+    "value.bias",
+];
+
 fn conv(p: nn::Path, cin: i64, cout: i64, k: i64, stride: i64) -> nn::Conv2D {
     let cfg = ConvConfig {
         stride,
@@ -99,6 +119,16 @@ impl Policy {
         let boost = f.apply(&self.boost_head);
         let value = f.apply(&self.value_head).squeeze_dim(-1);
         (turn, boost, value)
+    }
+
+    /// Raw head outputs for export verification: `(turn_logits [B,
+    /// TURN_BUCKETS], boost_logit [B], value [B])`, no sampling, no graph. The
+    /// browser export's reference forward must reproduce these.
+    pub fn raw_heads(&self, grid: &Tensor, scalars: &Tensor) -> (Tensor, Tensor, Tensor) {
+        tch::no_grad(|| {
+            let (turn, boost, value) = self.heads(grid, scalars);
+            (turn, boost.squeeze_dim(-1), value)
+        })
     }
 
     /// Sample actions for a batch of observations (rollout / inference). Returns

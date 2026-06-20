@@ -1,0 +1,19 @@
+[package]
+name = "slitherinfer"
+version = "0.1.0"
+edition = "2024"
+description = "Torch-free slither policy/value inference: the SLNET1 export's reference fp32 forward (strided CNN over the egocentric semantic grid, flattened + scalars, three heads). wasm-safe; the trainer's tch export is validated against it, and the browser bot plays through it."
+
+[lib]
+name = "slitherinfer"
+path = "src/lib.rs"
+
+# Standalone on purpose (like slither-rl/, slither-ppo/): an empty workspace
+# table keeps it — and its slither-rl path dep, which declares its own — out of
+# the repo's main cargo workspace. The browser bundles it via the standalone
+# web/slither-engine cdylib; the trainer's parity check builds it from
+# slither-ppo/. Build/test from this directory.
+[workspace]
+
+[dependencies]
+slither-rl = { path = "../slither-rl" }

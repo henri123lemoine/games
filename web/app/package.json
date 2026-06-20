@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "slither-engine": "file:../slither-engine/pkg",
     "web-engine": "file:../engine/pkg"
   },
   "devDependencies": {

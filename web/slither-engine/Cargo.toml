@@ -1,0 +1,22 @@
+[package]
+name = "slither-engine"
+version = "0.1.0"
+edition = "2024"
+description = "wasm-bindgen bindings driving the slither game in-browser: slither-rl dynamics with the human steering one worm and slitherinfer forwarding the trained net for the bot worms. Standalone (its own wasm-pack package), like the slither-rl/slither-ppo stack it bundles."
+
+# Standalone on purpose (like slither-rl/, slitherinfer/): an empty workspace
+# table keeps it and its path deps out of the repo's main cargo workspace. Built
+# with `wasm-pack build web/slither-engine --target web`.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+slither-rl = { path = "../../slither-rl" }
+slitherinfer = { path = "../../slitherinfer" }
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+
+[profile.release]
+opt-level = 3
