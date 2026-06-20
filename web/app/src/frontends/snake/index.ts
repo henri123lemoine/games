@@ -30,7 +30,7 @@
 // toward their target rather than freezing then snapping.
 
 import type { MatchEventData, ViewState } from '../../engine/protocol';
-import type { FrontendCtx, GameFrontend } from '../types';
+import { sleep, type FrontendCtx, type GameFrontend } from '../types';
 import { lastMove, resetTelemetry } from './telemetry';
 
 type Abs = 'n' | 'e' | 's' | 'w';
@@ -83,13 +83,18 @@ const LABEL_OF: Record<Abs, string> = { n: 'up', e: 'right', s: 'down', w: 'left
 
 const TICK_MS = 150;
 const QUEUE_MAX = 2;
-/** Bounds the glide duration. The floor keeps a fast bot's moves from blurring
- * into a streak; the ceiling caps how long a single cell-step may take so a
- * very slow think doesn't turn into a crawl. Between the two the snake glides
- * over the *actual* inter-tick gap, so it keeps sliding toward its target for
- * (almost) the whole think instead of snapping then freezing. */
-const GLIDE_MIN_MS = 90;
-const GLIDE_MAX_MS = 380;
+/** How long the shell blocks on `animate` before stepping to the next move —
+ * i.e. the extra cadence the frontend adds on top of the bot's think. The shell
+ * runs bot-think then awaits `animate` serially, so the felt pace is roughly
+ * bot-think + this. Kept SHORT so the bot, not the frontend, is the bottleneck;
+ * the visual glide (below) runs longer in the rAF loop, decoupled from this
+ * await, so a small pace doesn't make the motion choppy. */
+const MOVE_PACE_MS = 70;
+/** How long a one-cell slide takes on screen. Kept longer than the pace so the
+ * snake is essentially always mid-glide (continuous motion, never a snap-then-
+ * wait). When the next move lands before this elapses, the new glide picks up
+ * from the current interpolated position, so it stays seamless. */
+const GLIDE_MS = 160;
 
 interface Palette {
   body: string; // mid band
@@ -368,7 +373,6 @@ class SnakeFrontend implements GameFrontend {
   private mySeat = -1;
 
   private foodPop = { at: 0, x: -1, y: -1 };
-  private lastTickAt = 0;
   private flashes: Flash[] = [];
   private deathOrbs: DeathOrb[] = [];
   private deadSeats = new Set<number>();
@@ -474,26 +478,33 @@ class SnakeFrontend implements GameFrontend {
     }
     this.side = next.side;
 
-    // Glide over the real interval since the last tick (clamped), so the snake
-    // keeps sliding through a long bot think instead of snapping then waiting.
+    // Start the visual glide and return after only a SHORT paced await. The
+    // glide itself finishes in the rAF draw loop, decoupled from this await, so
+    // the shell isn't blocked move-to-move for the whole slide. If a glide is
+    // already mid-flight, continue from where it visually is (no teleport).
     const now = performance.now();
-    const gap = this.lastTickAt ? now - this.lastTickAt : TICK_MS;
-    this.lastTickAt = now;
-    const dur = clamp(gap * scale, GLIDE_MIN_MS * scale, GLIDE_MAX_MS * scale);
-    this.glide = { from: prev, to: next, start: now, dur };
-    await new Promise<void>((resolve) => {
-      const done = () => {
-        if (!this.glide || this.glide.to !== next) return resolve();
-        if (performance.now() - this.glide.start >= this.glide.dur) {
-          this.view = next;
-          this.glide = null;
-          resolve();
-        } else {
-          requestAnimationFrame(done);
-        }
-      };
-      requestAnimationFrame(done);
-    });
+    const from = this.currentBodies() ?? prev;
+    this.glide = { from, to: next, start: now, dur: GLIDE_MS * scale };
+    // The glide finishes in the draw loop; block the shell only for the short
+    // pace so moves keep flowing. `this.view` is committed when the glide ends.
+    await sleep(MOVE_PACE_MS * scale);
+  }
+
+  /** A synthetic view holding each snake's CURRENT interpolated body, so a new
+   * glide can start exactly where the in-flight one is drawn — no teleport when
+   * moves arrive faster than a slide completes. Null if no glide is active. */
+  private currentBodies(): DuelView | null {
+    const g = this.glide;
+    if (!g) return null;
+    const t = easeInOut(this.glideProgress(performance.now()));
+    const snakes = g.to.snakes.map((to, seat) => {
+      const fromCells = g.from.snakes[seat].cells;
+      const cells = interpBody(fromCells, to.cells, t).map(
+        ([x, y]) => [Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000] as [number, number],
+      );
+      return { ...to, cells };
+    }) as [SnakeInfo, SnakeInfo];
+    return { ...g.to, snakes };
   }
 
   promptAction(labels: string[]): void {
@@ -717,6 +728,13 @@ class SnakeFrontend implements GameFrontend {
     const cell = size / this.side;
     ctx.clearRect(0, 0, size, size);
     this.drawGrid(cell);
+
+    // Retire a finished glide so `render` (the human's turn, which doesn't go
+    // through `animate`) can advance `this.view` again.
+    if (this.glide && this.glideProgress(now) >= 1) {
+      this.view = this.glide.to;
+      this.glide = null;
+    }
 
     const view = this.glide ? this.glide.to : this.view;
     if (view?.food) this.drawFood(view.food, cell, now);
@@ -1026,10 +1044,6 @@ function strokeTube(
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
-}
-
-function clamp(v: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, v));
 }
 
 function easeOut(t: number): number {
