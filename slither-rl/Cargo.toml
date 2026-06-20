@@ -1,0 +1,21 @@
+[package]
+name = "slither-rl"
+version = "0.1.0"
+edition = "2024"
+description = "Headless slither.io RL substrate: deterministic continuous-worm dynamics, an egocentric viewport-clipped semantic-grid Gym env, and a hand-coded encircle heuristic — built to vectorize over thousands of parallel games for self-play PPO"
+
+# Standalone on purpose (like azgo/, azsnake/): an empty workspace table keeps
+# this crate out of the repo's main cargo workspace, so `cargo test` at the root
+# stays light. Build from this directory.
+[workspace]
+
+[dependencies]
+rayon = "1"
+
+[dev-dependencies]
+rayon = "1"
+
+[profile.release-dbg]
+inherits = "release"
+debug-assertions = true
+debug = true
