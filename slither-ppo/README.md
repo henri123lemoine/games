@@ -57,8 +57,22 @@ retuning a strong net after a dynamics change.
 
 `compare net=A.ot [net2=B.ot] [games=N] [seed=S]` runs the greedy eval panel vs
 the heuristic on common seeds — the honest A/B for "is this net actually better".
-It reports overall `win`, the `kill-win` subset (games with ≥1 kill — winning by
-cutting a foe off, not out-growing), and kills/deaths per game.
+It reports each net at the `[SYMMETRIC/deploy]` config (every worm `START_LENGTH`,
+no learner head-start — the real win-share a human faces) AND the old `[favorable]`
+config (learner oversized), so the gap between "looks good" and "real" is visible.
+Per config: overall `win`, the `kill-win` subset (games with ≥1 kill — winning by
+cutting a foe off, not out-growing), and kills/deaths per game. Keep-best gates on
+the symmetric number.
+
+### Deploy: export + the parity gate
+
+`export [net=CKPT.ot] [out=PATH]` dumps the checkpoint to the browser `SLNET1`
+format. It is a **hard release gate**: after writing, it runs the `slitherinfer`
+torch-free reference forward against the tch forward over 64 random inputs and, if
+any head deviates by ≥ `PARITY_TOL` (1e-3), it **deletes the blob and exits
+non-zero** — so `export` can never leave an unverified blob deployed (the
+train↔deploy parity contract). `verify-export [net=][export=]` re-checks an
+existing blob the same way. (Actual deviation on a good export is ~1e-5.)
 
 ## Does it learn?
 

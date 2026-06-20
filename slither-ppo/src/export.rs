@@ -92,28 +92,45 @@ pub fn export(args: &[String]) {
         net::SCALARS,
         SHAPES.turn_buckets,
     );
+
+    // HARD RELEASE GATE: the exported blob must reproduce the tch forward via the
+    // torch-free `slitherinfer` runtime the browser uses, or the deployed net is
+    // unverified. Check parity now and, on failure, delete the bad blob and exit
+    // non-zero — so `export` can never leave an unverified blob at `out`. (Skip
+    // with `--no-verify` only for a deliberate, throwaway export.)
+    if args.iter().any(|a| a == "--no-verify") {
+        eprintln!("WARNING: --no-verify set, skipping the parity gate");
+        return;
+    }
+    let (max_dt, max_db, max_dv) = parity_check(&net_path, &out);
+    if max_dt < PARITY_TOL && max_db < PARITY_TOL && max_dv < PARITY_TOL {
+        println!(
+            "parity gate PASSED: max |Δturn| {max_dt:.2e} |Δboost| {max_db:.2e} |Δvalue| {max_dv:.2e} (tol {PARITY_TOL:.0e})"
+        );
+    } else {
+        std::fs::remove_file(&out).ok();
+        eprintln!(
+            "parity gate FAILED: max |Δturn| {max_dt:.2e} |Δboost| {max_db:.2e} |Δvalue| {max_dv:.2e} >= tol {PARITY_TOL:.0e} — deleted {} (NOT deployed)",
+            out.display()
+        );
+        std::process::exit(1);
+    }
 }
 
-/// Compares the tch forward with `slitherinfer`'s reference forward on the
-/// exported file over random observations — guards the layout and the
-/// flatten/concat wiring. Asserts every head agrees to 1e-3.
-pub fn verify_export(args: &[String]) {
-    let net_path: PathBuf = arg(
-        args,
-        "net",
-        PathBuf::from("../data/slither/slither-best-kill1-i70.ot"),
-    );
-    let export_path: PathBuf = arg(
-        args,
-        "export",
-        PathBuf::from("../web/app/public/slither/slither.weights"),
-    );
+/// The parity tolerance the `slitherinfer` reference forward must match the tch
+/// forward to — the train↔deploy contract. An export above this is a broken blob.
+const PARITY_TOL: f32 = 1e-3;
 
+/// Compares the tch forward with `slitherinfer`'s reference forward on `export_path`
+/// over 64 random observations, returning the max head deviations. Guards the
+/// layout and the flatten/concat wiring. Shared by `verify_export` and the
+/// post-export gate in `export` so the deployed blob is always checked.
+fn parity_check(net_path: &PathBuf, export_path: &PathBuf) -> (f32, f32, f32) {
     let mut vs = nn::VarStore::new(Device::Cpu);
     let policy = Policy::new(&vs.root());
-    vs.load(&net_path).expect("load checkpoint");
+    vs.load(net_path).expect("load checkpoint");
 
-    let data = std::fs::read(&export_path).expect("read export");
+    let data = std::fs::read(export_path).expect("read export");
     let model = slitherinfer::Model::parse(&data).expect("parse export");
 
     let c = net::CHANNELS;
@@ -152,11 +169,30 @@ pub fn verify_export(args: &[String]) {
         max_db = max_db.max((out.boost_logit - boost_tch).abs());
         max_dv = max_dv.max((out.value - value_tch).abs());
     }
+    (max_dt, max_db, max_dv)
+}
+
+/// Compares the tch forward with `slitherinfer`'s reference forward on the
+/// exported file over random observations — guards the layout and the
+/// flatten/concat wiring. Asserts every head agrees to `PARITY_TOL`.
+pub fn verify_export(args: &[String]) {
+    let net_path: PathBuf = arg(
+        args,
+        "net",
+        PathBuf::from("../data/slither/slither-best-kill1-i70.ot"),
+    );
+    let export_path: PathBuf = arg(
+        args,
+        "export",
+        PathBuf::from("../web/app/public/slither/slither.weights"),
+    );
+
+    let (max_dt, max_db, max_dv) = parity_check(&net_path, &export_path);
     println!(
         "max |Δturn| {max_dt:.2e}, max |Δboost| {max_db:.2e}, max |Δvalue| {max_dv:.2e} over 64 inputs"
     );
     assert!(
-        max_dt < 1e-3 && max_db < 1e-3 && max_dv < 1e-3,
+        max_dt < PARITY_TOL && max_db < PARITY_TOL && max_dv < PARITY_TOL,
         "export does not match tch"
     );
     println!("export verified");
