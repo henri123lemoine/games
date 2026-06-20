@@ -18,10 +18,12 @@ pub struct Rollout {
 }
 
 pub fn goal_vector() -> [f32; MEAS_DIM] {
-    // weight: health a little, ammo slightly negative (spending ammo to fight is
-    // fine), frags a lot, opp_damage a lot — opp_damage is the dense signal that
-    // lets the policy learn to shoot before it ever lands a (sparse) frag.
-    [0.5, -0.1, 1.0, 1.0]
+    // [health, ammo, frags, opp_damage]. Neither health nor ammo is rewarded:
+    // a positive health weight finds the pacifism trap (flee, keep health, never
+    // fight), and rewarding ammo discourages firing. The only way to score is to
+    // engage and hurt the enemy — opp_damage is the dense driver, frags the
+    // sparse jackpot.
+    [0.0, 0.0, 2.0, 1.0]
 }
 
 /// Tile the per-measurement goal across all offsets (later offsets weighted up).
