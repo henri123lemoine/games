@@ -144,6 +144,20 @@ fn train_ppo(iwad: &str, arena: &str, device: Device, steps: usize, lr: f64) {
 
     let env = env_new(iwad, arena);
 
+    // Behaviour-cloning warmstart: imitate the scripted hunter so the policy
+    // starts with competent aim. Undirected RL exploration cannot land the 7+
+    // accurate shots a kill needs, so without this the policy never frags and
+    // never reinforces the +frag reward — the cold-start both DFP and raw PPO hit.
+    let bc_iters: usize = arg("bc-iters", "150").parse().unwrap();
+    if bc_iters > 0 {
+        let bc_loss = ppo::bc_pretrain(&net, &mut opt, device, bc_iters, steps.min(512), 256.0);
+        let (nf, _nd, bf, share) = ppo_eval_avg(&env, &net, device, 6, steps);
+        println!(
+            "bc warmstart: {bc_iters} iters, final ce={bc_loss:.4} -> eval net[frags={nf}] \
+             bot[frags={bf}] net_frag_share={share:.3}"
+        );
+    }
+
     // frozen self-play snapshot, used once progress passes self_play_at.
     let mut opp_vs = nn::VarStore::new(device);
     let opp_net = PpoNet::new(&opp_vs.root());

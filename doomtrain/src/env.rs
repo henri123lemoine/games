@@ -92,9 +92,11 @@ pub fn shaped_reward(
 ) -> f32 {
     let mut r = 0.0f32;
 
-    // frag (kill of opponent) — frags is players[i].frags[opp], monotonic.
+    // frag (kill of opponent) — the dominant prize. Made large so finishing a
+    // kill clearly beats the "chip damage and move" local optimum the policy
+    // settled into when frag ≈ total diffuse damage reward.
     let frag_delta = (cur.frags - prev.frags).max(0) as f32;
-    r += 1.0 * frag_delta;
+    r += 5.0 * frag_delta;
 
     // death: alive→dead transition this tic.
     let died = prev.alive != 0 && cur.alive == 0;
@@ -102,21 +104,23 @@ pub fn shaped_reward(
         // suicide vs killed-by-opponent: if the opponent didn't just score, it's
         // an environment/self death — penalize harder (anti-suicide).
         let opp_scored = (opp_cur.frags - opp_prev.frags).max(0) > 0;
-        r -= if opp_scored { 1.0 } else { 1.5 };
+        r -= if opp_scored { 2.0 } else { 3.0 };
     }
 
-    // damage dealt to the opponent this tic (opp health dropped), dense credit.
+    // damage dealt this tic — dense credit toward the kill. Kept modest so its
+    // cumulative total (~1 over a full kill) does not rival the +5 frag; it
+    // shapes the approach, the frag is the payoff.
     if cur.alive != 0 {
         let dmg = (opp_prev.health - opp_cur.health).max(0) as f32;
         r += 0.01 * dmg;
     }
 
-    // anti-camp: small reward for moving (capped), only while alive.
+    // anti-camp: a tiny movement nudge, small enough not to compete with combat.
     if cur.alive != 0 {
         let dx = cur.x - prev.x;
         let dy = cur.y - prev.y;
         let moved = (dx * dx + dy * dy).sqrt();
-        r += 0.002 * moved.min(30.0);
+        r += 0.0005 * moved.min(30.0);
     }
 
     r
@@ -196,6 +200,7 @@ pub fn encode_action(a: &Action) -> usize {
 pub struct BeatableBot {
     pub aim_noise_deg: f32,
     pub react_tics: u32,
+    pub fire_prob: f32,
     counter: u32,
     last_action: Action,
     rng: u64,
@@ -206,18 +211,25 @@ impl BeatableBot {
         BeatableBot {
             aim_noise_deg,
             react_tics,
+            fire_prob: 1.0,
             counter: 0,
             last_action: Action::default(),
             rng: seed | 1,
         }
     }
 
-    /// skill 0 → easy (12° noise, react every 4 tics); skill 1 → perfect hunter.
+    /// skill 0 → a near-passive target: large aim noise, slow reactions, and it
+    /// rarely fires (fire_prob low) so it doesn't kill the learner — a beatable
+    /// dummy the policy can frag during exploration to BOOTSTRAP the first kills,
+    /// which PPO then reinforces. skill 1 → the perfect, always-firing hunter.
     pub fn for_skill(skill: f32, seed: u64) -> BeatableBot {
         let s = skill.clamp(0.0, 1.0);
-        let noise = 12.0 * (1.0 - s);
-        let react = (1.0 + 3.0 * (1.0 - s)).round() as u32;
-        BeatableBot::new(noise, react.max(1), seed)
+        let noise = 25.0 * (1.0 - s);
+        let react = (1.0 + 5.0 * (1.0 - s)).round() as u32;
+        let fire_prob = 0.15 + 0.85 * s;
+        let mut b = BeatableBot::new(noise, react.max(1), seed);
+        b.fire_prob = fire_prob;
+        b
     }
 
     fn rand_unit(&mut self) -> f32 {
@@ -233,7 +245,12 @@ impl BeatableBot {
             let jitter = self.rand_unit() * self.aim_noise_deg;
             s.opp_bearing_deg += jitter;
             s.opp_memory.last_bearing_deg += jitter;
-            self.last_action = scripted_hunter(&s);
+            let mut a = scripted_hunter(&s);
+            // gate firing by fire_prob so a low-skill bot rarely shoots.
+            if a.fire != 0 && (self.rand_unit() * 0.5 + 0.5) > self.fire_prob {
+                a.fire = 0;
+            }
+            self.last_action = a;
         }
         self.counter = self.counter.wrapping_add(1);
         self.last_action

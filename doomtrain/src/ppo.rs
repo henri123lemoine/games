@@ -1,7 +1,8 @@
 use tch::{Kind, Tensor};
 
 use crate::env::{
-    decode_action, observation, shaped_reward, BeatableBot, DoomEnv, NUM_ACTIONS, OBS_DIM,
+    decode_action, encode_action, observation, scripted_hunter, shaped_reward, BeatableBot,
+    DoomEnv, NUM_ACTIONS, OBS_DIM,
 };
 use crate::ppo_net::PpoNet;
 
@@ -270,4 +271,71 @@ pub fn eval(
     let s0 = env.player_state(0);
     let s1 = env.player_state(1);
     (s0.frags as i64, s0.deaths as i64, s1.frags as i64)
+}
+
+/// Behaviour-cloning pretrain: imitate the scripted hunter so the policy starts
+/// with competent aim, the skill undirected RL exploration cannot bootstrap.
+/// Both seats run the hunter (combat-distribution obs); we record seat 0's
+/// (obs, nearest-discrete hunter action) and train the policy logits by
+/// cross-entropy over BPTT windows. Returns the final loss.
+pub fn bc_pretrain(
+    net: &PpoNet,
+    opt: &mut tch::nn::Optimizer,
+    device: tch::Device,
+    iters: usize,
+    steps: usize,
+    spawn_dist: f32,
+) -> f64 {
+    let mut last_loss = 0.0;
+    for _ in 0..iters {
+        // collect one episode of hunter-vs-hunter, label = hunter's action.
+        let (obs_v, lbl_v) = collect_hunter_demo(steps, spawn_dist);
+        if obs_v.is_empty() {
+            continue;
+        }
+        let n = lbl_v.len() as i64;
+        let obs = Tensor::from_slice(&obs_v)
+            .view([1, n, OBS_DIM as i64])
+            .to_device(device);
+        let lbl = Tensor::from_slice(&lbl_v).view([n]).to_device(device);
+        let state = PpoNet::zero_state(1, device);
+        let (logits, _v) = net.forward_seq(&obs, &state);
+        let logits = logits.view([n, NUM_ACTIONS as i64]);
+        let loss = logits.cross_entropy_for_logits(&lbl);
+        opt.backward_step(&loss);
+        last_loss = loss.double_value(&[]);
+    }
+    last_loss
+}
+
+thread_local! {
+    static BC_ENV: std::cell::RefCell<Option<DoomEnv>> = const { std::cell::RefCell::new(None) };
+}
+
+/// One hunter-vs-hunter demo episode; returns (flattened obs, action labels) for
+/// seat 0. Uses a process-local env so BC doesn't need its own engine handle.
+fn collect_hunter_demo(steps: usize, spawn_dist: f32) -> (Vec<f32>, Vec<i64>) {
+    BC_ENV.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let env = slot.get_or_insert_with(|| {
+            DoomEnv::new(
+                "../web/app/public/doom/doom1.wad",
+                Some("../doomrl/assets/flatarena.wad"),
+            )
+        });
+        env.reset();
+        env.spawn_near(spawn_dist);
+        let mut obs_v = Vec::with_capacity(steps * OBS_DIM);
+        let mut lbl_v = Vec::with_capacity(steps);
+        for _ in 0..steps {
+            let s0 = env.player_state(0);
+            let s1 = env.player_state(1);
+            let a0 = scripted_hunter(&s0);
+            let a1 = scripted_hunter(&s1);
+            obs_v.extend_from_slice(&observation(&s0));
+            lbl_v.push(encode_action(&a0) as i64);
+            env.step(a0, a1);
+        }
+        (obs_v, lbl_v)
+    })
 }
