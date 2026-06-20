@@ -1,4 +1,7 @@
-// Snake frontend: two neon snakes racing on a 20x20 canvas grid.
+// Snake frontend: two snakes race on a 20×20 board, rendered to read like a
+// polished arcade game — rounded capsule bodies with a gradient sheen and eyes,
+// a board with a soft vignette and inner glow, glowing food orbs, and eat/turn/
+// death flourishes.
 //
 // View JSON (contract with games/snake/src/duel_ui.rs):
 //   { side: 20,
@@ -18,6 +21,13 @@
 // fixed clock, so the snake never stalls. Arrow keys / WASD / swipe queue a
 // turn (180° reversals are dropped, as in classic snake); the queued turn is
 // consumed on the next tick. Watch mode just animates the bots' moves.
+//
+// Smoothness: a single requestAnimationFrame loop draws the board every frame,
+// fully decoupled from the bot's move computation (which runs in the worker /
+// on the GPU). Between two discrete game states the snakes GLIDE — each segment
+// eases from its previous cell to its next over the real wall-clock interval
+// between ticks, so even when the bot's think runs long the snakes keep sliding
+// toward their target rather than freezing then snapping.
 
 import type { MatchEventData, ViewState } from '../../engine/protocol';
 import type { FrontendCtx, GameFrontend } from '../types';
@@ -72,10 +82,44 @@ const LABEL_OF: Record<Abs, string> = { n: 'up', e: 'right', s: 'down', w: 'left
 
 const TICK_MS = 150;
 const QUEUE_MAX = 2;
-const SEAT_COLORS = [
-  { body: '#3fb950', head: '#8aff9f', glow: 'rgba(63, 185, 80, 0.55)' },
-  { body: '#58a6ff', head: '#bcd9ff', glow: 'rgba(88, 166, 255, 0.55)' },
+/** Bounds the glide duration. The floor keeps a fast bot's moves from blurring
+ * into a streak; the ceiling caps how long a single cell-step may take so a
+ * very slow think doesn't turn into a crawl. Between the two the snake glides
+ * over the *actual* inter-tick gap, so it keeps sliding toward its target for
+ * (almost) the whole think instead of snapping then freezing. */
+const GLIDE_MIN_MS = 90;
+const GLIDE_MAX_MS = 380;
+
+interface Palette {
+  body: string; // mid band
+  bodyHi: string; // lit band
+  bodyLo: string; // shaded band
+  head: string;
+  rim: string; // dark outline under the tube
+  glow: string; // soft outer glow
+}
+
+/** "You" runs emerald→mint, the bot electric blue→cyan — distinct hues with a
+ * full rim/highlight/glow so each snake reads as a glossy 3D tube. */
+const SEAT_PALETTES: [Palette, Palette] = [
+  {
+    body: '#21c46a',
+    bodyHi: '#5cf0a0',
+    bodyLo: '#127a43',
+    head: '#9bffc7',
+    rim: '#063a22',
+    glow: 'rgba(45, 220, 120, 0.55)',
+  },
+  {
+    body: '#3d8bff',
+    bodyHi: '#7ec0ff',
+    bodyLo: '#1f4fae',
+    head: '#c4e2ff',
+    rim: '#061634',
+    glow: 'rgba(70, 150, 255, 0.55)',
+  },
 ];
+
 const SEAT_NAMES = ['Snake A', 'Snake B'];
 
 function asView(data: unknown): DuelView | null {
@@ -118,7 +162,7 @@ const CSS = `
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 7px 12px;
+  padding: 8px 13px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--bg-inset);
@@ -128,21 +172,28 @@ const CSS = `
   transition: border-color 0.25s, box-shadow 0.25s, color 0.25s, opacity 0.25s;
 }
 .snk-chip.snk-dead {
-  opacity: 0.45;
+  opacity: 0.42;
+  filter: grayscale(0.5);
 }
 .snk-chip.snk-turn {
   border-color: var(--accent);
   color: var(--text);
-  box-shadow: 0 0 12px rgba(88, 166, 255, 0.28);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 14px rgba(88, 166, 255, 0.3);
 }
 .snk-dot {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   flex: none;
 }
-.snk-chip-0 .snk-dot { background: ${SEAT_COLORS[0].body}; box-shadow: 0 0 8px ${SEAT_COLORS[0].glow}; }
-.snk-chip-1 .snk-dot { background: ${SEAT_COLORS[1].body}; box-shadow: 0 0 8px ${SEAT_COLORS[1].glow}; }
+.snk-chip-0 .snk-dot {
+  background: radial-gradient(circle at 35% 30%, ${SEAT_PALETTES[0].bodyHi}, ${SEAT_PALETTES[0].body} 70%, ${SEAT_PALETTES[0].bodyLo});
+  box-shadow: 0 0 9px ${SEAT_PALETTES[0].glow};
+}
+.snk-chip-1 .snk-dot {
+  background: radial-gradient(circle at 35% 30%, ${SEAT_PALETTES[1].bodyHi}, ${SEAT_PALETTES[1].body} 70%, ${SEAT_PALETTES[1].bodyLo});
+  box-shadow: 0 0 9px ${SEAT_PALETTES[1].glow};
+}
 .snk-chip .snk-len {
   margin-left: auto;
   font-variant-numeric: tabular-nums;
@@ -165,17 +216,21 @@ const CSS = `
   border-radius: 999px;
   transition: width 0.2s linear, background-color 0.3s;
 }
-.snk-chip-0 .snk-hp-fill { background: ${SEAT_COLORS[0].body}; }
-.snk-chip-1 .snk-hp-fill { background: ${SEAT_COLORS[1].body}; }
+.snk-chip-0 .snk-hp-fill { background: ${SEAT_PALETTES[0].body}; }
+.snk-chip-1 .snk-hp-fill { background: ${SEAT_PALETTES[1].body}; }
 .snk-hp.snk-hp-low .snk-hp-fill { background: #f85149; }
 .snk-stage {
   position: relative;
   aspect-ratio: 1 / 1;
-  border-radius: var(--radius);
+  border-radius: 16px;
   overflow: hidden;
-  background: radial-gradient(circle at 50% 42%, #0c1f15, #05100b 92%);
-  border: 1px solid var(--border);
-  box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.5);
+  background:
+    radial-gradient(120% 100% at 50% 0%, #14304f 0%, #0a1c30 45%, #050d18 100%);
+  border: 1px solid rgba(120, 180, 255, 0.14);
+  box-shadow:
+    inset 0 1px 0 rgba(180, 220, 255, 0.07),
+    inset 0 0 60px rgba(0, 0, 0, 0.55),
+    0 10px 30px rgba(0, 0, 0, 0.35);
 }
 .snk-canvas {
   position: absolute;
@@ -192,8 +247,9 @@ const CSS = `
   align-items: center;
   justify-content: center;
   gap: 6px;
-  background: rgba(4, 12, 8, 0.66);
-  color: var(--text);
+  background: rgba(4, 10, 20, 0.62);
+  backdrop-filter: blur(2px);
+  color: #eaf2ff;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.35s;
@@ -204,11 +260,11 @@ const CSS = `
   opacity: 1;
 }
 .snk-overlay b {
-  font-size: 1.5rem;
-  letter-spacing: 0.04em;
+  font-size: 1.6rem;
+  letter-spacing: 0.03em;
 }
 .snk-overlay small {
-  color: var(--text-dim);
+  color: rgba(200, 215, 235, 0.8);
 }
 .snk-hint {
   text-align: center;
@@ -226,10 +282,31 @@ function injectStyle(): void {
   document.head.append(style);
 }
 
-interface Tween {
+/** A glide between two discrete game states, eased over a real time window. */
+interface Glide {
   from: DuelView;
   to: DuelView;
   start: number;
+  dur: number;
+}
+
+/** A short-lived visual flourish anchored to a board cell. */
+interface Flash {
+  x: number;
+  y: number;
+  born: number;
+  dur: number;
+  color: string;
+}
+
+/** A fading orb spat out when a snake dies. */
+interface DeathOrb {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  born: number;
+  color: string;
 }
 
 class SnakeFrontend implements GameFrontend {
@@ -246,7 +323,7 @@ class SnakeFrontend implements GameFrontend {
   private hintEl!: HTMLElement;
 
   private view: DuelView | null = null;
-  private tween: Tween | null = null;
+  private glide: Glide | null = null;
   private side = 20;
   private cssSize = 0;
   private rafId = 0;
@@ -256,7 +333,17 @@ class SnakeFrontend implements GameFrontend {
   private queue: Abs[] = [];
   private tickTimer = 0;
   private mySeat = -1;
+
   private foodPop = { at: 0, x: -1, y: -1 };
+  private lastTickAt = 0;
+  private flashes: Flash[] = [];
+  private deathOrbs: DeathOrb[] = [];
+  private deadSeats = new Set<number>();
+  private prevScores = [0, 0];
+
+  // FPS instrumentation, surfaced to the console for the perf check.
+  private frameTimes: number[] = [];
+  private fpsLogAt = 0;
 
   mount(host: HTMLElement, ctx: FrontendCtx): void {
     this.ctx = ctx;
@@ -315,7 +402,7 @@ class SnakeFrontend implements GameFrontend {
     this.resizeObs = new ResizeObserver(() => this.resize(stage));
     this.resizeObs.observe(stage);
     this.resize(stage);
-    this.loop();
+    this.loop(performance.now());
   }
 
   render(state: ViewState): void {
@@ -323,10 +410,10 @@ class SnakeFrontend implements GameFrontend {
     if (!view) return;
     this.side = view.side;
     // A render with no head movement (e.g. seat 0's pending commit, or a food
-    // spawn) snaps; a render that advanced both heads is tweened by animate().
-    if (!this.tween) this.view = view;
+    // spawn) snaps; a render that advanced both heads is glided by animate().
+    if (!this.glide) this.view = view;
+    this.syncJuice(view);
     this.updateBar(view, state);
-    this.maybeFoodPop(view);
     this.updateOverlay(view, state);
   }
 
@@ -334,25 +421,31 @@ class SnakeFrontend implements GameFrontend {
     const next = asView(after.viewData);
     if (!next) return;
     const prev = this.view;
-    this.maybeFoodPop(next);
+    this.syncJuice(next);
     this.updateBar(next, after);
     this.updateOverlay(next, after);
     const scale = this.ctx.animationScale();
     if (!prev || !headMoved(prev, next) || scale <= 0) {
       this.view = next;
-      this.tween = null;
+      this.glide = null;
       this.side = next.side;
       return;
     }
     this.side = next.side;
-    const dur = TICK_MS * Math.max(scale, 0.001);
-    this.tween = { from: prev, to: next, start: performance.now() };
+
+    // Glide over the real interval since the last tick (clamped), so the snake
+    // keeps sliding through a long bot think instead of snapping then waiting.
+    const now = performance.now();
+    const gap = this.lastTickAt ? now - this.lastTickAt : TICK_MS;
+    this.lastTickAt = now;
+    const dur = clamp(gap * scale, GLIDE_MIN_MS * scale, GLIDE_MAX_MS * scale);
+    this.glide = { from: prev, to: next, start: now, dur };
     await new Promise<void>((resolve) => {
       const done = () => {
-        if (!this.tween || this.tween.to !== next) return resolve();
-        if (performance.now() - this.tween.start >= dur) {
+        if (!this.glide || this.glide.to !== next) return resolve();
+        if (performance.now() - this.glide.start >= this.glide.dur) {
           this.view = next;
-          this.tween = null;
+          this.glide = null;
           resolve();
         } else {
           requestAnimationFrame(done);
@@ -435,7 +528,9 @@ class SnakeFrontend implements GameFrontend {
    * for the next tick (the snake cannot fold back on itself). */
   private steer(abs: Abs): void {
     if (this.mySeat < 0) return;
-    const last = this.queue.length ? this.queue[this.queue.length - 1] : this.view?.snakes[this.mySeat].dir;
+    const last = this.queue.length
+      ? this.queue[this.queue.length - 1]
+      : this.view?.snakes[this.mySeat].dir;
     if (last && abs === OPPOSITE[last]) return;
     if (last && abs === last) return;
     if (this.queue.length < QUEUE_MAX) this.queue.push(abs);
@@ -475,11 +570,51 @@ class SnakeFrontend implements GameFrontend {
     this.overlayEl.classList.add('snk-show');
   }
 
-  private maybeFoodPop(view: DuelView): void {
+  /** Fire the small flourishes off a fresh state: food respawn pop, an eat
+   * ring when a score ticks up, and a death burst when a snake dies. */
+  private syncJuice(view: DuelView): void {
+    const now = performance.now();
     const f = view.food;
-    if (!f) return;
-    if (f[0] !== this.foodPop.x || f[1] !== this.foodPop.y) {
-      this.foodPop = { at: performance.now(), x: f[0], y: f[1] };
+    if (f && (f[0] !== this.foodPop.x || f[1] !== this.foodPop.y)) {
+      this.foodPop = { at: now, x: f[0], y: f[1] };
+    }
+    for (let seat = 0; seat < 2; seat++) {
+      const s = view.snakes[seat];
+      if (s.score > this.prevScores[seat]) {
+        const [hx, hy] = s.cells[0];
+        this.flashes.push({
+          x: hx,
+          y: hy,
+          born: now,
+          dur: 360,
+          color: SEAT_PALETTES[seat].bodyHi,
+        });
+      }
+      this.prevScores[seat] = s.score;
+      if (!s.alive && !this.deadSeats.has(seat)) {
+        this.deadSeats.add(seat);
+        this.spawnDeath(seat, s);
+      }
+      if (s.alive) this.deadSeats.delete(seat);
+    }
+  }
+
+  private spawnDeath(seat: number, s: SnakeInfo): void {
+    const now = performance.now();
+    const pal = SEAT_PALETTES[seat];
+    const step = Math.max(1, Math.floor(s.cells.length / 22));
+    for (let i = 0; i < s.cells.length; i += step) {
+      const [cx, cy] = s.cells[i];
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 0.4 + Math.random() * 1.4;
+      this.deathOrbs.push({
+        x: cx,
+        y: cy,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd,
+        born: now + i * 4,
+        color: (i & 4) === 0 ? pal.bodyHi : pal.body,
+      });
     }
   }
 
@@ -493,12 +628,23 @@ class SnakeFrontend implements GameFrontend {
     this.c2d.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
-  private loop = (): void => {
-    this.draw();
+  private loop = (now: number): void => {
+    this.draw(now);
+    this.recordFps(now);
     this.rafId = requestAnimationFrame(this.loop);
   };
 
-  private draw(): void {
+  private recordFps(now: number): void {
+    this.frameTimes.push(now);
+    while (this.frameTimes.length && now - this.frameTimes[0] > 1000) this.frameTimes.shift();
+    if (now - this.fpsLogAt > 3000) {
+      this.fpsLogAt = now;
+      // eslint-disable-next-line no-console
+      console.info(`[snake] ${this.frameTimes.length} FPS`);
+    }
+  }
+
+  private draw(now: number): void {
     const ctx = this.c2d;
     const size = this.cssSize;
     if (size <= 0) return;
@@ -506,28 +652,27 @@ class SnakeFrontend implements GameFrontend {
     ctx.clearRect(0, 0, size, size);
     this.drawGrid(cell);
 
-    const view = this.tween ? this.tween.to : this.view;
-    if (!view) return;
+    const view = this.glide ? this.glide.to : this.view;
+    if (view?.food) this.drawFood(view.food, cell, now);
 
-    if (view.food) this.drawFood(view.food, cell);
-
-    const t = this.tweenProgress();
-    for (let seat = 0; seat < 2; seat++) {
-      this.drawSnake(seat, t, cell);
+    const t = this.glideProgress(now);
+    if (view) {
+      for (let seat = 0; seat < 2; seat++) this.drawSnake(seat, t, cell);
     }
+
+    this.drawFlashes(cell, now);
+    this.drawDeathOrbs(cell, now);
   }
 
-  private tweenProgress(): number {
-    if (!this.tween) return 1;
-    const scale = this.ctx.animationScale();
-    const dur = TICK_MS * Math.max(scale, 0.001);
-    return Math.min(1, (performance.now() - this.tween.start) / dur);
+  private glideProgress(now: number): number {
+    if (!this.glide) return 1;
+    return Math.min(1, (now - this.glide.start) / this.glide.dur);
   }
 
   private drawGrid(cell: number): void {
     const ctx = this.c2d;
     ctx.save();
-    ctx.strokeStyle = 'rgba(120, 220, 150, 0.06)';
+    ctx.strokeStyle = 'rgba(130, 190, 255, 0.05)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     for (let i = 1; i < this.side; i++) {
@@ -541,72 +686,204 @@ class SnakeFrontend implements GameFrontend {
     ctx.restore();
   }
 
-  private drawFood(food: [number, number], cell: number): void {
+  private drawFood(food: [number, number], cell: number, now: number): void {
     const ctx = this.c2d;
     const cx = (food[0] + 0.5) * cell;
     const cy = (food[1] + 0.5) * cell;
-    const age = (performance.now() - this.foodPop.at) / 220;
-    const pop = age < 1 ? 0.6 + 0.4 * easeOut(age) : 1;
-    const r = cell * 0.34 * pop;
+    const age = (now - this.foodPop.at) / 240;
+    const pop = age < 1 ? 0.55 + 0.45 * easeOut(age) : 1;
+    const breathe = 1 + 0.07 * Math.sin(now / 360);
+    const r = cell * 0.32 * pop * breathe;
+
     ctx.save();
-    ctx.shadowColor = 'rgba(248, 81, 73, 0.9)';
-    ctx.shadowBlur = cell * 0.6;
-    const grad = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.3, r * 0.1, cx, cy, r);
-    grad.addColorStop(0, '#ff8d7e');
-    grad.addColorStop(1, '#f85149');
+    // Soft outer halo.
+    const halo = ctx.createRadialGradient(cx, cy, r * 0.4, cx, cy, r * 2.6);
+    halo.addColorStop(0, 'rgba(255, 120, 100, 0.4)');
+    halo.addColorStop(1, 'rgba(255, 80, 70, 0)');
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 2.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    // The orb: white-hot core fading to a warm red rim.
+    const grad = ctx.createRadialGradient(cx - r * 0.32, cy - r * 0.34, r * 0.1, cx, cy, r);
+    grad.addColorStop(0, '#fff2ec');
+    grad.addColorStop(0.4, '#ff9d86');
+    grad.addColorStop(1, '#f0463c');
     ctx.fillStyle = grad;
+    ctx.shadowColor = 'rgba(248, 81, 73, 0.85)';
+    ctx.shadowBlur = cell * 0.7;
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.fill();
+
+    // Two orbiting sparkles.
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(255, 240, 220, 0.9)';
+    for (let k = 0; k < 2; k++) {
+      const a = now / 600 + k * Math.PI;
+      const sx = cx + Math.cos(a) * r * 1.5;
+      const sy = cy + Math.sin(a) * r * 1.5;
+      ctx.beginPath();
+      ctx.arc(sx, sy, cell * 0.045, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
   }
 
-  /** Draw one snake, interpolating each segment from its `from` position to
-   * its `to` position by `t` so the body glides one cell per tick. */
+  /** Draw one snake as a glossy capsule tube: a dark rim, the gradient body
+   * banded along the spine, a glossy highlight, then the head with eyes. The
+   * spine is interpolated by `t` so the body glides one cell per tick. */
   private drawSnake(seat: number, t: number, cell: number): void {
-    const color = SEAT_COLORS[seat];
-    const to = (this.tween ? this.tween.to : this.view!).snakes[seat];
-    const from = this.tween ? this.tween.from.snakes[seat] : to;
-    const cells = interpBody(from.cells, to.cells, t);
+    const pal = SEAT_PALETTES[seat];
+    const to = (this.glide ? this.glide.to : this.view!).snakes[seat];
+    const from = this.glide ? this.glide.from.snakes[seat] : to;
+    const cells = interpBody(from.cells, to.cells, easeInOut(t));
     if (cells.length === 0) return;
 
     const ctx = this.c2d;
-    const pad = cell * 0.12;
-    const seg = cell - pad * 2;
-    const radius = seg * 0.32;
+    // Center-of-cell points; the tube width tapers slightly toward the tail.
+    const pts = cells.map(([x, y]) => [(x + 0.5) * cell, (y + 0.5) * cell] as [number, number]);
+    const baseW = cell * 0.74;
+
     ctx.save();
-    ctx.shadowColor = color.glow;
-    ctx.shadowBlur = to.alive ? cell * 0.45 : 0;
     ctx.globalAlpha = to.alive ? 1 : 0.4;
-    for (let i = cells.length - 1; i >= 0; i--) {
-      const [x, y] = cells[i];
-      const head = i === 0;
-      ctx.fillStyle = head ? color.head : color.body;
-      roundRect(ctx, x * cell + pad, y * cell + pad, seg, seg, radius);
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+
+    // Outer glow under everything (skipped when dead — it's dissolving).
+    if (to.alive) {
+      ctx.save();
+      ctx.shadowColor = pal.glow;
+      ctx.shadowBlur = cell * 0.6;
+      ctx.strokeStyle = pal.glow;
+      ctx.lineWidth = baseW;
+      strokeTube(ctx, pts, 1);
+      ctx.restore();
+    }
+
+    // Dark rim, a touch wider than the body.
+    ctx.strokeStyle = pal.rim;
+    ctx.lineWidth = baseW + Math.max(1.5, cell * 0.1);
+    strokeTube(ctx, pts, 1);
+
+    // Body: a head→tail gradient between the lit and shaded tones, tapering.
+    if (pts.length >= 2) {
+      const grad = ctx.createLinearGradient(pts[0][0], pts[0][1], pts[pts.length - 1][0], pts[pts.length - 1][1]);
+      grad.addColorStop(0, pal.bodyHi);
+      grad.addColorStop(0.5, pal.body);
+      grad.addColorStop(1, pal.bodyLo);
+      ctx.strokeStyle = grad;
+    } else {
+      ctx.strokeStyle = pal.body;
+    }
+    ctx.lineWidth = baseW;
+    strokeTube(ctx, pts, 0.82); // taper the tail
+
+    // Glossy highlight riding the top of the tube.
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+    ctx.lineWidth = Math.max(1, baseW * 0.3);
+    strokeTube(ctx, pts, 1, -baseW * 0.22);
+
+    ctx.restore();
+
+    this.drawHead(pts[0], to.dir, cell, pal, to.alive);
+  }
+
+  private drawHead(
+    head: [number, number],
+    dir: Abs,
+    cell: number,
+    pal: Palette,
+    alive: boolean,
+  ): void {
+    const ctx = this.c2d;
+    const [hx, hy] = head;
+    const r = cell * 0.42;
+    const [dx, dy] = DELTA[dir];
+
+    ctx.save();
+    ctx.globalAlpha = alive ? 1 : 0.4;
+    // Rounded head cap with a glossy radial sheen toward the light.
+    ctx.fillStyle = pal.rim;
+    ctx.beginPath();
+    ctx.arc(hx, hy, r + Math.max(1, cell * 0.05), 0, Math.PI * 2);
+    ctx.fill();
+    const grad = ctx.createRadialGradient(hx - r * 0.34, hy - r * 0.4, r * 0.1, hx, hy, r);
+    grad.addColorStop(0, pal.head);
+    grad.addColorStop(0.55, pal.body);
+    grad.addColorStop(1, pal.bodyLo);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(hx, hy, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Eyes: set on the head's forward-sides, pupils looking the travel way.
+    const fwd = cell * 0.14;
+    const side = cell * 0.18;
+    const eyeR = cell * 0.13;
+    const pupilR = cell * 0.07;
+    for (const s of [-1, 1]) {
+      const ex = hx + dx * fwd + dy * side * s;
+      const ey = hy + dy * fwd + dx * side * s;
+      ctx.fillStyle = '#f4f9ff';
+      ctx.beginPath();
+      ctx.arc(ex, ey, eyeR, 0, Math.PI * 2);
       ctx.fill();
-      if (head) this.drawEyes(x, y, to.dir, cell);
+      ctx.fillStyle = '#0a1424';
+      ctx.beginPath();
+      ctx.arc(ex + dx * eyeR * 0.4, ey + dy * eyeR * 0.4, pupilR, 0, Math.PI * 2);
+      ctx.fill();
     }
     ctx.restore();
   }
 
-  private drawEyes(x: number, y: number, dir: Abs, cell: number): void {
+  private drawFlashes(cell: number, now: number): void {
+    if (this.flashes.length === 0) return;
     const ctx = this.c2d;
-    const [dx, dy] = DELTA[dir];
-    const cx = (x + 0.5) * cell;
-    const cy = (y + 0.5) * cell;
-    const fwd = cell * 0.16;
-    const side = cell * 0.16;
-    const r = cell * 0.07;
     ctx.save();
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = '#06120a';
-    for (const s of [-1, 1]) {
-      const ex = cx + dx * fwd + dy * side * s;
-      const ey = cy + dy * fwd + dx * side * s;
+    ctx.globalCompositeOperation = 'lighter';
+    this.flashes = this.flashes.filter((f) => {
+      const age = (now - f.born) / f.dur;
+      if (age >= 1) return false;
+      const cx = (f.x + 0.5) * cell;
+      const cy = (f.y + 0.5) * cell;
+      const r = cell * (0.3 + 1.1 * easeOut(age));
+      ctx.globalAlpha = (1 - age) * 0.7;
+      ctx.strokeStyle = f.color;
+      ctx.lineWidth = cell * 0.12 * (1 - age);
       ctx.beginPath();
-      ctx.arc(ex, ey, r, 0, Math.PI * 2);
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.stroke();
+      return true;
+    });
+    ctx.restore();
+  }
+
+  private drawDeathOrbs(cell: number, now: number): void {
+    if (this.deathOrbs.length === 0) return;
+    const ctx = this.c2d;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    this.deathOrbs = this.deathOrbs.filter((o) => {
+      const age = now - o.born;
+      if (age < 0) return true;
+      const life = age / 720;
+      if (life >= 1) return false;
+      const cx = (o.x + 0.5 + o.vx * life) * cell;
+      const cy = (o.y + 0.5 + o.vy * life) * cell;
+      const r = cell * 0.3 * (1 - life * 0.5);
+      ctx.globalAlpha = (1 - life) * 0.85;
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 2);
+      g.addColorStop(0, '#ffffff');
+      g.addColorStop(0.4, o.color);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r * 2, 0, Math.PI * 2);
       ctx.fill();
-    }
+      return true;
+    });
     ctx.restore();
   }
 }
@@ -630,30 +907,71 @@ function interpBody(
   return out;
 }
 
+/** Stroke a tube along `pts` (head→tail). `taper` scales the line width down
+ * to the tail; `perp` offsets the path perpendicular to local heading (for the
+ * gloss highlight). The current `ctx.lineWidth` is the head-end width. */
+function strokeTube(
+  ctx: CanvasRenderingContext2D,
+  pts: [number, number][],
+  taper: number,
+  perp = 0,
+): void {
+  if (pts.length === 0) return;
+  if (pts.length === 1) {
+    ctx.beginPath();
+    ctx.arc(pts[0][0], pts[0][1], ctx.lineWidth / 2, 0, Math.PI * 2);
+    ctx.fillStyle = ctx.strokeStyle as string;
+    ctx.fill();
+    return;
+  }
+  if (perp === 0 && taper >= 1) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.stroke();
+    return;
+  }
+  // Tapering / offset: draw as short round-capped segments whose width shrinks
+  // toward the tail so the join blends; cheap and reads as one smooth tube.
+  const headW = ctx.lineWidth;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const f = i / (pts.length - 1);
+    const w = headW * (1 - (1 - taper) * f);
+    let [ax, ay] = pts[i];
+    let [bx, by] = pts[i + 1];
+    if (perp !== 0) {
+      const dx = bx - ax;
+      const dy = by - ay;
+      const len = Math.hypot(dx, dy) || 1;
+      const nx = (-dy / len) * perp;
+      const ny = (dx / len) * perp;
+      ax += nx;
+      ay += ny;
+      bx += nx;
+      by += ny;
+    }
+    ctx.lineWidth = w;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
+  }
+}
+
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
 }
 
 function easeOut(t: number): number {
   return 1 - (1 - t) * (1 - t);
 }
 
-function roundRect(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  r: number,
-): void {
-  const rr = Math.min(r, w / 2, h / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + rr, y);
-  ctx.arcTo(x + w, y, x + w, y + h, rr);
-  ctx.arcTo(x + w, y + h, x, y + h, rr);
-  ctx.arcTo(x, y + h, x, y, rr);
-  ctx.arcTo(x, y, x + w, y, rr);
-  ctx.closePath();
+function easeInOut(t: number): number {
+  return t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
 }
 
 export function createSnakeFrontend(): GameFrontend {
