@@ -1,6 +1,6 @@
 use game_core::{Eval, Game, GameUi, Rng, Turn};
 use snake::DuelEval;
-use snake::duel::{Dir, Duel, DuelAction, DuelState, Outcome, SIDE};
+use snake::duel::{Dir, Duel, DuelAction, DuelState, MAX_HEALTH, Outcome, SIDE};
 
 /// Place food on `(x, y)` (a chance node), asserting the cell is free.
 fn food_at(g: &Duel, s: &mut DuelState, x: usize, y: usize) {
@@ -216,22 +216,52 @@ fn running_into_the_opponent_body_is_fatal() {
 }
 
 #[test]
-fn step_cap_decides_on_length() {
+fn each_tick_without_eating_costs_one_health() {
     let g = Duel::new();
     let mut s = g.initial_state();
-    // Feed seat 0 once so it leads on length, then have both circle safely
-    // around their own corners until the cap. A 2x2 clockwise loop never
-    // crashes and never eats (we keep food in a corner the loops avoid).
-    food_at(&g, &mut s, 5, SIDE / 2);
-    g.apply(&mut s, DuelAction::Move(Dir::Right));
-    g.apply(&mut s, DuelAction::Move(Dir::Left));
-    assert_eq!(s.worm(0).len(), 4);
+    assert_eq!(s.health(0), MAX_HEALTH, "snakes start at full health");
+    assert_eq!(s.health(1), MAX_HEALTH);
+    // Park food in a corner so neither snake eats; both spend one health per
+    // tick. Three idle ticks → three health spent.
+    for _ in 0..3 {
+        tick(&g, &mut s, Dir::Up, Dir::Up);
+    }
+    assert_eq!(s.health(0), MAX_HEALTH - 3, "seat 0 idled three ticks");
+    assert_eq!(s.health(1), MAX_HEALTH - 3);
+}
 
-    let cap = g.step_cap();
+#[test]
+fn eating_refills_health_to_full() {
+    let g = Duel::new();
+    let mut s = g.initial_state();
+    // Place food three cells ahead of seat 0 (head at (4,10), facing right).
+    // Seat 0 marches straight onto it, burning two health on the way and
+    // refilling to full on the meal; seat 1 idles and keeps starving.
+    food_at(&g, &mut s, 7, SIDE / 2);
+    while s.food().is_some() && !g.is_terminal(&s) {
+        g.apply(&mut s, DuelAction::Move(Dir::Right)); // seat 0 toward the food
+        g.apply(&mut s, DuelAction::Move(Dir::Up)); // seat 1 idles, never eating
+    }
+    assert_eq!(s.worm(0).len(), 4, "seat 0 ate and grew");
+    assert_eq!(s.health(0), MAX_HEALTH, "eating refills health to full");
+    assert!(
+        s.health(1) < MAX_HEALTH,
+        "seat 1 kept starving while seat 0 fed"
+    );
+}
+
+#[test]
+fn a_snake_that_never_eats_starves_at_max_health_ticks() {
+    let g = Duel::new();
+    let mut s = g.initial_state();
+    // Both snakes circle a safe 2x2 loop forever and never touch the parked
+    // corner food. Each starts at full health and spends one per tick, so both
+    // hit zero on the same tick — a simultaneous starvation draw, well before
+    // the step cap. This is the lever that bounds game length.
     let loop_dirs = [Dir::Up, Dir::Right, Dir::Down, Dir::Left];
     let mut i = 0;
     while !g.is_terminal(&s) {
-        // Keep food parked in a corner neither circling snake reaches.
+        // Park food in a corner the tight loops never reach.
         if matches!(g.turn(&s), Turn::Chance) {
             food_at(&g, &mut s, 0, 0);
         }
@@ -239,10 +269,66 @@ fn step_cap_decides_on_length() {
         g.apply(&mut s, DuelAction::Move(d));
         g.apply(&mut s, DuelAction::Move(d));
         i += 1;
-        assert!(s.steps() <= cap, "did not exceed the cap");
+        assert!(s.steps() < g.step_cap(), "starves long before the cap");
     }
-    assert_eq!(s.steps(), cap);
-    assert_eq!(s.outcome(), Outcome::Win(0), "longer snake wins on the cap");
+    assert_eq!(
+        s.steps() as u8,
+        MAX_HEALTH,
+        "both starve exactly when health runs out"
+    );
+    assert!(!s.worm(0).alive() && !s.worm(1).alive(), "both starved");
+    assert_eq!(
+        s.outcome(),
+        Outcome::Draw,
+        "simultaneous starvation is a draw"
+    );
+}
+
+#[test]
+fn a_well_fed_snake_outlives_a_starving_one() {
+    let g = Duel::new();
+    let mut s = g.initial_state();
+    // Seat 0 eats every chance it gets while seat 1 idles in place. Seat 1
+    // starves first, handing seat 0 the win — eating is survival.
+    let loop_dirs = [Dir::Up, Dir::Right, Dir::Down, Dir::Left];
+    let mut i = 0;
+    while !g.is_terminal(&s) {
+        // Always drop food directly ahead of seat 0 so it eats and refills.
+        if matches!(g.turn(&s), Turn::Chance) {
+            let (hx, hy) = s.worm(0).head();
+            let (dx, dy) = match s.worm(0).heading() {
+                Dir::Up => (0, -1),
+                Dir::Right => (1, 0),
+                Dir::Down => (0, 1),
+                Dir::Left => (-1, 0),
+            };
+            let (fx, fy) = ((hx as i32 + dx) as usize, (hy as i32 + dy) as usize);
+            // Keep food reachable and off seat 1's tight loop corner.
+            if fx < SIDE && fy < SIDE && (fx, fy) != s.worm(1).head() {
+                food_at(&g, &mut s, fx, fy);
+            } else {
+                food_at(&g, &mut s, 0, 0);
+            }
+        }
+        // Seat 0 drives straight (eating the food ahead); seat 1 circles a tiny
+        // loop on the far side and never eats.
+        let d0 = s.worm(0).heading();
+        let d1 = loop_dirs[i % 4];
+        g.apply(&mut s, DuelAction::Move(d0));
+        g.apply(&mut s, DuelAction::Move(d1));
+        i += 1;
+        assert!(
+            s.steps() < g.step_cap(),
+            "decided by starvation before the cap"
+        );
+    }
+    assert_eq!(
+        s.outcome(),
+        Outcome::Win(0),
+        "the fed snake outlasts the starver"
+    );
+    assert!(s.worm(0).alive() && !s.worm(1).alive());
+    assert!(s.worm(0).len() > 3, "seat 0 grew from eating");
 }
 
 #[test]
@@ -311,6 +397,10 @@ fn view_data_schema_round_trips() {
     assert!(json.contains("\"dir\":\"e\""), "seat 0 faces east: {json}");
     assert!(json.contains("\"dir\":\"w\""), "seat 1 faces west: {json}");
     assert!(json.contains("\"alive\":true"), "{json}");
+    assert!(
+        json.contains("\"health\":100"),
+        "fresh snakes report full health: {json}"
+    );
     // Head-first cells: seat 0's head is at (4, 10).
     assert!(json.contains("[[4,10],[3,10],[2,10]]"), "{json}");
 }

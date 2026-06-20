@@ -3,12 +3,14 @@
 // View JSON (contract with games/snake/src/duel_ui.rs):
 //   { side: 20,
 //     snakes: [ { cells: [[x,y], ... head first], dir: "n|e|s|w",
-//                 alive: bool, score: n }, { ... } ],
+//                 alive: bool, score: n, health: 0..=100 }, { ... } ],
 //     food: [x,y] | null,
 //     step: n, cap: n,
 //     outcome: "ongoing" | "win0" | "win1" | "draw" }
 // `x` grows rightward, `y` downward. snakes[0] is Snake A (seat 0), snakes[1]
-// Snake B (seat 1).
+// Snake B (seat 1). `health` drains by one each tick and refills to 100 on a
+// meal; a snake that hits 0 starves, so the bar doubles as a "find food now"
+// pressure gauge.
 //
 // The Duel game is turn-based under the hood (seat 0 commits, then seat 1
 // commits seeing it, then both advance), but play is REAL-TIME here: on the
@@ -27,7 +29,10 @@ interface SnakeInfo {
   dir: Abs;
   alive: boolean;
   score: number;
+  health: number;
 }
+
+const MAX_HEALTH = 100;
 
 interface DuelView {
   side: number;
@@ -144,6 +149,25 @@ const CSS = `
   color: var(--text);
   font-weight: 700;
 }
+.snk-hp {
+  position: relative;
+  flex: none;
+  width: 48px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+.snk-hp-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 100%;
+  border-radius: 999px;
+  transition: width 0.2s linear, background-color 0.3s;
+}
+.snk-chip-0 .snk-hp-fill { background: ${SEAT_COLORS[0].body}; }
+.snk-chip-1 .snk-hp-fill { background: ${SEAT_COLORS[1].body}; }
+.snk-hp.snk-hp-low .snk-hp-fill { background: #f85149; }
 .snk-stage {
   position: relative;
   aspect-ratio: 1 / 1;
@@ -214,6 +238,8 @@ class SnakeFrontend implements GameFrontend {
   private c2d!: CanvasRenderingContext2D;
   private chips: HTMLElement[] = [];
   private lenEls: HTMLElement[] = [];
+  private hpEls: HTMLElement[] = [];
+  private hpFillEls: HTMLElement[] = [];
   private overlayEl!: HTMLElement;
   private overlayTitleEl!: HTMLElement;
   private overlaySubEl!: HTMLElement;
@@ -241,11 +267,15 @@ class SnakeFrontend implements GameFrontend {
         <div class="snk-bar">
           <div class="snk-chip snk-chip-0">
             <span class="snk-dot"></span><span class="snk-name">${SEAT_NAMES[0]}</span>
-            <span class="seat-slot" data-seat="0"></span><span class="snk-len">3</span>
+            <span class="seat-slot" data-seat="0"></span>
+            <span class="snk-hp"><span class="snk-hp-fill"></span></span>
+            <span class="snk-len">3</span>
           </div>
           <div class="snk-chip snk-chip-1">
             <span class="snk-dot"></span><span class="snk-name">${SEAT_NAMES[1]}</span>
-            <span class="seat-slot" data-seat="1"></span><span class="snk-len">3</span>
+            <span class="seat-slot" data-seat="1"></span>
+            <span class="snk-hp"><span class="snk-hp-fill"></span></span>
+            <span class="snk-len">3</span>
           </div>
         </div>
         <div class="snk-stage">
@@ -260,6 +290,11 @@ class SnakeFrontend implements GameFrontend {
     this.lenEls = [
       this.chips[0].querySelector('.snk-len')!,
       this.chips[1].querySelector('.snk-len')!,
+    ];
+    this.hpEls = [this.chips[0].querySelector('.snk-hp')!, this.chips[1].querySelector('.snk-hp')!];
+    this.hpFillEls = [
+      this.chips[0].querySelector('.snk-hp-fill')!,
+      this.chips[1].querySelector('.snk-hp-fill')!,
     ];
     this.overlayEl = host.querySelector('.snk-overlay')!;
     this.overlayTitleEl = this.overlayEl.querySelector('b')!;
@@ -410,6 +445,11 @@ class SnakeFrontend implements GameFrontend {
     for (let seat = 0; seat < 2; seat++) {
       const s = view.snakes[seat];
       this.lenEls[seat].textContent = String(s.score);
+      const hp = Math.max(0, Math.min(MAX_HEALTH, s.health ?? MAX_HEALTH));
+      const pct = s.alive ? (hp / MAX_HEALTH) * 100 : 0;
+      this.hpFillEls[seat].style.width = `${pct}%`;
+      this.hpEls[seat].classList.toggle('snk-hp-low', s.alive && hp <= 25);
+      this.hpEls[seat].title = `health ${hp}`;
       this.chips[seat].classList.toggle('snk-dead', !s.alive);
       this.chips[seat].classList.toggle(
         'snk-turn',

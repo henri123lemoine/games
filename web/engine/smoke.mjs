@@ -55,6 +55,10 @@ assert(m.is_over() && snakeSteps >= 3, `snake watch ended after ${snakeSteps} st
 const snakeView = JSON.parse(m.view_data());
 assert(snakeView.side === 20 && snakeView.snakes.length === 2, 'snake view has two snakes on a 20-grid');
 assert(['win0', 'win1', 'draw'].includes(snakeView.outcome), `snake outcome: ${snakeView.outcome}`);
+assert(
+  snakeView.snakes.every((s) => typeof s.health === 'number' && s.health >= 0 && s.health <= 100),
+  `snake view carries per-snake health: ${JSON.stringify(snakeView.snakes.map((s) => s.health))}`,
+);
 console.log('snake watch:', snakeSteps, 'moves —', m.result_text());
 
 m = engine.create_match('snake', JSON.stringify({ seat: 0, sims: 60, depth: 12, seed: 6 }));

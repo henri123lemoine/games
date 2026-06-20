@@ -19,11 +19,10 @@ use solvers::azero::{self, Gather, PuctConfig, argmax};
 use crate::net::{EvalRequest, EvalResult, Infer};
 use crate::train::Sample;
 
-/// Self-play ply cap: a safety net for mutual circling. The [`Duel`] already
-/// caps at `area` steps and scores on length, so this only needs to bound the
-/// rare game that the engine's own cap somehow does not — a tighter bound than
-/// the old `4·area` keeps self-play decisive rather than churning out long
-/// circling draws that the discount would zero out anyway.
+/// Self-play ply cap: a safety net for mutual circling. Starvation already
+/// kills a snake after ~`MAX_HEALTH` foodless ticks, and the [`Duel`] caps at
+/// `area` steps and scores on length, so games rarely approach this bound; it
+/// only catches the pathological game where both snakes keep eating forever.
 fn max_plies(size: usize) -> u16 {
     (size * size) as u16
 }
@@ -65,8 +64,12 @@ pub struct SelfPlayConfig {
     pub full_prob: f64,
     /// Per-ply value discount toward 0 (`1.0` = undiscounted). A recorded
     /// position `d` plies before the end sees `gamma.powi(d)` of the terminal
-    /// value, so a fast win outscores a slow one and a draw-by-circling has a
-    /// vanishing target — the lever that breaks the survival equilibrium.
+    /// value, so a fast win still outscores a slow one. Starvation (health runs
+    /// out after ~`MAX_HEALTH` foodless ticks) now bounds the horizon for us, so
+    /// this sits close to `1`: a heavy discount over the old 400-ply circling
+    /// games erased the terminal reward (`0.99^400 ≈ 0.02`), but over the
+    /// ~100-ply starvation horizon a gentle `0.997` keeps the win/loss signal
+    /// intact (`0.997^100 ≈ 0.74`) while still favouring decisive finishes.
     pub gamma: f32,
     /// How much the length margin sharpens the terminal value: a decisive
     /// outcome is `(1-margin_w) + margin_w·tanh(len_diff/MARGIN_SCALE)` toward
@@ -96,7 +99,7 @@ impl Default for SelfPlayConfig {
             fast_sims: 32,
             full_sims: 256,
             full_prob: 0.0,
-            gamma: 0.99,
+            gamma: 0.997,
             margin_w: 0.25,
             pool_frac: 0.2,
         }

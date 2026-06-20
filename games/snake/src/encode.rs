@@ -24,7 +24,7 @@ use std::collections::VecDeque;
 
 use game_core::{Game, PolicyValueEncoder, Turn};
 
-use crate::duel::{Dir, Duel, DuelAction, DuelState, SIDE};
+use crate::duel::{Dir, Duel, DuelAction, DuelState, MAX_HEALTH, SIDE};
 
 const MY_HEAD: usize = 0;
 const MY_BODY: usize = 1;
@@ -49,7 +49,13 @@ const VORONOI_DIFF: usize = 12;
 const MY_TAIL_REACH: usize = 13;
 /// Broadcast scalar: 1.0 iff the opponent's head can reach its own tail.
 const OPP_TAIL_REACH: usize = 14;
-const ONES: usize = 15;
+/// Broadcast scalar: my remaining health over `MAX_HEALTH` — how many ticks I
+/// can go without eating before I starve (the starvation clock the net must see
+/// to value chasing food over coasting).
+const MY_HEALTH: usize = 15;
+/// Broadcast scalar: the opponent's remaining health over `MAX_HEALTH`.
+const OPP_HEALTH: usize = 16;
+const ONES: usize = 17;
 pub const PLANES: usize = ONES + 1;
 
 pub struct SnakeEncoder;
@@ -254,6 +260,10 @@ impl PolicyValueEncoder<Duel> for SnakeEncoder {
         out[OPP_TAIL_REACH * n..(OPP_TAIL_REACH + 1) * n]
             .fill(f32::from(space.tail_reachable(state, opp)));
 
+        let health = f32::from(MAX_HEALTH);
+        out[MY_HEALTH * n..(MY_HEALTH + 1) * n].fill(f32::from(state.health(me)) / health);
+        out[OPP_HEALTH * n..(OPP_HEALTH + 1) * n].fill(f32::from(state.health(opp)) / health);
+
         out[ONES * n..(ONES + 1) * n].fill(1.0);
         out
     }
@@ -301,6 +311,31 @@ mod tests {
 
         let food_cells: f32 = x[FOOD * n..(FOOD + 1) * n].iter().sum();
         assert_eq!(food_cells, 1.0, "exactly one food cell");
+    }
+
+    #[test]
+    fn health_planes_are_full_at_the_start_and_drop_as_a_snake_idles() {
+        use crate::duel::{Dir, MAX_HEALTH};
+
+        let (g, mut s) = opened();
+        let n = SIDE * SIDE;
+        let enc = SnakeEncoder::new();
+        let x = enc.encode_state(&g, &s);
+        assert_eq!(x[MY_HEALTH * n], 1.0, "fresh snakes start at full health");
+        assert_eq!(x[OPP_HEALTH * n], 1.0);
+
+        // Run a tick where neither snake eats (food is parked at (0,0) by
+        // `opened`'s first chance outcome, far from both starting heads): each
+        // snake spends one health, so the broadcast scalar drops by 1/MAX.
+        g.apply(&mut s, DuelAction::Move(Dir::Right));
+        g.apply(&mut s, DuelAction::Move(Dir::Left));
+        let x = enc.encode_state(&g, &s);
+        let want = f32::from(MAX_HEALTH - 1) / f32::from(MAX_HEALTH);
+        assert!(
+            (x[MY_HEALTH * n] - want).abs() < 1e-6,
+            "a tick without eating costs one health: {}",
+            x[MY_HEALTH * n]
+        );
     }
 
     #[test]

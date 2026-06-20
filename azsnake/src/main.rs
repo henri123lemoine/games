@@ -197,7 +197,7 @@ fn run(args: &[String]) {
     let fast_sims: u32 = arg(args, "--fast-sims", 32);
     let full_sims: u32 = arg(args, "--full-sims", sims.max(256));
     let full_prob: f64 = arg(args, "--full-prob", 0.0);
-    let gamma: f32 = arg(args, "--gamma", 0.99);
+    let gamma: f32 = arg(args, "--gamma", 0.997);
     let margin_w: f32 = arg(args, "--margin-w", 0.25);
     let pool_frac: f64 = arg(args, "--pool-frac", 0.2);
     let pool_size: usize = arg(args, "--pool-size", 5);
@@ -602,7 +602,7 @@ fn main() {
                 "usage: azsnake run   [--dir ../data/azsnake/run1] [--hours 5] [--size 20] \
                  [--blocks 4] [--ch 64] [--sims 320] [--leaves 8] [--concurrent 256] \
                  [--samples-per-iter 8192] [--temp-plies 12] [--alpha 1.0] [--value-mix 0.3] \
-                 [--gamma 0.99] [--margin-w 0.25] [--pool-frac 0.2] [--pool-size 5] \
+                 [--gamma 0.997] [--margin-w 0.25] [--pool-frac 0.2] [--pool-size 5] \
                  [--resign-fp-target 0.05] [--resign-q 0.95] [--resign-ply 20] [--resign-off 0.1] \
                  [--batch 512] [--reuse 1.8] [--replay 400000] [--lr 1e-3] [--wd 1e-4] \
                  [--eval-every 4] [--eval-pairs 16] [--eval-sims 128] [--snapshot-every 30]"

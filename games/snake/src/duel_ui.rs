@@ -60,13 +60,15 @@ impl GameUi for Duel {
             grid[hy][hx] = head;
         }
         let mut out = format!(
-            "step {}/{}\nyou are Snake {}   A:len {}{}   B:len {}{}\n",
+            "step {}/{}\nyou are Snake {}   A:len {} hp {}{}   B:len {} hp {}{}\n",
             state.steps(),
             self.step_cap(),
             if viewer == 1 { "B" } else { "A" },
             state.score(0),
+            state.health(0),
             if state.worm(0).alive() { "" } else { " (dead)" },
             state.score(1),
+            state.health(1),
             if state.worm(1).alive() { "" } else { " (dead)" },
         );
         let frame = "#".repeat(side + 2);
@@ -107,23 +109,25 @@ impl GameUi for Duel {
     /// ```json
     /// {"side":20,
     ///  "snakes":[ {"cells":[[x,y],...head first],"dir":"n|e|s|w",
-    ///              "alive":true,"score":3}, {...} ],
+    ///              "alive":true,"score":3,"health":100}, {...} ],
     ///  "food":[x,y]|null,
     ///  "step":0,"cap":400,
     ///  "outcome":"ongoing|win0|win1|draw"}
     /// ```
     ///
     /// `x` grows rightward, `y` downward. `snakes[0]` is seat 0 (Snake A),
-    /// `snakes[1]` seat 1 (Snake B).
+    /// `snakes[1]` seat 1 (Snake B). `health` is `0..=100`; a snake reaching
+    /// `0` starves to death.
     fn view_data(&self, state: &DuelState, _viewer: usize) -> Option<String> {
         let snake = |seat: usize| {
             let worm = state.worm(seat);
             format!(
-                "{{\"cells\":[{}],\"dir\":\"{}\",\"alive\":{},\"score\":{}}}",
+                "{{\"cells\":[{}],\"dir\":\"{}\",\"alive\":{},\"score\":{},\"health\":{}}}",
                 snake_cells(state, seat),
                 dir_letter(worm.heading()),
                 worm.alive(),
                 state.score(seat),
+                worm.health(),
             )
         };
         let food = match state.food() {

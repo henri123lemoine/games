@@ -7,18 +7,25 @@
 //! advance at once). Food placement is a chance node over empty cells at the
 //! start and after any meal.
 //!
-//! Death: a head leaving the board, entering a body cell, or a head-to-head
-//! collision (the shorter snake dies; both die if equal length). Tails vacate
-//! on the same tick the heads advance, so a head may chase a non-eating
-//! opponent's vacating tail safely. The game ends when a snake dies (the
-//! survivor wins) or at a step cap (the higher score wins, else a draw).
-//! [`Game::returns`] is the win/loss/draw convention `{1, 0, -1}`.
+//! Death: a head leaving the board, entering a body cell, a head-to-head
+//! collision (the shorter snake dies; both die if equal length), or running
+//! its health to zero (Battlesnake-style starvation). Tails vacate on the same
+//! tick the heads advance, so a head may chase a non-eating opponent's vacating
+//! tail safely. Each tick costs one health; eating refills it to full and grows
+//! the snake, so neither snake can idle — both must keep hunting food, which
+//! forces engagement over the single contested morsel. The game ends when a
+//! snake dies (the survivor wins) or at a step cap (the higher score wins, else
+//! a draw). [`Game::returns`] is the win/loss/draw convention `{1, 0, -1}`.
 
 use std::collections::VecDeque;
 
 use game_core::{Game, Turn};
 
 pub const SIDE: usize = 20;
+
+/// Health a snake starts with and is refilled to on eating; each tick without
+/// a meal costs one, so a snake that never eats starves after this many ticks.
+pub const MAX_HEALTH: u8 = 100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dir {
@@ -66,6 +73,7 @@ pub struct Worm {
     body: VecDeque<(u8, u8)>,
     heading: Dir,
     alive: bool,
+    health: u8,
 }
 
 impl Worm {
@@ -88,6 +96,11 @@ impl Worm {
 
     pub fn alive(&self) -> bool {
         self.alive
+    }
+
+    /// Remaining health, in `0..=MAX_HEALTH`; zero means the snake starved.
+    pub fn health(&self) -> u8 {
+        self.health
     }
 
     /// Cells head first.
@@ -142,6 +155,11 @@ impl DuelState {
     /// so length is the resource both sides fight over.
     pub fn score(&self, seat: usize) -> usize {
         self.worms[seat].len()
+    }
+
+    /// A snake's remaining health in `0..=MAX_HEALTH`.
+    pub fn health(&self, seat: usize) -> u8 {
+        self.worms[seat].health()
     }
 }
 
@@ -218,8 +236,8 @@ impl Duel {
     }
 
     /// Resolve one tick: both snakes step to their committed heading at once,
-    /// then deaths (wall, body, head-to-head) and meals are applied. Called
-    /// when seat 1 commits, using seat 0's `pending` heading.
+    /// then deaths (wall, body, head-to-head, starvation) and meals are
+    /// applied. Called when seat 1 commits, using seat 0's `pending` heading.
     fn resolve_tick(&self, state: &mut DuelState, dir1: Dir) {
         let dir0 = state.pending.take().expect("seat 0 commits before seat 1");
         let h0 = Self::resolved_heading(&state.worms[0], dir0);
@@ -242,10 +260,17 @@ impl Duel {
         let wall0 = !Self::in_bounds(nx0, ny0);
         let wall1 = !Self::in_bounds(nx1, ny1);
 
+        // A snake that does not eat this tick spends one health; reaching zero
+        // starves it, which kills it exactly like a crash.
+        let starve0 = !eats0 && state.worms[0].health <= 1;
+        let starve1 = !eats1 && state.worms[1].health <= 1;
+
         let mut dead0 = wall0
+            || starve0
             || Self::hits_body(&state.worms[0], nx0, ny0, eats0, false)
             || Self::hits_body(&state.worms[1], nx0, ny0, eats1, true);
         let mut dead1 = wall1
+            || starve1
             || Self::hits_body(&state.worms[1], nx1, ny1, eats1, false)
             || Self::hits_body(&state.worms[0], nx1, ny1, eats0, true);
 
@@ -286,8 +311,11 @@ impl Duel {
     fn advance(worm: &mut Worm, heading: Dir, head: (i32, i32), eats: bool) {
         worm.heading = heading;
         worm.body.push_front((head.0 as u8, head.1 as u8));
-        if !eats {
+        if eats {
+            worm.health = MAX_HEALTH;
+        } else {
             worm.body.pop_back();
+            worm.health = worm.health.saturating_sub(1);
         }
     }
 
@@ -319,6 +347,7 @@ impl Duel {
         for worm in &state.worms {
             h = combine(h, worm.heading as u64);
             h = combine(h, worm.alive as u64);
+            h = combine(h, worm.health as u64);
             h = combine(h, worm.body.len() as u64);
             for &c in &worm.body {
                 h = combine(h, pack(c));
@@ -350,11 +379,13 @@ impl Game for Duel {
             body: (0..3).map(|i| (left - i, mid)).collect(),
             heading: Dir::Right,
             alive: true,
+            health: MAX_HEALTH,
         };
         let worm1 = Worm {
             body: (0..3).map(|i| (right + i, mid)).collect(),
             heading: Dir::Left,
             alive: true,
+            health: MAX_HEALTH,
         };
         DuelState {
             worms: [worm0, worm1],
