@@ -1,0 +1,18 @@
+[package]
+name = "ppo-core"
+version = "0.1.0"
+edition = "2024"
+description = "Reusable PPO math (tch): GAE(λ), clipped surrogate, value-clip, entropy, advantage normalization, and the minibatch/epoch loop, generic over a Policy and an Env adapter. slither-ppo (and doom's future trainer) are thin adapters over this core"
+
+# Standalone on purpose (like slither-ppo/, azgo/): an empty workspace table keeps
+# libtorch out of the repo's main cargo workspace, so `cargo test` at the root
+# stays light. Build from this directory (or as a path dep of a standalone crate).
+[workspace]
+
+[dependencies]
+tch = { version = "0.23", features = ["download-libtorch"] }
+
+[profile.release-dbg]
+inherits = "release"
+debug-assertions = true
+debug = true

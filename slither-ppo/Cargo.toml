@@ -10,6 +10,7 @@ description = "PPO self-play league trainer for the slither encircle bot: a 3-co
 [workspace]
 
 [dependencies]
+ppo-core = { path = "../ppo-core" }
 slither-rl = { path = "../slither-rl" }
 slitherinfer = { path = "../slitherinfer" }
 rayon = "1"
