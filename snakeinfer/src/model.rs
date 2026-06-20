@@ -148,43 +148,58 @@ impl Model {
     /// global-pooling net is board-size-agnostic — the convolution weights are
     /// shared across sizes and only the spatial extent changes.
     pub fn forward_at(&self, planes: &[f32], size: usize) -> (Vec<f32>, f32) {
+        self.forward_with(planes, size, &mut Scratch::default())
+    }
+
+    /// Like [`forward_at`](Self::forward_at) but reuses caller-owned scratch
+    /// buffers, so a search that evaluates thousands of leaves allocates the
+    /// conv working set once instead of per leaf.
+    fn forward_with(&self, planes: &[f32], size: usize, sc: &mut Scratch) -> (Vec<f32>, f32) {
         let area = size * size;
-        let t = self.trunk(planes, size);
+        self.trunk(planes, size, sc);
         // Policy: conv → global pool → MLP to the four heading logits.
-        let pol = conv_fwd(&self.p1, &t, size, true);
-        let pol_g = global_pool(&pol, self.channels, area);
+        conv_fwd(&self.p1, &sc.trunk, size, true, &mut sc.head);
+        let pol_g = global_pool(&sc.head, self.channels, area);
         let h = linear_fwd(&self.pf1, &pol_g, true);
         let logits = linear_fwd(&self.pf2, &h, false);
         // Value: conv → global pool → MLP → tanh.
-        let v = conv_fwd(&self.v1, &t, size, true);
-        let v_g = global_pool(&v, self.channels, area);
+        conv_fwd(&self.v1, &sc.trunk, size, true, &mut sc.head);
+        let v_g = global_pool(&sc.head, self.channels, area);
         let vh = linear_fwd(&self.vf1, &v_g, true);
         let out = linear_fwd(&self.vf2, &vh, false);
         (logits, out[0].tanh())
     }
 
-    /// The residual-tower output `[channels, size²]` shared by both heads.
-    fn trunk(&self, planes: &[f32], size: usize) -> Vec<f32> {
+    /// Computes the residual-tower output `[channels, size²]` shared by both
+    /// heads, leaving it in `sc.trunk`.
+    fn trunk(&self, planes: &[f32], size: usize, sc: &mut Scratch) {
         debug_assert_eq!(planes.len(), PLANES * size * size);
-        let mut t = conv_fwd(&self.stem, planes, size, true);
+        let Scratch {
+            trunk,
+            skip,
+            tmp,
+            head: _,
+        } = sc;
+        conv_fwd(&self.stem, planes, size, true, trunk);
         for (c1, c2) in &self.tower {
-            let y = conv_fwd(c1, &t, size, true);
-            let mut y = conv_fwd(c2, &y, size, false);
-            for (yv, tv) in y.iter_mut().zip(&t) {
+            std::mem::swap(trunk, skip);
+            conv_fwd(c1, skip, size, true, tmp);
+            conv_fwd(c2, tmp, size, false, trunk);
+            for (yv, tv) in trunk.iter_mut().zip(skip.iter()) {
                 *yv = (*yv + *tv).max(0.0);
             }
-            t = y;
         }
-        t
     }
 
     /// Evaluates requests one by one (reference path; no batching). Each
-    /// request's board size is read from its feature length.
+    /// request's board size is read from its feature length. Conv scratch is
+    /// allocated once and reused across the batch.
     pub fn eval(&self, reqs: &[EvalRequest]) -> Vec<EvalResult> {
+        let mut sc = Scratch::default();
         reqs.iter()
             .map(|r| {
                 let size = isqrt_planes(r.features.len());
-                let (logits, value) = self.forward_at(&r.features, size);
+                let (logits, value) = self.forward_with(&r.features, size, &mut sc);
                 let mut priors: Vec<f32> =
                     r.support.iter().map(|&s| logits[usize::from(s)]).collect();
                 crate::softmax(&mut priors);
@@ -194,40 +209,83 @@ impl Model {
     }
 }
 
-/// `size`×`size` same-padding convolution, channel-major `[c, area]` layout.
-fn conv_fwd(conv: &Conv, x: &[f32], size: usize, relu: bool) -> Vec<f32> {
-    let s = size as isize;
+/// Conv working buffers reused across a forward (and across a whole batch in
+/// [`Model::eval`]). `conv_fwd` resizes them as needed, so the default-empty
+/// state is a valid start.
+#[derive(Default)]
+struct Scratch {
+    trunk: Vec<f32>,
+    skip: Vec<f32>,
+    tmp: Vec<f32>,
+    head: Vec<f32>,
+}
+
+/// `size`×`size` same-padding convolution, channel-major `[c, area]` layout,
+/// writing into `out` (resized to `c_out·area`).
+///
+/// Formulated as a sum of shifted, weight-scaled input planes: each output
+/// plane starts at its bias, then every (input channel, kernel tap) contributes
+/// a contiguous row-wise `out += w · shift(x)` over the in-bounds region. The
+/// inner loop is a branch-free unit-stride axpy — autovectorized, and lowered
+/// to `f32x4` under `+simd128` on wasm. The per-output-cell summation order
+/// (bias, then input channel, then kernel row, then kernel column) is identical
+/// to the textbook nested-loop reference, so results are bit-for-bit unchanged.
+fn conv_fwd(conv: &Conv, x: &[f32], size: usize, relu: bool, out: &mut Vec<f32>) {
     let area = size * size;
-    let mut out = vec![0.0f32; conv.c_out * area];
-    let k = conv.k as isize;
-    let half = k / 2;
+    out.clear();
+    out.resize(conv.c_out * area, 0.0);
+    let k = conv.k;
+    let half = (k / 2) as isize;
+    let s = size as isize;
     for co in 0..conv.c_out {
-        for y in 0..s {
-            for xx in 0..s {
-                let mut acc = conv.b[co];
-                for ci in 0..conv.c_in {
-                    let wbase = ((co * conv.c_in + ci) * conv.k * conv.k) as isize;
-                    for dy in -half..=half {
-                        let sy = y + dy;
-                        if !(0..s).contains(&sy) {
-                            continue;
-                        }
-                        for dx in -half..=half {
-                            let sx = xx + dx;
-                            if !(0..s).contains(&sx) {
-                                continue;
-                            }
-                            let w = conv.w[(wbase + (dy + half) * k + (dx + half)) as usize];
-                            acc += w * x[ci * area + (sy * s + sx) as usize];
-                        }
+        let out_plane = &mut out[co * area..(co + 1) * area];
+        out_plane.fill(conv.b[co]);
+        for ci in 0..conv.c_in {
+            let wbase = (co * conv.c_in + ci) * k * k;
+            let in_plane = &x[ci * area..(ci + 1) * area];
+            for ky in 0..k {
+                let dy = ky as isize - half;
+                // Output rows whose source row `y + dy` is in bounds.
+                let y0 = (-dy).max(0);
+                let y1 = (s - dy).min(s);
+                for kx in 0..k {
+                    let w = conv.w[wbase + ky * k + kx];
+                    if w == 0.0 {
+                        continue;
+                    }
+                    let dx = kx as isize - half;
+                    // Output columns whose source column `x + dx` is in bounds.
+                    let x0 = (-dx).max(0);
+                    let x1 = (s - dx).min(s);
+                    if x0 >= x1 {
+                        continue;
+                    }
+                    let span = (x1 - x0) as usize;
+                    for y in y0..y1 {
+                        let o = (y * s + x0) as usize;
+                        let i = ((y + dy) * s + (x0 + dx)) as usize;
+                        let dst = &mut out_plane[o..o + span];
+                        let src = &in_plane[i..i + span];
+                        axpy(w, src, dst);
                     }
                 }
-                let v = if relu { acc.max(0.0) } else { acc };
-                out[co * area + (y * s + xx) as usize] = v;
+            }
+        }
+        if relu {
+            for v in out_plane.iter_mut() {
+                *v = v.max(0.0);
             }
         }
     }
-    out
+}
+
+/// `dst[i] += w · src[i]`. A fused multiply-add over equal-length unit-stride
+/// slices; the compiler vectorizes the slice-zip into `f32x4` fma lanes.
+#[inline(always)]
+fn axpy(w: f32, src: &[f32], dst: &mut [f32]) {
+    for (d, &s) in dst.iter_mut().zip(src) {
+        *d += w * s;
+    }
 }
 
 /// Global pooling: channel-major `[c, area]` → `[3c]` = per-channel mean, then
@@ -363,7 +421,8 @@ mod tests {
             4.0, 5.0, 6.0,
             7.0, 8.0, 9.0,
         ];
-        let out = conv_fwd(&conv, &x, 3, false);
+        let mut out = Vec::new();
+        conv_fwd(&conv, &x, 3, false, &mut out);
         assert_eq!(out[3 + 1], 45.0, "center sees all nine");
         assert_eq!(out[0], 1.0 + 2.0 + 4.0 + 5.0, "corner sees the 2x2");
     }
