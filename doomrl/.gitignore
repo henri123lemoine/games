@@ -3,3 +3,4 @@ build/
 .default.cfg
 *.o
 *.wad
+!assets/*.wad

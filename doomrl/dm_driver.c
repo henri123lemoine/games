@@ -59,12 +59,16 @@ static void hunter_action(int seat, const doomrl_player_state_t *st, doomrl_acti
     float want = atan2f(dy, dx) * 180.0f / (float)M_PI;
     float bearing = wrap180(want - ang_to_deg(me->angle));
 
-    a->turn = (short)(bearing * 45.0f);
-    if (bearing < -45.0f) a->turn = -2200;
-    if (bearing > 45.0f) a->turn = 2200;
-    a->forward = 50;
+    a->turn = (short)(bearing * 80.0f);
+    if (a->turn > 1300) a->turn = 1300;
+    if (a->turn < -1300) a->turn = -1300;
 
-    if (st->opponent_visible && bearing > -8.0f && bearing < 8.0f)
+    if (st->opp_dist > 256.0f)
+        a->forward = 50;
+    else
+        a->forward = 0;
+
+    if (st->opponent_visible && bearing > -20.0f && bearing < 20.0f)
         a->fire = 1;
 }
 
@@ -74,6 +78,9 @@ int main(int argc, char **argv)
     int ep_tics = 6000;
     int print_every = 1500;
     int duel = 0;
+    static char ep[2] = "1";
+    static char mp[2] = "1";
+    const char *arena = NULL;
 
     for (int i = 1; i < argc; i++)
     {
@@ -81,17 +88,33 @@ int main(int argc, char **argv)
         else if (!strncmp(argv[i], "--tics=", 7)) ep_tics = atoi(argv[i] + 7);
         else if (!strncmp(argv[i], "--print-every=", 14)) print_every = atoi(argv[i] + 14);
         else if (!strcmp(argv[i], "--duel")) duel = 1;
+        else if (!strncmp(argv[i], "--map=", 6)) mp[0] = argv[i][6];
+        else if (!strncmp(argv[i], "--episode=", 10)) ep[0] = argv[i][10];
+        else if (!strncmp(argv[i], "--arena=", 8)) arena = argv[i] + 8;
     }
 
-    char *doom_argv[] = {
+    char *base_argv[] = {
         "doomrl",
         "-iwad", "../web/app/public/doom/doom1.wad",
-        "-warp", "1", "1",
+        "-warp", ep, mp,
         "-skill", "3",
         "-deathmatch", "-solo-net", "-nomonsters",
         "-nomusic", "-nosfx", "-nodraw",
     };
-    int doom_argc = (int)(sizeof(doom_argv) / sizeof(doom_argv[0]));
+    char *arena_argv[] = {
+        "doomrl",
+        "-iwad", "../web/app/public/doom/doom1.wad",
+        "-file", arena ? (char *)arena : "",
+        "-warp", ep, mp,
+        "-skill", "3",
+        "-deathmatch", "-solo-net", "-nomonsters",
+        "-nomusic", "-nosfx", "-nodraw",
+    };
+    char **doom_argv = arena ? arena_argv : base_argv;
+    int doom_argc = arena ? (int)(sizeof(arena_argv) / sizeof(arena_argv[0]))
+                          : (int)(sizeof(base_argv) / sizeof(base_argv[0]));
+    if (arena)
+        setenv("DOOMRL_ALLOW_FILE", "1", 1);
 
     doomrl_dm_init(doom_argc, doom_argv);
     printf("init: players=%d  (deathmatch=%d netgame=%d)\n", doomrl_num_players(), deathmatch, netgame);

@@ -1571,7 +1571,7 @@ void D_DoomMain (void)
 	};
 	int i;
 	
-	if ( gamemode == shareware)
+	if ( gamemode == shareware && !getenv("DOOMRL_ALLOW_FILE"))
 	    I_Error(DEH_String("\nYou cannot -file with the shareware "
 			       "version. Register!"));
 

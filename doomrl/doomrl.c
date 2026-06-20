@@ -287,7 +287,7 @@ void DGRL_OverrideSet(ticcmd_t *cmds, boolean *ingame)
     }
 }
 
-static void dm_setup_match(void)
+static void dm_setup_match(int first_time)
 {
     netgame = true;
     netdemo = true;
@@ -297,13 +297,19 @@ static void dm_setup_match(void)
     for (int i = 0; i < MAXPLAYERS; i++)
         playeringame[i] = (i < s_dm_players);
 
-    G_InitNew(startskill, startepisode, startmap);
-
-    for (int t = 0; t < 16 && gamestate != GS_LEVEL; t++)
+    if (first_time)
     {
-        for (int i = 0; i < DOOMRL_MAX_PLAYERS; i++)
-            s_dm.pending[i] = NULL;
-        doomgeneric_Tick();
+        G_InitNew(startskill, startepisode, startmap);
+    }
+    else
+    {
+        gameaction = ga_loadlevel;
+        for (int t = 0; t < 16 && gameaction != ga_nothing; t++)
+        {
+            for (int i = 0; i < DOOMRL_MAX_PLAYERS; i++)
+                s_dm.pending[i] = NULL;
+            doomgeneric_Tick();
+        }
     }
 
     memset(&s_dm, 0, sizeof(s_dm));
@@ -326,14 +332,14 @@ void doomrl_dm_init(int argc, char **argv)
     memset(&s_dm, 0, sizeof(s_dm));
 
     doomgeneric_Create(argc, argv);
-    dm_setup_match();
+    dm_setup_match(1);
 }
 
 void doomrl_reset(void)
 {
     if (s_dm_players < 2)
         return;
-    dm_setup_match();
+    dm_setup_match(0);
 }
 
 int doomrl_num_players(void)
