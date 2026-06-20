@@ -57,8 +57,8 @@ int main(int argc, char **argv)
     printf("init: tic=%d gamestate=%d pos=(%.1f,%.1f,%.1f) ang=%.1f hp=%d arm=%d weap=%d totalkills=%d alive=%d\n",
            st.tic, st.gamestate, st.x, st.y, st.z, st.angle_deg,
            st.health, st.armor, st.ready_weapon, st.total_kills, st.alive);
-    printf("       enemies=%d ammo=[%d %d %d %d]\n",
-           st.num_enemies, st.ammo[0], st.ammo[1], st.ammo[2], st.ammo[3]);
+    printf("       visible_enemies=%d ammo=[%d %d %d %d]\n",
+           st.num_visible_enemies, st.ammo[0], st.ammo[1], st.ammo[2], st.ammo[3]);
 
     double t0 = now_seconds();
 
@@ -80,17 +80,20 @@ int main(int argc, char **argv)
         if (!benchmark && print_every > 0 && (t % print_every) == 0)
         {
             doomrl_get_state(&st);
-            printf("t=%4d tic=%4d pos=(%.1f,%.1f) ang=%6.1f hp=%3d arm=%3d kills=%d/%d items=%d enemies=%d alive=%d gs=%d\n",
+            printf("t=%4d tic=%4d pos=(%.1f,%.1f) ang=%6.1f hp=%3d arm=%3d kills=%d/%d items=%d visible=%d alive=%d gs=%d\n",
                    t, st.tic, st.x, st.y, st.angle_deg, st.health, st.armor,
-                   st.killcount, st.total_kills, st.itemcount, st.num_enemies, st.alive, st.gamestate);
+                   st.killcount, st.total_kills, st.itemcount, st.num_visible_enemies, st.alive, st.gamestate);
 
-            int show = st.num_enemies < 3 ? st.num_enemies : 3;
+            int show = st.num_visible_enemies < 3 ? st.num_visible_enemies : 3;
             for (int e = 0; e < show; e++)
             {
                 doomrl_enemy_t *en = &st.enemies[e];
-                printf("        enemy[%d] type=%d pos=(%.1f,%.1f) hp=%d dist=%.0f awake=%d\n",
-                       e, en->type, en->x, en->y, en->health, en->dist, en->awake);
+                printf("        visible[%d] type=%d bearing=%6.1f dist=%.0f hp=%d rel_v=(%.1f,%.1f) awake=%d\n",
+                       e, en->type, en->bearing_deg, en->dist, en->health, en->rel_vx, en->rel_vy, en->awake);
             }
+            if (st.target.valid)
+                printf("        target: type=%d last_bearing=%.1f last_dist=%.0f ticks_since_seen=%d\n",
+                       st.target.type, st.target.last_bearing_deg, st.target.last_dist, st.target.ticks_since_seen);
         }
     }
 

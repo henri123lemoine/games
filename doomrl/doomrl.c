@@ -20,11 +20,22 @@
 #include "d_main.h"
 #include "d_loop.h"
 #include "info.h"
+#include "r_main.h"
 
 extern thinker_t thinkercap;
 
 static uint32_t s_clock_ms = 0;
 static const doomrl_action_t *s_pending_action = NULL;
+
+static struct {
+    const mobj_t *mo;
+    int           start_tic;
+    int           type;
+    int           valid;
+    int           ticks_since_seen;
+    float         last_bearing_deg;
+    float         last_dist;
+} s_target;
 
 void DG_Init(void) {}
 
@@ -83,6 +94,8 @@ void doomrl_init(int argc, char **argv)
     singletics = true;
     s_clock_ms = 0;
     s_pending_action = NULL;
+    memset(&s_target, 0, sizeof(s_target));
+    s_target.start_tic = -1;
     doomgeneric_Create(argc, argv);
 }
 
@@ -106,6 +119,13 @@ static float fx2f(fixed_t v)
 static float ang2deg(angle_t a)
 {
     return (float)((double)a / (double)ANG_MAX * 360.0);
+}
+
+static float wrap180(float deg)
+{
+    while (deg > 180.0f) deg -= 360.0f;
+    while (deg < -180.0f) deg += 360.0f;
+    return deg;
 }
 
 void doomrl_get_state(doomrl_state_t *out)
@@ -148,6 +168,18 @@ void doomrl_get_state(doomrl_state_t *out)
     out->momx = fx2f(mo->momx);
     out->momy = fx2f(mo->momy);
 
+    if (s_target.start_tic != levelstarttic)
+    {
+        memset(&s_target, 0, sizeof(s_target));
+        s_target.start_tic = levelstarttic;
+    }
+
+    const mobj_t *nearest = NULL;
+    float nearest_dist = 0.0f;
+    float nearest_bearing = 0.0f;
+
+    int saved_validcount = validcount;
+
     int n = 0;
     thinker_t *th = thinkercap.next;
     while (th != &thinkercap && n < DOOMRL_MAX_ENEMIES)
@@ -156,7 +188,7 @@ void doomrl_get_state(doomrl_state_t *out)
         {
             mobj_t *m = (mobj_t *)th;
             int is_monster = (m->flags & MF_COUNTKILL) && !(m->flags & MF_CORPSE);
-            if (is_monster && m->health > 0 && m != mo)
+            if (is_monster && m->health > 0 && m != mo && P_CheckSight(mo, m))
             {
                 doomrl_enemy_t *e = &out->enemies[n];
                 e->type = m->type;
@@ -168,11 +200,45 @@ void doomrl_get_state(doomrl_state_t *out)
                 float dx = e->x - out->x;
                 float dy = e->y - out->y;
                 e->dist = sqrtf(dx * dx + dy * dy);
+                float abs_bearing = atan2f(dy, dx) * 180.0f / (float)M_PI;
+                e->bearing_deg = wrap180(abs_bearing - out->angle_deg);
+                e->rel_vx = fx2f(m->momx) - out->momx;
+                e->rel_vy = fx2f(m->momy) - out->momy;
                 e->awake = (m->target == mo) ? 1 : 0;
+
+                if (nearest == NULL || e->dist < nearest_dist)
+                {
+                    nearest = m;
+                    nearest_dist = e->dist;
+                    nearest_bearing = e->bearing_deg;
+                }
                 n++;
             }
         }
         th = th->next;
     }
-    out->num_enemies = n;
+
+    validcount = saved_validcount;
+
+    out->num_visible_enemies = n;
+
+    if (nearest != NULL)
+    {
+        s_target.mo = nearest;
+        s_target.type = nearest->type;
+        s_target.valid = 1;
+        s_target.ticks_since_seen = 0;
+        s_target.last_bearing_deg = nearest_bearing;
+        s_target.last_dist = nearest_dist;
+    }
+    else if (s_target.valid)
+    {
+        s_target.ticks_since_seen++;
+    }
+
+    out->target.type = s_target.type;
+    out->target.valid = s_target.valid;
+    out->target.ticks_since_seen = s_target.ticks_since_seen;
+    out->target.last_bearing_deg = s_target.last_bearing_deg;
+    out->target.last_dist = s_target.last_dist;
 }

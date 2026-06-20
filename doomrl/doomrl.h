@@ -18,7 +18,18 @@ typedef struct {
     int   health;
     float dist;
     int   awake;
+    float bearing_deg;
+    float rel_vx;
+    float rel_vy;
 } doomrl_enemy_t;
+
+typedef struct {
+    int   type;
+    int   valid;
+    int   ticks_since_seen;
+    float last_bearing_deg;
+    float last_dist;
+} doomrl_target_memory_t;
 
 typedef struct {
     int   tic;
@@ -45,8 +56,10 @@ typedef struct {
     int   total_secrets;
     int   alive;
 
-    int   num_enemies;
+    int   num_visible_enemies;
     doomrl_enemy_t enemies[DOOMRL_MAX_ENEMIES];
+
+    doomrl_target_memory_t target;
 } doomrl_state_t;
 
 typedef struct {
