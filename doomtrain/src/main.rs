@@ -159,13 +159,21 @@ fn train(
     let eval_every: usize = arg("eval-every", "5").parse().unwrap();
     let eval_episodes: usize = arg("eval-episodes", "6").parse().unwrap();
     let self_play: bool = std::env::args().any(|a| a == "--self-play");
+    let vs_hunter: bool = std::env::args().any(|a| a == "--vs-hunter");
     let refresh_every: usize = arg("refresh-every", "10").parse().unwrap();
     let save: String = arg("save", "doomdfp.ot");
     let best_path: String = arg("best", "doomdfp_best.ot");
 
+    let mode = if vs_hunter {
+        "vs-hunter"
+    } else if self_play {
+        "self-play"
+    } else {
+        "self-mirror"
+    };
     println!(
         "doomtrain train: iters={iters} steps={steps} updates={updates} batch={batch} \
-         self_play={self_play} eval_episodes={eval_episodes} params={}",
+         mode={mode} eval_episodes={eval_episodes} params={}",
         n_params(vs)
     );
     let env = env_new(iwad, arena);
@@ -181,13 +189,23 @@ fn train(
 
     for it in 0..iters {
         let epsilon = epsilon_at(it, iters, eps_start, eps_end);
-        let opponent = if self_play { Some(&opp_net) } else { None };
+        let opponent = if vs_hunter {
+            dfp::Opponent::Hunter
+        } else if self_play {
+            dfp::Opponent::Snapshot(&opp_net)
+        } else {
+            dfp::Opponent::SelfMirror
+        };
         let (r0, r1, frags) = dfp::collect_episode_vs(&env, net, opponent, device, steps, epsilon);
         for c in dfp::chunk_rollout(&r0) {
             replay.push(c);
         }
-        for c in dfp::chunk_rollout(&r1) {
-            replay.push(c);
+        // In vs-hunter mode seat 1 is the scripted hunter, not the net — don't
+        // train on its rollout. Otherwise both seats are net-driven (valid data).
+        if !vs_hunter {
+            for c in dfp::chunk_rollout(&r1) {
+                replay.push(c);
+            }
         }
 
         let mut loss = 0.0;

@@ -18,8 +18,10 @@ pub struct Rollout {
 }
 
 pub fn goal_vector() -> [f32; MEAS_DIM] {
-    // weight: health a little, ammo a little, frags a lot — the DFP "goal".
-    [0.5, 0.5, 1.0]
+    // weight: health a little, ammo slightly negative (spending ammo to fight is
+    // fine), frags a lot, opp_damage a lot — opp_damage is the dense signal that
+    // lets the policy learn to shoot before it ever lands a (sparse) frag.
+    [0.5, -0.1, 1.0, 1.0]
 }
 
 /// Tile the per-measurement goal across all offsets (later offsets weighted up).
@@ -45,6 +47,17 @@ pub fn greedy_action(pred: &Tensor, goal_full: &Tensor) -> usize {
     scores.argmax(0, false).int64_value(&[]) as usize
 }
 
+/// Who drives seat 1 during collection.
+pub enum Opponent<'a> {
+    /// Seat 1 uses the same live net (self-mirror).
+    SelfMirror,
+    /// Seat 1 uses a frozen snapshot (self-play).
+    Snapshot(&'a DfpNet),
+    /// Seat 1 uses the scripted hunter — forces firefights so seat 0's rollout
+    /// actually contains opp_damage / frag signal (the cold-start cure).
+    Hunter,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn collect_episode(
     env: &DoomEnv,
@@ -53,17 +66,18 @@ pub fn collect_episode(
     steps: usize,
     epsilon: f64,
 ) -> (Rollout, Rollout, i64) {
-    collect_episode_vs(env, net, None, device, steps, epsilon)
+    collect_episode_vs(env, net, Opponent::SelfMirror, device, steps, epsilon)
 }
 
-/// Collect an episode. Seat 0 always acts with the live `net`. Seat 1 acts with
-/// `opponent` if given (a frozen self-play snapshot), else also with `net` (a
-/// shared-net self-mirror). Both seats' rollouts are valid DFP regression data.
+/// Collect an episode. Seat 0 always acts with the live `net` (epsilon-greedy on
+/// the DFP goal). Seat 1 is driven per `opponent`. Both seats' rollouts are valid
+/// DFP regression data (only seat 0's is used for training in vs-hunter mode,
+/// since the hunter isn't the net — the caller chooses).
 #[allow(clippy::too_many_arguments)]
 pub fn collect_episode_vs(
     env: &DoomEnv,
     net: &DfpNet,
-    opponent: Option<&DfpNet>,
+    opponent: Opponent,
     device: tch::Device,
     steps: usize,
     epsilon: f64,
@@ -89,6 +103,7 @@ pub fn collect_episode_vs(
         let mut actions = [0usize; 2];
         let mut obs_now = [[0f32; crate::env::OBS_DIM]; 2];
         let mut meas_now = [[0f32; MEAS_DIM]; 2];
+        let mut hunter_act = None;
 
         for seat in 0..2 {
             let st = env.player_state(seat as i32);
@@ -97,14 +112,24 @@ pub fn collect_episode_vs(
             obs_now[seat] = obs;
             meas_now[seat] = meas;
 
+            // Seat 1 may be the scripted hunter — its real (continuous) action
+            // drives the env; the stored index is the nearest discrete one.
+            if seat == 1 {
+                if let Opponent::Hunter = opponent {
+                    let ha = crate::env::scripted_hunter(&st);
+                    actions[1] = crate::env::encode_action(&ha);
+                    hunter_act = Some(ha);
+                    continue;
+                }
+            }
+
             let obs_t = Tensor::from_slice(&obs).unsqueeze(0).to_device(device);
             let meas_t = Tensor::from_slice(&meas).unsqueeze(0).to_device(device);
             let goal_t = goal.unsqueeze(0);
 
-            let actor = if seat == 1 {
-                opponent.unwrap_or(net)
-            } else {
-                net
+            let actor = match (seat, &opponent) {
+                (1, Opponent::Snapshot(o)) => *o,
+                _ => net,
             };
             let (pred, new_state) =
                 tch::no_grad(|| actor.step(&obs_t, &meas_t, &goal_t, &state[seat]));
@@ -127,7 +152,8 @@ pub fn collect_episode_vs(
             });
         }
 
-        env.step(decode_action(actions[0]), decode_action(actions[1]));
+        let a1 = hunter_act.unwrap_or_else(|| decode_action(actions[1]));
+        env.step(decode_action(actions[0]), a1);
     }
 
     // append a final measurement so the last offsets have a target tail

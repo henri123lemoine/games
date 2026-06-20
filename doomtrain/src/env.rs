@@ -1,7 +1,7 @@
 use crate::ffi::{Action, Engine, PlayerState};
 
 pub const OBS_DIM: usize = 18;
-pub const MEAS_DIM: usize = 3;
+pub const MEAS_DIM: usize = 4;
 
 pub struct DoomEnv {
     engine: Engine,
@@ -77,10 +77,20 @@ pub fn observation(st: &PlayerState) -> [f32; OBS_DIM] {
 }
 
 pub fn measurements(st: &PlayerState) -> [f32; MEAS_DIM] {
+    // opp_damage is a dense proxy for "hurting the enemy": it rises as we shoot
+    // the opponent down from 100 hp and drops when they respawn, giving gradient
+    // toward aiming/firing long before the sparse frag event. Still a game state
+    // variable (opponent health), not hand-designed reward shaping.
+    let opp_damage = if st.opponent_visible != 0 {
+        (100 - st.opp_health).max(0) as f32 / 100.0
+    } else {
+        0.0
+    };
     [
         (st.health as f32) / 100.0,
         (st.ammo[0] as f32) / 50.0,
         st.frags as f32,
+        opp_damage,
     ]
 }
 
@@ -101,6 +111,23 @@ pub fn decode_action(idx: usize) -> Action {
         use_: 0,
         weapon: 0,
     }
+}
+
+/// Snap a continuous Action (e.g. the scripted hunter's) to the nearest discrete
+/// action index, so a mixed rollout stays in the same action space.
+pub fn encode_action(a: &Action) -> usize {
+    let nearest = |val: i32, arr: &[i16]| -> usize {
+        arr.iter()
+            .enumerate()
+            .min_by_key(|(_, &v)| (v as i32 - val).abs())
+            .map(|(i, _)| i)
+            .unwrap()
+    };
+    let t = nearest(a.turn as i32, &TURNS);
+    let move_arr: [i16; 3] = [MOVES[0] as i16, MOVES[1] as i16, MOVES[2] as i16];
+    let mi = nearest(a.forward as i32, &move_arr);
+    let fire = (a.fire != 0) as usize;
+    (t * MOVES.len() + mi) * 2 + fire
 }
 
 /// A fixed scripted opponent for evaluation: turn toward the visible opponent,
