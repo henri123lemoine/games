@@ -1,0 +1,5 @@
+build/
+.savegame/
+.default.cfg
+*.o
+*.wad
