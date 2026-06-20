@@ -4,9 +4,11 @@ M3 of "RL on Doom": a reinforcement-learning trainer over the `doomrl` 1v1
 deathmatch substrate (M1/M2). Standalone `tch` crate, like `azt`/`azgo` — its
 own `[workspace]` so `libtorch` never touches the root `cargo test`.
 
-**Status: harness + CPU smoke.** It compiles, links the C engine, steps the
-env, builds DFP targets, and runs training steps with the loss decreasing — the
-GPU-free prep. The real training run (longer, on GPU) comes later.
+**Status: complete trainer, CPU-validated.** It compiles, links the C engine,
+and runs the full DFP loop — collect → replay → **truncated-BPTT** updates with
+epsilon decay — plus an `eval` (vs a fixed scripted hunter) and a portable
+weight `export`. The remaining work is the long **GPU** run itself (flip the
+device flag); the loss falls, eval runs, and export round-trips on CPU.
 
 ## Approach (per the M3 blueprint)
 
@@ -54,50 +56,57 @@ shareware maps) — the clean signal DFP wants. Loaded via `-file` (the sharewar
 
 ```bash
 cd doomtrain
-./run.sh smoke                       # default: 3 episodes × 256 steps on the arena
-./run.sh smoke --episodes=5 --steps=512 --epsilon=0.4
+./run.sh smoke                                   # BPTT smoke: 3 eps, asserts sanity
+./run.sh train --iters=20 --steps=256 --eval-every=5 --save=doomdfp.ot
+./run.sh eval  --net=doomdfp.ot --episodes=10    # greedy DFP vs the scripted hunter
+./run.sh export --net=doomdfp.ot --out=doomdfp.bin   # portable weights + round-trip check
 ```
 
-The smoke prints, per episode: frag count, batch size, DFP loss (decreasing),
-target stats, observation spread, and the action histogram, and asserts shape /
-finiteness / non-constant-observation sanity. Example:
+Subcommands:
 
-```
-engine up: num_players=2
-net params: 377966
-ep0: ... loss=0.098 tgt_absmax=0.060 obs_std=0.934 distinct_actions=30/30
-...
-smoke OK: compiled, env stepped, DFP targets built, train steps ran
-```
+- **`smoke`** — collects episodes, fills the replay buffer with BPTT chunks, runs
+  `train_chunk` updates, and asserts shape / finiteness / non-constant-obs. Prints
+  `bptt_loss` (falling), `chunks_in_replay`, `obs_std`, and the action histogram.
+- **`train`** — the full loop: per iteration, collect an episode (epsilon decays
+  `--eps-start`→`--eps-end`), push BPTT chunks into a capped replay buffer, run
+  `--updates` BPTT minibatch updates of `--batch` chunks, and every
+  `--eval-every` iters run an eval. Saves a tch checkpoint to `--save`.
+- **`eval`** — loads `--net`, plays the greedy DFP policy (seat 0, GRU state
+  carried) vs the fixed scripted hunter (seat 1, observation-only, no
+  ground-truth) over `--episodes`, and reports frags/deaths + `net_frag_share` —
+  the measurable "is it learning to fight" signal.
+- **`export`** — loads `--net`, writes a portable flat file (`DOOMDFP1` magic +
+  named fp32 tensors, no tch needed to read it) for the eventual wasm/in-browser
+  forward, and verifies the round-trip against the live VarStore.
 
-`frags=0` in the smoke is expected: the **untrained** DFP policy has not learned
-to aim or close distance yet (the scripted hunter frags because its aim is
-hand-coded). The learning signal is present — loss falls and the frag
-measurement is in the DFP target.
+Set `DOOMTRAIN_MPS=1` to run on Metal (the net/rollout are device-generic).
+`frags=0` from the untrained net is expected — the eval/`net_frag_share` is the
+number that should climb during a real GPU run.
 
-## Path to the real run (M3 continued, GPU)
+## Path to the GPU run (M3 continued)
 
-- **Device**: flip `Device::Cpu` → `Device::Mps` (Metal) in `main.rs`, as `azt`
-  does; the net and rollout are already device-generic.
+- **Device**: `DOOMTRAIN_MPS=1` flips to Metal (already wired); a real run wants
+  more iters/steps and tuned `lr`/epsilon/window.
 - **Scale**: many env instances in parallel (the engine is ~3–6k tics/sec
-  headless), a replay buffer, longer rollouts, epsilon decay.
-- **BPTT**: the smoke runs the GRU stateless per step for the train pass
-  (simplest correct form); real training should backprop through time over
-  rollout chunks (carry `DfpNet::zero_state`-seeded hidden state across the
-  chunk). The forward already threads explicit state for this.
+  headless) feeding one replay buffer; longer rollouts.
 - **Self-play / PBT**: APPO + population-based training (Sample Factory-style) is
   the strength path; both seats already step from the same net, so freezing one
-  seat as a past-snapshot opponent is a small change.
-- **Eval / export**: add a greedy-eval subcommand (frags/episode vs a fixed
-  opponent) and a weight export for a future browser bot (M4 WASM still needs an
-  `emsdk` install for the engine side).
+  seat as a past-snapshot opponent (instead of the scripted hunter) is a small
+  change to `collect_episode`.
+- **Deploy**: the `export` flat file is the bridge to M4 — a browser forward
+  loads it and drives a `doomrl` WASM build's ticcmd. M4 still needs an `emsdk`
+  install for the engine side.
 
 ## Files
 
-- `build.rs` — runs `doomrl/build.sh`, links `libdoomrl.a`.
+- `build.rs` — runs `doomrl/build.sh`, links `libdoomrl.a` (reruns if it's gone).
 - `src/ffi.rs` — `#[repr(C)]` structs + `extern "C"` bindings + safe `Engine`.
-- `src/env.rs` — `DoomEnv`, observation/measurement encoders, action decode.
-- `src/net.rs` — the GRU + dueling DFP heads.
-- `src/dfp.rs` — rollout collection, future-offset target build, train step.
-- `src/main.rs` — CLI + `smoke`.
+- `src/env.rs` — `DoomEnv`, observation/measurement encoders, action decode, the
+  scripted hunter baseline.
+- `src/net.rs` — the GRU + dueling DFP heads; `step` (single tic) and
+  `forward_seq` (whole-window BPTT via the GRU's `seq_init`).
+- `src/dfp.rs` — rollout collection, `chunk_rollout` (BPTT windows), the
+  `ReplayBuffer`, `train_chunk` (BPTT update), `eval_episode`.
+- `src/export.rs` — portable weight export + round-trip verify + checkpoint load.
+- `src/main.rs` — CLI: `smoke | train | eval | export`.
 - `run.sh` — build + run with `DYLD_LIBRARY_PATH` set.

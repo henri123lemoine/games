@@ -102,3 +102,31 @@ pub fn decode_action(idx: usize) -> Action {
         weapon: 0,
     }
 }
+
+/// A fixed scripted opponent for evaluation: turn toward the visible opponent,
+/// close to firing range, shoot when roughly aligned. Uses only the LOS-gated
+/// observation (no ground-truth peeking), so it is a fair fixed benchmark.
+pub fn scripted_hunter(st: &PlayerState) -> Action {
+    let mut a = Action::default();
+    if st.alive == 0 {
+        return a;
+    }
+    let (bearing, dist, visible) = if st.opponent_visible != 0 {
+        (st.opp_bearing_deg, st.opp_dist, true)
+    } else if st.opp_memory.valid != 0 && st.opp_memory.ticks_since_seen < 70 {
+        (
+            st.opp_memory.last_bearing_deg,
+            st.opp_memory.last_dist,
+            false,
+        )
+    } else {
+        (0.0, 9999.0, false)
+    };
+
+    a.turn = (bearing * 80.0).clamp(-1300.0, 1300.0) as i16;
+    a.forward = if dist > 256.0 { 50 } else { 0 };
+    if visible && bearing.abs() < 20.0 {
+        a.fire = 1;
+    }
+    a
+}

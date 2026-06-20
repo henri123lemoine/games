@@ -1,7 +1,10 @@
 mod dfp;
 mod env;
+mod export;
 mod ffi;
 mod net;
+
+use std::path::PathBuf;
 
 use tch::nn::OptimizerConfig;
 use tch::{nn, Device};
@@ -17,6 +20,14 @@ fn arg(name: &str, default: &str) -> String {
         .unwrap_or_else(|| default.to_string())
 }
 
+fn epsilon_at(iter: usize, iters: usize, start: f64, end: f64) -> f64 {
+    if iters <= 1 {
+        return end;
+    }
+    let frac = iter as f64 / (iters - 1) as f64;
+    start + (end - start) * frac
+}
+
 fn main() {
     let cmd = std::env::args()
         .nth(1)
@@ -24,79 +35,187 @@ fn main() {
 
     let iwad = arg("iwad", "../web/app/public/doom/doom1.wad");
     let arena = arg("arena", "../doomrl/assets/flatarena.wad");
-    let episodes: usize = arg("episodes", "3").parse().unwrap();
     let steps: usize = arg("steps", "256").parse().unwrap();
     let lr: f64 = arg("lr", "1e-3").parse().unwrap();
-    let epsilon: f64 = arg("epsilon", "0.25").parse().unwrap();
 
-    let device = Device::Cpu;
-    let vs = nn::VarStore::new(device);
+    let device = if std::env::var("DOOMTRAIN_MPS").is_ok() {
+        Device::Mps
+    } else {
+        Device::Cpu
+    };
+
+    let mut vs = nn::VarStore::new(device);
     let net = DfpNet::new(&vs.root());
     let mut opt = nn::Adam::default().build(&vs, lr).unwrap();
 
     match cmd.as_str() {
-        "smoke" => {
-            println!(
-                "doomtrain smoke: iwad={iwad} arena={arena} episodes={episodes} steps={steps}"
-            );
-            let env = DoomEnv::new(&iwad, Some(&arena));
-            println!("engine up: num_players={}", env.num_players());
-
-            let n_params: i64 = vs
-                .trainable_variables()
-                .iter()
-                .map(|t| t.numel() as i64)
-                .sum();
-            println!("net params: {n_params}");
-
-            for ep in 0..episodes {
-                let (r0, r1, frags) = dfp::collect_episode(&env, &net, device, steps, epsilon);
-                assert_eq!(r0.transitions.len(), steps, "rollout length mismatch");
-
-                let (o0, m0, a0, t0) = dfp::build_targets(&r0, device);
-                let (o1, m1, a1, t1) = dfp::build_targets(&r1, device);
-
-                let obs = tch::Tensor::cat(&[o0, o1], 0);
-                let meas = tch::Tensor::cat(&[m0, m1], 0);
-                let act = tch::Tensor::cat(&[a0, a1], 0);
-                let tgt = tch::Tensor::cat(&[t0, t1], 0);
-
-                // shape sanity
-                let n = obs.size()[0];
-                assert_eq!(obs.size(), vec![n, env::OBS_DIM as i64]);
-                assert_eq!(tgt.size(), vec![n, net::PRED_PER_ACTION]);
-
-                let mut last_loss = 0.0;
-                for _ in 0..8 {
-                    last_loss = dfp::train_step(&net, &mut opt, device, &obs, &meas, &act, &tgt);
-                }
-
-                let tgt_mean = tgt.mean(tch::Kind::Float).double_value(&[]);
-                let tgt_absmax = tgt.abs().max().double_value(&[]);
-
-                // obs/action sanity: spread of obs and the action histogram
-                let obs_std = obs.std(false).double_value(&[]);
-                let mut act_hist = [0usize; env::NUM_ACTIONS];
-                for tr in r0.transitions.iter().chain(r1.transitions.iter()) {
-                    act_hist[tr.action] += 1;
-                }
-                let distinct_actions = act_hist.iter().filter(|&&c| c > 0).count();
-
-                println!(
-                    "ep{ep}: frags(both seats, end)={frags} steps={steps} batch_n={n} \
-                     loss={last_loss:.5} tgt_mean={tgt_mean:.4} tgt_absmax={tgt_absmax:.3} \
-                     obs_std={obs_std:.3} distinct_actions={distinct_actions}/{}",
-                    env::NUM_ACTIONS
-                );
-
-                assert!(last_loss.is_finite(), "loss went non-finite");
-                assert!(obs_std > 0.0, "observations are constant — env not varying");
+        "smoke" => smoke(&env_new(&iwad, &arena), &net, &mut opt, device, steps),
+        "train" => train(&iwad, &arena, &net, &mut opt, &mut vs, device, steps),
+        "eval" => {
+            let ckpt = arg("net", "");
+            if !ckpt.is_empty() {
+                export::load_checkpoint(&mut vs, &PathBuf::from(&ckpt));
             }
-            println!("smoke OK: compiled, env stepped, DFP targets built, train steps ran");
+            let episodes: usize = arg("episodes", "10").parse().unwrap();
+            let env = env_new(&iwad, &arena);
+            run_eval(&env, &net, device, episodes, steps);
+        }
+        "export" => {
+            let ckpt = arg("net", "");
+            if !ckpt.is_empty() {
+                export::load_checkpoint(&mut vs, &PathBuf::from(&ckpt));
+            }
+            let out = PathBuf::from(arg("out", "doomdfp.bin"));
+            export::export(&vs, &out);
+            let ok = export::verify_roundtrip(&vs, &out);
+            println!(
+                "export: wrote {} ({} tensors) round_trip={}",
+                out.display(),
+                vs.variables().len(),
+                if ok { "OK" } else { "FAILED" }
+            );
+            assert!(ok, "export round-trip mismatch");
         }
         other => {
-            eprintln!("unknown command: {other} (try: smoke)");
+            eprintln!("unknown command: {other} (try: smoke | train | eval | export)");
             std::process::exit(2);
         }
     }
+}
+
+fn env_new(iwad: &str, arena: &str) -> DoomEnv {
+    DoomEnv::new(iwad, Some(arena))
+}
+
+fn n_params(vs: &nn::VarStore) -> i64 {
+    vs.trainable_variables()
+        .iter()
+        .map(|t| t.numel() as i64)
+        .sum()
+}
+
+fn smoke(env: &DoomEnv, net: &DfpNet, opt: &mut nn::Optimizer, device: Device, steps: usize) {
+    println!("doomtrain smoke (BPTT): num_players={}", env.num_players());
+
+    let episodes: usize = arg("episodes", "3").parse().unwrap();
+    let epsilon: f64 = arg("epsilon", "0.3").parse().unwrap();
+    let mut replay = dfp::ReplayBuffer::new(256);
+
+    for ep in 0..episodes {
+        let (r0, r1, frags) = dfp::collect_episode(env, net, device, steps, epsilon);
+        assert_eq!(r0.transitions.len(), steps, "rollout length mismatch");
+
+        for c in dfp::chunk_rollout(&r0) {
+            replay.push(c);
+        }
+        for c in dfp::chunk_rollout(&r1) {
+            replay.push(c);
+        }
+        assert!(!replay.is_empty(), "no BPTT chunks produced");
+
+        let mut last_loss = 0.0;
+        for _ in 0..8 {
+            let batch = replay.sample(8.min(replay.len()));
+            last_loss = dfp::train_chunk(net, opt, device, &batch);
+        }
+
+        let obs_std = {
+            let flat: Vec<f32> = r0.transitions.iter().flat_map(|t| t.obs).collect();
+            tch::Tensor::from_slice(&flat).std(false).double_value(&[])
+        };
+        let mut act_hist = [0usize; env::NUM_ACTIONS];
+        for tr in r0.transitions.iter().chain(r1.transitions.iter()) {
+            act_hist[tr.action] += 1;
+        }
+        let distinct = act_hist.iter().filter(|&&c| c > 0).count();
+
+        println!(
+            "ep{ep}: frags={frags} chunks_in_replay={} bptt_loss={last_loss:.5} \
+             obs_std={obs_std:.3} distinct_actions={distinct}/{}",
+            replay.len(),
+            env::NUM_ACTIONS
+        );
+        assert!(last_loss.is_finite(), "loss went non-finite");
+        assert!(obs_std > 0.0, "observations constant — env not varying");
+    }
+    println!("smoke OK: BPTT over rollout chunks, replay buffer, train steps ran");
+}
+
+#[allow(clippy::too_many_arguments)]
+fn train(
+    iwad: &str,
+    arena: &str,
+    net: &DfpNet,
+    opt: &mut nn::Optimizer,
+    vs: &mut nn::VarStore,
+    device: Device,
+    steps: usize,
+) {
+    let iters: usize = arg("iters", "20").parse().unwrap();
+    let updates: usize = arg("updates", "16").parse().unwrap();
+    let batch: usize = arg("batch", "16").parse().unwrap();
+    let eps_start: f64 = arg("eps-start", "0.9").parse().unwrap();
+    let eps_end: f64 = arg("eps-end", "0.1").parse().unwrap();
+    let eval_every: usize = arg("eval-every", "5").parse().unwrap();
+    let save: String = arg("save", "doomdfp.ot");
+
+    println!(
+        "doomtrain train: iters={iters} steps={steps} updates={updates} batch={batch} params={}",
+        n_params(vs)
+    );
+    let env = env_new(iwad, arena);
+
+    let mut replay = dfp::ReplayBuffer::new(4096);
+
+    for it in 0..iters {
+        let epsilon = epsilon_at(it, iters, eps_start, eps_end);
+        let (r0, r1, frags) = dfp::collect_episode(&env, net, device, steps, epsilon);
+        for c in dfp::chunk_rollout(&r0) {
+            replay.push(c);
+        }
+        for c in dfp::chunk_rollout(&r1) {
+            replay.push(c);
+        }
+
+        let mut loss = 0.0;
+        for _ in 0..updates {
+            let b = replay.sample(batch.min(replay.len()));
+            loss = dfp::train_chunk(net, opt, device, &b);
+        }
+
+        println!(
+            "iter {it}: eps={epsilon:.3} frags={frags} replay={} loss={loss:.5}",
+            replay.len()
+        );
+
+        if eval_every > 0 && (it + 1) % eval_every == 0 {
+            let (nf, nd, hf, hd) = dfp::eval_episode(&env, net, device, steps);
+            println!(
+                "  eval @iter{it}: net[frags={nf} deaths={nd}] hunter[frags={hf} deaths={hd}]"
+            );
+        }
+    }
+
+    vs.save(&save).expect("save checkpoint");
+    println!("saved checkpoint: {save}");
+}
+
+fn run_eval(env: &DoomEnv, net: &DfpNet, device: Device, episodes: usize, steps: usize) {
+    let mut net_frags = 0i64;
+    let mut net_deaths = 0i64;
+    let mut hunter_frags = 0i64;
+    let mut hunter_deaths = 0i64;
+    for ep in 0..episodes {
+        let (nf, nd, hf, hd) = dfp::eval_episode(env, net, device, steps);
+        net_frags += nf;
+        net_deaths += nd;
+        hunter_frags += hf;
+        hunter_deaths += hd;
+        println!("ep{ep}: net[frags={nf} deaths={nd}] hunter[frags={hf} deaths={hd}]");
+    }
+    println!(
+        "EVAL over {episodes} eps: net frags={net_frags} deaths={net_deaths} | \
+         hunter frags={hunter_frags} deaths={hunter_deaths} | net_frag_share={:.2}",
+        net_frags as f64 / (net_frags + hunter_frags).max(1) as f64
+    );
 }

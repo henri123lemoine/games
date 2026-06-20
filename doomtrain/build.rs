@@ -27,6 +27,12 @@ fn main() {
         "cargo:rerun-if-changed={}",
         doomrl.join("build.sh").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        doomrl.join("dm_driver.c").display()
+    );
+    // Rerun (and thus rebuild the C lib) if the archive goes missing.
+    println!("cargo:rerun-if-changed={}", lib.display());
 
     println!("cargo:rustc-link-search=native={}", build_dir.display());
     println!("cargo:rustc-link-lib=static=doomrl");

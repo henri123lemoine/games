@@ -92,6 +92,38 @@ impl DfpNet {
         (pred, new_state)
     }
 
+    /// Sequence forward for truncated BPTT. Inputs are [B, T, *]; the GRU runs
+    /// over the whole window in one call (gradients flow through all T steps).
+    /// Returns predictions [B, T, NUM_ACTIONS, PRED_PER_ACTION] and the final
+    /// hidden state [B, GRU_HIDDEN] (detached, for chaining windows).
+    pub fn forward_seq(
+        &self,
+        obs: &Tensor,
+        meas: &Tensor,
+        goal: &Tensor,
+        state: &Tensor,
+    ) -> (Tensor, Tensor) {
+        let (b, t) = (obs.size()[0], obs.size()[1]);
+
+        let o = obs.apply(&self.obs_fc).relu(); // [B, T, 128]
+        let h0 = nn::GRUState(state.unsqueeze(0));
+        let (gru_out, new_h) = self.gru.seq_init(&o, &h0); // [B, T, H]
+        let final_state = new_h.0.squeeze_dim(0).detach();
+
+        let h = gru_out.reshape([b * t, GRU_HIDDEN]);
+        let m = meas.reshape([b * t, -1]).apply(&self.meas_fc).relu();
+        let g = goal.reshape([b * t, -1]).apply(&self.goal_fc).relu();
+        let joint = Tensor::cat(&[h, m, g], 1);
+
+        let exp = joint.apply(&self.expectation);
+        let adv = joint
+            .apply(&self.advantage)
+            .view([b * t, NUM_ACTIONS as i64, PRED_PER_ACTION]);
+        let adv = &adv - adv.mean_dim(1, true, Kind::Float);
+        let pred = (exp.unsqueeze(1) + adv).view([b, t, NUM_ACTIONS as i64, PRED_PER_ACTION]);
+        (pred, final_state)
+    }
+
     pub fn zero_state(b: i64, device: tch::Device) -> Tensor {
         Tensor::zeros([b, GRU_HIDDEN], (Kind::Float, device))
     }
