@@ -157,19 +157,32 @@ fn train(
     let eps_start: f64 = arg("eps-start", "0.9").parse().unwrap();
     let eps_end: f64 = arg("eps-end", "0.1").parse().unwrap();
     let eval_every: usize = arg("eval-every", "5").parse().unwrap();
+    let eval_episodes: usize = arg("eval-episodes", "6").parse().unwrap();
+    let self_play: bool = std::env::args().any(|a| a == "--self-play");
+    let refresh_every: usize = arg("refresh-every", "10").parse().unwrap();
     let save: String = arg("save", "doomdfp.ot");
+    let best_path: String = arg("best", "doomdfp_best.ot");
 
     println!(
-        "doomtrain train: iters={iters} steps={steps} updates={updates} batch={batch} params={}",
+        "doomtrain train: iters={iters} steps={steps} updates={updates} batch={batch} \
+         self_play={self_play} eval_episodes={eval_episodes} params={}",
         n_params(vs)
     );
     let env = env_new(iwad, arena);
-
     let mut replay = dfp::ReplayBuffer::new(4096);
+
+    // Frozen self-play opponent snapshot (seat 1), refreshed from the live net.
+    let mut opp_vs = nn::VarStore::new(device);
+    let opp_net = DfpNet::new(&opp_vs.root());
+    opp_vs.copy(vs).expect("init opponent snapshot");
+    opp_vs.freeze();
+
+    let mut best_share = -1.0f64;
 
     for it in 0..iters {
         let epsilon = epsilon_at(it, iters, eps_start, eps_end);
-        let (r0, r1, frags) = dfp::collect_episode(&env, net, device, steps, epsilon);
+        let opponent = if self_play { Some(&opp_net) } else { None };
+        let (r0, r1, frags) = dfp::collect_episode_vs(&env, net, opponent, device, steps, epsilon);
         for c in dfp::chunk_rollout(&r0) {
             replay.push(c);
         }
@@ -183,21 +196,54 @@ fn train(
             loss = dfp::train_chunk(net, opt, device, &b);
         }
 
+        if self_play && refresh_every > 0 && (it + 1) % refresh_every == 0 {
+            opp_vs.copy(vs).expect("refresh opponent snapshot");
+            println!("  refreshed self-play opponent @iter{it}");
+        }
+
         println!(
             "iter {it}: eps={epsilon:.3} frags={frags} replay={} loss={loss:.5}",
             replay.len()
         );
 
         if eval_every > 0 && (it + 1) % eval_every == 0 {
-            let (nf, nd, hf, hd) = dfp::eval_episode(&env, net, device, steps);
+            let (nf, nd, hf, hd, share) = eval_avg(&env, net, device, eval_episodes, steps);
+            let mut tag = "";
+            if share > best_share {
+                best_share = share;
+                vs.save(&best_path).expect("save best checkpoint");
+                tag = " <- new best, saved";
+            }
             println!(
-                "  eval @iter{it}: net[frags={nf} deaths={nd}] hunter[frags={hf} deaths={hd}]"
+                "  eval @iter{it} ({eval_episodes} eps): net[frags={nf} deaths={nd}] \
+                 hunter[frags={hf} deaths={hd}] net_frag_share={share:.3} best={best_share:.3}{tag}"
             );
         }
     }
 
     vs.save(&save).expect("save checkpoint");
-    println!("saved checkpoint: {save}");
+    println!("saved final checkpoint: {save} (best net_frag_share={best_share:.3} -> {best_path})");
+}
+
+/// Average eval over N episodes vs the scripted hunter; returns totals and the
+/// net's frag share.
+fn eval_avg(
+    env: &DoomEnv,
+    net: &DfpNet,
+    device: Device,
+    episodes: usize,
+    steps: usize,
+) -> (i64, i64, i64, i64, f64) {
+    let (mut nf, mut nd, mut hf, mut hd) = (0i64, 0i64, 0i64, 0i64);
+    for _ in 0..episodes {
+        let (a, b, c, d) = dfp::eval_episode(env, net, device, steps);
+        nf += a;
+        nd += b;
+        hf += c;
+        hd += d;
+    }
+    let share = nf as f64 / (nf + hf).max(1) as f64;
+    (nf, nd, hf, hd, share)
 }
 
 fn run_eval(env: &DoomEnv, net: &DfpNet, device: Device, episodes: usize, steps: usize) {

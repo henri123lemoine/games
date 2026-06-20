@@ -53,6 +53,21 @@ pub fn collect_episode(
     steps: usize,
     epsilon: f64,
 ) -> (Rollout, Rollout, i64) {
+    collect_episode_vs(env, net, None, device, steps, epsilon)
+}
+
+/// Collect an episode. Seat 0 always acts with the live `net`. Seat 1 acts with
+/// `opponent` if given (a frozen self-play snapshot), else also with `net` (a
+/// shared-net self-mirror). Both seats' rollouts are valid DFP regression data.
+#[allow(clippy::too_many_arguments)]
+pub fn collect_episode_vs(
+    env: &DoomEnv,
+    net: &DfpNet,
+    opponent: Option<&DfpNet>,
+    device: tch::Device,
+    steps: usize,
+    epsilon: f64,
+) -> (Rollout, Rollout, i64) {
     env.reset();
     let goal = Tensor::from_slice(&goal_full()).to_device(device);
 
@@ -86,8 +101,13 @@ pub fn collect_episode(
             let meas_t = Tensor::from_slice(&meas).unsqueeze(0).to_device(device);
             let goal_t = goal.unsqueeze(0);
 
+            let actor = if seat == 1 {
+                opponent.unwrap_or(net)
+            } else {
+                net
+            };
             let (pred, new_state) =
-                tch::no_grad(|| net.step(&obs_t, &meas_t, &goal_t, &state[seat]));
+                tch::no_grad(|| actor.step(&obs_t, &meas_t, &goal_t, &state[seat]));
             state[seat] = new_state;
 
             let a = if rng.gen::<f64>() < epsilon {
