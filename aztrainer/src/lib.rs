@@ -9,7 +9,9 @@
 
 pub mod export;
 pub mod net;
+pub mod train;
 pub mod verify;
 
 pub use net::{EvalRequest, EvalResult, Infer, Net, NetConfig};
 pub use nn_infer::{HeadFlags, HeadKind};
+pub use train::{Batch, OptConfig, Replay, TrainSample, Trainer};
