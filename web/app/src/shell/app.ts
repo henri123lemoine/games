@@ -511,15 +511,20 @@ export class App {
     this.renderMatchSkeleton(game, mode, opts);
     // An AlphaZero seat (single bot, or one seat of a heterogeneous board) is
     // driven page-side: WebGPU when present, otherwise the in-wasm CPU forward.
-    const usesAzero =
+    // Snake's `azero` is CPU-only (`azero-gpu` is the GPU-capable id).
+    const isAzeroSpec = (b: string) => b === "azero-gpu" || b === "azero";
+    const azeroSeat =
+      isAzeroSpec(opts.bot ?? "") ||
+      splitSpecs(opts.bots ?? "").some((s) => isAzeroSpec(s.split(":")[0]));
+    const usesAzeroGpu =
       opts.bot === "azero-gpu" ||
       splitSpecs(opts.bots ?? "").some((s) => s.split(":")[0] === "azero-gpu");
-    if (usesAzero && isCpuFallback()) this.showCpuNote();
+    if (azeroSeat && isCpuFallback()) this.showCpuNote();
     try {
       await this.loadArtifacts(game, opts);
       const st = await this.host.create(game.id, opts);
       if (gen !== this.gen) return;
-      const makeBot = clientBotFor(game.id, usesAzero ? "azero-gpu" : opts.bot);
+      const makeBot = clientBotFor(game.id, usesAzeroGpu ? "azero-gpu" : opts.bot);
       this.clientBot = makeBot ? await makeBot(this.host, opts) : null;
       if (gen !== this.gen) return;
       const boardEl = this.root.querySelector<HTMLElement>(".board")!;

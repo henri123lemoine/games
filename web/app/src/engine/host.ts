@@ -150,6 +150,18 @@ export class EngineHost {
     return this.call({ op: 'azFinalResult' }) as Promise<string>;
   }
 
+  /** Creates the in-wasm snake AlphaZero bot with its weights loaded. */
+  snakeNew(sims: number, leaves: number, seed: number, weights: ArrayBuffer): Promise<void> {
+    return this.call({ op: 'snakeNew', sims, leaves, seed, weights }) as Promise<void>;
+  }
+
+  /** Reconstructs the snake bot's root from the engine's view JSON, runs the
+   * whole search in-wasm against the reference forward, and returns the chosen
+   * heading. Requires `snakeNew` first. */
+  snakePlayCpu(view: string): Promise<AzBest> {
+    return this.call({ op: 'snakePlayCpu', view }) as Promise<AzBest>;
+  }
+
   terminate(): void {
     this.worker.terminate();
     this.rejectAll('engine terminated');

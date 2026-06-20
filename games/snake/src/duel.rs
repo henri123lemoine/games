@@ -107,6 +107,17 @@ impl Worm {
     pub fn cells(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.body.iter().map(|&(x, y)| (x as usize, y as usize))
     }
+
+    /// Rebuilds a worm from observed parts (`cells` head-first), for clients
+    /// that reconstruct a board from the view rather than replaying moves.
+    pub fn from_parts(cells: &[(usize, usize)], heading: Dir, alive: bool, health: u8) -> Worm {
+        Worm {
+            body: cells.iter().map(|&(x, y)| (x as u8, y as u8)).collect(),
+            heading,
+            alive,
+            health,
+        }
+    }
 }
 
 /// Why the duel ended (or that it is still running).
@@ -187,6 +198,27 @@ impl Duel {
 
     pub fn area(&self) -> usize {
         SIDE * SIDE
+    }
+
+    /// Rebuilds an ongoing `DuelState` from observed parts — for clients (the
+    /// browser bot) that reconstruct the board from the view JSON instead of
+    /// replaying moves through the chance-driven engine. `pending` is seat 0's
+    /// committed heading when seat 1 is to move (`None` otherwise); the outcome
+    /// is always [`Outcome::Ongoing`] since the engine only hands a live
+    /// position to a driven seat.
+    pub fn state_from_parts(
+        worms: [Worm; 2],
+        food: Option<(usize, usize)>,
+        pending: Option<Dir>,
+        steps: u32,
+    ) -> DuelState {
+        DuelState {
+            worms,
+            food: food.map(|(x, y)| (x as u8, y as u8)),
+            pending,
+            steps,
+            outcome: Outcome::Ongoing,
+        }
     }
 
     fn in_bounds(x: i32, y: i32) -> bool {
@@ -460,5 +492,54 @@ impl Game for Duel {
             DuelAction::Move(d) => *d as u64,
             DuelAction::Food(c) => 4 + u64::from(*c),
         }
+    }
+}
+
+#[cfg(test)]
+mod parts_tests {
+    use super::*;
+    use crate::SnakeEncoder;
+    use game_core::PolicyValueEncoder;
+
+    /// Rebuilding a live position from its observed parts (what the browser bot
+    /// does from the view JSON) yields an encoder-identical state — the
+    /// reconstruction the AlphaZero bot relies on is exact. Covers a seat-1 turn
+    /// (food placed, seat 0's heading pending), the lossiest case.
+    #[test]
+    fn state_from_parts_round_trips_through_the_encoder() {
+        let game = Duel::new();
+        let mut state = game.initial_state();
+        let outs = game.chance_outcomes(&state);
+        game.apply(&mut state, outs[3].0); // place food, seat 0 to move
+        game.apply(&mut state, DuelAction::Move(Dir::Up)); // seat 0 commits → seat 1 to move
+        assert!(
+            matches!(game.turn(&state), Turn::Player(1)),
+            "seat 1 on the clock"
+        );
+        assert!(state.pending().is_some(), "seat 0's heading is pending");
+
+        let worm = |seat: usize| {
+            let w = state.worm(seat);
+            Worm::from_parts(
+                &w.cells().collect::<Vec<_>>(),
+                w.heading(),
+                w.alive(),
+                w.health(),
+            )
+        };
+        let rebuilt = Duel::state_from_parts(
+            [worm(0), worm(1)],
+            state.food(),
+            state.pending(),
+            state.steps() as u32,
+        );
+
+        assert_eq!(game.turn(&rebuilt), game.turn(&state), "same side to move");
+        let enc = SnakeEncoder::new();
+        assert_eq!(
+            enc.encode_state(&game, &rebuilt),
+            enc.encode_state(&game, &state),
+            "reconstructed planes match the original"
+        );
     }
 }

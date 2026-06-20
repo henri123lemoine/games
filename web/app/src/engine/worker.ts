@@ -4,6 +4,7 @@
 import init, {
   AzChessBot,
   AzGoBot,
+  AzSnakeBot,
   WebMatch,
   create_match,
   elo,
@@ -20,6 +21,10 @@ let match: WebMatch | null = null;
 // One client-driven search bot at a time; chess and go share the push/
 // advance/best surface, so the rest of the az* ops are bot-agnostic.
 let azBot: AzChessBot | AzGoBot | null = null;
+// Snake has its own surface: it reconstructs its search root from the view
+// JSON each move (chance nodes make move-mirroring unsound), so it does not
+// share the push/advance protocol.
+let snakeBot: AzSnakeBot | null = null;
 const ready = init({ module_or_path: wasmUrl });
 
 function state(): ViewState {
@@ -115,6 +120,16 @@ function handle(req: EngineRequest): unknown {
     case 'azFinalResult': {
       if (!azBot) throw new Error('no az bot');
       return azBot.final_result();
+    }
+    case 'snakeNew':
+      snakeBot?.free();
+      snakeBot = new AzSnakeBot(req.sims, req.leaves, req.seed);
+      snakeBot.load_weights(new Uint8Array(req.weights));
+      return null;
+    case 'snakePlayCpu': {
+      if (!snakeBot) throw new Error('no snake bot');
+      snakeBot.set_state(req.view);
+      return { uci: snakeBot.play_cpu(), stats: JSON.parse(snakeBot.stats()) };
     }
   }
 }

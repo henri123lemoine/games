@@ -13,6 +13,7 @@
 //! shutdown.
 
 mod eval;
+mod export;
 mod gauge;
 mod net;
 mod selfplay;
@@ -595,6 +596,8 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("run") => run(&args[1..]),
         Some("bench") => bench(&args[1..]),
+        Some("export") => export::export(&args[1..]),
+        Some("verify-export") => export::verify_export(&args[1..]),
         Some("rate") => gauge::rate(&args[1..]),
         Some("elo") => gauge::elo_gauge(&args[1..]),
         _ => {
@@ -610,6 +613,14 @@ fn main() {
             eprintln!(
                 "       azsnake bench [--size 20] [--blocks 4] [--ch 64] [--sims 320] [--leaves 8] \
                  [--concurrent 256] [--samples 4096]"
+            );
+            eprintln!(
+                "       azsnake export        [--net ../data/azsnake/run3/latest.ot] \
+                 [--out azero-snake.azweb]"
+            );
+            eprintln!(
+                "       azsnake verify-export [--net ../data/azsnake/run3/latest.ot] \
+                 [--export azero-snake.azweb]"
             );
             eprintln!(
                 "       azsnake rate [--dir ../data/azsnake/run1] [--pairs 8] [--sims 96] \

@@ -11,6 +11,7 @@ description = "AlphaZero 1v1 Snake (20x20) on Metal: tch-rs resnet, batched self
 
 [dependencies]
 snake = { path = "../games/snake" }
+snakeinfer = { path = "../snakeinfer" }
 game-core = { path = "../game-core" }
 solvers = { path = "../solvers" }
 rayon = "1"

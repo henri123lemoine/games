@@ -1,0 +1,14 @@
+[package]
+name = "snakeinfer"
+version = "0.1.0"
+edition = "2024"
+description = "Torch-free azero snake inference: the AZSNK1 export's reference fp32 forward (conv stem + residual tower, global-pooling policy/value heads over snake::encode). wasm-safe; the browser bot plays through it, and the trainer's tch export is validated against it."
+
+[lib]
+name = "snakeinfer"
+path = "src/lib.rs"
+
+[dependencies]
+snake = { path = "../games/snake" }
+game-core = { path = "../game-core" }
+solvers = { path = "../solvers", default-features = false }

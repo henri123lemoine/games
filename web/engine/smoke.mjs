@@ -163,4 +163,35 @@ while (!gm.is_over() && goPlies < 4) {
 assert(goPlies >= 4, 'go CPU fallback advanced');
 console.log('azero CPU fallback:', goPlies, 'plies, ok');
 
+// The snake AlphaZero CPU path: an externally driven seat where the bot
+// reconstructs its search root from the engine's view JSON each move
+// (set_state) and runs the whole search in-wasm against the reference forward
+// (play_cpu) — the exact path the snake card hits. Snake stays hidden on the
+// live cards, but the engine path is validated here.
+const snakeWeights = await readFile(new URL('../app/public/azero/azero-snake.azweb', import.meta.url));
+const sm = engine.create_match('snake', JSON.stringify({ bot: 'azero', seat: 0, seed: 9 }));
+assert(sm.step() === '', 'no engine-side bot moves in an externally driven snake match');
+const snakeBot = new engine.AzSnakeBot(8, 8, 9);
+snakeBot.load_weights(new Uint8Array(snakeWeights));
+const HEADINGS = ['up', 'right', 'down', 'left'];
+let snakePlies = 0;
+while (!sm.is_over() && snakePlies < 12) {
+  const turn = sm.to_act();
+  const want = JSON.parse(sm.legal_labels());
+  let input;
+  if (turn === sm.human_seat()) {
+    input = want.find((l) => HEADINGS.includes(l)) ?? want[0];
+  } else {
+    snakeBot.set_state(sm.view_data());
+    input = snakeBot.play_cpu();
+    assert(want.includes(input), `snake cpu move '${input}' is legal`);
+    const stats = JSON.parse(snakeBot.stats());
+    assert(Number.isFinite(stats.value) && stats.sims > 0, 'snake bot stats parse');
+  }
+  JSON.parse(sm.apply_human(input));
+  snakePlies++;
+}
+assert(snakePlies >= 1, 'snake azero CPU path advanced');
+console.log('snake azero CPU path:', snakePlies, 'plies, ok');
+
 console.log('SMOKE OK');

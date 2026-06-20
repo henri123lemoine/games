@@ -15,6 +15,9 @@ pub const PLANE_COUNT: usize = snake::encode::PLANES;
 /// The four absolute headings (Up/Right/Down/Left) the policy head scores.
 pub const ACTIONS: i64 = 4;
 
+/// Magic for the portable `AZSNK1` browser export (see `export.rs`).
+pub const MAGIC: &[u8; 6] = b"AZSNK1";
+
 #[derive(Clone, Copy)]
 pub struct NetConfig {
     pub blocks: usize,

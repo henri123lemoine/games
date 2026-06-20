@@ -10,8 +10,10 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 azinfer = { path = "../../azinfer" }
 goinfer = { path = "../../goinfer" }
+snakeinfer = { path = "../../snakeinfer" }
 chess = { path = "../../games/chess" }
 go = { path = "../../games/go" }
+snake = { path = "../../games/snake" }
 game-core = { workspace = true }
 lab = { path = "../../lab", default-features = false }
 serde_json = "1"

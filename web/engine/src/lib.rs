@@ -5,6 +5,7 @@
 
 mod az;
 mod azgo;
+mod azsnake;
 
 use lab::registry::{Opts, entries};
 use lab::runner::{AnyMatch, MatchEvent};
@@ -13,6 +14,7 @@ use wasm_bindgen::prelude::*;
 
 pub use az::AzChessBot;
 pub use azgo::AzGoBot;
+pub use azsnake::AzSnakeBot;
 
 #[wasm_bindgen(start)]
 pub fn start() {

@@ -134,9 +134,16 @@ impl GameUi for Duel {
             Some((x, y)) => format!("[{x},{y}]"),
             None => "null".into(),
         };
+        // Seat 0's committed-but-unresolved heading when seat 1 is on the clock
+        // — the one board-invisible scrap of state a client (the browser bot)
+        // needs to reconstruct seat 1's position exactly.
+        let pending = match state.pending() {
+            Some(d) => format!("\"{}\"", dir_letter(d)),
+            None => "null".into(),
+        };
         Some(format!(
-            "{{\"side\":{},\"snakes\":[{},{}],\"food\":{food},\"step\":{},\"cap\":{},\
-             \"outcome\":\"{}\"}}",
+            "{{\"side\":{},\"snakes\":[{},{}],\"food\":{food},\"pending\":{pending},\
+             \"step\":{},\"cap\":{},\"outcome\":\"{}\"}}",
             self.side(),
             snake(0),
             snake(1),
