@@ -1,7 +1,7 @@
 use crate::ffi::{Action, Engine, PlayerState};
 
 pub const OBS_DIM: usize = 18;
-pub const MEAS_DIM: usize = 4;
+pub const MEAS_DIM: usize = 5;
 
 pub struct DoomEnv {
     engine: Engine,
@@ -86,11 +86,21 @@ pub fn measurements(st: &PlayerState) -> [f32; MEAS_DIM] {
     } else {
         0.0
     };
+    // aim_align: how well we're facing a visible enemy (1 = dead-on, 0 = 90deg+
+    // off or invisible). A dense, instantaneous signal that rewards the
+    // turn-to-face maneuver — the prerequisite for landing damage that DFP could
+    // not credit-assign from opp_damage alone.
+    let aim_align = if st.opponent_visible != 0 {
+        st.opp_bearing_deg.to_radians().cos().max(0.0)
+    } else {
+        0.0
+    };
     [
         (st.health as f32) / 100.0,
         (st.ammo[0] as f32) / 50.0,
         st.frags as f32,
         opp_damage,
+        aim_align,
     ]
 }
 

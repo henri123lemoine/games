@@ -18,12 +18,12 @@ pub struct Rollout {
 }
 
 pub fn goal_vector() -> [f32; MEAS_DIM] {
-    // [health, ammo, frags, opp_damage]. Neither health nor ammo is rewarded:
-    // a positive health weight finds the pacifism trap (flee, keep health, never
-    // fight), and rewarding ammo discourages firing. The only way to score is to
-    // engage and hurt the enemy — opp_damage is the dense driver, frags the
-    // sparse jackpot.
-    [0.0, 0.0, 2.0, 1.0]
+    // [health, ammo, frags, opp_damage, aim_align]. Health/ammo unrewarded (a
+    // positive health weight finds the pacifism trap). aim_align rewards turning
+    // to face the enemy (the prerequisite skill the policy failed to learn from
+    // opp_damage alone), opp_damage rewards landing hits, frags the sparse
+    // jackpot.
+    [0.0, 0.0, 2.0, 1.0, 0.5]
 }
 
 /// Tile the per-measurement goal across all offsets (later offsets weighted up).
