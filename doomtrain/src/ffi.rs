@@ -66,6 +66,7 @@ extern "C" {
     fn doomrl_dm_step(a0: *const Action, a1: *const Action);
     fn doomrl_get_player_state(seat: c_int, out: *mut PlayerState);
     fn doomrl_reset();
+    fn doomrl_dm_spawn_near(dist: f32);
     fn doomrl_num_players() -> c_int;
 }
 
@@ -98,6 +99,10 @@ impl Engine {
 
     pub fn reset(&self) {
         unsafe { doomrl_reset() }
+    }
+
+    pub fn spawn_near(&self, dist: f32) {
+        unsafe { doomrl_dm_spawn_near(dist) }
     }
 
     pub fn num_players(&self) -> i32 {

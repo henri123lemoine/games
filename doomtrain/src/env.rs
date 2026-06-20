@@ -37,6 +37,11 @@ impl DoomEnv {
         self.engine.reset();
     }
 
+    /// Teleport the two players to `dist` units apart (curriculum spawn-near).
+    pub fn spawn_near(&self, dist: f32) {
+        self.engine.spawn_near(dist);
+    }
+
     pub fn step(&self, a0: Action, a1: Action) {
         self.engine.step(&a0, &a1);
     }
@@ -76,6 +81,47 @@ pub fn observation(st: &PlayerState) -> [f32; OBS_DIM] {
     ]
 }
 
+/// Arnold-style light reward shaping for PPO, computed from the seat's previous
+/// and current state plus the opponent's. +frag, -death, -suicide,
+/// +small·distance-moved (anti-camp), +small·damage-dealt-to-opponent (dense).
+pub fn shaped_reward(
+    prev: &PlayerState,
+    cur: &PlayerState,
+    opp_prev: &PlayerState,
+    opp_cur: &PlayerState,
+) -> f32 {
+    let mut r = 0.0f32;
+
+    // frag (kill of opponent) — frags is players[i].frags[opp], monotonic.
+    let frag_delta = (cur.frags - prev.frags).max(0) as f32;
+    r += 1.0 * frag_delta;
+
+    // death: alive→dead transition this tic.
+    let died = prev.alive != 0 && cur.alive == 0;
+    if died {
+        // suicide vs killed-by-opponent: if the opponent didn't just score, it's
+        // an environment/self death — penalize harder (anti-suicide).
+        let opp_scored = (opp_cur.frags - opp_prev.frags).max(0) > 0;
+        r -= if opp_scored { 1.0 } else { 1.5 };
+    }
+
+    // damage dealt to the opponent this tic (opp health dropped), dense credit.
+    if cur.alive != 0 {
+        let dmg = (opp_prev.health - opp_cur.health).max(0) as f32;
+        r += 0.01 * dmg;
+    }
+
+    // anti-camp: small reward for moving (capped), only while alive.
+    if cur.alive != 0 {
+        let dx = cur.x - prev.x;
+        let dy = cur.y - prev.y;
+        let moved = (dx * dx + dy * dy).sqrt();
+        r += 0.002 * moved.min(30.0);
+    }
+
+    r
+}
+
 pub fn measurements(st: &PlayerState) -> [f32; MEAS_DIM] {
     // opp_damage is a dense proxy for "hurting the enemy": it rises as we shoot
     // the opponent down from 100 hp and drops when they respawn, giving gradient
@@ -104,7 +150,9 @@ pub fn measurements(st: &PlayerState) -> [f32; MEAS_DIM] {
     ]
 }
 
-const TURNS: [i16; 5] = [-1200, -400, 0, 400, 1200];
+// Finer turn granularity (incl. small angles) so the policy can actually track a
+// target — the coarse 5-level turn could not. 9 turns x 3 forward x 2 fire = 54.
+const TURNS: [i16; 9] = [-1300, -700, -300, -120, 0, 120, 300, 700, 1300];
 const MOVES: [i8; 3] = [-40, 0, 50];
 
 pub const NUM_ACTIONS: usize = TURNS.len() * MOVES.len() * 2;
@@ -138,6 +186,58 @@ pub fn encode_action(a: &Action) -> usize {
     let mi = nearest(a.forward as i32, &move_arr);
     let fire = (a.fire != 0) as usize;
     (t * MOVES.len() + mi) * 2 + fire
+}
+
+/// A weakened scripted opponent for the curriculum: the hunter with aim NOISE
+/// (random bearing jitter) and REACTION DELAY (acts on a stale observation,
+/// refreshed every `react_tics`), so a learning policy can actually out-duel it
+/// and frag-share can climb off 0. `skill` in [0,1] scales toward the perfect
+/// hunter (1 = no noise/delay).
+pub struct BeatableBot {
+    pub aim_noise_deg: f32,
+    pub react_tics: u32,
+    counter: u32,
+    last_action: Action,
+    rng: u64,
+}
+
+impl BeatableBot {
+    pub fn new(aim_noise_deg: f32, react_tics: u32, seed: u64) -> BeatableBot {
+        BeatableBot {
+            aim_noise_deg,
+            react_tics,
+            counter: 0,
+            last_action: Action::default(),
+            rng: seed | 1,
+        }
+    }
+
+    /// skill 0 → easy (12° noise, react every 4 tics); skill 1 → perfect hunter.
+    pub fn for_skill(skill: f32, seed: u64) -> BeatableBot {
+        let s = skill.clamp(0.0, 1.0);
+        let noise = 12.0 * (1.0 - s);
+        let react = (1.0 + 3.0 * (1.0 - s)).round() as u32;
+        BeatableBot::new(noise, react.max(1), seed)
+    }
+
+    fn rand_unit(&mut self) -> f32 {
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 7;
+        self.rng ^= self.rng << 17;
+        ((self.rng >> 11) as f32 / (1u64 << 53) as f32) * 2.0 - 1.0
+    }
+
+    pub fn act(&mut self, st: &PlayerState) -> Action {
+        if self.counter.is_multiple_of(self.react_tics.max(1)) {
+            let mut s = *st;
+            let jitter = self.rand_unit() * self.aim_noise_deg;
+            s.opp_bearing_deg += jitter;
+            s.opp_memory.last_bearing_deg += jitter;
+            self.last_action = scripted_hunter(&s);
+        }
+        self.counter = self.counter.wrapping_add(1);
+        self.last_action
+    }
 }
 
 /// A fixed scripted opponent for evaluation: turn toward the visible opponent,
