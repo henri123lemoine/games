@@ -11,8 +11,11 @@
 //! Usage:
 //!   cargo run --release -- [iters=N] [arenas=N] [steps=N] [device=cpu|mps|cuda]
 //!                          [out=DIR] [eval-every=N] [eval-games=N] [snapshot-every=N]
+//!                          [lr=F] [seed=N] [init=CKPT.ot]
 //!
-//! The best net by winrate-vs-heuristic is kept automatically as `<out>/best.ot`.
+//! `init` warm-starts from a checkpoint and skips the early curriculum (a
+//! fine-tune leg). The best net by the combined kill-aware score vs the heuristic
+//! is kept automatically as `<out>/best.ot`.
 
 mod curriculum;
 mod eval;
@@ -49,6 +52,9 @@ struct Args {
     snapshot_every: usize,
     lr: f64,
     seed: u64,
+    /// Warm-start the learner from this checkpoint instead of random init. Lets a
+    /// fine-tune leg build on a strong net (e.g. retune on changed dynamics).
+    init: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
@@ -63,6 +69,7 @@ fn parse_args() -> Args {
         snapshot_every: 25,
         lr: 2.5e-4,
         seed: 1,
+        init: None,
     };
     for arg in std::env::args().skip(1) {
         let Some((k, v)) = arg.split_once('=') else {
@@ -86,6 +93,7 @@ fn parse_args() -> Args {
             "snapshot-every" => a.snapshot_every = v.parse().unwrap(),
             "lr" => a.lr = v.parse().unwrap(),
             "seed" => a.seed = v.parse().unwrap(),
+            "init" => a.init = Some(PathBuf::from(v)),
             _ => eprintln!("ignoring unknown arg {k}"),
         }
     }
@@ -125,7 +133,14 @@ fn shaping_weight(iter: usize, kills_per_episode: f32) -> f32 {
     (by_iter * kill_accel).clamp(0.0, 1.0)
 }
 
-fn stage_for(iter: usize) -> Stage {
+/// Curriculum stage for an iteration. A fine-tune (`warm`) skips the early
+/// oversized/mixed ramp — the warm-started net already plays even-size, and the
+/// prey stages would only un-teach it — and trains straight in even self-play
+/// (with the close-encounter practice geometry).
+fn stage_for(iter: usize, warm: bool) -> Stage {
+    if warm {
+        return Stage::EvenSelfPlay;
+    }
     match iter {
         0..=40 => Stage::OversizedVsPrey,
         41..=90 => Stage::Mixed,
@@ -243,8 +258,13 @@ fn train() {
         net::TURN_BUCKETS
     );
 
-    let vs = nn::VarStore::new(args.device);
+    let mut vs = nn::VarStore::new(args.device);
     let policy = Policy::new(&vs.root());
+    if let Some(init) = &args.init {
+        vs.load(init)
+            .unwrap_or_else(|e| panic!("warm-start load {}: {e}", init.display()));
+        println!("  warm-started from {}", init.display());
+    }
     let mut opt = nn::Adam::default().build(&vs, args.lr).expect("optimizer");
 
     let cfg = WorldConfig {
@@ -266,7 +286,8 @@ fn train() {
         steps: args.steps,
     };
 
-    let mut stage = stage_for(0);
+    let warm = args.init.is_some();
+    let mut stage = stage_for(0, warm);
     let mut collector = Collector::new(args.arenas, cfg, stage, &mut pool, args.seed ^ 0xC0DE);
     let mut buf: Vec<Transition> = Vec::with_capacity(args.steps * args.arenas);
     let mut kills_per_episode_last = 0.0f32;
@@ -282,7 +303,7 @@ fn train() {
 
     for iter in 0..args.iters {
         let t0 = Instant::now();
-        let new_stage = stage_for(iter);
+        let new_stage = stage_for(iter, warm);
         if new_stage != stage {
             stage = new_stage;
             collector.set_stage(stage);
