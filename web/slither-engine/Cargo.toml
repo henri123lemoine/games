@@ -12,11 +12,20 @@ description = "wasm-bindgen bindings driving the slither game in-browser: slithe
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Exposes test-only inspection/kill hooks for the headless `respawn_check`
+# example; off by default so the shipped wasm never includes them.
+debug-hooks = []
+
 [dependencies]
 slither-rl = { path = "../../slither-rl" }
 slitherinfer = { path = "../../slitherinfer" }
 wasm-bindgen = "0.2"
 console_error_panic_hook = "0.1"
+
+[[example]]
+name = "respawn_check"
+required-features = ["debug-hooks"]
 
 [profile.release]
 opt-level = 3

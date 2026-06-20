@@ -76,6 +76,15 @@ fn build_world(seed: u64, bot_count: usize, pellet_target: usize) -> World {
     World::from_worms(seed, worms, pellet_target)
 }
 
+/// A respawned bot comes back at the starting size, like a fresh slither.io
+/// snake — its accumulated length stays on the field as the death pellets it
+/// already dropped.
+const RESPAWN_LENGTH: f32 = START_LENGTH;
+/// A respawn position must clear every living worm's body by at least this much
+/// (plus the bodies' own radii) so a bot doesn't pop into existence already
+/// overlapping a snake and instantly die again.
+const RESPAWN_CLEARANCE: f32 = 360.0;
+
 #[wasm_bindgen]
 pub struct SlitherGame {
     world: World,
@@ -90,6 +99,9 @@ pub struct SlitherGame {
     /// Whether each worm actually boosted on the last tick (control boost gated by
     /// `can_boost`) — drives the boost glow in the renderer.
     boosting: Vec<bool>,
+    /// Dedicated RNG for picking respawn positions, kept off the world's pellet
+    /// RNG so respawns don't perturb the food stream.
+    respawn_rng: Rng,
     /// Cached so a fresh game reuses the same population/pellet density.
     cfg: WorldConfig,
     seed: u64,
@@ -123,6 +135,7 @@ impl SlitherGame {
             cached: vec![Action::default(); n],
             bot_cursor: HUMAN + 1,
             boosting: vec![false; n],
+            respawn_rng: Rng::new(seed ^ 0x5151_5151_5151_5151),
             cfg,
             seed,
         })
@@ -137,6 +150,7 @@ impl SlitherGame {
         self.cached = vec![Action::default(); n];
         self.bot_cursor = HUMAN + 1;
         self.boosting = vec![false; n];
+        self.respawn_rng = Rng::new(self.seed ^ 0x5151_5151_5151_5151);
     }
 
     /// Advance one fixed `DT` tick. The human worm aims its head at
@@ -199,6 +213,63 @@ impl SlitherGame {
         }
 
         self.world.step(&controls);
+        self.respawn_dead_bots();
+    }
+
+    /// Bring every dead *bot* back as a fresh small worm at a safe spot, so the
+    /// arena stays populated like slither.io instead of emptying out as bots are
+    /// killed. The human (seat 0) is never auto-respawned — its death is the
+    /// page's game-over — so a dead human stays dead and `human_dead()` still
+    /// fires.
+    fn respawn_dead_bots(&mut self) {
+        let n = self.world.worms.len();
+        for i in (HUMAN + 1)..n {
+            if !self.world.worms[i].dead {
+                continue;
+            }
+            let (pos, angle) = self.pick_respawn(i);
+            self.world.worms[i] = Worm::spawn(pos, angle, RESPAWN_LENGTH);
+            self.mem[i] = ObsMemory::new();
+            self.cached[i] = Action::default();
+            self.boosting[i] = false;
+        }
+    }
+
+    /// Rejection-sample a respawn pose for worm `idx` that clears the walls and
+    /// every other living worm's body. Falls back to the last sampled point if no
+    /// clear spot is found in a bounded number of tries (a packed arena), which
+    /// is still better than leaving the bot dead.
+    fn pick_respawn(&mut self, idx: usize) -> (Vec2, f32) {
+        let margin = 320.0;
+        let mut pos = Vec2::new(WORLD * 0.5, WORLD * 0.5);
+        for _ in 0..24 {
+            let cand = Vec2::new(
+                self.respawn_rng.range(margin, WORLD - margin),
+                self.respawn_rng.range(margin, WORLD - margin),
+            );
+            pos = cand;
+            if self.spawn_is_clear(cand, idx) {
+                break;
+            }
+        }
+        let angle = self.respawn_rng.range(0.0, std::f32::consts::TAU);
+        (pos, angle)
+    }
+
+    /// True if `at` is far enough from every living worm (other than `idx`) that
+    /// a fresh worm spawned there won't be touching a body.
+    fn spawn_is_clear(&self, at: Vec2, idx: usize) -> bool {
+        for (j, w) in self.world.worms.iter().enumerate() {
+            if j == idx || w.dead {
+                continue;
+            }
+            let clear = RESPAWN_CLEARANCE + w.radius();
+            let clear2 = clear * clear;
+            if w.segments.iter().any(|&s| at.dist2(s) <= clear2) {
+                return false;
+            }
+        }
+        true
     }
 
     /// `true` once the human worm has died — the page's game-over trigger.
@@ -303,5 +374,22 @@ impl SlitherGame {
             out.push(w.length);
         }
         out
+    }
+}
+
+/// Test-only hooks for the headless respawn check (the `respawn_check` example).
+/// Gated behind `debug-hooks` so they never reach the shipped wasm.
+#[cfg(feature = "debug-hooks")]
+impl SlitherGame {
+    pub fn debug_kill(&mut self, idx: usize) {
+        self.world.worms[idx].dead = true;
+    }
+
+    pub fn debug_worm_dead(&self, idx: usize) -> bool {
+        self.world.worms[idx].dead
+    }
+
+    pub fn debug_worm_length(&self, idx: usize) -> f32 {
+        self.world.worms[idx].length
     }
 }
