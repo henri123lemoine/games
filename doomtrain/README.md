@@ -4,11 +4,54 @@ M3 of "RL on Doom": a reinforcement-learning trainer over the `doomrl` 1v1
 deathmatch substrate (M1/M2). Standalone `tch` crate, like `azt`/`azgo` — its
 own `[workspace]` so `libtorch` never touches the root `cargo test`.
 
-**Status: complete trainer, CPU-validated.** It compiles, links the C engine,
-and runs the full DFP loop — collect → replay → **truncated-BPTT** updates with
-epsilon decay — plus an `eval` (vs a fixed scripted hunter) and a portable
-weight `export`. The remaining work is the long **GPU** run itself (flip the
-device flag); the loss falls, eval runs, and export round-trips on CPU.
+## STATUS — PARKED 2026-06-20 (resumable; branch `doomrl-m1-substrate`, do not merge)
+
+Doom is parked to put effort into snake/slither. The **infrastructure is
+complete and validated; no winning bot exists yet** — training hit a real RL
+wall (below). The branch is not goal-complete, so it is **not merged**. Pick up
+here:
+
+**1. What's validated (works, committed):**
+- Substrate (M1/M2): headless controllable Doom, 1v1 deathmatch, per-seat
+  `P_CheckSight`-gated state, flat DM arena where scripted hunters frag ~65/s.
+- Trainer (M3): truncated **BPTT** over 32-step GRU windows, capped **replay
+  buffer**, **epsilon decay**, **eval** vs the scripted hunter, portable weight
+  **export** (round-trip verified), **self-play** (frozen-snapshot opponent),
+  **eval-gated keep-best**. `smoke`/`train`/`eval`/`export` subcommands; runs on
+  CPU and MPS (`DOOMTRAIN_MPS=1`). The loss trains.
+
+**2. What emerged in the MPS run:** with the `aim_align` measurement, the policy
+learned to **turn-to-face and fire** — `aimed_fires` (|opp_bearing|<15°) went
+from ~0 to **35–86 per episode** (instrument with `DOOMTRAIN_DEBUG_EVAL=1`).
+
+**3. The two blockers (why `net_frag_share` stayed 0 after 600 iters):**
+- **Eval target too hard:** the scripted hunter has *perfect* proportional aim;
+  the coarse 5-level turn action can't out-duel it, so the net can never frag the
+  hunter → share can't climb against that benchmark.
+- **Self-play cold-start:** vs a beatable (equally-imperfect) copy of itself, the
+  two nets spawn in opposite arena corners and never learn to **navigate to each
+  other** → self-play collection also yields 0 frags. The net can't chain
+  navigate → aim → fire → kill in this DFP setup/budget.
+
+**4. Recommended unblock paths (next session's choice):**
+- *Cheap (~hours, might get DFP over the line):* spawn both agents **near** each
+  other each episode (generalize the substrate's `--duel` teleport) so navigation
+  isn't a prerequisite; train/eval against a **beatable curriculum** opponent
+  (a weakened hunter, or self-play once they actually meet); and use a **finer
+  turn action space** + tighter aimed-fire threshold so aim can track.
+- *Strong (bigger rewrite, the research-flagged answer):* **PPO/APPO self-play**
+  (Sample-Factory style) — better credit assignment than DFP for the multi-skill
+  navigate-aim-fire chain.
+
+**M4 (WASM deploy):** still parked on an **`emsdk` install** (`emcc` not on
+PATH). The `export` flat file (`DOOMDFP1` magic, no-tch read) is the bridge: a
+browser forward loads it and drives a `doomrl` WASM build's ticcmd.
+
+Full run findings + recipe are in memory `doom-rl-training`.
+
+---
+
+(Original M3 design notes below.)
 
 ## Approach (per the M3 blueprint)
 
