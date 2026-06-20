@@ -26,6 +26,10 @@ const EAT_PADDING: f32 = 10.0;
 
 pub const PELLET_VALUE: f32 = 1.0;
 const DEATH_PELLET_VALUE: f32 = 2.0;
+/// Ambient food regrowth, pellets/second, trickled in by `refill_pellets` rather
+/// than topping straight back up to the target — slow enough that a grazed-out
+/// region stays depleted, so growth means ranging for food, not circling in place.
+const REFILL_PER_SEC: f32 = 30.0;
 
 /// A worm's collision radius grows slowly with length, capping out so long
 /// snakes stay maneuverable. Mirrors the TS `radius()`.
@@ -173,7 +177,7 @@ impl Default for WorldConfig {
     fn default() -> Self {
         Self {
             worms: 6,
-            pellet_target: 600,
+            pellet_target: 250,
             seat0_length: START_LENGTH,
             prey_jitter: 80.0,
         }
@@ -288,7 +292,12 @@ impl World {
                 continue;
             }
             let boosting = controls.get(i).copied().unwrap_or_default().boost && w.can_boost();
-            if boosting && self.rng.unit() < DT * 14.0 {
+            // Shed pellets at the same rate boost drains length, so boosting
+            // conserves mass: BOOST_DRAIN_PER_SEC length/s drained == that many
+            // PELLET_VALUE pellets/s dropped. (At the old 14/s shed rate a worm
+            // could boost in a circle, eat its own shed pellets, and net mass.)
+            let shed_rate = BOOST_DRAIN_PER_SEC / PELLET_VALUE;
+            if boosting && self.rng.unit() < DT * shed_rate {
                 let tail = *self.worms[i].segments.last().unwrap();
                 self.drop_pellet(tail, PELLET_VALUE);
             }
@@ -381,9 +390,18 @@ impl World {
     }
 
     fn refill_pellets(&mut self) {
-        while self.pellets.len() < self.pellet_target {
-            let p = self.random_pellet();
-            self.pellets.push(p);
+        // Trickle ambient food back toward the target instead of instantly
+        // topping up. An instant top-up makes a grazed-out spot regenerate every
+        // step, so a worm grows just by circling in regenerating food; a slow
+        // trickle keeps a depleted region depleted, so growth means actively
+        // ranging for food (or hunting) — closer to real slither.io.
+        if self.pellets.len() < self.pellet_target {
+            let deficit = self.pellet_target - self.pellets.len();
+            let trickle = (REFILL_PER_SEC * DT).max(1.0) as usize;
+            for _ in 0..trickle.min(deficit) {
+                let p = self.random_pellet();
+                self.pellets.push(p);
+            }
         }
         let cap = (self.pellet_target as f32 * 1.6) as usize;
         if self.pellets.len() > cap {

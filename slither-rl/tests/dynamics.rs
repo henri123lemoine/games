@@ -153,6 +153,39 @@ fn boost_burns_length() {
     assert!(w.worms[0].length < before, "sustained boost burns length");
 }
 
+/// Boost must conserve mass: the length burned is shed as pellets at the same
+/// rate, so a worm can't boost in a circle, eat its own shed pellets, and net
+/// mass. With no ambient food, total mass (worm length + field pellet value)
+/// must never rise above where it started.
+#[test]
+fn boost_conserves_mass() {
+    let mut w = World::new(
+        13,
+        WorldConfig {
+            worms: 1,
+            pellet_target: 0,
+            ..WorldConfig::default()
+        },
+    );
+    w.worms[0].length = 300.0;
+    let field: f32 = w.pellets.iter().map(|p| p.value).sum();
+    let start_mass = w.worms[0].length + field;
+
+    // Boost in a tight circle so the head keeps crossing its own shed pellets.
+    for _ in 0..600 {
+        w.step(&[WormControl {
+            aim: w.worms[0].angle + 0.6,
+            boost: true,
+        }]);
+        let field: f32 = w.pellets.iter().map(|p| p.value).sum();
+        let mass = w.worms[0].length + field;
+        assert!(
+            mass <= start_mass + 1e-3,
+            "boost created mass: {mass} > {start_mass}"
+        );
+    }
+}
+
 #[test]
 fn head_hits_body_skips_neck() {
     // The first two body points are the worm's own head/neck and must never count.

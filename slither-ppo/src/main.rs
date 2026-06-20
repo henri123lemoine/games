@@ -240,7 +240,6 @@ fn train() {
 
     let cfg = WorldConfig {
         worms: 6,
-        pellet_target: 600,
         ..WorldConfig::default()
     };
 
