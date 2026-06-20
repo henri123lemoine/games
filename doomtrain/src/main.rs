@@ -104,13 +104,10 @@ fn main() {
 
 /// Curriculum stage: spawn distance + opponent skill at a given progress 0..1.
 fn curriculum(progress: f64) -> (f32, f32) {
-    // Hold CLOSE for the first ~40% (learn to aim/kill point-blank), then ramp
-    // spawn distance; opponent skill ramps 0 -> 0.6 (kept beatable). Spending the
-    // early budget close is what lets kills — and a frag-share signal — emerge.
-    let p = progress as f32;
     // Hold CLOSE for the first 60% so PPO refines the BC-cloned fragging at
     // point-blank before navigation re-enters; gentle ramp after. Skill ramps to
     // 0.7 (still beatable).
+    let p = progress as f32;
     let spawn = if p < 0.6 {
         256.0
     } else {
