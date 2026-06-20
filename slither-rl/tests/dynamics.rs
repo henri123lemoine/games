@@ -276,6 +276,35 @@ fn heuristic_outlives_random() {
 }
 
 #[test]
+fn body_radius_grows_sublinearly_with_length() {
+    // The radius law is the single source of truth for collision and rendering,
+    // and must grow gently (cube-root) with length — width should not balloon
+    // with score the way a linear law makes it. Concretely: across a 10x jump in
+    // length the radius must less than double, and across the whole playable
+    // range (spawn → a giant) the spread stays inside ~3.5x.
+    let r = |len: f32| Worm::spawn(Vec2::new(2000.0, 2000.0), 0.0, len).radius();
+    let r_start = r(START_LENGTH);
+    let r_mid = r(300.0);
+    let r_big = r(3000.0);
+
+    assert!(
+        r_mid > r_start && r_big > r_mid,
+        "radius must increase with length"
+    );
+    // 10x length (300 → 3000) under cube root is 10^(1/3) ≈ 2.15x on the growth
+    // term, well under 2x on the whole radius once the constant base is included.
+    assert!(
+        r_big < 2.0 * r_mid,
+        "10x length should less than double the radius, got {r_mid} → {r_big}"
+    );
+    assert!(
+        r_big / r_start < 3.5,
+        "spawn→giant spread should stay gentle, got {}x",
+        r_big / r_start
+    );
+}
+
+#[test]
 fn worm_head_stays_in_arena() {
     let mut w = World::new(13, WorldConfig::default());
     let n = w.worms.len();

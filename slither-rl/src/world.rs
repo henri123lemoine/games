@@ -31,10 +31,22 @@ const DEATH_PELLET_VALUE: f32 = 2.0;
 /// region stays depleted, so growth means ranging for food, not circling in place.
 const REFILL_PER_SEC: f32 = 30.0;
 
-/// A worm's collision radius grows slowly with length, capping out so long
-/// snakes stay maneuverable. Mirrors the TS `radius()`.
+/// A worm's body radius as a function of its length. This is the single source
+/// of truth for both collision (here) and rendering (the browser reads it back
+/// per worm), so the snake never collides at a size different from how it draws.
+///
+/// The growth is deliberately *sublinear* — a cube root of length. Real
+/// slither.io width grows gently with mass, not in step with it: a snake ten
+/// times longer is only a couple of times wider. The previous law grew the
+/// radius linearly with length (then hard-capped), so width ballooned with
+/// score — a worm at length 300 was already ~3.4x the starting width and kept
+/// climbing, which read as the snake getting absurdly fat per point. Cube-root
+/// growth keeps the whole playable range to roughly a 1.5–3x spread: ~8.6 at
+/// the START_LENGTH spawn, ~13.6 at length 300, ~21 at length 2000.
 fn radius_for(length: f32) -> f32 {
-    6.0 + (length / 16.0).min(20.0)
+    const BASE: f32 = 5.0;
+    const GROWTH: f32 = 3.6;
+    BASE + GROWTH * (length.max(0.0) / START_LENGTH).cbrt()
 }
 
 #[derive(Clone, Debug)]
