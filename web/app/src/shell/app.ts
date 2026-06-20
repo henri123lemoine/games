@@ -36,14 +36,12 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   othello: { depth: "5" },
   connect4: { depth: "7" },
   go: { size: "9", bot: "azero-gpu", sims: "1500" },
-  snake: { sims: "150" },
+  snake: { bot: "azero", sims: "128" },
   "2048": {},
 };
 
-/** Games registered in the lab but not surfaced on the site. Snake stays
- * hidden until its AlphaZero net is trained and strong — the lab's MCTS is a
- * training yardstick, not a shipped opponent. */
-const HIDDEN_GAMES = new Set<string>(["snake"]);
+/** Games registered in the lab but not surfaced on the site. */
+const HIDDEN_GAMES = new Set<string>([]);
 
 /** Trained artifacts fetched as static assets, keyed by the path the
  * registry asks for. */

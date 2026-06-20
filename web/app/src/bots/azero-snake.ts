@@ -4,12 +4,13 @@
 // bot can't mirror moves like the go/chess bots; instead it reconstructs its
 // search root from the engine's view JSON before each move (snakePlayCpu).
 
-import { CPU_MAX_SIMS, TRIVIAL_SIMS } from '../shell/azero';
 import type { EngineHost } from '../engine/host';
 import type { ViewState } from '../engine/protocol';
 import type { ClientBot } from './index';
 
 const LEAVES = 8;
+const SNAKE_DEFAULT_SIMS = 128;
+const SNAKE_MAX_SIMS = 256;
 const WEIGHTS_URL = `${import.meta.env.BASE_URL}azero/azero-snake.azweb`;
 
 /** The raw export bytes, fetched once per page. */
@@ -56,7 +57,7 @@ export async function createAzeroSnake(
 ): Promise<ClientBot> {
   const seed = Number(opts.seed) >>> 0 || 1;
   // The chosen level, capped so moves stay responsive on the CPU forward.
-  const sims = Math.min(Number(opts.sims) > 0 ? Number(opts.sims) : TRIVIAL_SIMS, CPU_MAX_SIMS);
+  const sims = Math.min(Number(opts.sims) > 0 ? Number(opts.sims) : SNAKE_DEFAULT_SIMS, SNAKE_MAX_SIMS);
   await host.snakeNew(sims, LEAVES, seed, await getWeights());
   return new AzeroSnakeCpu(host);
 }
