@@ -1,0 +1,41 @@
+[package]
+name = "aztrainer"
+version = "0.1.0"
+edition = "2024"
+description = "Generic AlphaZero trainer: one tch-rs resnet + self-play/replay/optimizer harness over (Game, PolicyValueEncoder, NetConfig), with per-game chess/go/snake binaries"
+
+# Standalone on purpose (like the azt/azgo/azsnake crates it unifies): keeps
+# libtorch out of the main workspace, so `cargo test` at the repo root stays
+# light. Build from this directory.
+[workspace]
+
+[dependencies]
+chess = { path = "../games/chess" }
+go = { path = "../games/go" }
+snake = { path = "../games/snake" }
+azinfer = { path = "../azinfer" }
+goinfer = { path = "../goinfer" }
+snakeinfer = { path = "../snakeinfer" }
+nn-infer = { path = "../nn-infer" }
+game-core = { path = "../game-core" }
+solvers = { path = "../solvers" }
+rayon = "1"
+serde_json = "1"
+tch = { version = "0.23", features = ["download-libtorch"] }
+
+[[bin]]
+name = "chess"
+path = "src/bin/chess.rs"
+
+[[bin]]
+name = "go"
+path = "src/bin/go.rs"
+
+[[bin]]
+name = "snake"
+path = "src/bin/snake.rs"
+
+[profile.release-dbg]
+inherits = "release"
+debug-assertions = true
+debug = true
