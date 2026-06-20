@@ -108,12 +108,15 @@ fn curriculum(progress: f64) -> (f32, f32) {
     // spawn distance; opponent skill ramps 0 -> 0.6 (kept beatable). Spending the
     // early budget close is what lets kills — and a frag-share signal — emerge.
     let p = progress as f32;
-    let spawn = if p < 0.4 {
+    // Hold CLOSE for the first 60% so PPO refines the BC-cloned fragging at
+    // point-blank before navigation re-enters; gentle ramp after. Skill ramps to
+    // 0.7 (still beatable).
+    let spawn = if p < 0.6 {
         256.0
     } else {
-        256.0 + (1400.0 - 256.0) * ((p - 0.4) / 0.6)
+        256.0 + (1100.0 - 256.0) * ((p - 0.6) / 0.4)
     };
-    let skill = 0.6 * p;
+    let skill = 0.7 * p;
     (spawn, skill)
 }
 
@@ -150,7 +153,15 @@ fn train_ppo(iwad: &str, arena: &str, device: Device, steps: usize, lr: f64) {
     // never reinforces the +frag reward — the cold-start both DFP and raw PPO hit.
     let bc_iters: usize = arg("bc-iters", "150").parse().unwrap();
     if bc_iters > 0 {
-        let bc_loss = ppo::bc_pretrain(&net, &mut opt, device, bc_iters, steps.min(512), 256.0);
+        let bc_loss = ppo::bc_pretrain(
+            &env,
+            &net,
+            &mut opt,
+            device,
+            bc_iters,
+            steps.min(512),
+            256.0,
+        );
         let (nf, _nd, bf, share) = ppo_eval_avg(&env, &net, device, 6, steps);
         println!(
             "bc warmstart: {bc_iters} iters, final ce={bc_loss:.4} -> eval net[frags={nf}] \

@@ -9,7 +9,9 @@ use crate::ppo_net::PpoNet;
 pub const GAMMA: f64 = 0.99;
 pub const LAMBDA: f64 = 0.95;
 pub const CLIP: f64 = 0.2;
-pub const ENT_COEF: f64 = 0.01;
+// Low entropy: after the BC warmstart we want PPO to *refine* the cloned aim,
+// not explore away from it. A high entropy bonus washed the BC policy out.
+pub const ENT_COEF: f64 = 0.002;
 pub const VF_COEF: f64 = 0.5;
 pub const WINDOW: usize = 32;
 
@@ -279,6 +281,7 @@ pub fn eval(
 /// (obs, nearest-discrete hunter action) and train the policy logits by
 /// cross-entropy over BPTT windows. Returns the final loss.
 pub fn bc_pretrain(
+    env: &DoomEnv,
     net: &PpoNet,
     opt: &mut tch::nn::Optimizer,
     device: tch::Device,
@@ -289,7 +292,7 @@ pub fn bc_pretrain(
     let mut last_loss = 0.0;
     for _ in 0..iters {
         // collect one episode of hunter-vs-hunter, label = hunter's action.
-        let (obs_v, lbl_v) = collect_hunter_demo(steps, spawn_dist);
+        let (obs_v, lbl_v) = collect_hunter_demo(env, steps, spawn_dist);
         if obs_v.is_empty() {
             continue;
         }
@@ -308,34 +311,22 @@ pub fn bc_pretrain(
     last_loss
 }
 
-thread_local! {
-    static BC_ENV: std::cell::RefCell<Option<DoomEnv>> = const { std::cell::RefCell::new(None) };
-}
-
-/// One hunter-vs-hunter demo episode; returns (flattened obs, action labels) for
-/// seat 0. Uses a process-local env so BC doesn't need its own engine handle.
-fn collect_hunter_demo(steps: usize, spawn_dist: f32) -> (Vec<f32>, Vec<i64>) {
-    BC_ENV.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        let env = slot.get_or_insert_with(|| {
-            DoomEnv::new(
-                "../web/app/public/doom/doom1.wad",
-                Some("../doomrl/assets/flatarena.wad"),
-            )
-        });
-        env.reset();
-        env.spawn_near(spawn_dist);
-        let mut obs_v = Vec::with_capacity(steps * OBS_DIM);
-        let mut lbl_v = Vec::with_capacity(steps);
-        for _ in 0..steps {
-            let s0 = env.player_state(0);
-            let s1 = env.player_state(1);
-            let a0 = scripted_hunter(&s0);
-            let a1 = scripted_hunter(&s1);
-            obs_v.extend_from_slice(&observation(&s0));
-            lbl_v.push(encode_action(&a0) as i64);
-            env.step(a0, a1);
-        }
-        (obs_v, lbl_v)
-    })
+/// One hunter-vs-hunter demo episode on the shared env (doomgeneric is a global
+/// singleton — there is only ever one engine); returns (flattened obs, action
+/// labels) for seat 0.
+fn collect_hunter_demo(env: &DoomEnv, steps: usize, spawn_dist: f32) -> (Vec<f32>, Vec<i64>) {
+    env.reset();
+    env.spawn_near(spawn_dist);
+    let mut obs_v = Vec::with_capacity(steps * OBS_DIM);
+    let mut lbl_v = Vec::with_capacity(steps);
+    for _ in 0..steps {
+        let s0 = env.player_state(0);
+        let s1 = env.player_state(1);
+        let a0 = scripted_hunter(&s0);
+        let a1 = scripted_hunter(&s1);
+        obs_v.extend_from_slice(&observation(&s0));
+        lbl_v.push(encode_action(&a0) as i64);
+        env.step(a0, a1);
+    }
+    (obs_v, lbl_v)
 }
