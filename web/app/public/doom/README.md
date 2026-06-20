@@ -11,9 +11,26 @@ shareware WAD.
 - `websockets-doom.js`, `websockets-doom.wasm` — the engine, Chocolate Doom
   compiled to WebAssembly via Emscripten.
 - `doom1.wad` — the DOOM shareware IWAD (episode 1, "Knee-Deep in the Dead").
-- `default.cfg` — key bindings and engine defaults (`startup_delay 0`).
-- `doom.html` — the loader page (title overlay → boots the engine on click).
+- `default.cfg` — Chocolate Doom's *main* config: key bindings, volumes,
+  `use_mouse 0` (keyboard-only — see Rendering below).
+- `websockets-doom.cfg` — Chocolate Doom's *extra* config (named after the
+  program). The video and mouse-feel settings live here, not in `default.cfg`:
+  `force_software_renderer 1` and `novert 1`. Loaded via `-extraconfig`.
+- `doom.html` — the loader page (title overlay → boots the engine on click);
+  preloads both configs into the engine's config dir and points
+  `-config`/`-extraconfig` at them.
 - `COPYING.md` — GPLv2, the engine's license.
+
+## Rendering
+
+The hardware (WebGL/GLES2) renderer in this WASM build queries its max texture
+size as 0×0 at init, so it never creates the upscaled screen texture and leaves
+stale geometry on screen — the picture smears during motion. We force the
+**software renderer** (`force_software_renderer 1` in `websockets-doom.cfg`),
+which presents a full surface every frame and matches native DOOM exactly. The
+mouse is disabled (`use_mouse 0`, `novert 1`) because, ungrabbed in a browser,
+relative mouse motion turns the player erratically. Both are verified by
+`web/app/scripts/doom-conformance/`.
 
 ## Provenance
 

@@ -154,13 +154,21 @@
         window.addEventListener("keydown", swallow, { passive: false });
         window.addEventListener("keyup", swallow, { passive: false });
 
+        // Chocolate Doom splits its config in two: the main config (keybindings,
+        // volumes) and a program-named "extra" config that owns the video and
+        // mouse settings — force_software_renderer and novert live ONLY there.
+        // Both must be loaded from the engine's config dir, so we preload them
+        // there and point -config/-extraconfig at it.
+        const CFGDIR = "/libsdl/doom-ws-wasm";
         const args = [
           "-iwad",
           "doom1.wad",
           "-window",
           "-nogui",
           "-config",
-          "default.cfg",
+          CFGDIR + "/default.cfg",
+          "-extraconfig",
+          CFGDIR + "/websockets-doom.cfg",
           "-nomusic",
         ];
 
@@ -171,8 +179,18 @@
           locateFile: (path) => path,
           preRun: [
             function () {
+              try {
+                Module.FS.mkdirTree(CFGDIR);
+              } catch (e) {}
               Module.FS.createPreloadedFile("", "doom1.wad", "doom1.wad", true, true);
-              Module.FS.createPreloadedFile("", "default.cfg", "default.cfg", true, true);
+              Module.FS.createPreloadedFile(CFGDIR, "default.cfg", "default.cfg", true, true);
+              Module.FS.createPreloadedFile(
+                CFGDIR,
+                "websockets-doom.cfg",
+                "websockets-doom.cfg",
+                true,
+                true,
+              );
             },
           ],
           onRuntimeInitialized: function () {

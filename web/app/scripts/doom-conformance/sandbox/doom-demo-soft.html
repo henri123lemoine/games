@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>DOOM demo (software)</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #000; }
+      #canvas { background:#000; image-rendering: pixelated; display:block; width:640px; height:480px; }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas" width="640" height="480" tabindex="-1"></canvas>
+    <button id="start">start</button>
+    <script>
+      (function () {
+        const canvas = document.getElementById("canvas");
+        const CFGDIR = "/libsdl/doom-ws-wasm";
+        const args = [
+          "-iwad", "doom1.wad",
+          "-window", "-nogui", "-nomusic", "-nosound",
+          "-playdemo", "demo1",
+          "-config", CFGDIR + "/default.cfg",
+          "-extraconfig", CFGDIR + "/websockets-doom.cfg",
+        ];
+        window.Module = {
+          canvas, noInitialRun: true, arguments: args, locateFile: (p) => p,
+          preRun: [function () {
+            try { Module.FS.mkdirTree(CFGDIR); } catch (e) {}
+            Module.FS.createPreloadedFile("", "doom1.wad", "doom1.wad", true, true);
+            Module.FS.createPreloadedFile("", "demo1.lmp", "demo1.lmp", true, true);
+            Module.FS.createPreloadedFile(CFGDIR, "default.cfg", "default.cfg", true, true);
+            Module.FS.createPreloadedFile(CFGDIR, "websockets-doom.cfg", "websockets-doom.cfg", true, true);
+          }],
+          print: (t) => console.log("[doom]", t),
+          printErr: (t) => console.warn("[doom]", t),
+        };
+        document.getElementById("start").addEventListener("click", function () {
+          canvas.focus();
+          const s = document.createElement("script");
+          s.src = "websockets-doom.js";
+          s.onload = () => { const run = () => { if (Module.calledRun && Module.callMain) Module.callMain(args); else setTimeout(run, 60); }; run(); };
+          document.body.appendChild(s);
+        });
+      })();
+    </script>
+  </body>
+</html>
