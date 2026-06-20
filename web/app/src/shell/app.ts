@@ -15,8 +15,6 @@ import type {
 import { frontendFor, hasFrontend } from "../frontends";
 import type { FrontendCtx, GameFrontend } from "../frontends/types";
 import { CPU_LEVELS, isCpuFallback, TRIVIAL_SIMS } from "./azero";
-import { standaloneGames, standaloneInfo } from "../standalone";
-import type { StandaloneGame } from "../standalone/types";
 import {
   DIFFICULTY,
   OPT_CHOICES,
@@ -227,7 +225,6 @@ export class App {
   private manifest!: Manifest;
   private frontend: GameFrontend | null = null;
   private clientBot: ClientBot | null = null;
-  private standalone: StandaloneGame | null = null;
   private tourney: TournamentScreen | null = null;
   private gen = 0;
   private speedScale = 1;
@@ -267,11 +264,6 @@ export class App {
       return;
     }
     if (segs[0] === "g" && segs[1]) {
-      const standalone = standaloneInfo(segs[1]);
-      if (standalone) {
-        this.startStandalone(standalone.id);
-        return;
-      }
       const game = this.manifest.games.find((g) => g.id === segs[1]);
       if (game) {
         const mode: Mode = params.get("mode") === "watch" ? "watch" : "play";
@@ -323,23 +315,12 @@ export class App {
             <span class="card-name">DOOM</span>
           </div>
         </div>`;
-    const standaloneCards = standaloneGames()
-      .map(
-        (g) => `
-        <div class="card card-standalone" data-standalone="${g.id}" role="button" tabindex="0">
-          ${g.mini}
-          <div class="card-text">
-            <span class="card-name">${esc(g.name)}</span>
-          </div>
-        </div>`,
-      )
-      .join("");
     this.root.innerHTML = `
       <div class="home">
         <header class="home-head">
           <h1>Games Room</h1>
         </header>
-        <div class="card-grid">${cards}${doomCard}${standaloneCards}</div>
+        <div class="card-grid">${cards}${doomCard}</div>
         <footer class="home-footer">
           <nav>
             <a href="https://github.com/henri123lemoine/games">GitHub</a>
@@ -373,20 +354,6 @@ export class App {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           openDoom();
-        }
-      };
-    }
-    for (const el of this.root.querySelectorAll<HTMLElement>(
-      ".card-standalone",
-    )) {
-      const id = el.dataset.standalone;
-      if (!id) continue;
-      const play = () => this.navTo(`/g/${id}`);
-      el.onclick = play;
-      el.onkeydown = (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          play();
         }
       };
     }
@@ -426,36 +393,6 @@ export class App {
       () => this.navTo("/"),
     );
     this.tourney.render();
-  }
-
-  // ---------- standalone client games ----------
-  // Real-time canvas games that never touch the engine. The shell hands over a
-  // full-bleed board and a teardown hook; the game owns its own loop.
-
-  private startStandalone(id: string): void {
-    const info = standaloneInfo(id);
-    if (!info) {
-      this.navTo("/");
-      return;
-    }
-    this.teardown();
-    history.replaceState(null, "", `#/g/${id}`);
-    this.root.innerHTML = `
-      <div class="match match-standalone">
-        <header class="match-bar">
-          <button type="button" class="link back">&larr; games</button>
-          <span class="match-title">${esc(info.name)}</span>
-        </header>
-        <div class="board board-standalone"></div>
-      </div>`;
-    this.root.querySelector<HTMLButtonElement>(".back")!.onclick = () =>
-      this.navTo("/");
-    const boardEl = this.root.querySelector<HTMLElement>(".board")!;
-    this.standalone = info.create();
-    this.standalone.mount(boardEl, {
-      reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)")
-        .matches,
-    });
   }
 
   // ---------- match ----------
@@ -1067,8 +1004,6 @@ export class App {
     this.clientBot = null;
     this.frontend?.unmount();
     this.frontend = null;
-    this.standalone?.unmount();
-    this.standalone = null;
     this.submitResolve = null;
   }
 
