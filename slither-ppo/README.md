@@ -117,9 +117,27 @@ wants it to *encircle*, not win on reflexes):
   kept net is a better killer *and* not worse overall.
 
 Training fresh on the conservative game stalls (learning to kill from random init
-is hard when food is too sparse to coast on), so the shipped net is a **warm-start
-fine-tune** of the stable old net (`init=`): on common-seed A/B (512 games × 4
-seeds) it beats the old net on every axis — winrate ≈0.30 vs 0.24, **kills/game
-≈0.33 vs 0.24 (+~35%)**, and it *dies less* (≈0.72 vs ≈0.79 deaths/game). It kills
-more without trading away winrate. (Absolute kill rate is still modest — equal-top-
-speed conversion is genuinely hard — but it is now a clear, decisive improvement.)
+is hard when food is too sparse to coast on), so each leg is a **warm-start
+fine-tune** of the previous net (`init=`).
+
+### Make defeating an opponent the headline reward
+
+The first fine-tune still mostly *out-competed* — it out-grew a naive player rather
+than relentlessly hunting it. The user wants the kill to be the fun part. So the
+reward was re-weighted to make a kill the unambiguous top event: `KILL_FLAT`
+1.5→5.0 (a kill now pays ≈7.7 — well above a whole life's growth and above the
+death penalty), `LENGTH_DELTA_SCALE` 0.08→0.04 (farming clearly secondary), and
+`BOOST_COST` 0.008→0.02 (the bugged mass-creating dynamics had trained in a
+boost-spam habit; this breaks it), with the death penalty held at −6 so it stays
+fear of dying, not recklessness.
+
+The kill-reward fine-tune (warm-start of the prior net, close-encounter curriculum
+on, kill-aware keep-best) beats it on every axis, common-seed A/B (512 games × 4
+seeds vs the heuristic): **winrate ≈0.40 vs 0.29, kills/game ≈0.41 vs 0.31
+(+~32%)**, kill-win ≈0.36 vs 0.28, while dying slightly *less* (≈0.70 vs ≈0.73)
+and growing *more* (final-len ≈57 vs 47). It hunts more without trading away
+survival or winrate. The keep-best (gated on the combined kill+winrate score) holds
+the peak — the run regressed past it, but the kept net is the peak. (Absolute kill
+rate is still modest: equal-top-speed conversion against a competent encircler is
+genuinely hard, and the value head briefly spikes on the bigger kill rewards before
+settling — watched, no anneal needed.)

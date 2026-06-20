@@ -29,18 +29,25 @@ pub const TURN_BUCKETS: usize = 9;
 /// extreme bucket just means "turn as hard as you can this way".
 const MAX_RELATIVE_TURN: f32 = 1.2;
 
-/// A kill pays a flat amount plus a length-scaled bonus. The flat term makes
-/// *any* conversion (even of small prey on equal footing — the project's weak
-/// spot) decisively worth more than the dense length signal, so the policy
-/// learns to finish kills rather than only farm food. The length term keeps
-/// trapping a big snake the bigger prize. A length-50 kill now pays
-/// `1.5 + 0.06*50 = 4.5`, on the same order as a death (`-6.0`), so going for a
-/// kill the bot can land is a clearly positive-EV gamble.
-const KILL_FLAT: f32 = 1.5;
+/// A kill pays a flat amount plus a length-scaled bonus, and the flat term is
+/// large on purpose: defeating an opponent must be the *unambiguous* headline
+/// event — "the fun part" — clearly above a whole life of farming food. A
+/// length-45 kill pays `5.0 + 0.06*45 ≈ 7.7`, well over a full life's growth
+/// (~1.8 at the scale below) and above the death penalty, so going for a kill the
+/// bot can land is strongly positive-EV. The length term keeps trapping a big
+/// snake the bigger prize. (Earlier the kill ≈ 4.2 < the 6.0 death, so the policy
+/// played safe and farmed; this makes it hunt.)
+const KILL_FLAT: f32 = 5.0;
 const KILL_BONUS: f32 = 0.06;
 const DEATH_PENALTY: f32 = 6.0;
-const LENGTH_DELTA_SCALE: f32 = 0.08;
-const BOOST_COST: f32 = 0.008;
+/// Growth is a modest dense signal, halved so farming food is clearly secondary
+/// to killing — kept nonzero so the value head has a signal and so eating a
+/// victim's death-pellets after a kill still pays.
+const LENGTH_DELTA_SCALE: f32 = 0.04;
+/// Per-step cost while actually boosting. Raised to break the boost-spam habit
+/// the bugged (mass-creating) dynamics trained in; still cheap enough that a
+/// deliberate boost-cutoff finisher stays worthwhile.
+const BOOST_COST: f32 = 0.02;
 const ENCIRCLE_SCALE: f32 = 1.0;
 /// A foe must be at least this fraction smaller to be worth encircling (the
 /// heuristic's `enCircleThreshold` ≈ 0.56 analog: trap things you can outlast).
