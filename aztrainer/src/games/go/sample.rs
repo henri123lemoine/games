@@ -160,3 +160,64 @@ impl TrainSample for Sample {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{compact, expand};
+    use game_core::{Game, PolicyValueEncoder};
+    use go::encode::GoEncoder;
+    use go::{Go, GoAction};
+
+    #[test]
+    fn compact_expand_roundtrip_under_identity() {
+        // 19 exercises the >128-cell packing (361 bits / plane) that 9 does not.
+        for size in [9usize, 19] {
+            let g = Go::new(size);
+            let enc = GoEncoder::new(size);
+            let mut s = g.initial_state();
+            for (i, _) in (0..6).enumerate() {
+                let p = (i * 37 + 5) % (size * size);
+                let placements: Vec<_> = g
+                    .legal_actions(&s)
+                    .into_iter()
+                    .filter(|a| matches!(a, GoAction::Place(q) if (*q as usize) == p))
+                    .collect();
+                if let Some(&a) = placements.first() {
+                    g.apply(&mut s, a);
+                }
+            }
+            let x = enc.encode_state(&g, &s);
+            let (planes, stm_white) = compact(&x, size);
+            let mut back = vec![0.0f32; x.len()];
+            expand(&planes, stm_white, g.komi() as f32, 0, size, &mut back);
+            assert_eq!(x, back, "size {size}");
+        }
+    }
+
+    #[test]
+    fn expand_under_symmetry_matches_encoding_of_transformed_board() {
+        for (size, coords) in [
+            (9usize, vec!["e5", "c3", "g7", "d4", "f6"]),
+            (19, vec!["k10", "d4", "q16", "c15", "r5"]),
+        ] {
+            let g = Go::new(size);
+            let enc = GoEncoder::new(size);
+            let mut s = g.initial_state();
+            for c in &coords {
+                g.apply(&mut s, GoAction::Place(g.point(c).unwrap()));
+            }
+            let (planes, stm_white) = compact(&enc.encode_state(&g, &s), size);
+            for t in 0..8u8 {
+                let mut ts = g.initial_state();
+                for c in &coords {
+                    let p = g.point(c).unwrap() as usize;
+                    g.apply(&mut ts, GoAction::Place(go::encode::d8(p, t, size) as u16));
+                }
+                let want = enc.encode_state(&g, &ts);
+                let mut got = vec![0.0f32; want.len()];
+                expand(&planes, stm_white, g.komi() as f32, t, size, &mut got);
+                assert_eq!(got, want, "size {size} symmetry {t}");
+            }
+        }
+    }
+}

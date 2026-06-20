@@ -92,3 +92,33 @@ impl TrainSample for Sample {
         }]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{compact_planes, expand_planes};
+    use chess::encode::{PLANE_COUNT, encode_planes};
+    use chess::{Board, legal_moves};
+    use game_core::Rng;
+
+    #[test]
+    fn compact_expand_planes_roundtrip() {
+        // Walk a short random game so the halfmove clock and a variety of piece
+        // placements exercise the bit-packing and its reconstruction.
+        let mut board = Board::start();
+        let mut rng = Rng::new(7);
+        for _ in 0..40 {
+            let direct = encode_planes(&board);
+            let (packed, halfmove) = compact_planes(&board);
+            let mut back = vec![0.0f32; PLANE_COUNT * 64];
+            expand_planes(&packed, halfmove, &mut back);
+            assert_eq!(direct, back, "round-trip at halfmove {}", board.halfmove);
+
+            let moves = legal_moves(&board);
+            if moves.is_empty() {
+                board = Board::start();
+                continue;
+            }
+            board.apply(moves[rng.below(moves.len())]);
+        }
+    }
+}
