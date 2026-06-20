@@ -1,0 +1,9 @@
+# Build the browser engine wasm with SIMD128. wasm-pack runs cargo from this
+# directory, so this applies to the wasm build and is ignored by native cargo at
+# the workspace root. simd128 roughly halves the snake/go reference conv forward
+# (~50→~25 ms/leaf measured for the snake net) by letting the axpy inner loops
+# use f32x4 — it does not make a CPU search of this net fast (the GPU path does
+# that), but it keeps the no-GPU fallback as responsive as the CPU allows.
+# Supported by every browser the arcade targets and by Node >= 16 / Deno.
+[target.wasm32-unknown-unknown]
+rustflags = ["-Ctarget-feature=+simd128"]
