@@ -152,12 +152,18 @@ deployment number. The browser is **symmetric** (every worm `START_LENGTH`, no
 head-start, vs a human), where the true strength is ~0.14. The fix: eval (and the
 keep-best gate) now run at the symmetric deployment config; `compare` reports both.
 
-Gating on the honest symmetric number, a further warm-start fine-tune lifts the
-real deployment strength: common-seed A/B (512 games × 4 seeds vs the heuristic,
-**symmetric/deploy**) — **winrate ≈0.19 vs 0.15, kills/game ≈0.18 vs 0.16**, beating
-the prior net on every seed and clearing fair share (1/6 ≈ 0.167). Absolute numbers
-are modest because the symmetric game against a competent encircler is genuinely
-hard — but this is the real win-share a human faces, optimized directly rather than
-flattered by a head-start. Both kill-reward legs peak then regress in the back half;
-keep-best holds the peak. (Value loss briefly spikes on the bigger kill rewards at
-warm-start, then settles — watched, no anneal needed.)
+Gating on the honest symmetric number, successive warm-start fine-tunes lift the
+real deployment strength. Two more changes pushed it further: the even-self-play
+training world was made **symmetric too** (`START_LENGTH`, no head-start — the
+training distribution should *be* the deployment distribution, not a softer one),
+and the close-encounter practice cluster was made **equal-size** (worms packed
+against a wall at `START_LENGTH`, so the cut-off is on the table without a size
+advantage). The lineage on the honest symmetric/deploy metric (512 games × 4 seeds
+vs the heuristic): ft1 ≈0.12 → kill1 ≈0.15 → sym1 ≈0.19 → **sym2 ≈0.22 win,
+≈0.22 kills/game** — each leg beats the prior on every seed, now solidly above fair
+share (1/6 ≈ 0.167). Absolute numbers are modest because the symmetric game against
+a competent encircler is genuinely hard, but this is the real win-share a human
+faces, optimized directly rather than flattered by a head-start — and the symmetric-
+matched + shorter (200-iter) run no longer regresses in the back half (the earlier
+legs peaked then degraded; this one holds its plateau). (Value loss briefly spikes
+on the bigger kill rewards at warm-start, then settles — watched, no anneal needed.)

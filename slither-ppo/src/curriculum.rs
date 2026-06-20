@@ -43,18 +43,24 @@ impl Stage {
             Stage::OversizedVsPrey => prey_cluster_world(cfg, seed, 220.0, START_LENGTH),
             Stage::Mixed => prey_cluster_world(cfg, seed, 140.0, START_LENGTH + 40.0),
             Stage::EvenSelfPlay => {
+                // Match the TRUE symmetric deployment the eval gates on: every worm
+                // the same START_LENGTH, no learner head-start, no size jitter. The
+                // training distribution should be the deployment distribution — an
+                // even-self-play world that handed the learner +30 was training on a
+                // softer game than the symmetric eval it's scored on.
                 let even_cfg = WorldConfig {
-                    seat0_length: START_LENGTH + 30.0,
-                    prey_jitter: 40.0,
+                    seat0_length: START_LENGTH,
+                    prey_jitter: 0.0,
                     ..cfg
                 };
-                // A fraction of arenas spawn as a tight, equal-size cluster pinned
+                // A fraction of arenas spawn as a tight EQUAL-SIZE cluster pinned
                 // against a wall instead of scattered open-field. In the open field
-                // the learner can always just run and out-grow, so the cut-off
-                // never has to fire; a close equal-size encounter with a wall to
-                // pin against is where encircling is geometrically on the table and
-                // the policy can *discover* the finisher. The rest stay scattered so
-                // it doesn't overfit to the spawn geometry — real league play too.
+                // the learner can run and never has to commit to a cut-off; a close
+                // equal-size encounter with a wall to pin against is where
+                // encircling is geometrically on the table WITHOUT a size advantage
+                // — matching symmetric deployment — so the policy can *discover* the
+                // finisher. The rest stay scattered so it doesn't overfit the spawn
+                // geometry.
                 if seed_unit(seed) < CLOSE_ENCOUNTER_FRAC {
                     close_encounter_world(even_cfg, seed)
                 } else {
@@ -116,10 +122,12 @@ fn seed_unit(seed: u64) -> f32 {
 }
 
 /// A tight equal-size cluster pinned against a randomly chosen wall: every worm
-/// the same length (`seat0_length`), packed within a small radius near the wall
-/// with headings roughly along it. Close enough that a cut-off is immediately on
-/// the table and the wall is a surface to pin a foe against — the encircle
-/// practice geometry the open field never forces.
+/// the same length (`cfg.seat0_length`, which the even stage sets to
+/// `START_LENGTH` — no head-start, deployment-matched), packed within a small
+/// radius near the wall with headings roughly along it. Close enough that a
+/// cut-off is immediately on the table and the wall is a surface to pin a foe
+/// against — the encircle practice geometry the open field never forces, on an
+/// even footing.
 fn close_encounter_world(cfg: WorldConfig, seed: u64) -> World {
     let mut rng = Rng::new(seed ^ 0xE7C1_2C1E);
     let len = cfg.seat0_length;
