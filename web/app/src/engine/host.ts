@@ -150,16 +150,37 @@ export class EngineHost {
     return this.call({ op: 'azFinalResult' }) as Promise<string>;
   }
 
-  /** Creates the in-wasm snake AlphaZero bot with its weights loaded. */
-  snakeNew(sims: number, leaves: number, seed: number, weights: ArrayBuffer): Promise<void> {
+  /** Creates the in-wasm snake AlphaZero bot. `weights` (the `.azweb` bytes)
+   * enables the in-wasm CPU path (`snakePlayCpu`) for the no-GPU fallback; omit
+   * it for the WebGPU path, which evaluates leaves page-side. */
+  snakeNew(sims: number, leaves: number, seed: number, weights?: ArrayBuffer): Promise<void> {
     return this.call({ op: 'snakeNew', sims, leaves, seed, weights }) as Promise<void>;
   }
 
   /** Reconstructs the snake bot's root from the engine's view JSON, runs the
    * whole search in-wasm against the reference forward, and returns the chosen
-   * heading. Requires `snakeNew` first. */
+   * heading. Requires `snakeNew` with weights first. */
   snakePlayCpu(view: string): Promise<AzBest> {
     return this.call({ op: 'snakePlayCpu', view }) as Promise<AzBest>;
+  }
+
+  /** Reconstructs the snake bot's root from the view JSON, discarding the prior
+   * tree (the GPU path's per-move reset before the `snakeAdvance` loop). */
+  snakeSetState(view: string): Promise<void> {
+    return this.call({ op: 'snakeSetState', view }) as Promise<void>;
+  }
+
+  /** Resumes the snake search with the page's evaluations for the previous
+   * batch (empty arrays on the first call after `snakeSetState`) and gathers
+   * the next batch (empty when the search is done). The WebGPU path. */
+  snakeAdvance(priors: Float32Array, values: Float32Array): Promise<AzBatch> {
+    return this.call({ op: 'snakeAdvance', priors, values }) as Promise<AzBatch>;
+  }
+
+  /** The snake bot's searched move (argmax over root visits). Requires a search
+   * that ran to its budget via the `snakeAdvance` loop. */
+  snakeBest(): Promise<AzBest> {
+    return this.call({ op: 'snakeBest' }) as Promise<AzBest>;
   }
 
   terminate(): void {

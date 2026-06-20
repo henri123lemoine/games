@@ -51,7 +51,7 @@ export const DIFFICULTY: Record<string, Difficulty> = {
   "2048/mcts-eval": { key: "sims", levels: [["Easy", "100"], ["Medium", "200"], ["Hard", "600"]] },
   "snake/mcts": { key: "sims", levels: [["Easy", "60"], ["Medium", "150"], ["Hard", "400"]] },
   "snake/mcts-eval": { key: "sims", levels: [["Easy", "60"], ["Medium", "150"], ["Hard", "400"]] },
-  "snake/azero-gpu": { key: "sims", levels: [["Easy", "1"], ["Medium", "3"], ["Hard", "6"]] },
+  "snake/azero-gpu": { key: "sims", levels: [["Trivial", "1"], ["Easy", "32"], ["Medium", "128"], ["Hard", "256"]] },
 };
 
 export function difficultyFor(gameId: string, bot: string): Difficulty | undefined {

@@ -124,12 +124,31 @@ function handle(req: EngineRequest): unknown {
     case 'snakeNew':
       snakeBot?.free();
       snakeBot = new AzSnakeBot(req.sims, req.leaves, req.seed);
-      snakeBot.load_weights(new Uint8Array(req.weights));
+      if (req.weights) snakeBot.load_weights(new Uint8Array(req.weights));
       return null;
     case 'snakePlayCpu': {
       if (!snakeBot) throw new Error('no snake bot');
       snakeBot.set_state(req.view);
       return { uci: snakeBot.play_cpu(), stats: JSON.parse(snakeBot.stats()) };
+    }
+    case 'snakeSetState': {
+      if (!snakeBot) throw new Error('no snake bot');
+      snakeBot.set_state(req.view);
+      return null;
+    }
+    case 'snakeAdvance': {
+      if (!snakeBot) throw new Error('no snake bot');
+      const n = snakeBot.advance(req.priors, req.values);
+      return {
+        n,
+        features: n > 0 ? snakeBot.batch_features() : new Float32Array(0),
+        support: n > 0 ? snakeBot.batch_support() : new Uint16Array(0),
+        offsets: n > 0 ? snakeBot.batch_offsets() : new Uint32Array(0),
+      };
+    }
+    case 'snakeBest': {
+      if (!snakeBot) throw new Error('no snake bot');
+      return { uci: snakeBot.best(), stats: JSON.parse(snakeBot.stats()) };
     }
   }
 }

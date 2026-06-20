@@ -1,21 +1,24 @@
 //! The AlphaZero snake bot's wasm surface. The batched park/resume PUCT search
-//! and the reference forward both run in-wasm: the snake net is tiny (4×64), so
-//! the CPU forward is fast enough — no WebGPU path, unlike go.
+//! runs in-wasm; leaf evaluation runs either on the GPU (the page answers each
+//! parked batch via WebGPU — `set_state` → `advance`/`batch_*` → `advance` … →
+//! `best`) or in-wasm against `snakeinfer`'s reference forward (`play_cpu`),
+//! the no-GPU fallback. Same net and same search either way, like go and chess.
 //!
 //! Snake's food placement is a chance node the match engine resolves with its
 //! own RNG, so a move-mirroring bot (like `AzGoBot`) would diverge from the
 //! engine on every spawn. Instead this bot reconstructs its search root from the
-//! engine's authoritative view JSON before each move (`set_state`), then runs
-//! the whole search to its visit budget against `snakeinfer`'s forward
-//! (`play_cpu`). The reconstruction is exact: the view carries both worms, the
-//! food, health, the step count, and seat 0's pending heading.
+//! engine's authoritative view JSON before each move (`set_state`), which also
+//! discards the prior tree — chance nodes make subtree reuse across the engine's
+//! RNG unsound, and one search per move is cheap. The reconstruction is exact:
+//! the view carries both worms, the food, health, the step count, and seat 0's
+//! pending heading.
 
 use game_core::{Game, GameUi, Rng, Turn};
 use snake::duel::{Dir, MAX_HEALTH, Worm};
 use snake::encode::SnakeEncoder;
 use snake::{Duel, DuelState};
 use snakeinfer::model::Model;
-use snakeinfer::{Gather, PuctConfig, Search, argmax};
+use snakeinfer::{EvalRequest, EvalResult, Gather, PuctConfig, Search, argmax};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -26,9 +29,14 @@ pub struct AzSnakeBot {
     search: Search<Duel>,
     cfg: PuctConfig,
     rng: Rng,
-    /// The reference net; `None` until `load_weights`. CPU play needs it for
-    /// every leaf evaluation.
+    /// The reference net; `None` until `load_weights`. The CPU path needs it for
+    /// every leaf evaluation; the GPU path never loads it.
     model: Option<Model>,
+    /// Requests parked by the last `advance`, awaiting page-side (GPU)
+    /// evaluation. Empty between moves and on the CPU path.
+    batch: Vec<EvalRequest>,
+    /// The last search ran to its visit budget, so `best` is readable.
+    done: bool,
 }
 
 #[wasm_bindgen]
@@ -53,10 +61,13 @@ impl AzSnakeBot {
             },
             rng: Rng::new(u64::from(seed)),
             model: None,
+            batch: Vec::new(),
+            done: false,
         }
     }
 
-    /// Loads the `.azweb` net; CPU leaf evaluation needs it.
+    /// Loads the `.azweb` net; only the in-wasm CPU leaf evaluation needs it
+    /// (the GPU path evaluates page-side).
     pub fn load_weights(&mut self, weights: &[u8]) -> Result<(), JsError> {
         self.model = Some(Model::parse(weights).map_err(|e| JsError::new(&e))?);
         Ok(())
@@ -65,29 +76,33 @@ impl AzSnakeBot {
     /// Resets the search root to the position described by the engine's view
     /// JSON (the `snake` frontend contract). Discards the prior tree — snake's
     /// chance nodes make subtree reuse across the engine's RNG unsound, and one
-    /// search per move is cheap on a 4×64 net.
+    /// search per move is cheap. Both backends start each move here.
     pub fn set_state(&mut self, view_json: &str) -> Result<(), JsError> {
+        if !self.batch.is_empty() {
+            return Err(JsError::new("set_state while evaluations are in flight"));
+        }
         let state = parse_state(&self.game, view_json).map_err(|e| JsError::new(&e))?;
+        if self.game.is_terminal(&state) || !matches!(self.game.turn(&state), Turn::Player(_)) {
+            return Err(JsError::new("set_state must leave a player to move"));
+        }
         self.state = state;
         self.search = Search::new(None);
+        self.done = false;
         Ok(())
     }
 
     /// Runs the whole search to its visit budget in-wasm, evaluating every
     /// parked leaf with the reference forward, and returns the chosen move as a
-    /// heading label (`"up"`/`"right"`/`"down"`/`"left"`). Requires the search
-    /// root to be a position where it is a player's turn (the engine only drives
-    /// the bot then).
+    /// heading label (`"up"`/`"right"`/`"down"`/`"left"`). The no-GPU fallback;
+    /// requires `load_weights` and a `set_state` leaving a player to move.
     pub fn play_cpu(&mut self) -> Result<String, JsError> {
+        if !self.batch.is_empty() {
+            return Err(JsError::new("play_cpu while evaluations are in flight"));
+        }
         let model = self
             .model
             .as_ref()
             .ok_or_else(|| JsError::new("CPU weights not loaded"))?;
-        if self.game.is_terminal(&self.state)
-            || !matches!(self.game.turn(&self.state), Turn::Player(_))
-        {
-            return Err(JsError::new("set_state must leave a player to move"));
-        }
         let mut results = Vec::new();
         while let Gather::Requests(reqs) = self.search.advance(
             &self.game,
@@ -99,6 +114,105 @@ impl AzSnakeBot {
             &|_| false,
         ) {
             results = model.eval(&reqs);
+        }
+        self.done = true;
+        self.best()
+    }
+
+    /// Resumes the search with the page's evaluations for the previous batch
+    /// (pass empty arrays on the first call after `set_state`), gathers the next
+    /// batch, and returns its size — 0 means the search is done and `best` is
+    /// ready. `priors` is the flat concatenation over the batch, aligned with
+    /// `batch_offsets`; `values` holds one entry per request. The GPU path.
+    pub fn advance(&mut self, priors: &[f32], values: &[f32]) -> Result<u32, JsError> {
+        let results = if self.batch.is_empty() {
+            if !priors.is_empty() || !values.is_empty() {
+                return Err(JsError::new("no batch outstanding, expected empty results"));
+            }
+            Vec::new()
+        } else {
+            if values.len() != self.batch.len() {
+                return Err(JsError::new(&format!(
+                    "expected {} values, got {}",
+                    self.batch.len(),
+                    values.len()
+                )));
+            }
+            let mut out = Vec::with_capacity(self.batch.len());
+            let mut off = 0usize;
+            for (req, &value) in self.batch.iter().zip(values) {
+                let k = req.support.len();
+                if off + k > priors.len() {
+                    return Err(JsError::new("priors shorter than the batch support"));
+                }
+                out.push(EvalResult {
+                    priors: priors[off..off + k].to_vec(),
+                    value,
+                });
+                off += k;
+            }
+            if off != priors.len() {
+                return Err(JsError::new("priors longer than the batch support"));
+            }
+            out
+        };
+        self.batch.clear();
+        match self.search.advance(
+            &self.game,
+            &self.enc,
+            &self.state,
+            &self.cfg,
+            &mut self.rng,
+            results,
+            &|_| false,
+        ) {
+            Gather::Requests(reqs) => {
+                self.batch = reqs;
+                Ok(self.batch.len() as u32)
+            }
+            Gather::Done => {
+                self.done = true;
+                Ok(0)
+            }
+        }
+    }
+
+    /// Features of the pending batch, flat `[n × 18·area]` (board planes).
+    pub fn batch_features(&self) -> Vec<f32> {
+        let mut out = Vec::with_capacity(self.batch.iter().map(|r| r.features.len()).sum());
+        for r in &self.batch {
+            out.extend_from_slice(&r.features);
+        }
+        out
+    }
+
+    /// Legal policy indices of the pending batch, flat; `batch_offsets`
+    /// delimits the per-request runs.
+    pub fn batch_support(&self) -> Vec<u16> {
+        let mut out = Vec::with_capacity(self.batch.iter().map(|r| r.support.len()).sum());
+        for r in &self.batch {
+            out.extend_from_slice(&r.support);
+        }
+        out
+    }
+
+    /// `n + 1` prefix offsets into `batch_support` / the flat priors.
+    pub fn batch_offsets(&self) -> Vec<u32> {
+        let mut out = Vec::with_capacity(self.batch.len() + 1);
+        let mut off = 0u32;
+        out.push(0);
+        for r in &self.batch {
+            off += r.support.len() as u32;
+            out.push(off);
+        }
+        out
+    }
+
+    /// The searched move as a heading label (`"up"`/`"right"`/`"down"`/`"left"`),
+    /// argmax over root visits. Readable once a search has run to its budget.
+    pub fn best(&self) -> Result<String, JsError> {
+        if !self.done {
+            return Err(JsError::new("search is not done"));
         }
         let visits = self.search.root_visits();
         let actions = self.search.root_actions();

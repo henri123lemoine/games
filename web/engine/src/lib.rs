@@ -146,6 +146,29 @@ pub fn go_reference_forward(
     Ok(out)
 }
 
+/// `snakeinfer`'s reference forward over `n` snake positions (`features` flat,
+/// each `PLANES·size²`). Logit stride is 4 (the four absolute headings).
+#[wasm_bindgen]
+pub fn snake_reference_forward(
+    weights: &[u8],
+    features: &[f32],
+    n: usize,
+    size: usize,
+) -> Result<RefForward, JsError> {
+    let model = snakeinfer::model::Model::parse(weights).map_err(|e| JsError::new(&e))?;
+    let stride_in = snake::encode::PLANES * size * size;
+    let mut out = RefForward {
+        logits: Vec::with_capacity(n * 4),
+        values: Vec::with_capacity(n),
+    };
+    for i in 0..n {
+        let (logits, value) = model.forward_at(&features[i * stride_in..(i + 1) * stride_in], size);
+        out.logits.extend_from_slice(&logits);
+        out.values.push(value);
+    }
+    Ok(out)
+}
+
 /// `azinfer`'s reference forward over `n` chess positions (`features` flat,
 /// each `PLANE_COUNT·64`). Logit stride is `AZ_POLICY_LEN` (`square·73+plane`).
 #[wasm_bindgen]

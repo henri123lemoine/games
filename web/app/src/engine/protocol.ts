@@ -110,8 +110,18 @@ export type EngineRequest =
   | { id: number; op: 'azPlayCpu' }
   | { id: number; op: 'azFinalResult' }
   | { id: number; op: 'azBest' }
-  | { id: number; op: 'snakeNew'; sims: number; leaves: number; seed: number; weights: ArrayBuffer }
-  | { id: number; op: 'snakePlayCpu'; view: string };
+  | {
+      id: number;
+      op: 'snakeNew';
+      sims: number;
+      leaves: number;
+      seed: number;
+      weights?: ArrayBuffer;
+    }
+  | { id: number; op: 'snakePlayCpu'; view: string }
+  | { id: number; op: 'snakeSetState'; view: string }
+  | { id: number; op: 'snakeAdvance'; priors: Float32Array; values: Float32Array }
+  | { id: number; op: 'snakeBest' };
 
 /** One gathered leaf batch from the wasm AZ search (empty when done). */
 export interface AzBatch {
