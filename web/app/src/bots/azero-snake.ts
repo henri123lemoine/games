@@ -1,6 +1,6 @@
 // The AlphaZero snake bot. The wasm engine runs the park/resume PUCT search;
 // this driver supplies the leaf evaluations. With WebGPU it answers each parked
-// leaf batch with the GPU net (weights from the AZSNK1 export); without it, it
+// leaf batch with the GPU net (weights from the AZNET1 export); without it, it
 // hands the same weights to the wasm engine and lets snakePlayCpu run the whole
 // search in-wasm against nn-infer's reference forward.
 //

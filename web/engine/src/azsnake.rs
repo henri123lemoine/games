@@ -14,9 +14,9 @@
 //! pending heading.
 
 use game_core::{Game, GameUi, Rng, Turn};
-use nn_infer::{Legacy, Net};
+use nn_infer::Net;
 use snake::duel::{Dir, MAX_HEALTH, Worm};
-use snake::encode::{PLANES, SnakeEncoder};
+use snake::encode::SnakeEncoder;
 use snake::{Duel, DuelState};
 use solvers::azero::{EvalRequest, EvalResult, Gather, PuctConfig, Search, argmax};
 use wasm_bindgen::prelude::*;
@@ -68,15 +68,10 @@ impl AzSnakeBot {
         }
     }
 
-    /// Loads the `.azweb` net; only the in-wasm CPU leaf evaluation needs it
+    /// Loads the `AZNET1` net; only the in-wasm CPU leaf evaluation needs it
     /// (the GPU path evaluates page-side).
     pub fn load_weights(&mut self, weights: &[u8]) -> Result<(), JsError> {
-        let net = Legacy::SnakeDense {
-            planes: PLANES,
-            policy_len: 4,
-        }
-        .load(weights)
-        .map_err(|e| JsError::new(&e))?;
+        let net = Net::parse(weights).map_err(|e| JsError::new(&e))?;
         self.model = Some(net);
         Ok(())
     }

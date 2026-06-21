@@ -11,9 +11,9 @@
 //! draws are off.
 
 use game_core::{Game, GameUi, PolicyValueEncoder, Rng};
-use go::encode::{GoEncoder, PLANES};
+use go::encode::GoEncoder;
 use go::{Go, GoAction, GoState};
-use nn_infer::{Legacy, Net};
+use nn_infer::Net;
 use solvers::azero::{EvalRequest, EvalResult, Gather, PuctConfig, Search, argmax};
 use wasm_bindgen::prelude::*;
 
@@ -36,7 +36,8 @@ pub struct AzGoBot {
     batch: Vec<EvalRequest>,
     /// The reference net, loaded in both modes: CPU play uses it for leaf
     /// evaluations, and either mode uses its ownership head for the pass
-    /// decision. `None` until `load_weights` (and ownership-less for `AZWEBGO2`).
+    /// decision. `None` until `load_weights` (and ownership-less if the net
+    /// carries no ownership head).
     model: Option<Net>,
     /// The tree holds at least an expanded root (safe to read/extract).
     has_tree: bool,
@@ -73,12 +74,10 @@ impl AzGoBot {
         }
     }
 
-    /// Loads the `.azweb` net (CPU leaf evaluation and the ownership pass
+    /// Loads the `AZNET1` net (CPU leaf evaluation and the ownership pass
     /// decision both need it, so both modes call this).
     pub fn load_weights(&mut self, weights: &[u8]) -> Result<(), JsError> {
-        let net = Legacy::GoSpatial { planes: PLANES }
-            .load(weights)
-            .map_err(|e| JsError::new(&e))?;
+        let net = Net::parse(weights).map_err(|e| JsError::new(&e))?;
         self.model = Some(net);
         Ok(())
     }
@@ -310,9 +309,10 @@ impl AzGoBot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use go::encode::PLANES;
 
-    /// A synthetic net of the right shape (heads are uniform fill, ownership
-    /// head `0.1`). `AZWEBGO3` when `ownership`, else `AZWEBGO2`.
+    /// A synthetic `AZNET1` go net of the right shape (heads are uniform fill,
+    /// ownership head `0.1` when present).
     fn synth_net(blocks: usize, c: usize, size: usize, ownership: bool) -> Vec<u8> {
         let floats = c * PLANES * 9
             + c
@@ -324,11 +324,21 @@ mod tests {
             + (c * c + c)
             + (128 * 3 * c + 128)
             + (128 + 1);
-        let mut b = Vec::new();
-        b.extend_from_slice(if ownership { b"AZWEBGO3" } else { b"AZWEBGO2" });
-        b.extend_from_slice(&(blocks as u32).to_le_bytes());
-        b.extend_from_slice(&(c as u32).to_le_bytes());
-        b.extend_from_slice(&(size as u32).to_le_bytes());
+        let arch = nn_infer::Arch {
+            blocks,
+            channels: c,
+            planes: PLANES,
+            size,
+            scalars: 0,
+            head: nn_infer::HeadKind::GlobalPoolSpatial,
+            policy_len: 0,
+            flags: nn_infer::HeadFlags(if ownership {
+                nn_infer::HeadFlags::OWNERSHIP
+            } else {
+                0
+            }),
+        };
+        let mut b = arch.header_bytes();
         for _ in 0..floats {
             b.extend_from_slice(&0.02f32.to_le_bytes());
         }

@@ -124,20 +124,17 @@ impl RefForward {
     }
 }
 
-/// Loads a committed `.azweb` net (any of the legacy magics) through the
-/// generic engine. The game supplies the plane count and head topology the
-/// legacy header omits; the weight stream is unchanged, so this is the same net
-/// the per-game forward parsed — now run through `nn-infer`.
+/// Loads a committed `AZNET1` net through the generic engine and forwards it
+/// over `n` positions at board `size`. The plane count comes from the net's
+/// header; `size` lets the global-pool heads forward at any board size.
 fn ref_forward(
-    legacy: nn_infer::Legacy,
     weights: &[u8],
     features: &[f32],
     n: usize,
-    planes: usize,
     size: usize,
 ) -> Result<RefForward, JsError> {
-    let net = legacy.load(weights).map_err(|e| JsError::new(&e))?;
-    let stride_in = planes * size * size;
+    let net = nn_infer::Net::parse(weights).map_err(|e| JsError::new(&e))?;
+    let stride_in = net.arch().planes * size * size;
     let mut out = RefForward {
         logits: Vec::new(),
         values: Vec::with_capacity(n),
@@ -152,9 +149,7 @@ fn ref_forward(
 
 /// The in-wasm CPU leaf evaluator: answers a batch of `EvalRequest`s with the
 /// generic forward, restricting and softmaxing the policy to each request's
-/// legal support. The AZ games carry no scalar side-input. Bit-identical to the
-/// per-game `Model::eval` the old crates supplied, so the in-wasm search is
-/// unchanged.
+/// legal support. The AZ games carry no scalar side-input.
 pub(crate) fn eval_batch(
     net: &nn_infer::Net,
     reqs: &[solvers::azero::EvalRequest],
@@ -176,15 +171,7 @@ pub fn go_reference_forward(
     n: usize,
     size: usize,
 ) -> Result<RefForward, JsError> {
-    let planes = go::encode::PLANES;
-    ref_forward(
-        nn_infer::Legacy::GoSpatial { planes },
-        weights,
-        features,
-        n,
-        planes,
-        size,
-    )
+    ref_forward(weights, features, n, size)
 }
 
 /// The snake reference forward over `n` positions (`features` flat, each
@@ -196,18 +183,7 @@ pub fn snake_reference_forward(
     n: usize,
     size: usize,
 ) -> Result<RefForward, JsError> {
-    let planes = snake::encode::PLANES;
-    ref_forward(
-        nn_infer::Legacy::SnakeDense {
-            planes,
-            policy_len: 4,
-        },
-        weights,
-        features,
-        n,
-        planes,
-        size,
-    )
+    ref_forward(weights, features, n, size)
 }
 
 /// The chess reference forward over `n` positions (`features` flat, each
@@ -218,18 +194,7 @@ pub fn chess_reference_forward(
     features: &[f32],
     n: usize,
 ) -> Result<RefForward, JsError> {
-    let planes = chess::encode::PLANE_COUNT;
-    ref_forward(
-        nn_infer::Legacy::FlatConv {
-            planes,
-            policy_len: chess::encode::AZ_POLICY_LEN,
-        },
-        weights,
-        features,
-        n,
-        planes,
-        8,
-    )
+    ref_forward(weights, features, n, 8)
 }
 
 #[wasm_bindgen]

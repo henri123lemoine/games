@@ -1,12 +1,7 @@
-//! The export parity gate: load a checkpoint, export it (legacy + `AZNET1`),
-//! and check that the tch forward agrees with `nn-infer`'s tch-free `AZNET1`
-//! forward over random positions. Guards the BN folding and the layer order —
-//! the proof that a trained net exports to weights the browser plays identically.
-//!
-//! `nn-infer` is bit-for-bit equal to the old per-game `*infer` forwards (its
-//! own parity tests pin that), so checking tch ≡ `nn-infer` is the enduring form
-//! of the historic tch ≡ `*infer` gate, and it carries no dependency on the
-//! retired per-game inference crates.
+//! The export parity gate: load a checkpoint, export it to `AZNET1`, and check
+//! that the tch forward agrees with `nn-infer`'s tch-free `AZNET1` forward over
+//! random positions. Guards the BN folding and the layer order — the proof that
+//! a trained net exports to weights the browser plays identically.
 
 use std::path::Path;
 
@@ -25,26 +20,20 @@ pub trait VerifyGame {
 
 /// Walks `positions` random legal positions and asserts tch ≡ `nn_infer(AZNET1)`
 /// for policy, value, and (go) ownership. `cfg` is the checkpoint architecture;
-/// `net_path` the checkpoint; the export is written to `legacy_out` (legacy
-/// dual-write, kept for the deployed browser nets) and `aznet1_out` first, and
-/// the `AZNET1` file is the one parsed back as the reference.
+/// `net_path` the checkpoint; the `AZNET1` export is written to `out` and parsed
+/// back as the reference.
 pub fn verify<V: VerifyGame>(
     net_path: &Path,
     cfg: NetConfig,
-    legacy_out: &Path,
-    aznet1_out: &Path,
+    out: &Path,
     positions: usize,
 ) -> Result<(), String> {
-    let body = crate::export::export_dual(net_path, cfg, legacy_out, aznet1_out)?;
-    println!(
-        "exported body {body} bytes -> {} (legacy) + {} (AZNET1)",
-        legacy_out.display(),
-        aznet1_out.display()
-    );
+    let body = crate::export::export(net_path, cfg, out)?;
+    println!("exported body {body} bytes -> {} (AZNET1)", out.display());
 
     let infer = Infer::load(net_path, cfg, tch::Device::Cpu, tch::Kind::Float)
         .map_err(|e| format!("load checkpoint: {e}"))?;
-    let aznet1_bytes = std::fs::read(aznet1_out).map_err(|e| format!("read aznet1: {e}"))?;
+    let aznet1_bytes = std::fs::read(out).map_err(|e| format!("read aznet1: {e}"))?;
     let net = nn_infer::Net::parse(&aznet1_bytes).map_err(|e| format!("nn_infer parse: {e}"))?;
 
     let game = V::game(&cfg);

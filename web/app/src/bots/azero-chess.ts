@@ -1,6 +1,6 @@
 // The AlphaZero chess bot. The wasm engine runs the park/resume PUCT search
 // and mirrors the game; this driver supplies the leaf evaluations. With WebGPU
-// it answers each parked leaf batch with the GPU net (weights from the AZWEB001
+// it answers each parked leaf batch with the GPU net (weights from the AZNET1
 // export); without it, it hands the same weights to the wasm engine and lets
 // `play_cpu` run the whole search in-wasm against nn-infer's reference forward —
 // same net, so anyone can play, GPU or not.

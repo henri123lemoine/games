@@ -7,7 +7,7 @@
 use game_core::{Game, GameUi, PolicyValueEncoder, Rng};
 use go::encode::GoEncoder;
 use go::{Go, GoAction, GoState, mask_pass_visits};
-use nn_infer::{Legacy, Net};
+use nn_infer::Net;
 use solvers::azero::{EvalResult, Gather, PuctConfig, Search, argmax};
 
 use super::eval::gnugo_path;
@@ -87,17 +87,8 @@ pub fn run(args: &[String]) {
     let games: usize = arg(args, "--games", 4);
     let sims: u32 = arg(args, "--sims", 8);
     let noise: f32 = arg(args, "--noise", 0.35);
-    // Accept either a new AZNET1 export or a legacy `.azweb` (the deployed go
-    // net, `AZWEBGO2/3`), which the generic engine loads via its legacy adapter.
     let data = std::fs::read(&net_path).expect("read net");
-    let net = Net::parse(&data)
-        .or_else(|_| {
-            Legacy::GoSpatial {
-                planes: go::encode::PLANES,
-            }
-            .load(&data)
-        })
-        .expect("parse net (AZNET1 or legacy AZWEBGO2/3)");
+    let net = Net::parse(&data).expect("parse AZNET1 net");
     let game = Go::new(SIZE);
     let enc = GoEncoder::new(SIZE);
 

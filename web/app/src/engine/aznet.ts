@@ -19,11 +19,8 @@
 //     head a small conv then a pair of linears, all on the GPU via the dense
 //     kernel; only the final channel-major→square-major reshuffle is CPU-side.
 //
-// The parser reads the unified AZNET1 header (see nn-infer/src/format.rs) and
-// also still accepts the per-game legacy magics (AZWEB001 / AZWEBGO2-3 / AZSNK1)
-// so committed weights keep loading until the trainers re-export AZNET1. The
-// weight body is byte-identical across the unified and legacy formats — only the
-// header differs — so a single body reader serves both.
+// The parser reads the unified AZNET1 header (see nn-infer/src/format.rs); it is
+// the only export format the arcade ships.
 
 /** `19.0` centers the global-pool size-scale; matches the trainers/reference. */
 const POOL_SIZE_REF = 19;
@@ -143,94 +140,36 @@ export interface Arch {
   ownership: boolean;
 }
 
-/** Parses any export header (unified AZNET1 or a legacy per-game magic) into the
- * unified `Arch` plus the byte offset where the weight stream begins. The
- * legacy magics carried only `(blocks, channels[, size])`; the remaining fields
- * are recovered from the known per-game topology so the body reader is uniform. */
+/** Parses the unified AZNET1 header into the `Arch` plus the byte offset where
+ * the weight stream begins. */
 export function parseArch(buf: ArrayBuffer): { arch: Arch; body: number } {
   const dv = new DataView(buf);
   const magic = new TextDecoder().decode(buf.slice(0, 8));
   const u32 = (off: number): number => dv.getUint32(off, true);
 
-  if (magic === 'AZNET1\0\0') {
-    // Fields are ten u32s at byte 8 + 4·i: version, blocks, channels, planes,
-    // size, scalars, head_kind, policy_len, flags, reserved (see format.rs).
-    const version = u32(8);
-    if (version !== 1) throw new Error('unsupported AZNET1 version ' + version);
-    const head = u32(32);
-    if (head > 2) throw new Error('unknown head_kind ' + head);
-    const flags = u32(40);
-    if (flags & ~FLAG_OWNERSHIP) throw new Error('unknown head flags ' + flags.toString(16));
-    if (u32(44) !== 0) throw new Error('nonzero reserved header word');
-    return {
-      arch: {
-        blocks: u32(12),
-        C: u32(16),
-        planes: u32(20),
-        size: u32(24),
-        scalars: u32(28),
-        head: head as HeadKind,
-        policyLen: u32(36),
-        ownership: !!(flags & FLAG_OWNERSHIP),
-      },
-      body: 48,
-    };
-  }
-
-  // Legacy formats: header is magic + (blocks, channels[, size]); the head
-  // topology is implied by the magic. The weight body that follows is identical
-  // to the corresponding AZNET1 net's, so the shared body reader handles it.
-  if (magic === 'AZWEB001') {
-    // Chess, fixed 8×8, 18 planes, 73 move planes → policy 4672.
-    return {
-      arch: {
-        blocks: u32(8),
-        C: u32(12),
-        planes: 18,
-        size: 8,
-        scalars: 0,
-        head: HeadKind.FlatConv,
-        policyLen: 8 * 8 * 73,
-        ownership: false,
-      },
-      body: 16,
-    };
-  }
-  if (magic.startsWith('AZWEBGO2') || magic.startsWith('AZWEBGO3')) {
-    // Go global-pool spatial; GO3 appends the ownership head.
-    return {
-      arch: {
-        blocks: u32(8),
-        C: u32(12),
-        planes: 16,
-        size: u32(16),
-        scalars: 0,
-        head: HeadKind.GlobalPoolSpatial,
-        policyLen: 0,
-        ownership: magic.startsWith('AZWEBGO3'),
-      },
-      body: 20,
-    };
-  }
-  if (magic.startsWith('AZSNK1')) {
-    // Snake global-pool dense; 4 absolute headings, 18 planes. The 18-byte
-    // header is read by field, and the body reader copies (never views) floats,
-    // so the 2-byte-aligned float region is fine.
-    return {
-      arch: {
-        blocks: u32(6),
-        C: u32(10),
-        planes: 18,
-        size: u32(14),
-        scalars: 0,
-        head: HeadKind.GlobalPoolDense,
-        policyLen: 4,
-        ownership: false,
-      },
-      body: 18,
-    };
-  }
-  throw new Error('bad magic: ' + magic);
+  if (magic !== 'AZNET1\0\0') throw new Error('bad magic: ' + magic);
+  // Fields are ten u32s at byte 8 + 4·i: version, blocks, channels, planes,
+  // size, scalars, head_kind, policy_len, flags, reserved (see format.rs).
+  const version = u32(8);
+  if (version !== 1) throw new Error('unsupported AZNET1 version ' + version);
+  const head = u32(32);
+  if (head > 2) throw new Error('unknown head_kind ' + head);
+  const flags = u32(40);
+  if (flags & ~FLAG_OWNERSHIP) throw new Error('unknown head flags ' + flags.toString(16));
+  if (u32(44) !== 0) throw new Error('nonzero reserved header word');
+  return {
+    arch: {
+      blocks: u32(12),
+      C: u32(16),
+      planes: u32(20),
+      size: u32(24),
+      scalars: u32(28),
+      head: head as HeadKind,
+      policyLen: u32(36),
+      ownership: !!(flags & FLAG_OWNERSHIP),
+    },
+    body: 48,
+  };
 }
 
 /** Sequential reader over an export's float region — the TS mirror of nn-infer's

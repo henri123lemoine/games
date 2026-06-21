@@ -37,19 +37,16 @@ fn export(args: &[String]) {
         "--net",
         PathBuf::from("../data/azsnake/run3/latest.ot"),
     );
-    let legacy: PathBuf = run::parse_arg(args, "--out", net.with_file_name("azero-snake.azweb"));
-    let aznet1: PathBuf =
-        run::parse_arg(args, "--aznet1", net.with_file_name("azero-snake.aznet1"));
+    let out: PathBuf = run::parse_arg(args, "--out", net.with_file_name("azero-snake.azweb"));
     let cfg = run::net_config_for(args, &net);
-    let len = crate::export::export_dual(&net, cfg, &legacy, &aznet1).expect("export");
+    let len = crate::export::export(&net, cfg, &out).expect("export");
     println!(
-        "exported {}x{} size-{} net: {} body bytes -> {} (legacy) + {} (AZNET1)",
+        "exported {}x{} size-{} net: {} body bytes -> {} (AZNET1)",
         cfg.blocks,
         cfg.channels,
         cfg.size,
         len,
-        legacy.display(),
-        aznet1.display()
+        out.display(),
     );
 }
 
@@ -59,11 +56,9 @@ fn verify_export(args: &[String]) {
         "--net",
         PathBuf::from("../data/azsnake/run3/latest.ot"),
     );
-    let legacy: PathBuf = run::parse_arg(args, "--out", net.with_file_name("azero-snake.azweb"));
-    let aznet1: PathBuf =
-        run::parse_arg(args, "--aznet1", net.with_file_name("azero-snake.aznet1"));
+    let out: PathBuf = run::parse_arg(args, "--out", net.with_file_name("azero-snake.azweb"));
     let cfg = run::net_config_for(args, &net);
-    verify::<SnakeVerify>(&net, cfg, &legacy, &aznet1, 120).expect("verify");
+    verify::<SnakeVerify>(&net, cfg, &out, 120).expect("verify");
 }
 
 /// The snake binary's command dispatch.

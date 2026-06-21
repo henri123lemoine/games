@@ -1,17 +1,13 @@
 //! Self-consistency of the generic forward on the *committed trained nets*,
-//! loaded through `nn_infer::Legacy` (the deploy path). The bit-for-bit
-//! comparison against the original `azinfer`/`goinfer`/`snakeinfer` forwards
-//! lived here too — that `==` proof passed and retired with those reference
-//! crates when they were deleted. What endures and still needs guarding: the
-//! committed nets parse, the AZNET1 body stays byte-identical to the legacy body
-//! (the 73-zero policy-conv pad), the forward is well-formed (finite logits,
+//! which are now `AZNET1` (the per-game `azinfer`/`goinfer`/`snakeinfer` forwards
+//! and the legacy magics they read are gone). Guards that each committed net
+//! parses, its header round-trips, the forward is well-formed (finite logits,
 //! `value ∈ [-1,1]`, ownership where the head carries it), it is board-size
 //! agnostic for the global-pool heads, and `forward_support` yields a valid
 //! distribution over the legal subset.
 
-use nn_infer::{Arch, HeadFlags, HeadKind, Legacy, Net};
+use nn_infer::{HeadKind, Net};
 
-/// A tiny xorshift RNG so inputs are reproducible without a dep.
 struct Rng(u64);
 impl Rng {
     fn f32(&mut self) -> f32 {
@@ -40,39 +36,34 @@ fn well_formed(out: &nn_infer::Output, policy_len: usize) {
     );
 }
 
+/// The committed nets are AZNET1: their magic is the unified one, and the header
+/// re-serializes to the same bytes it parsed from (round-trip).
+fn assert_aznet1_round_trip(bytes: &[u8]) {
+    assert_eq!(
+        &bytes[..8],
+        nn_infer::format::MAGIC.as_slice(),
+        "AZNET1 magic"
+    );
+    let net = Net::parse(bytes).expect("AZNET1 parse");
+    let header = net.arch().header_bytes();
+    assert_eq!(
+        header,
+        &bytes[..nn_infer::format::HEADER_LEN],
+        "header round-trips to the same bytes"
+    );
+}
+
 #[test]
 fn chess_net_loads_and_is_well_formed() {
-    let Some(old) = read("web/app/public/azero/azero-chess.azweb") else {
+    let Some(bytes) = read("web/app/public/azero/azero-chess.azweb") else {
         eprintln!("skip: chess net not committed");
         return;
     };
-    let planes = chess::encode::PLANE_COUNT;
-    let policy_len = chess::encode::AZ_POLICY_LEN;
-    let net = Legacy::FlatConv { planes, policy_len }
-        .load(&old)
-        .expect("legacy load");
+    assert_aznet1_round_trip(&bytes);
+    let net = Net::parse(&bytes).expect("parse");
     assert_eq!(net.arch().head, HeadKind::FlatConv);
-
-    // Byte-identical body: an AZNET1 buffer for the same arch is
-    // `header ∥ legacy_body`, including chess's 73-zero policy-conv bias pad.
-    let arch = Arch {
-        blocks: net.arch().blocks,
-        channels: net.arch().channels,
-        planes,
-        size: 8,
-        scalars: 0,
-        head: HeadKind::FlatConv,
-        policy_len,
-        flags: HeadFlags::default(),
-    };
-    let mut aznet = arch.header_bytes();
-    aznet.extend_from_slice(&old[16..]);
-    assert_eq!(
-        aznet[nn_infer::format::HEADER_LEN..],
-        old[16..],
-        "AZNET1 FlatConv body must equal the legacy body (73-zero pad kept)"
-    );
-    assert!(Net::parse(&aznet).is_ok(), "rewrapped AZNET1 parses");
+    let planes = net.arch().planes;
+    let policy_len = net.arch().policy_len;
 
     let mut rng = Rng(0xC0FFEE);
     for _ in 0..16 {
@@ -82,20 +73,19 @@ fn chess_net_loads_and_is_well_formed() {
 
 #[test]
 fn go_net_loads_well_formed_size_agnostic_with_ownership() {
-    let Some(old) = read("web/app/public/azero/azero-go.azweb") else {
+    let Some(bytes) = read("web/app/public/azero/azero-go.azweb") else {
         eprintln!("skip: go net not committed");
         return;
     };
-    let planes = go::encode::PLANES;
-    let net = Legacy::GoSpatial { planes }
-        .load(&old)
-        .expect("legacy load");
-    let size = net.arch().size;
+    assert_aznet1_round_trip(&bytes);
+    let net = Net::parse(&bytes).expect("parse");
     assert_eq!(net.arch().head, HeadKind::GlobalPoolSpatial);
     assert!(
         net.arch().flags.ownership(),
-        "the committed go net carries the ownership head (AZWEBGO3)"
+        "the committed go net carries the ownership head"
     );
+    let planes = net.arch().planes;
+    let size = net.arch().size;
 
     let mut rng = Rng(0x90D90D);
     // The global-pool heads run at any board size on the same weights.
@@ -115,19 +105,15 @@ fn go_net_loads_well_formed_size_agnostic_with_ownership() {
 
 #[test]
 fn snake_net_loads_well_formed_size_agnostic() {
-    let Some(old) = read("web/app/public/azero/azero-snake.azweb") else {
+    let Some(bytes) = read("web/app/public/azero/azero-snake.azweb") else {
         eprintln!("skip: snake net not committed");
         return;
     };
-    let planes = snake::encode::PLANES;
-    let net = Legacy::SnakeDense {
-        planes,
-        policy_len: 4,
-    }
-    .load(&old)
-    .expect("legacy load");
-    let size = net.arch().size;
+    assert_aznet1_round_trip(&bytes);
+    let net = Net::parse(&bytes).expect("parse");
     assert_eq!(net.arch().head, HeadKind::GlobalPoolDense);
+    let planes = net.arch().planes;
+    let size = net.arch().size;
 
     let mut rng = Rng(0x5EED5);
     for &s in &[size, 11] {
@@ -141,14 +127,12 @@ fn snake_net_loads_well_formed_size_agnostic() {
 
 #[test]
 fn forward_support_is_a_distribution_over_the_legal_subset() {
-    let Some(old) = read("web/app/public/azero/azero-go.azweb") else {
+    let Some(bytes) = read("web/app/public/azero/azero-go.azweb") else {
         eprintln!("skip: go net not committed");
         return;
     };
-    let planes = go::encode::PLANES;
-    let net = Legacy::GoSpatial { planes }
-        .load(&old)
-        .expect("legacy load");
+    let net = Net::parse(&bytes).expect("parse");
+    let planes = net.arch().planes;
     let size = net.arch().size;
 
     let mut rng = Rng(0xA11CE);

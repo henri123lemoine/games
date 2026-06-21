@@ -11,10 +11,9 @@
 
 use std::collections::HashMap;
 
-use chess::encode::PLANE_COUNT;
 use chess::{Board, Move, legal_moves};
 use game_core::Rng;
-use nn_infer::{Legacy, Net};
+use nn_infer::Net;
 use solvers::azero::{EvalRequest, EvalResult, argmax};
 use wasm_bindgen::prelude::*;
 
@@ -66,15 +65,10 @@ impl AzChessBot {
         }
     }
 
-    /// Loads the `AZWEB001` weights for the CPU path (`play_cpu`). Only needed
+    /// Loads the `AZNET1` weights for the CPU path (`play_cpu`). Only needed
     /// when the page has no WebGPU; the GPU path never calls this.
     pub fn load_weights(&mut self, weights: &[u8]) -> Result<(), JsError> {
-        let net = Legacy::FlatConv {
-            planes: PLANE_COUNT,
-            policy_len: chess::encode::AZ_POLICY_LEN,
-        }
-        .load(weights)
-        .map_err(|e| JsError::new(&e))?;
+        let net = Net::parse(weights).map_err(|e| JsError::new(&e))?;
         self.model = Some(net);
         Ok(())
     }

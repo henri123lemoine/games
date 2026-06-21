@@ -1,10 +1,6 @@
-//! Checkpoint export with every BatchNorm folded into its conv. The BN-folded
-//! weight stream (the file's body) is byte-identical across the legacy per-game
-//! formats and the unified `AZNET1` container — only the header differs — so the
-//! body is built once here and written under whichever header(s) the caller
-//! wants. `AZNET1` is emitted alongside the legacy format during the transition;
-//! the legacy file keeps the committed browser nets and the trainers'
-//! `verify-export` parity gate green.
+//! Checkpoint export with every BatchNorm folded into its conv, written in the
+//! unified `AZNET1` container. The BN-folded weight stream (the file's body) is
+//! built once and written under the `AZNET1` header.
 //!
 //! Fold: `w' = w·γ/√(σ²+ε)`, `b' = β − μ·γ/√(σ²+ε)`, so a runtime needs only
 //! conv+bias, linear, global-pool, relu, tanh.
@@ -15,37 +11,6 @@ use nn_infer::{Arch, HeadFlags, HeadKind};
 use tch::{Device, Kind, Tensor, nn};
 
 use crate::net::{Net, NetConfig};
-
-/// The legacy magic + dim header for a game's pre-`AZNET1` export, matching the
-/// exact bytes the deployed browser nets (`AZWEB001` / `AZWEBGO2-3` / `AZSNK1`)
-/// carry — kept so re-exporting a checkpoint reproduces those bytes verbatim.
-fn legacy_header(cfg: &NetConfig, has_ownership: bool) -> Vec<u8> {
-    let mut b = Vec::new();
-    match cfg.head {
-        HeadKind::FlatConv => {
-            b.extend_from_slice(b"AZWEB001");
-            b.extend_from_slice(&(cfg.blocks as u32).to_le_bytes());
-            b.extend_from_slice(&(cfg.channels as u32).to_le_bytes());
-        }
-        HeadKind::GlobalPoolSpatial => {
-            b.extend_from_slice(if has_ownership {
-                b"AZWEBGO3"
-            } else {
-                b"AZWEBGO2"
-            });
-            b.extend_from_slice(&(cfg.blocks as u32).to_le_bytes());
-            b.extend_from_slice(&(cfg.channels as u32).to_le_bytes());
-            b.extend_from_slice(&(cfg.size as u32).to_le_bytes());
-        }
-        HeadKind::GlobalPoolDense => {
-            b.extend_from_slice(b"AZSNK1");
-            b.extend_from_slice(&(cfg.blocks as u32).to_le_bytes());
-            b.extend_from_slice(&(cfg.channels as u32).to_le_bytes());
-            b.extend_from_slice(&(cfg.size as u32).to_le_bytes());
-        }
-    }
-    b
-}
 
 /// The `AZNET1` header for this architecture.
 fn aznet1_header(cfg: &NetConfig, has_ownership: bool) -> Vec<u8> {
@@ -164,14 +129,9 @@ fn build_body(vs: &nn::VarStore, cfg: &NetConfig) -> (Vec<u8>, bool) {
 }
 
 /// Loads `net_path` into a fresh VarStore for `cfg`, builds the BN-folded body,
-/// and writes the legacy file (`legacy_out`) and the `AZNET1` file (`aznet1_out`).
-/// Returns the byte length of the (shared) body for logging.
-pub fn export_dual(
-    net_path: &Path,
-    cfg: NetConfig,
-    legacy_out: &Path,
-    aznet1_out: &Path,
-) -> Result<usize, String> {
+/// and writes the `AZNET1` file (`out`). Returns the byte length of the body for
+/// logging.
+pub fn export(net_path: &Path, cfg: NetConfig, out: &Path) -> Result<usize, String> {
     let mut vs = nn::VarStore::new(Device::Cpu);
     let _net = Net::new(&vs.root(), cfg);
     crate::net::load_inference_weights(&mut vs, net_path)
@@ -179,13 +139,9 @@ pub fn export_dual(
 
     let (body, has_ownership) = build_body(&vs, &cfg);
 
-    let mut legacy = legacy_header(&cfg, has_ownership);
-    legacy.extend_from_slice(&body);
-    std::fs::write(legacy_out, &legacy).map_err(|e| format!("write legacy: {e}"))?;
-
     let mut aznet1 = aznet1_header(&cfg, has_ownership);
     aznet1.extend_from_slice(&body);
-    std::fs::write(aznet1_out, &aznet1).map_err(|e| format!("write aznet1: {e}"))?;
+    std::fs::write(out, &aznet1).map_err(|e| format!("write aznet1: {e}"))?;
 
     Ok(body.len())
 }

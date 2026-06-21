@@ -1,20 +1,15 @@
 //! The `AZNET1` container: the self-describing header and the `Reader`
 //! primitives that walk the BN-folded weight stream. One parser for every
-//! exported conv-resnet net, replacing the per-game `AZWEB001` / `AZWEBGO2/3` /
-//! `AZSNK1` magics. The header names the architecture (`blocks`, `channels`,
-//! `planes`, `size`, `scalars`) and the head topology (`HeadKind`,
+//! exported conv-resnet net. The header names the architecture (`blocks`,
+//! `channels`, `planes`, `size`, `scalars`) and the head topology (`HeadKind`,
 //! `policy_len`, `HeadFlags`); the body is fp32 little-endian weights in a fixed
 //! layer order. The `Reader{floats,conv,linear}` set and the no-trailing-bytes
-//! integrity check are the integrity boundary the per-game forwards once shared.
+//! check are the format's integrity boundary.
 //!
-//! **Byte-identical bodies.** The `AZNET1` weight stream is laid out so the body
-//! after the header is byte-for-byte the legacy body — every conv keeps its bias
-//! (including chess's unused zero-padded policy-conv bias, see
-//! [`HeadKind::FlatConv`]), in the legacy layer order. So an `AZNET1` buffer is
-//! exactly `header ∥ legacy_body`: only the header differs. That is what lets
-//! [`crate::legacy`] load the committed old-format nets and lets a trainer's
-//! exporter switch to `AZNET1` by swapping the header alone, keeping its
-//! existing weight-dump untouched.
+//! **Body layout.** Every conv carries a bias — including chess's unused
+//! zero-padded policy-conv bias (see [`HeadKind::FlatConv`]) — so the runtime
+//! needs only conv+bias / linear / relu / tanh. The trainer's exporter writes
+//! the header, then dumps the BN-folded weights in this order.
 
 /// `AZNET1\0\0`: the unified magic, padded to 8 bytes.
 pub const MAGIC: &[u8; 8] = b"AZNET1\0\0";
@@ -26,7 +21,7 @@ pub const VERSION: u32 = 1;
 /// Number of `u32` header fields after the magic.
 const HEADER_FIELDS: usize = 10;
 /// Total header byte count: the 8-byte magic plus the ten `u32` fields (48).
-/// The weight stream begins here; an `AZNET1` buffer is `header ∥ legacy_body`.
+/// The weight stream begins here.
 pub const HEADER_LEN: usize = MAGIC.len() + HEADER_FIELDS * 4;
 
 /// Which policy/value head topology the trunk feeds. The trained nets pair a
@@ -38,11 +33,10 @@ pub enum HeadKind {
     /// and a value head that flattens a small conv to a dense MLP. Board-fixed.
     ///
     /// The policy conv `p2` (`C`→`policy_len/size²`) **carries a bias like every
-    /// other conv**, even though chess never uses it: the legacy `AZWEB001` body
-    /// writes `policy_len/size²` (= 73) zero floats there to honor the runtime's
-    /// "every conv has a bias" invariant, and `AZNET1` **keeps that pad** so the
-    /// FlatConv body stays byte-identical to the legacy body. The exporter must
-    /// emit those zeros; the reader consumes them via [`Reader::conv`].
+    /// other conv**, even though chess never uses it: the exporter writes
+    /// `policy_len/size²` (= 73) zero floats there to honor the runtime's "every
+    /// conv has a bias" invariant. The exporter must emit those zeros; the reader
+    /// consumes them via [`Reader::conv`].
     FlatConv,
     /// Go: a 1×1 conv policy biased by the global pool, one logit per board
     /// point plus a pooled pass logit (`size²+1` wide), and a global-pool value
