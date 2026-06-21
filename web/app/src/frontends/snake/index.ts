@@ -478,6 +478,51 @@ class SnakeFrontend implements GameFrontend {
     this.updateOverlay(view, state);
   }
 
+  // ----- real-time driver interface (snake play) -----
+  // The real-time driver (shell/snake-realtime.ts) owns a FIXED game clock and
+  // drives the board through these two fire-and-forget methods, so the player's
+  // snake advances on the clock and is NEVER gated by the bot's search.
+
+  /** The player's heading for THIS tick: their latest pressed direction (legal
+   * vs the current heading), else straight on. Sampled instantly — no await, no
+   * bot — so the driver can apply it the moment the clock ticks. Clears the
+   * consumed press so a held key keeps turning only once. */
+  pollHeading(): string {
+    const cur = this.currentHeading();
+    const pressed = this.desired;
+    this.desired = null;
+    const want = pressed && pressed !== OPPOSITE[cur] ? pressed : cur;
+    return LABEL_OF[want];
+  }
+
+  /** Glide to a freshly-applied state over `durMs` (the fixed clock period).
+   * Fire-and-forget: starts the glide and returns immediately, so the driver's
+   * clock is never blocked. A non-head-moving update (pending commit / food)
+   * just merges in. */
+  pushState(state: ViewState, durMs: number): void {
+    const next = asView(state.viewData);
+    if (!next) return;
+    const prev = this.latestKnown();
+    this.syncJuice(next);
+    this.updateBar(next, state);
+    this.updateOverlay(next, state);
+    this.side = next.side;
+    const scale = this.ctx.animationScale();
+    if (scale <= 0) {
+      this.view = next;
+      this.glide = null;
+      return;
+    }
+    if (!prev || !headMoved(prev, next)) {
+      if (!this.glide) this.view = next;
+      return;
+    }
+    const now = performance.now();
+    const from = this.glide ? this.glide.to : (this.view ?? prev);
+    this.glide = { from, to: next, start: now, dur: durMs * scale };
+    this.glideEndsAt = now + durMs * scale;
+  }
+
   async animate(_event: MatchEventData, after: ViewState): Promise<void> {
     const next = asView(after.viewData);
     if (!next) return;

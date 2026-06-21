@@ -4,6 +4,7 @@
 // and narration, frontends own the board.
 
 import { type ClientBot, clientBotFor } from "../bots";
+import { createSnakeSearch, type SnakeSearchHandle } from "../bots/snake-search";
 import { EngineHost } from "../engine/host";
 import type {
   GameInfo,
@@ -14,6 +15,8 @@ import type {
 } from "../engine/protocol";
 import { frontendFor, hasFrontend } from "../frontends";
 import type { SlitherScreen } from "../frontends/slither";
+import type { RealtimeBoard } from "./snake-realtime";
+import { SnakeRealtime } from "./snake-realtime";
 import type { FrontendCtx, GameFrontend } from "../frontends/types";
 import { CPU_LEVELS, isCpuFallback, TRIVIAL_SIMS } from "./azero";
 import {
@@ -242,6 +245,11 @@ export class App {
   private submitResolve: ((input: string) => void) | null = null;
   private logEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
+  /** Snake play runs on a dedicated real-time driver (fixed clock, bot search
+   * off the critical path) instead of the serial match loop. */
+  private snakeRealtime: SnakeRealtime | null = null;
+  private snakeSearch: SnakeSearchHandle | null = null;
+  private snakeSearchHost: EngineHost | null = null;
 
   constructor(private root: HTMLElement) {
     window.addEventListener("hashchange", () => this.route());
@@ -571,12 +579,15 @@ export class App {
       opts.bot === "azero-gpu" ||
       splitSpecs(opts.bots ?? "").some((s) => s.split(":")[0] === "azero-gpu");
     if (azeroSeat && isCpuFallback()) this.showCpuNote();
+    // Snake PLAY (human seated, AlphaZero opponent) runs real-time: a dedicated
+    // fixed-clock driver with the bot's search off the critical path, so the
+    // player's snake is never gated by the bot's compute. Watch mode and the
+    // CPU/keyboard fallback keep the generic serial loop.
+    const snakePlay =
+      game.id === "snake" && usesAzeroGpu && opts.seat !== "watch";
     try {
       await this.loadArtifacts(game, opts);
       const st = await this.host.create(game.id, opts);
-      if (gen !== this.gen) return;
-      const makeBot = clientBotFor(game.id, usesAzeroGpu ? "azero-gpu" : opts.bot);
-      this.clientBot = makeBot ? await makeBot(this.host, opts) : null;
       if (gen !== this.gen) return;
       const boardEl = this.root.querySelector<HTMLElement>(".board")!;
       this.frontend = frontendFor(game.id);
@@ -591,12 +602,50 @@ export class App {
       this.frontend.mount(boardEl, ctx);
       this.frontend.render(st);
       this.fillSeatSlots(game, opts);
+
+      if (snakePlay) {
+        await this.startSnakeRealtime(gen, opts, st);
+        return;
+      }
+
+      const makeBot = clientBotFor(game.id, usesAzeroGpu ? "azero-gpu" : opts.bot);
+      this.clientBot = makeBot ? await makeBot(this.host, opts) : null;
+      if (gen !== this.gen) return;
       this.setStatus(st.humanSeat < 0 ? "Bots playing…" : "Thinking…");
       void this.runLoop(gen);
     } catch (e) {
       if (gen === this.gen)
         this.setStatus(`Could not start: ${message(e)}`, "error");
     }
+  }
+
+  /** Wire snake's real-time driver: a background search on its own worker, plus
+   * the fixed-clock driver that reads the player's input and the bot's
+   * best-so-far each tick without ever awaiting the search. */
+  private async startSnakeRealtime(
+    gen: number,
+    opts: Record<string, string>,
+    initial: ViewState,
+  ): Promise<void> {
+    const { search, host } = await createSnakeSearch(opts);
+    if (gen !== this.gen) {
+      search.stop();
+      host.terminate();
+      return;
+    }
+    this.snakeSearch = search;
+    this.snakeSearchHost = host;
+    const board = this.frontend as unknown as RealtimeBoard;
+    this.snakeRealtime = new SnakeRealtime(
+      this.host,
+      search,
+      board,
+      () => gen === this.gen,
+      () => {
+        /* the frontend draws its own game-over overlay */
+      },
+    );
+    this.snakeRealtime.start(initial);
   }
 
   private renderMatchSkeleton(
@@ -1119,6 +1168,12 @@ export class App {
   private teardownMatch(): void {
     this.clientBot?.cancel();
     this.clientBot = null;
+    this.snakeRealtime?.stop();
+    this.snakeRealtime = null;
+    this.snakeSearch?.stop();
+    this.snakeSearch = null;
+    this.snakeSearchHost?.terminate();
+    this.snakeSearchHost = null;
     this.frontend?.unmount();
     this.frontend = null;
     this.submitResolve = null;

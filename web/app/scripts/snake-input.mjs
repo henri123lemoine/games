@@ -195,6 +195,9 @@ async function main() {
     // Read the snake's ACTUAL current heading (not a tracked guess) right before
     // each command, so harness bookkeeping can't drift from the game.
     for (const key of sequence) {
+      // Stop if the snake already died (e.g. into the active bot) — a dead head
+      // can't turn, so further presses aren't a fair input test.
+      if (await page.evaluate(() => !!document.querySelector('.snk-overlay.snk-show'))) break;
       const want = KEY_DIR[key];
       const before = (await head(page))?.dir ?? 'e';
       // Skip an illegal 180° of the current heading — the game legitimately keeps
@@ -286,16 +289,17 @@ async function main() {
         };
         window.__cgRaf = requestAnimationFrame(tick);
       });
-      // Drive a gentle clockwise box: a few cells each side. ~4.5s total.
+      // Drive a tight clockwise box near center (~2 cells/side at the fast clock)
+      // so the player survives many uninterrupted cells. ~3.5s total.
       const box = ['ArrowUp', 'ArrowRight', 'ArrowDown', 'ArrowLeft'];
       const t0 = Date.now();
       let bi = 0;
-      while (Date.now() - t0 < 4500) {
+      while (Date.now() - t0 < 3500) {
         const over = await page.evaluate(() => !!document.querySelector('.snk-overlay.snk-show'));
         if (over) break;
         await page.keyboard.press(box[bi % 4]);
         bi++;
-        await page.waitForTimeout(560); // a few cells per side
+        await page.waitForTimeout(260);
       }
       const glide = await page.evaluate(() => {
         cancelAnimationFrame(window.__cgRaf);
@@ -303,10 +307,14 @@ async function main() {
         const t = s.length ? s[0].t : 0;
         return s.map((p) => ({ t: p.t - t, x: p.x, y: p.y }));
       });
-      result.continuousGlide = analyzePath(glide);
-      result.continuousEndedEarly = await page.evaluate(
+      const endedEarly = await page.evaluate(
         () => !!document.querySelector('.snk-overlay.snk-show'),
       );
+      result.continuousGlide =
+        glide.length >= 5
+          ? analyzePath(glide)
+          : { note: 'snake collided with the active bot before enough cells', samples: glide.length };
+      result.continuousEndedEarly = endedEarly;
     }
 
     await page.screenshot({ path: join(OUT_DIR, 'snake-input.png') });
