@@ -30,7 +30,7 @@
 // toward their target rather than freezing then snapping.
 
 import type { MatchEventData, ViewState } from '../../engine/protocol';
-import { sleep, type FrontendCtx, type GameFrontend } from '../types';
+import { type FrontendCtx, type GameFrontend } from '../types';
 import { lastMove, resetTelemetry } from './telemetry';
 
 type Abs = 'n' | 'e' | 's' | 'w';
@@ -83,18 +83,27 @@ const LABEL_OF: Record<Abs, string> = { n: 'up', e: 'right', s: 'down', w: 'left
 
 const TICK_MS = 150;
 const QUEUE_MAX = 2;
-/** How long the shell blocks on `animate` before stepping to the next move —
- * i.e. the extra cadence the frontend adds on top of the bot's think. The shell
- * runs bot-think then awaits `animate` serially, so the felt pace is roughly
- * bot-think + this. Kept SHORT so the bot, not the frontend, is the bottleneck;
- * the visual glide (below) runs longer in the rAF loop, decoupled from this
- * await, so a small pace doesn't make the motion choppy. */
-const MOVE_PACE_MS = 70;
-/** How long a one-cell slide takes on screen. Kept longer than the pace so the
- * snake is essentially always mid-glide (continuous motion, never a snap-then-
- * wait). When the next move lands before this elapses, the new glide picks up
- * from the current interpolated position, so it stays seamless. */
-const GLIDE_MS = 160;
+/** The snake glides one cell per `cellMs`, LINEARLY — a steady ms-per-cell, so
+ * within any short window the motion is constant-velocity like Google Snake. The
+ * value is held steady across each cell and only drifts slowly (an EMA, below)
+ * toward the measured supply rate, so the cadence is a metronome that tracks the
+ * machine's throughput rather than a hard-coded guess that either freezes (too
+ * fast) or crawls (too slow). These bounds keep it sane on any machine. */
+const CELL_MS_MIN = 90;
+const CELL_MS_MAX = 600;
+/** Where the cadence starts before any inter-cell interval has been measured. */
+const CELL_MS_INIT = 150;
+/** EMA weight for new inter-cell-interval samples. Small, so the cadence eases
+ * toward a new supply rate over several cells rather than jolting per move —
+ * local velocity stays uniform; only the long-run pace adapts. */
+const CADENCE_EMA = 0.18;
+/** How many ready-but-not-yet-shown moves the frontend buffers. `animate`
+ * returns as soon as a move is enqueued (until the buffer is full), so the shell
+ * loops on to compute the NEXT move while the current one is still gliding — the
+ * search is PIPELINED under the glide. The buffer absorbs per-move jitter so the
+ * drained cadence stays steady; a small cap applies backpressure so the shell
+ * can't run unboundedly ahead of the display. */
+const BUFFER_MAX = 3;
 
 interface Palette {
   body: string; // mid band
@@ -320,7 +329,10 @@ function debugEnabled(): boolean {
   }
 }
 
-/** A glide between two discrete game states, eased over a real time window. */
+/** A glide between two discrete game states, run LINEARLY over `dur` ms so the
+ * snake advances at constant velocity within the cell. `dur` is locked when the
+ * glide starts (from the live cadence), so a cadence drift never changes the
+ * speed of a cell already in motion. */
 interface Glide {
   from: DuelView;
   to: DuelView;
@@ -362,6 +374,16 @@ class SnakeFrontend implements GameFrontend {
 
   private view: DuelView | null = null;
   private glide: Glide | null = null;
+  /** Head-moving states delivered by the shell but not yet glided to. The rAF
+   * loop drains this at the fixed CELL_MS cadence, so a burst of quick moves
+   * queues up and plays out at uniform speed rather than racing the display. */
+  private stateQueue: DuelView[] = [];
+  /** Resolvers for `animate` calls parked on a full buffer (backpressure). */
+  private bufferWaiters: (() => void)[] = [];
+  /** EMA of the wall-clock interval between head-moving states arriving — the
+   * supply rate the glide cadence tracks. `cellMs` is the live ms-per-cell. */
+  private cellMs = CELL_MS_INIT;
+  private lastHeadMoveAt = 0;
   private side = 20;
   private cssSize = 0;
   private rafId = 0;
@@ -454,9 +476,11 @@ class SnakeFrontend implements GameFrontend {
     const view = asView(state.viewData);
     if (!view) return;
     this.side = view.side;
-    // A render with no head movement (e.g. seat 0's pending commit, or a food
-    // spawn) snaps; a render that advanced both heads is glided by animate().
-    if (!this.glide) this.view = view;
+    // Snap to this state only when nothing is mid-flight: an active glide or a
+    // buffered move owns the display until it drains (committed by the draw
+    // loop). render() is the human's-turn / final redraw path, which doesn't go
+    // through animate().
+    if (!this.glide && this.stateQueue.length === 0) this.view = view;
     this.syncJuice(view);
     this.updateBar(view, state);
     this.updateOverlay(view, state);
@@ -465,46 +489,83 @@ class SnakeFrontend implements GameFrontend {
   async animate(_event: MatchEventData, after: ViewState): Promise<void> {
     const next = asView(after.viewData);
     if (!next) return;
-    const prev = this.view;
+    const prev = this.latestKnown();
     this.syncJuice(next);
     this.updateBar(next, after);
     this.updateOverlay(next, after);
     const scale = this.ctx.animationScale();
-    if (!prev || !headMoved(prev, next) || scale <= 0) {
-      this.view = next;
-      this.glide = null;
-      this.side = next.side;
-      return;
-    }
     this.side = next.side;
 
-    // Start the visual glide and return after only a SHORT paced await. The
-    // glide itself finishes in the rAF draw loop, decoupled from this await, so
-    // the shell isn't blocked move-to-move for the whole slide. If a glide is
-    // already mid-flight, continue from where it visually is (no teleport).
+    // Motion disabled (reduced-motion / instant speed): drop everything in
+    // flight and snap to the final state.
+    if (scale <= 0) {
+      this.view = next;
+      this.glide = null;
+      this.stateQueue = [];
+      this.flushBufferWaiters();
+      return;
+    }
+
+    // No head movement (a seat-0 pending commit, or a food spawn): carries no
+    // motion of its own. If a glide or buffered move is in flight it owns the
+    // display — leave it untouched (the non-positional data was already merged
+    // above). Otherwise snap this state in so the board reflects it.
+    if (!prev || !headMoved(prev, next)) {
+      if (!this.glide && this.stateQueue.length === 0) this.view = next;
+      return;
+    }
+
+    // Measure how fast head-moving states are actually arriving (the supply
+    // rate) and ease the glide cadence toward it. The pace then matches the
+    // bot's real throughput on this machine — fast enough to never freeze, slow
+    // enough to never starve — while only drifting gradually, so the velocity
+    // stays locally uniform.
     const now = performance.now();
-    const from = this.currentBodies() ?? prev;
-    this.glide = { from, to: next, start: now, dur: GLIDE_MS * scale };
-    // The glide finishes in the draw loop; block the shell only for the short
-    // pace so moves keep flowing. `this.view` is committed when the glide ends.
-    await sleep(MOVE_PACE_MS * scale);
+    if (this.lastHeadMoveAt > 0) {
+      const interval = now - this.lastHeadMoveAt;
+      // Ignore a long idle gap (e.g. the human dithering) so a steady pace isn't
+      // poisoned by one outlier; only plausibly-back-to-back moves update it.
+      if (interval <= CELL_MS_MAX * 2) {
+        const target = clamp(interval, CELL_MS_MIN, CELL_MS_MAX);
+        this.cellMs += (target - this.cellMs) * CADENCE_EMA;
+      }
+    }
+    this.lastHeadMoveAt = now;
+
+    // Buffer the move and return as soon as there's room, so the shell loops on
+    // to compute the NEXT move while this one is still gliding — the bot's
+    // search is pipelined under the glide. The rAF loop drains the buffer at the
+    // steady `cellMs` cadence, so the on-screen velocity stays uniform no matter
+    // how long any single search took. Backpressure (await on a full buffer)
+    // stops the shell from racing unboundedly ahead of the display.
+    this.stateQueue.push(next);
+    if (this.stateQueue.length > BUFFER_MAX) {
+      await new Promise<void>((resolve) => this.bufferWaiters.push(resolve));
+    }
   }
 
-  /** A synthetic view holding each snake's CURRENT interpolated body, so a new
-   * glide can start exactly where the in-flight one is drawn — no teleport when
-   * moves arrive faster than a slide completes. Null if no glide is active. */
-  private currentBodies(): DuelView | null {
-    const g = this.glide;
-    if (!g) return null;
-    const t = easeInOut(this.glideProgress(performance.now()));
-    const snakes = g.to.snakes.map((to, seat) => {
-      const fromCells = g.from.snakes[seat].cells;
-      const cells = interpBody(fromCells, to.cells, t).map(
-        ([x, y]) => [Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000] as [number, number],
-      );
-      return { ...to, cells };
-    }) as [SnakeInfo, SnakeInfo];
-    return { ...g.to, snakes };
+  /** The most recent discrete state the frontend knows about — the tail of the
+   * pending buffer, or the active glide's target, or the committed view. New
+   * moves are compared against this to decide if the head actually moved. */
+  private latestKnown(): DuelView | null {
+    if (this.stateQueue.length) return this.stateQueue[this.stateQueue.length - 1];
+    if (this.glide) return this.glide.to;
+    return this.view;
+  }
+
+  private flushBufferWaiters(): void {
+    const waiters = this.bufferWaiters;
+    this.bufferWaiters = [];
+    for (const w of waiters) w();
+  }
+
+  /** Wake one parked `animate` when the buffer has room again, so the shell's
+   * pipeline keeps flowing one move at a time rather than in bursts. */
+  private releaseOneWaiter(): void {
+    if (this.stateQueue.length <= BUFFER_MAX && this.bufferWaiters.length) {
+      const w = this.bufferWaiters.shift()!;
+      w();
+    }
   }
 
   promptAction(labels: string[]): void {
@@ -528,6 +589,10 @@ class SnakeFrontend implements GameFrontend {
     window.removeEventListener('keydown', this.onKey);
     this.resizeObs?.disconnect();
     this.resizeObs = null;
+    // Release any `animate` parked on a full buffer so the shell's loop doesn't
+    // hang waiting on a torn-down frontend.
+    this.stateQueue = [];
+    this.flushBufferWaiters();
     resetTelemetry();
   }
 
@@ -729,12 +794,7 @@ class SnakeFrontend implements GameFrontend {
     ctx.clearRect(0, 0, size, size);
     this.drawGrid(cell);
 
-    // Retire a finished glide so `render` (the human's turn, which doesn't go
-    // through `animate`) can advance `this.view` again.
-    if (this.glide && this.glideProgress(now) >= 1) {
-      this.view = this.glide.to;
-      this.glide = null;
-    }
+    this.advanceGlide(now);
 
     const view = this.glide ? this.glide.to : this.view;
     if (view?.food) this.drawFood(view.food, cell, now);
@@ -746,6 +806,33 @@ class SnakeFrontend implements GameFrontend {
 
     this.drawFlashes(cell, now);
     this.drawDeathOrbs(cell, now);
+  }
+
+  /** Advance the steady-cadence glide pipeline. When the current cell's slide
+   * finishes, commit it and immediately start the next buffered move — carrying
+   * any time overshoot into the next glide's start so the metronome never drifts
+   * (a frame landing 8 ms past the cell boundary begins the next cell 8 ms in).
+   * With moves buffered this hands off seamlessly cell to cell; with the buffer
+   * empty it just rests on the last state until the next move lands. */
+  private advanceGlide(now: number): void {
+    while (this.glide && now - this.glide.start >= this.glide.dur) {
+      const finishedAt = this.glide.start + this.glide.dur;
+      this.view = this.glide.to;
+      this.glide = null;
+      const next = this.stateQueue.shift();
+      if (!next) break;
+      this.releaseOneWaiter();
+      // Start from the just-committed body, beginning at the exact cell boundary
+      // so the cadence stays locked regardless of frame jitter; lock this cell's
+      // duration to the live cadence so its velocity is constant.
+      this.glide = { from: this.view!, to: next, start: finishedAt, dur: this.cellMs };
+    }
+    // Not gliding but moves are waiting (e.g. resumed from idle): kick one off.
+    if (!this.glide && this.stateQueue.length) {
+      const next = this.stateQueue.shift()!;
+      this.releaseOneWaiter();
+      this.glide = { from: this.view ?? next, to: next, start: now, dur: this.cellMs };
+    }
   }
 
   private glideProgress(now: number): number {
@@ -822,7 +909,9 @@ class SnakeFrontend implements GameFrontend {
     const pal = SEAT_PALETTES[seat];
     const to = (this.glide ? this.glide.to : this.view!).snakes[seat];
     const from = this.glide ? this.glide.from.snakes[seat] : to;
-    const cells = interpBody(from.cells, to.cells, easeInOut(t));
+    // LINEAR in t (no easing): constant velocity within a cell, so combined with
+    // the fixed CELL_MS-per-cell cadence the snake glides at a uniform speed.
+    const cells = interpBody(from.cells, to.cells, t);
     if (cells.length === 0) return;
 
     const ctx = this.c2d;
@@ -1046,12 +1135,12 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
-function easeOut(t: number): number {
-  return 1 - (1 - t) * (1 - t);
+function clamp(x: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, x));
 }
 
-function easeInOut(t: number): number {
-  return t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+function easeOut(t: number): number {
+  return 1 - (1 - t) * (1 - t);
 }
 
 export function createSnakeFrontend(): GameFrontend {
