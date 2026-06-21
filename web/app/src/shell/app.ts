@@ -4,7 +4,7 @@
 // and narration, frontends own the board.
 
 import { type ClientBot, clientBotFor } from "../bots";
-import { createSnakeSearch, type SnakeSearchHandle } from "../bots/snake-search";
+import { createSnakeBot, type SnakeBot } from "../bots/snake-search";
 import { EngineHost } from "../engine/host";
 import type {
   GameInfo,
@@ -245,11 +245,10 @@ export class App {
   private submitResolve: ((input: string) => void) | null = null;
   private logEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
-  /** Snake play runs on a dedicated real-time driver (fixed clock, bot search
-   * off the critical path) instead of the serial match loop. */
+  /** Snake play runs on a dedicated real-time driver (fixed clock, bot's policy
+   * floor + search off the critical path) instead of the serial match loop. */
   private snakeRealtime: SnakeRealtime | null = null;
-  private snakeSearch: SnakeSearchHandle | null = null;
-  private snakeSearchHost: EngineHost | null = null;
+  private snakeBot: SnakeBot | null = null;
 
   constructor(private root: HTMLElement) {
     window.addEventListener("hashchange", () => this.route());
@@ -619,26 +618,24 @@ export class App {
     }
   }
 
-  /** Wire snake's real-time driver: a background search on its own worker, plus
-   * the fixed-clock driver that reads the player's input and the bot's
-   * best-so-far each tick without ever awaiting the search. */
+  /** Wire snake's real-time driver: the bot (CPU policy floor + background
+   * search, each on its own worker) plus the fixed-clock driver that reads the
+   * player's input every tick without ever awaiting the heavy search. */
   private async startSnakeRealtime(
     gen: number,
     opts: Record<string, string>,
     initial: ViewState,
   ): Promise<void> {
-    const { search, host } = await createSnakeSearch(opts);
+    const bot = await createSnakeBot(opts);
     if (gen !== this.gen) {
-      search.stop();
-      host.terminate();
+      bot.stop();
       return;
     }
-    this.snakeSearch = search;
-    this.snakeSearchHost = host;
+    this.snakeBot = bot;
     const board = this.frontend as unknown as RealtimeBoard;
     this.snakeRealtime = new SnakeRealtime(
       this.host,
-      search,
+      bot,
       board,
       () => gen === this.gen,
       () => {
@@ -1170,10 +1167,8 @@ export class App {
     this.clientBot = null;
     this.snakeRealtime?.stop();
     this.snakeRealtime = null;
-    this.snakeSearch?.stop();
-    this.snakeSearch = null;
-    this.snakeSearchHost?.terminate();
-    this.snakeSearchHost = null;
+    this.snakeBot?.stop();
+    this.snakeBot = null;
     this.frontend?.unmount();
     this.frontend = null;
     this.submitResolve = null;

@@ -21,7 +21,7 @@
 
 import type { EngineHost } from '../engine/host';
 import type { ViewState } from '../engine/protocol';
-import type { SnakeSearchHandle } from '../bots/snake-search';
+import type { SnakeBot } from '../bots/snake-search';
 
 /** The slice of the snake frontend the driver needs. */
 export interface RealtimeBoard {
@@ -40,13 +40,13 @@ export class SnakeRealtime {
   private timer = 0;
   private running = false;
   private alive = true;
-  /** The bot snake's current heading label, for a safe straight-on fallback
-   * before/between completed searches (much safer than a fixed direction). */
+  /** The bot snake's current heading, the last-ditch fallback if even the policy
+   * floor fails (it should not). */
   private botHeading = 'left';
 
   constructor(
     private host: EngineHost,
-    private search: SnakeSearchHandle,
+    private bot: SnakeBot,
     private board: RealtimeBoard,
     private isCurrent: () => boolean,
     private onOver: (st: ViewState) => void,
@@ -55,7 +55,7 @@ export class SnakeRealtime {
   /** Begin the fixed-clock loop from the initial state. */
   start(initial: ViewState): void {
     this.board.render(initial);
-    this.search.setRoot(JSON.stringify(initial.viewData));
+    this.bot.search?.setRoot(JSON.stringify(initial.viewData));
     this.running = true;
     this.scheduleNext(performance.now());
   }
@@ -87,26 +87,42 @@ export class SnakeRealtime {
       await this.host.step();
       if (!this.running || !this.isCurrent()) return;
 
-      // Seat 0 = player: sample the held/pressed heading NOW, instantly.
+      // Seat 0 = player: sample the held/pressed heading NOW, instantly, and
+      // commit it. The player's move never waits on the bot.
       const playerHeading = this.board.pollHeading();
       await this.host.apply(playerHeading);
       if (!this.running || !this.isCurrent()) return;
 
-      // Seat 1 = bot: use whatever move the background search has READY (no
-      // await on the search). If none yet, go straight on (safe) — stale/last/
-      // straight is fine; the player never waits for the bot.
-      const botHeading = this.search.best() ?? this.botHeading;
+      // Seat 1 = bot. The board is now seat-1-to-move (seat 0's pending is set);
+      // point the background search at it and get the bot's move for THIS board:
+      //   - a fresh search best if one is ready (the strong bonus), else
+      //   - the always-available CPU POLICY FLOOR (one net forward + 1-ply
+      //     safety, ~1-2ms on its own free worker) — a real, non-suicidal move.
+      // The bot NEVER coasts straight; the policy floor guarantees a played move
+      // even with no GPU and a throttled CPU.
+      const seat1View = await this.host.state();
+      if (!this.running || !this.isCurrent()) return;
+      const seat1Json = JSON.stringify(seat1View.viewData);
+      this.bot.search?.setRoot(seat1Json);
+      let botHeading = this.bot.search?.best() ?? null;
+      if (!botHeading) {
+        try {
+          botHeading = await this.bot.policy.policyMove(seat1Json);
+        } catch {
+          botHeading = this.botHeading; // last-ditch; should not happen
+        }
+      }
+      if (!this.running || !this.isCurrent()) return;
       await this.host.apply(botHeading);
       if (!this.running || !this.isCurrent()) return;
 
       // The tick is resolved; read the new world and glide to it over the fixed
-      // clock period, then point the background search at the new board.
+      // clock period.
       const st = await this.host.state();
       if (!this.running || !this.isCurrent()) return;
       const view = st.viewData as { snakes?: { dir?: string }[] } | null;
       const dir = view?.snakes?.[1]?.dir;
       if (dir && DIR_LABEL[dir]) this.botHeading = DIR_LABEL[dir];
-      this.search.setRoot(JSON.stringify(st.viewData));
       this.board.pushState(st, TICK_MS);
 
       if (st.isOver) {

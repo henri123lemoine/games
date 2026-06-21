@@ -50,10 +50,13 @@ const getWeights = weightsLoader(`${import.meta.env.BASE_URL}azero/azero-snake.a
 const getGpu = gpuLoader(SnakeGpu.init, getWeights);
 
 export interface SnakeSearchHandle {
-  /** Point the search at the latest board (the seat-1-to-move view JSON). */
+  /** Point the search at the latest board (the seat-1-to-move view JSON). The
+   * published best is cleared, so `best()` only returns a result computed for
+   * THIS root — never a stale move for an old board. */
   setRoot(viewJson: string): void;
-  /** The most recent completed best heading label ("up"/"right"/"down"/"left"),
-   * or null before the first search completes. Read synchronously by the tick. */
+  /** The completed best heading label for the CURRENT root, or null if the
+   * search hasn't finished one yet (the common case at the fast clock, when the
+   * driver uses the policy floor instead). Read synchronously by the tick. */
   best(): string | null;
   /** Backend actually running, for the HUD. */
   backend(): 'gpu' | 'cpu';
@@ -75,8 +78,11 @@ class GpuSearch implements SnakeSearchHandle {
   }
 
   setRoot(viewJson: string): void {
-    this.root = viewJson;
-    this.rev++;
+    if (viewJson !== this.root) {
+      this.root = viewJson;
+      this.current = null; // the old best was for an old board — never reuse it
+      this.rev++;
+    }
   }
 
   best(): string | null {
@@ -138,6 +144,7 @@ class GpuSearch implements SnakeSearchHandle {
     }
     if (this.stopped || this.rev !== myRev) return;
     const { uci, stats } = await this.host.snakeBest();
+    if (this.stopped || this.rev !== myRev) return; // root changed during the readback
     this.current = uci;
     reportMove({ backend: 'gpu', ms: performance.now() - t0, sims: stats.sims, trips });
   }
@@ -155,7 +162,10 @@ class CpuSearch implements SnakeSearchHandle {
   }
 
   setRoot(viewJson: string): void {
-    this.root = viewJson;
+    if (viewJson !== this.root) {
+      this.root = viewJson;
+      this.current = null;
+    }
   }
 
   best(): string | null {
@@ -183,8 +193,11 @@ class CpuSearch implements SnakeSearchHandle {
         const t0 = performance.now();
         const { uci, stats } = await this.host.snakePlayCpu(root);
         if (this.stopped) return;
-        this.current = uci;
-        reportMove({ backend: 'cpu', ms: performance.now() - t0, sims: stats.sims, trips: 0 });
+        if (this.root === root) {
+          // Only publish if still the current board (else it's stale).
+          this.current = uci;
+          reportMove({ backend: 'cpu', ms: performance.now() - t0, sims: stats.sims, trips: 0 });
+        }
       } catch {
         await sleep(16);
       }
@@ -197,31 +210,72 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** Spin up the snake bot's background search on its OWN engine worker (so it can
- * never contend with the game tick). Prefers WebGPU; falls back to the in-wasm
- * CPU forward. Caller owns the returned handle and must `stop()` it on teardown.
- * The returned `host` is also owned by the caller (terminate on teardown). */
-export async function createSnakeSearch(
-  opts: Record<string, string>,
-): Promise<{ search: SnakeSearchHandle; host: EngineHost }> {
+/** The always-available CPU policy floor: one net forward + 1-ply safety per
+ * call (~1-2ms), on its OWN worker that runs NOTHING ELSE — so it is never
+ * blocked by the heavy search and answers every tick promptly, even with no GPU
+ * and a throttled CPU. This is the guaranteed non-suicidal move. */
+export class SnakePolicy {
+  constructor(private host: EngineHost) {}
+
+  /** A safe, competent move for the given board (seat-1-to-move view JSON). */
+  policyMove(viewJson: string): Promise<string> {
+    return this.host.snakePolicyMove(viewJson);
+  }
+}
+
+export interface SnakeBot {
+  policy: SnakePolicy;
+  /** The background refinement search, or null if it couldn't start (the policy
+   * floor alone still plays). */
+  search: SnakeSearchHandle | null;
+  stop(): void;
+}
+
+/** Spin up the snake bot: a CPU policy FLOOR on its own worker (always loaded
+ * with weights, so it works with no WebGPU) plus a background refinement search
+ * on a SECOND worker (GPU when available, else the slow CPU MCTS). Each runs on
+ * its own worker so neither can ever contend with the game tick. The caller owns
+ * the bot and must `stop()` it on teardown. */
+export async function createSnakeBot(opts: Record<string, string>): Promise<SnakeBot> {
   const seed = Number(opts.seed) >>> 0 || 1;
   const wantSims = Number(opts.sims) > 0 ? Number(opts.sims) : 0;
-  const host = new EngineHost();
+  const weights = await getWeights();
+
+  // The policy floor: its own worker, weights loaded, sims=1 (it never searches,
+  // only policy_move — but snakeNew wants a budget).
+  const policyHost = new EngineHost();
+  await policyHost.snakeNew(1, LEAVES, seed, weights);
+  const policy = new SnakePolicy(policyHost);
+
+  // The refinement search on a second worker.
+  const searchHost = new EngineHost();
+  let search: SnakeSearchHandle | null = null;
   if (!isCpuFallback()) {
     try {
       const gpu = await getGpu();
       const sims = Math.min(wantSims || GPU_DEFAULT_SIMS, GPU_MAX_SIMS);
-      await host.snakeNew(sims, LEAVES, seed);
-      console.info(`[snake] background WebGPU search, ${sims} sims, ${SEARCH_BUDGET_MS}ms budget`);
-      return { search: new GpuSearch(host, gpu), host };
+      await searchHost.snakeNew(sims, LEAVES, seed);
+      console.info(`[snake] policy floor + background WebGPU search (${sims} sims)`);
+      search = new GpuSearch(searchHost, gpu);
     } catch (e) {
-      console.warn('[snake] WebGPU init failed, background search on the slow CPU forward:', e);
+      console.warn('[snake] WebGPU init failed; policy floor + slow CPU search:', e);
     }
   } else {
-    console.warn('[snake] no WebGPU; background search on the slow CPU forward');
+    console.warn('[snake] no WebGPU; policy floor + slow CPU search');
   }
-  const sims = Math.min(wantSims || CPU_DEFAULT_SIMS, CPU_MAX_SIMS);
-  await host.snakeNew(sims, LEAVES, seed, await getWeights());
-  console.info(`[snake] background CPU search, ${sims} sims (degraded — no GPU)`);
-  return { search: new CpuSearch(host), host };
+  if (!search) {
+    const sims = Math.min(wantSims || CPU_DEFAULT_SIMS, CPU_MAX_SIMS);
+    await searchHost.snakeNew(sims, LEAVES, seed, weights);
+    search = new CpuSearch(searchHost);
+  }
+
+  return {
+    policy,
+    search,
+    stop() {
+      search?.stop();
+      searchHost.terminate();
+      policyHost.terminate();
+    },
+  };
 }

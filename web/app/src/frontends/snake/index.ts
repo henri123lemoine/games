@@ -926,16 +926,21 @@ class SnakeFrontend implements GameFrontend {
     const cells = interpBody(from.cells, to.cells, t);
     if (cells.length === 0) return;
 
-    // Opt-in (?snakeDebug) test seam: publish seat 0's interpolated head (board
-    // CELL coords) and current heading each frame, so the validation harness can
-    // read the exact rendered head and verify the snake follows input — far
-    // cleaner than colour-tracking the canvas through the juice.
-    if (this.showDebug && seat === 0) {
-      (
-        window as unknown as {
-          __snakeHead0?: { t: number; x: number; y: number; dir: string };
-        }
-      ).__snakeHead0 = { t: performance.now(), x: cells[0][0], y: cells[0][1], dir: to.dir };
+    // Opt-in (?snakeDebug) test seam: publish each snake's interpolated head
+    // (board CELL coords), heading, and alive flag every frame, so the validation
+    // harness can read the exact rendered heads — far cleaner than colour-
+    // tracking the canvas through the juice. Seat 0 verifies input-following;
+    // seat 1 verifies the bot actually plays (doesn't suicide).
+    if (this.showDebug) {
+      const key = seat === 0 ? '__snakeHead0' : '__snakeHead1';
+      (window as unknown as Record<string, unknown>)[key] = {
+        t: performance.now(),
+        x: cells[0][0],
+        y: cells[0][1],
+        dir: to.dir,
+        alive: to.alive,
+        len: to.cells.length,
+      };
     }
 
     const ctx = this.c2d;
