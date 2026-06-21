@@ -3,16 +3,6 @@
 version = 4
 
 [[package]]
-name = "azinfer"
-version = "0.1.0"
-dependencies = [
- "chess",
- "game-core",
- "serde_json",
- "solvers",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -126,16 +116,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "goinfer"
-version = "0.1.0"
-dependencies = [
- "game-core",
- "go",
- "serde_json",
- "solvers",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -187,12 +167,9 @@ checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
 name = "nn-infer"
 version = "0.1.0"
 dependencies = [
- "azinfer",
  "chess",
  "go",
- "goinfer",
  "snake",
- "snakeinfer",
 ]
 
 [[package]]
@@ -313,15 +290,6 @@ name = "snake"
 version = "0.1.0"
 dependencies = [
  "game-core",
- "solvers",
-]
-
-[[package]]
-name = "snakeinfer"
-version = "0.1.0"
-dependencies = [
- "game-core",
- "snake",
  "solvers",
 ]
 

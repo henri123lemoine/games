@@ -1,9 +1,9 @@
 //! The fp32 forward primitives shared by every conv-resnet head: same-padding
 //! convolution, global pooling, and dense layers. Plain loops — built for
-//! correctness and wasm portability, not speed. The conv is the axpy-shaped
-//! sweep proven bit-identical to the textbook gather (`snakeinfer`): for any
-//! fixed output cell the `(c_in, ky, kx)` terms are summed in the same order,
-//! so a trained net's argmax/sign decisions are unchanged.
+//! correctness and wasm portability, not speed. The conv is an axpy-shaped sweep
+//! that is bit-identical to the textbook per-output-cell gather: for any fixed
+//! output cell the `(c_in, ky, kx)` terms are summed in the same order, so a
+//! trained net's argmax/sign decisions are unchanged.
 
 use crate::format::{Conv, Linear};
 

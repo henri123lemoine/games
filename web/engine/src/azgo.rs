@@ -285,7 +285,7 @@ impl AzGoBot {
         // so the deployed bot doesn't hand a human the game on a sparse board.
         let mut visits = self.search.root_visits().to_vec();
         let actions = self.search.root_actions();
-        mask_pass_visits(&self.game, &self.state, actions, &mut visits);
+        go::mask_pass_visits(&self.game, &self.state, actions, &mut visits);
         let action = actions[argmax(&visits)];
         Ok(self.game.action_label(&self.state, action))
     }
@@ -304,30 +304,6 @@ impl AzGoBot {
             0.0
         };
         format!("{{\"value\":{value},\"sims\":{sims}}}")
-    }
-}
-
-/// Zeroes the pass action's visits when the mover still has a productive move
-/// (see [`Go::has_productive_move`]), so the deployed bot never favors passing
-/// early on a sparse board — the guard against area scoring's "pass for the
-/// komi win" degenerate equilibrium. A no-op once only eye-filling moves remain,
-/// so finished games still end by passing; leaves visits untouched if pass is
-/// the only visited action.
-fn mask_pass_visits(game: &Go, state: &GoState, actions: &[GoAction], visits: &mut [u32]) {
-    if !game.has_productive_move(state) {
-        return;
-    }
-    let Some(pass_i) = actions.iter().position(|a| matches!(a, GoAction::Pass)) else {
-        return;
-    };
-    let others: u32 = visits
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != pass_i)
-        .map(|(_, &v)| v)
-        .sum();
-    if others > 0 {
-        visits[pass_i] = 0;
     }
 }
 

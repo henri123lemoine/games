@@ -1,9 +1,9 @@
 //! Torch-free generic conv-resnet forward + the unified versioned `AZNET1`
 //! weight format. One reference fp32 forward — a 3×3 conv stem, a residual
 //! tower of BN-folded `(conv, conv)` pairs, then a config-selected policy/value
-//! head — replacing the per-game `azinfer` / `goinfer` / `snakeinfer` forwards.
-//! Plain loops, built for correctness and wasm portability; the browser's
-//! WebGPU path and the trainers' `verify-export` checks validate against it.
+//! head — for every exported AlphaZero net (chess, go, snake). Plain loops,
+//! built for correctness and wasm portability; the browser's WebGPU path and the
+//! trainer's `verify-export` check validate against it.
 //!
 //! The head topology is data, not a game identity: [`HeadKind::FlatConv`]
 //! (chess), [`HeadKind::GlobalPoolSpatial`] (go, `size²+1` policy + optional

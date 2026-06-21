@@ -5,7 +5,7 @@
 //! `planes`, `size`, `scalars`) and the head topology (`HeadKind`,
 //! `policy_len`, `HeadFlags`); the body is fp32 little-endian weights in a fixed
 //! layer order. The `Reader{floats,conv,linear}` set and the no-trailing-bytes
-//! integrity check are lifted verbatim from the canonical `snakeinfer` shape.
+//! integrity check are the integrity boundary the per-game forwards once shared.
 //!
 //! **Byte-identical bodies.** The `AZNET1` weight stream is laid out so the body
 //! after the header is byte-for-byte the legacy body — every conv keeps its bias

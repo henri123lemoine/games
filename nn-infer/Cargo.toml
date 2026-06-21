@@ -2,14 +2,11 @@
 name = "nn-infer"
 version = "0.1.0"
 edition = "2024"
-description = "Torch-free generic conv-resnet forward + the unified versioned AZNET1 weight format. One reference fp32 forward (chess flat-conv, go/snake global-pool, go ownership) replacing the per-game azinfer/goinfer/snakeinfer forwards; wasm-safe, the browser's WebGPU path validates against it."
+description = "Torch-free generic conv-resnet forward + the unified versioned AZNET1 weight format. One reference fp32 forward (chess flat-conv, go/snake global-pool, go ownership) for every exported AlphaZero net; wasm-safe, the browser's WebGPU path validates against it."
 
 [dependencies]
 
 [dev-dependencies]
-azinfer = { path = "../azinfer" }
-goinfer = { path = "../goinfer" }
-snakeinfer = { path = "../snakeinfer" }
 chess = { path = "../games/chess" }
 go = { path = "../games/go" }
 snake = { path = "../games/snake" }
