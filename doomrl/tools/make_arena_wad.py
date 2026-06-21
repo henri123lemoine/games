@@ -1,169 +1,211 @@
 #!/usr/bin/env python3
-"""Generate a minimal flat single-room deathmatch arena as a PWAD.
+"""Generate the strategic 1v1 "dumbbell" deathmatch arena as a PWAD.
 
-One convex rectangular sector at a single floor height with four 1-sided walls
-and four deathmatch starts (thing type 11) in the corners. Vanilla Doom needs
-prebuilt nodes; for one convex subsector the BSP is trivial (a single subsector,
-the root node index is the subsector with the 0x8000 leaf bit). The IWAD
-supplies the flats/textures named here (FLOOR4_8 / CEIL3_5 / STARTAN3 exist in
-the shareware doom1.wad).
+Two end pockets joined by a central hall (the dumbbell long axis is x). Contested
+power items sit in the open: the ROCKET LAUNCHER (2003) on a slightly SUNKEN
+central altar, the BLUE MEGAARMOR (2019) on a RAISED ledge in the opposite
+corner, and a SOULSPHERE (2013) in a pocket. Two SOLID COVER BLOCKS break line of
+sight across the hall; a CHOKE narrows one hall mouth. Starter weapons (chaingun
+2002 / shotgun 2001) sit near the spawns. Four inward-facing DM starts (type 11).
+Shareware E1 things only (no SSG).
 
-Replaces E1M1 when loaded after the IWAD (-merge / -file), so boot with
-`-warp 1 1` against this PWAD as an extra file.
+Unlike the old flat box this is a multi-sector, non-convex map with height
+variation and interior voids, so the BSP is built by tools/nodebuild.py (a real
+node builder) — the hand-faked single-subsector hack cannot represent it.
+
+Replaces E1M1 when loaded after the IWAD (-file). Run with `-altdeath` so the
+items respawn on 30 s timers.
 """
 
-import struct
 import sys
 
-HALF = 1024
-FLOOR_Z = 0
-CEIL_Z = 128
+import nodebuild
+
+# ---- textures / flats present in shareware doom1.wad ----
+WALL = b"STARTAN3"
+STEP = b"STEP1"        # step / riser texture (lower/upper)
+FLOOR = b"FLOOR4_8"
+FLOOR_ALT = b"FLAT5_4"
+CEIL = b"CEIL3_5"
 LIGHT = 200
-FLOOR_TEX = b"FLOOR4_8"
-CEIL_TEX = b"CEIL3_5\x00"
-WALL_TEX = b"STARTAN3"
+
+ARENA_HALF = 1024
+CEIL_Z = 192
+
+# floor heights
+Z_MAIN = 0
+Z_ALTAR = -24      # rocket launcher sunken altar
+Z_LEDGE = 40       # megaarmor raised ledge
 
 
-def pad8(name: bytes) -> bytes:
-    return name[:8].ljust(8, b"\x00")
+class MapBuilder:
+    def __init__(self):
+        self.verts = []
+        self.vmap = {}
+        self.linedefs = []
+        self.sidedefs = []
+        self.sectors = []
+        self.things = []
+
+    def v(self, x, y):
+        x, y = int(x), int(y)
+        k = (x, y)
+        i = self.vmap.get(k)
+        if i is None:
+            i = len(self.verts)
+            self.verts.append((x, y))
+            self.vmap[k] = i
+        return i
+
+    def sector(self, floor, ceil, ftex=FLOOR, ctex=CEIL, light=LIGHT, special=0, tag=0):
+        self.sectors.append(dict(floor=floor, ceil=ceil, floortex=ftex, ceiltex=ctex,
+                                 light=light, special=special, tag=tag))
+        return len(self.sectors) - 1
+
+    def sidedef(self, sector, upper=b"-", lower=b"-", middle=b"-", xoff=0, yoff=0):
+        self.sidedefs.append(dict(xoff=xoff, yoff=yoff, upper=upper, lower=lower,
+                                  middle=middle, sector=sector))
+        return len(self.sidedefs) - 1
+
+    def line(self, x1, y1, x2, y2, front_sd, back_sd=None, flags=None, special=0, tag=0):
+        if flags is None:
+            flags = 0x0001 if back_sd is None else 0x0004  # blocking / two-sided
+        self.linedefs.append(dict(
+            v1=self.v(x1, y1), v2=self.v(x2, y2), flags=flags, special=special, tag=tag,
+            front=front_sd, back=back_sd))
+
+    def one_sided_loop(self, pts, sector, tex=WALL):
+        """A closed loop of one-sided walls bounding `sector` (front faces in)."""
+        n = len(pts)
+        for i in range(n):
+            x1, y1 = pts[i]
+            x2, y2 = pts[(i + 1) % n]
+            sd = self.sidedef(sector, middle=tex)
+            self.line(x1, y1, x2, y2, sd)
+
+    def two_sided_loop(self, pts, inner_sector, outer_sector,
+                       lower=STEP, upper=STEP):
+        """A closed loop separating an inner sub-sector (e.g. altar/ledge) from
+        the surrounding play sector. Front sidedef -> inner, back -> outer. The
+        step riser shows on lower (sunken) or upper (raised)."""
+        n = len(pts)
+        for i in range(n):
+            x1, y1 = pts[i]
+            x2, y2 = pts[(i + 1) % n]
+            front = self.sidedef(inner_sector, lower=lower, upper=upper)
+            back = self.sidedef(outer_sector, lower=lower, upper=upper)
+            self.line(x1, y1, x2, y2, front, back, flags=0x0004)
+
+    def void_block(self, cx, cy, hw, hh, sector, tex=WALL):
+        """A solid pillar / cover block: an inner square of one-sided walls wound
+        CLOCKWISE so the front sidedefs face OUTWARD into `sector` (the block's
+        interior is void / solid)."""
+        pts = [(cx - hw, cy - hh), (cx - hw, cy + hh),
+               (cx + hw, cy + hh), (cx + hw, cy - hh)]  # CW
+        self.one_sided_loop(pts, sector, tex)
+
+    def thing(self, x, y, angle, type_, flags=0x07):
+        self.things.append(dict(x=int(x), y=int(y), angle=int(angle), type=int(type_), flags=flags))
 
 
-def build_map_lumps():
-    # corners (CW so the front sidedef faces into the sector for each 1-sided line)
-    verts = [(-HALF, -HALF), (-HALF, HALF), (HALF, HALF), (HALF, -HALF)]
+def build():
+    m = MapBuilder()
+    main = m.sector(Z_MAIN, CEIL_Z, ftex=FLOOR, ctex=CEIL)
 
-    things = []
-    # four deathmatch starts (type 11), inset from the corners, facing inward
-    inset = HALF - 256
+    # --- Outer boundary: a dumbbell. Two end pockets (wide) joined by a hall
+    # (narrow in y). One end is offset/asymmetric on purpose. Traced CCW so the
+    # one-sided front faces inward. Coordinates in map units. ---
+    H = ARENA_HALF
+    POCKET_HY = 640          # pocket half-height (y)
+    HALL_HY = 320            # hall half-height (narrower -> the hall)
+    PX = 1024                # pocket outer x extent
+    HALLX = 360              # hall starts at +/- this x
+    CHOKE_HY = 200           # the choke narrows the LEFT hall mouth further
+
+    # Left pocket is taller/offset (asymmetric): shift its top up.
+    # Outline vertices, CCW starting bottom-left.
+    outline = [
+        (-PX, -POCKET_HY),               # bottom-left pocket corner
+        (-HALLX - 220, -POCKET_HY),
+        (-HALLX, -CHOKE_HY),             # choke: hall mouth pinched on the left
+        (HALLX, -HALL_HY),
+        (PX, -POCKET_HY),                # bottom-right
+        (PX, POCKET_HY),                 # top-right
+        (HALLX, HALL_HY),
+        (-HALLX, CHOKE_HY),              # choke top
+        (-HALLX - 220, POCKET_HY + 96),  # left pocket taller (asymmetric)
+        (-PX, POCKET_HY + 96),
+    ]
+    m.one_sided_loop(outline, main, WALL)
+
+    # --- Sunken central altar holding the ROCKET LAUNCHER (contested, open). ---
+    altar = m.sector(Z_ALTAR, CEIL_Z, ftex=FLOOR_ALT, ctex=CEIL, light=170)
+    ahw, ahh = 128, 128
+    altar_pts = [(-ahw, -ahh), (-ahw, ahh), (ahw, ahh), (ahw, -ahh)]  # CCW (inner)
+    m.two_sided_loop(altar_pts, altar, main, lower=STEP, upper=STEP)
+    m.thing(0, 0, 0, 2003)  # rocket launcher on the altar
+
+    # --- Raised ledge in the FAR (right-top) corner holding the MEGAARMOR. ---
+    ledge = m.sector(Z_LEDGE, CEIL_Z, ftex=FLOOR_ALT, ctex=CEIL, light=210)
+    lx, ly = PX - 224, POCKET_HY - 224
+    lhw, lhh = 128, 128
+    ledge_pts = [(lx - lhw, ly - lhh), (lx - lhw, ly + lhh),
+                 (lx + lhw, ly + lhh), (lx + lhw, ly - lhh)]  # CCW
+    m.two_sided_loop(ledge_pts, ledge, main, lower=STEP, upper=STEP)
+    m.thing(lx, ly, 0, 2019)  # blue megaarmor on the ledge
+
+    # --- Soulsphere in the LEFT pocket (the third timed objective). ---
+    m.thing(-PX + 256, POCKET_HY - 160, 0, 2013)
+
+    # --- Two SOLID COVER BLOCKS in the hall that break line of sight. ---
+    m.void_block(-150, 150, 70, 70, main, WALL)
+    m.void_block(150, -150, 70, 70, main, WALL)
+
+    # --- Starter weapons near the spawns. ---
+    m.thing(-PX + 200, -POCKET_HY + 200, 0, 2002)   # chaingun, left-bottom spawn
+    m.thing(PX - 200, -POCKET_HY + 200, 0, 2001)    # shotgun, right-bottom spawn
+    m.thing(-PX + 200, POCKET_HY - 96, 0, 2001)     # shotgun, left-top
+    m.thing(PX - 320, -POCKET_HY + 200, 0, 2002)    # chaingun, right-bottom-2
+
+    # --- Four inward-facing DM starts (type 11), in the pocket corners. ---
     starts = [
-        (-inset, -inset, 45),
-        (inset, -inset, 135),
-        (inset, inset, 225),
-        (-inset, inset, 315),
+        (-PX + 200, -POCKET_HY + 200, 0),     # left-bottom, face +x (inward)
+        (PX - 200, -POCKET_HY + 200, 180),    # right-bottom, face -x
+        (PX - 200, POCKET_HY - 200, 180),     # right-top, face -x
+        (-PX + 200, POCKET_HY - 100, 0),      # left-top, face +x
     ]
     for x, y, ang in starts:
-        things.append(struct.pack("<hhHHH", x, y, ang, 11, 0x07))
-    # also a single-player start (type 1) so the map is valid standalone
-    things.append(struct.pack("<hhHHH", 0, 0, 90, 1, 0x07))
-    things_lump = b"".join(things)
+        m.thing(x, y, ang, 11)
+    # A single-player start (type 1) so the map is valid standalone.
+    m.thing(0, -HALL_HY + 64, 90, 1)
 
-    vertexes_lump = b"".join(struct.pack("<hh", x, y) for x, y in verts)
-
-    # one sector
-    sectors_lump = struct.pack(
-        "<hh8s8shhh", FLOOR_Z, CEIL_Z, pad8(FLOOR_TEX), pad8(CEIL_TEX), LIGHT, 0, 0
-    )
-
-    # four sidedefs, all referencing sector 0 with the wall texture as midtex
-    sidedef = struct.pack("<hh8s8s8sh", 0, 0, pad8(b"-"), pad8(b"-"), pad8(WALL_TEX), 0)
-    sidedefs_lump = sidedef * 4
-
-    # four linedefs forming the loop; 1-sided (back = 0xFFFF), impassable+blocking
-    linedefs = []
-    for i in range(4):
-        v1 = i
-        v2 = (i + 1) % 4
-        flags = 0x0001  # ML_BLOCKING (impassable, 1-sided)
-        linedefs.append(struct.pack("<HHHHHHH", v1, v2, flags, 0, 0, i, 0xFFFF))
-    linedefs_lump = b"".join(linedefs)
-
-    # one seg per linedef. seg: v1, v2, angle, linedef, side(0=front), offset
-    segs = []
-    angles = {0: 0x4000, 1: 0x0000, 2: 0xC000, 3: 0x8000}
-    for i in range(4):
-        v1 = i
-        v2 = (i + 1) % 4
-        segs.append(struct.pack("<HHHHHH", v1, v2, angles[i], i, 0, 0))
-    segs_lump = b"".join(segs)
-
-    # one subsector covering all four segs
-    ssectors_lump = struct.pack("<HH", 4, 0)
-
-    # NODES: with a single subsector there is no split node. The reference
-    # vanilla behaviour is an empty NODES lump; R_PointInSubsector treats the
-    # root (numnodes-1 with no nodes) as subsector 0 via the 0x8000 leaf bit.
-    # Provide one degenerate node whose both children point at subsector 0 so
-    # P_LoadNodes has a root to start from.
-    # node: x,y,dx,dy, bbox[2][4], child[2]
-    nodes_lump = struct.pack(
-        "<hhhh" + "hhhh" * 2 + "HH",
-        -HALF, 0, 0, 1,
-        HALF, -HALF, -HALF, HALF,
-        HALF, -HALF, -HALF, HALF,
-        0x8000, 0x8000,
-    )
-
-    # REJECT: 1 sector -> ceil(1*1/8)=1 byte, all visible (0)
-    reject_lump = b"\x00"
-
-    blockmap_lump = build_blockmap(linedefs, verts)
-
-    return {
-        "THINGS": things_lump,
-        "LINEDEFS": linedefs_lump,
-        "SIDEDEFS": sidedefs_lump,
-        "VERTEXES": vertexes_lump,
-        "SEGS": segs_lump,
-        "SSECTORS": ssectors_lump,
-        "NODES": nodes_lump,
-        "SECTORS": sectors_lump,
-        "REJECT": reject_lump,
-        "BLOCKMAP": blockmap_lump,
-    }
-
-
-def build_blockmap(linedefs, verts):
-    # Doom links mobjs/lines into 128-unit blocks indexed from (bmaporgx,
-    # bmaporgy). The map must span the whole room or P_PathTraverse /
-    # P_BlockThingsIterator miss mobjs in unlisted blocks.
-    BLOCK = 128
-    origin_x = -HALF - BLOCK
-    origin_y = -HALF - BLOCK
-    span = 2 * HALF + 2 * BLOCK
-    cols = (span + BLOCK - 1) // BLOCK
-    rows = cols
-    header = struct.pack("<hhHH", origin_x, origin_y, cols, rows)
-
-    n_blocks = cols * rows
-    head_words = 4
-    # Put every wall linedef in every block's list (cheap and correct for a
-    # tiny single room; the four walls bound the whole arena). Empty would also
-    # work for interior blocks, but listing all keeps wall collision exact.
-    line_indices = list(range(len(linedefs)))
-    blocklist = [0x0000] + line_indices + [0xFFFF]
-    block_words = len(blocklist)
-
-    offsets = []
-    first = head_words + n_blocks
-    for b in range(n_blocks):
-        offsets.append(first + b * block_words)
-
-    offsets_bytes = struct.pack("<%dH" % n_blocks, *offsets)
-    body = struct.pack("<%dH" % block_words, *blocklist) * n_blocks
-    return header + offsets_bytes + body
+    return m
 
 
 def write_wad(path, lumps_in_order):
-    # PWAD with a single map: marker E1M1 then the 10 map lumps
+    import struct
     directory = []
     data = bytearray()
+
+    def pad8(name):
+        if isinstance(name, str):
+            name = name.encode()
+        return name[:8].ljust(8, b"\x00")
 
     def add_lump(name, payload):
         offset = 12 + len(data)
         data.extend(payload)
         directory.append((offset, len(payload), pad8(name)))
 
-    add_lump(b"E1M1", b"")
+    add_lump("E1M1", b"")
     for name, payload in lumps_in_order:
-        add_lump(name.encode(), payload)
+        add_lump(name, payload)
 
     dir_offset = 12 + len(data)
     header = struct.pack("<4sii", b"PWAD", len(directory), dir_offset)
-
     dir_bytes = bytearray()
     for offset, size, name in directory:
         dir_bytes.extend(struct.pack("<ii8s", offset, size, name))
-
     with open(path, "wb") as f:
         f.write(header)
         f.write(data)
@@ -171,14 +213,16 @@ def write_wad(path, lumps_in_order):
 
 
 def main():
-    out = sys.argv[1] if len(sys.argv) > 1 else "flatarena.wad"
-    lumps = build_map_lumps()
-    order = [
-        "THINGS", "LINEDEFS", "SIDEDEFS", "VERTEXES", "SEGS",
-        "SSECTORS", "NODES", "SECTORS", "REJECT", "BLOCKMAP",
-    ]
-    write_wad(out, [(n, lumps[n]) for n in order])
-    print(f"wrote {out}: 1 sector arena, 4 DM starts, floor_z={FLOOR_Z}")
+    out = sys.argv[1] if len(sys.argv) > 1 else "dumbbell.wad"
+    m = build()
+    lumps, stats = nodebuild.pack_map_lumps(
+        m.verts, m.linedefs, m.sidedefs, m.sectors, m.things)
+    write_wad(out, lumps)
+    n_dm = sum(1 for t in m.things if t["type"] == 11)
+    print(f"wrote {out}: sectors={len(m.sectors)} linedefs={len(m.linedefs)} "
+          f"things={len(m.things)} dm_starts={n_dm}")
+    print(f"  bsp: nodes={stats['nodes']} ssectors={stats['ssectors']} "
+          f"segs={stats['segs']} verts={stats['verts']}")
 
 
 if __name__ == "__main__":
