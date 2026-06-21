@@ -133,9 +133,16 @@ fn train_ppo(iwad: &str, arena: &str, device: Device, steps: usize, lr: f64) {
     let save: String = arg("save", "doomppo.ot");
     let best_path: String = arg("best", "doomppo_best.ot");
 
-    let vs = nn::VarStore::new(device);
+    let mut vs = nn::VarStore::new(device);
     let net = PpoNet::new(&vs.root());
     let mut opt = nn::Adam::default().build(&vs, lr).unwrap();
+
+    let init: String = arg("init", "");
+    if !init.is_empty() {
+        export::load_checkpoint(&mut vs, &PathBuf::from(&init));
+        println!("warm-started PPO net from checkpoint: {init}");
+    }
+
     let n_params: i64 = vs
         .trainable_variables()
         .iter()
