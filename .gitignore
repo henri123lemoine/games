@@ -25,3 +25,6 @@ web/slither-engine/pkg/
 web/app/node_modules/
 web/app/dist/
 web/app/.validation/
+
+# doomrl C build output (compiled .o objects + the doomrl_driver binary)
+doomrl/build/
