@@ -29,8 +29,8 @@ def pad8(name: bytes) -> bytes:
 
 
 def build_map_lumps():
-    # corners (CCW so the sector is on the front/right of each 1-sided line)
-    verts = [(-HALF, -HALF), (HALF, -HALF), (HALF, HALF), (-HALF, HALF)]
+    # corners (CW so the front sidedef faces into the sector for each 1-sided line)
+    verts = [(-HALF, -HALF), (-HALF, HALF), (HALF, HALF), (HALF, -HALF)]
 
     things = []
     # four deathmatch starts (type 11), inset from the corners, facing inward
@@ -69,7 +69,7 @@ def build_map_lumps():
 
     # one seg per linedef. seg: v1, v2, angle, linedef, side(0=front), offset
     segs = []
-    angles = {0: 0, 1: 0x4000, 2: -0x8000 & 0xFFFF, 3: -0x4000 & 0xFFFF}
+    angles = {0: 0x4000, 1: 0x0000, 2: 0xC000, 3: 0x8000}
     for i in range(4):
         v1 = i
         v2 = (i + 1) % 4

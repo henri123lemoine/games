@@ -21,9 +21,14 @@ static void place_for_duel(void)
     mobj_t *m1 = players[1].mo;
     if (m0 == NULL || m1 == NULL)
         return;
-    P_TeleportMove(m1, m0->x + 256 * FRACUNIT, m0->y);
-    m0->angle = 0;
-    m1->angle = ANG180;
+    fixed_t dir = (m0->x > 0) ? -(256 * FRACUNIT) : (256 * FRACUNIT);
+    fixed_t tx = m0->x + dir;
+    const fixed_t bound = (1024 - 64) * FRACUNIT;
+    if (tx > bound) tx = bound;
+    if (tx < -bound) tx = -bound;
+    P_TeleportMove(m1, tx, m0->y);
+    m0->angle = (m0->x > 0) ? ANG180 : 0;
+    m1->angle = (m0->x > 0) ? 0 : ANG180;
 }
 
 static double now_seconds(void)

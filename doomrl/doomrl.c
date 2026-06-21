@@ -361,10 +361,17 @@ void doomrl_dm_spawn_near(float dist)
         return;
 
     fixed_t d = (fixed_t)(dist * (float)FRACUNIT);
-    if (P_TeleportMove(m1, m0->x + d, m0->y))
+    // place seat 1 TOWARD the map center so the pair can't be pushed into the
+    // void, then clamp the target x inside the arena (+/- 960 units).
+    fixed_t dir = (m0->x > 0) ? -d : d;
+    fixed_t tx = m0->x + dir;
+    const fixed_t bound = (1024 - 64) * FRACUNIT;
+    if (tx > bound) tx = bound;
+    if (tx < -bound) tx = -bound;
+    if (P_TeleportMove(m1, tx, m0->y))
     {
-        m0->angle = 0;
-        m1->angle = ANG180;
+        m0->angle = (m0->x > 0) ? ANG180 : 0;
+        m1->angle = (m0->x > 0) ? 0 : ANG180;
     }
 }
 
