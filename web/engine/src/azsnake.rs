@@ -37,8 +37,6 @@ pub struct AzSnakeBot {
     /// Requests parked by the last `advance`, awaiting page-side (GPU)
     /// evaluation. Empty between moves and on the CPU path.
     batch: Vec<EvalRequest>,
-    /// The last search ran to its visit budget, so `best` is readable.
-    done: bool,
 }
 
 #[wasm_bindgen]
@@ -64,7 +62,6 @@ impl AzSnakeBot {
             rng: Rng::new(u64::from(seed)),
             model: None,
             batch: Vec::new(),
-            done: false,
         }
     }
 
@@ -80,17 +77,19 @@ impl AzSnakeBot {
     /// JSON (the `snake` frontend contract). Discards the prior tree — snake's
     /// chance nodes make subtree reuse across the engine's RNG unsound, and one
     /// search per move is cheap. Both backends start each move here.
+    ///
+    /// Any batch parked by a *time-budgeted* search that was stopped mid-flight
+    /// (the anytime GPU path returns best-so-far at a deadline rather than
+    /// running every batch) is simply dropped — the whole tree is being
+    /// discarded anyway, so a leftover parked batch is stale and harmless.
     pub fn set_state(&mut self, view_json: &str) -> Result<(), JsError> {
-        if !self.batch.is_empty() {
-            return Err(JsError::new("set_state while evaluations are in flight"));
-        }
+        self.batch.clear();
         let state = parse_state(&self.game, view_json).map_err(|e| JsError::new(&e))?;
         if self.game.is_terminal(&state) || !matches!(self.game.turn(&state), Turn::Player(_)) {
             return Err(JsError::new("set_state must leave a player to move"));
         }
         self.state = state;
         self.search = Search::new(None);
-        self.done = false;
         Ok(())
     }
 
@@ -118,7 +117,6 @@ impl AzSnakeBot {
         ) {
             results = eval_batch(model, &reqs);
         }
-        self.done = true;
         self.best()
     }
 
@@ -173,10 +171,7 @@ impl AzSnakeBot {
                 self.batch = reqs;
                 Ok(self.batch.len() as u32)
             }
-            Gather::Done => {
-                self.done = true;
-                Ok(0)
-            }
+            Gather::Done => Ok(0),
         }
     }
 
@@ -212,12 +207,16 @@ impl AzSnakeBot {
     }
 
     /// The searched move as a heading label (`"up"`/`"right"`/`"down"`/`"left"`),
-    /// argmax over root visits. Readable once a search has run to its budget.
+    /// argmax over root visits. Readable as soon as the root has any visits, so
+    /// a time-budgeted (anytime) search can stop at its deadline and read the
+    /// best move SO FAR — the argmax-over-visits move is well-defined from the
+    /// first simulation and only sharpens with more, so an early read is the
+    /// same kind of answer, just from a shallower search.
     pub fn best(&self) -> Result<String, JsError> {
-        if !self.done {
-            return Err(JsError::new("search is not done"));
-        }
         let visits = self.search.root_visits();
+        if visits.iter().all(|&v| v == 0) {
+            return Err(JsError::new("search has no visits yet"));
+        }
         let actions = self.search.root_actions();
         let action = actions[argmax(visits)];
         Ok(self.game.action_label(&self.state, action))
