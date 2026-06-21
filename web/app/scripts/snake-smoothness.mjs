@@ -73,49 +73,36 @@ function startServer(rootDir) {
   });
 }
 
-/** Sample snake A's body centroid from the canvas each animation frame. Snake A
- * is the emerald snake (green dominant, g >> r and g >> b); the body centroid
- * translates one cell per glide exactly as the head does, so its per-frame
- * displacement is the head's velocity. Returns {t, x, y} samples over ~ms. */
+/** Sample snake A's interpolated HEAD each animation frame, in board CELL
+ * coordinates, from the `?snakeDebug` test seam (window.__snakeHead0) the
+ * frontend publishes from its draw loop. This is the EXACT head the renderer
+ * draws — no colour-tracking, immune to the eat/flash/gloss juice — so the
+ * measured velocity is the true glide velocity. The head moves one cell per
+ * cellMs at a constant speed; we measure its PATH LENGTH per window (below), a
+ * constant scalar speed even through turns (a turn changes direction, not arc
+ * length). Samples are deduped by the publish timestamp so a frame the app
+ * didn't repaint isn't counted as a freeze. Coordinates are already in cells,
+ * so cellPx = 1. */
 function installCentroidProbe(ms) {
   return new Promise((resolve) => {
-    const canvas = document.querySelector('.snk-canvas');
-    if (!canvas) {
+    if (!document.querySelector('.snk-canvas')) {
       resolve({ error: 'no canvas' });
       return;
     }
-    // Read at a downscaled resolution: the centroid is unchanged but getImageData
-    // is far cheaper, so the probe doesn't itself cause the stutter it measures.
-    const SCALE = 0.25;
-    const off = document.createElement('canvas');
-    const w = (off.width = Math.max(1, Math.round(canvas.width * SCALE)));
-    const h = (off.height = Math.max(1, Math.round(canvas.height * SCALE)));
-    const g = off.getContext('2d', { willReadFrequently: true });
     const samples = [];
     const t0 = performance.now();
+    let lastPub = -1;
     const tick = () => {
       const now = performance.now();
-      g.clearRect(0, 0, w, h);
-      g.drawImage(canvas, 0, 0, w, h);
-      const data = g.getImageData(0, 0, w, h).data;
-      let sx = 0;
-      let sy = 0;
-      let n = 0;
-      // Emerald snake A: strong green, green clearly above red & blue.
-      for (let p = 0; p < data.length; p += 4) {
-        const r = data[p];
-        const gr = data[p + 1];
-        const b = data[p + 2];
-        if (gr > 110 && gr - r > 45 && gr - b > 35) {
-          const idx = p / 4;
-          sx += idx % w;
-          sy += Math.floor(idx / w);
-          n++;
-        }
+      const head = window.__snakeHead0;
+      // Only record a fresh publish (the app painted a new frame); skip stale
+      // reads so the probe's own rAF rate can't fabricate frozen windows.
+      if (head && head.t !== lastPub) {
+        lastPub = head.t;
+        samples.push({ t: head.t - t0, x: head.x, y: head.y });
       }
-      if (n > 8) samples.push({ t: now - t0, x: sx / n, y: sy / n, n });
       if (now - t0 < ms) requestAnimationFrame(tick);
-      else resolve({ samples, w, h, cellPx: w / 20 });
+      else resolve({ samples, cellPx: 1 });
     };
     requestAnimationFrame(tick);
   });
@@ -130,7 +117,7 @@ function analyze(samples, cellPx) {
   // a frame but far narrower than a cell exposes a REAL freeze (the snake
   // genuinely standing still between cells) while ignoring sub-frame noise.
   const WIN = 50; // ms per measurement window
-  if (samples.length < 3) return { error: 'too few samples', frames: samples.length };
+  if (samples.length < 5) return { error: 'too few samples', frames: samples.length };
   const tEnd = samples[samples.length - 1].t;
   const at = (t) => {
     let i = 1;
@@ -141,13 +128,22 @@ function analyze(samples, cellPx) {
     const f = (t - a.t) / (b.t - a.t);
     return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
   };
-  // Cells per second for each window.
+  // Scalar head SPEED = PATH LENGTH per window, not endpoint chord. Path length
+  // follows the head's trajectory, so a window straddling a cell-boundary turn
+  // (where the head changes cardinal direction) still measures the true |v| —
+  // constant for a constant-speed head — instead of a shortened diagonal chord.
+  // Sample on a fine 10ms grid and accumulate step magnitudes per 50ms window.
+  const STEP = 10;
   const speeds = [];
   for (let t = samples[0].t + WIN; t <= tEnd; t += WIN) {
-    const p0 = at(t - WIN);
-    const p1 = at(t);
-    const cells = Math.hypot(p1.x - p0.x, p1.y - p0.y) / cellPx;
-    speeds.push((cells / WIN) * 1000); // cells/sec
+    let path = 0;
+    let prev = at(t - WIN);
+    for (let u = t - WIN + STEP; u <= t + 1e-6; u += STEP) {
+      const cur = at(u);
+      path += Math.hypot(cur.x - prev.x, cur.y - prev.y);
+      prev = cur;
+    }
+    speeds.push((path / cellPx / WIN) * 1000); // cells/sec along the path
   }
   // A steady glide is ~ 1000/cellMs ≈ 3-8 cells/sec. "Frozen" = under 0.4
   // cells/sec (the snake is essentially standing still); "moving" = the rest.

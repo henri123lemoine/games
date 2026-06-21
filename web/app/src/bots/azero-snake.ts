@@ -23,6 +23,7 @@ import type { EngineHost } from '../engine/host';
 import type { ViewState } from '../engine/protocol';
 import { SnakeGpu, softmaxOver } from '../frontends/snake/azgpu';
 import { reportMove } from '../frontends/snake/telemetry';
+import { sleep } from '../frontends/types';
 import { isCpuFallback } from '../shell/azero';
 import { gpuLoader, weightsLoader } from './azero-net';
 import type { ClientBot } from './index';
@@ -37,6 +38,15 @@ const LEAVES = 32;
 const GPU_DEFAULT_SIMS = 64;
 /** GPU ceiling: ~5 round-trips, ~200 ms headless. */
 const GPU_MAX_SIMS = 128;
+/** Per-move wall-clock budget for the GPU search (an ANYTIME/time-budgeted
+ * search, not a fixed sim count). Every move takes ~this long: a search that
+ * finishes its sims early is PADDED to the budget, and one that would overrun
+ * stops at the deadline and returns the best move so far. The result is
+ * metronomic think-time → metronomic motion, with no single move able to stall
+ * the snake. Tuned to comfortably fit a typical full GPU_MAX_SIMS search (~120-
+ * 200ms headless, less in-browser), so the bot is NOT weakened — it still does
+ * its full search in the common case; the budget only caps the rare overrun. */
+const GPU_MOVE_BUDGET_MS = 210;
 /** CPU fallback ceiling. The wasm forward is ~25 ms/leaf, so even this is
  * ~200 ms/move; anything higher is unplayable without a GPU. */
 const CPU_DEFAULT_SIMS = 4;
@@ -60,10 +70,15 @@ class AzeroSnakeGpu implements ClientBot {
   async chooseMove(st: ViewState): Promise<string> {
     if (this.cancelled) throw new Error('cancelled');
     const t0 = performance.now();
+    const deadline = t0 + GPU_MOVE_BUDGET_MS;
     await this.host.snakeSetState(JSON.stringify(st.viewData));
     let priors = new Float32Array(0);
     let values = new Float32Array(0);
     let trips = 0;
+    // Anytime search: run PUCT batches until the search exhausts its sims OR the
+    // wall-clock deadline passes, then take the best move so far. Checking the
+    // deadline between batches (one GPU round-trip each) makes the search
+    // time-bounded — no single move can overrun the budget and stall the snake.
     for (;;) {
       if (this.cancelled) throw new Error('cancelled');
       const batch = await this.host.snakeAdvance(priors, values);
@@ -78,8 +93,16 @@ class AzeroSnakeGpu implements ClientBot {
       }
       priors = Float32Array.from(flat);
       values = v.slice(0, batch.n);
+      if (performance.now() >= deadline) break;
     }
     const { uci, stats } = await this.host.snakeBest();
+    // Pad a search that finished early up to the budget so EVERY move takes the
+    // same wall-clock time. Constant think-time is what lets the frontend glide
+    // at a single fixed cadence with zero stutter — metronomic thinking yields
+    // metronomic motion. (Cancellation during the pad just drops the move.)
+    const remaining = deadline - performance.now();
+    if (remaining > 0) await sleep(remaining);
+    if (this.cancelled) throw new Error('cancelled');
     reportMove({ backend: 'gpu', ms: performance.now() - t0, sims: stats.sims, trips });
     return uci;
   }
@@ -130,7 +153,9 @@ export async function createAzeroSnake(
       const sims = Math.min(wantSims || GPU_DEFAULT_SIMS, GPU_MAX_SIMS);
       // GPU path evaluates leaves page-side, so the wasm bot needs no weights.
       await host.snakeNew(sims, LEAVES, seed);
-      console.info(`[snake] WebGPU backend, ${sims} sims`);
+      console.info(
+        `[snake] WebGPU backend, ${sims} sims, ${GPU_MOVE_BUDGET_MS}ms anytime budget`,
+      );
       return new AzeroSnakeGpu(host, gpu);
     } catch (e) {
       console.warn('[snake] WebGPU init failed, falling back to the slow CPU forward:', e);

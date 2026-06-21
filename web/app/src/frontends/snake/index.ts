@@ -83,20 +83,24 @@ const LABEL_OF: Record<Abs, string> = { n: 'up', e: 'right', s: 'down', w: 'left
 
 const TICK_MS = 150;
 const QUEUE_MAX = 2;
-/** The snake glides one cell per `cellMs`, LINEARLY — a steady ms-per-cell, so
- * within any short window the motion is constant-velocity like Google Snake. The
- * value is held steady across each cell and only drifts slowly (an EMA, below)
- * toward the measured supply rate, so the cadence is a metronome that tracks the
- * machine's throughput rather than a hard-coded guess that either freezes (too
- * fast) or crawls (too slow). These bounds keep it sane on any machine. */
+/** The snake glides one cell per `cellMs`, LINEARLY — a FIXED ms-per-cell, so
+ * the motion is a single constant velocity (Google-Snake feel), not a pace that
+ * wobbles with the bot's think-time. The bot's search is time-budgeted to a
+ * constant per move, so the states arrive metronomically; the cadence locks onto
+ * that period during a short warmup and then holds it fixed. These bounds keep
+ * it sane on any machine. */
 const CELL_MS_MIN = 90;
 const CELL_MS_MAX = 600;
 /** Where the cadence starts before any inter-cell interval has been measured. */
 const CELL_MS_INIT = 150;
-/** EMA weight for new inter-cell-interval samples. Small, so the cadence eases
- * toward a new supply rate over several cells rather than jolting per move —
- * local velocity stays uniform; only the long-run pace adapts. */
-const CADENCE_EMA = 0.18;
+/** Head-moving states observed before the cadence LOCKS to the measured supply
+ * period. After this many, `cellMs` is frozen — constant velocity from then on,
+ * no per-move drift. Kept small so the lock happens within the first second. */
+const CADENCE_WARMUP = 4;
+/** Locked cadence = measured supply period × this, a hair OVER the period so the
+ * display never outruns supply (the buffer absorbs the slack via backpressure
+ * rather than ever starving and freezing). */
+const CADENCE_MARGIN = 1.04;
 /** How many ready-but-not-yet-shown moves the frontend buffers. `animate`
  * returns as soon as a move is enqueued (until the buffer is full), so the shell
  * loops on to compute the NEXT move while the current one is still gliding — the
@@ -380,10 +384,14 @@ class SnakeFrontend implements GameFrontend {
   private stateQueue: DuelView[] = [];
   /** Resolvers for `animate` calls parked on a full buffer (backpressure). */
   private bufferWaiters: (() => void)[] = [];
-  /** EMA of the wall-clock interval between head-moving states arriving — the
-   * supply rate the glide cadence tracks. `cellMs` is the live ms-per-cell. */
+  /** The fixed ms-per-cell glide cadence. Starts at a guess, then locks to the
+   * measured supply period after a short warmup and stays constant. */
   private cellMs = CELL_MS_INIT;
   private lastHeadMoveAt = 0;
+  /** Inter-cell intervals gathered during warmup; once `CADENCE_WARMUP` are in,
+   * `cellMs` locks to their median × margin and this stops growing. */
+  private cadenceSamples: number[] = [];
+  private cadenceLocked = false;
   private side = 20;
   private cssSize = 0;
   private rafId = 0;
@@ -515,19 +523,23 @@ class SnakeFrontend implements GameFrontend {
       return;
     }
 
-    // Measure how fast head-moving states are actually arriving (the supply
-    // rate) and ease the glide cadence toward it. The pace then matches the
-    // bot's real throughput on this machine — fast enough to never freeze, slow
-    // enough to never starve — while only drifting gradually, so the velocity
-    // stays locally uniform.
+    // Learn the (now metronomic) supply period during a short warmup, then LOCK
+    // the cadence to it and hold it fixed — a single constant glide velocity
+    // from then on. The bot time-budgets each move to a constant, so the
+    // measured intervals cluster tightly; their median (× a small margin so the
+    // display can't outrun supply) is the period the snake glides at.
     const now = performance.now();
-    if (this.lastHeadMoveAt > 0) {
+    if (this.lastHeadMoveAt > 0 && !this.cadenceLocked) {
       const interval = now - this.lastHeadMoveAt;
-      // Ignore a long idle gap (e.g. the human dithering) so a steady pace isn't
-      // poisoned by one outlier; only plausibly-back-to-back moves update it.
-      if (interval <= CELL_MS_MAX * 2) {
-        const target = clamp(interval, CELL_MS_MIN, CELL_MS_MAX);
-        this.cellMs += (target - this.cellMs) * CADENCE_EMA;
+      // Skip an idle/outlier gap (e.g. the human dithering) so the lock reflects
+      // back-to-back play, not a pause.
+      if (interval >= CELL_MS_MIN && interval <= CELL_MS_MAX * 2) {
+        this.cadenceSamples.push(interval);
+        if (this.cadenceSamples.length >= CADENCE_WARMUP) {
+          const period = median(this.cadenceSamples);
+          this.cellMs = clamp(period * CADENCE_MARGIN, CELL_MS_MIN, CELL_MS_MAX);
+          this.cadenceLocked = true;
+        }
       }
     }
     this.lastHeadMoveAt = now;
@@ -910,9 +922,17 @@ class SnakeFrontend implements GameFrontend {
     const to = (this.glide ? this.glide.to : this.view!).snakes[seat];
     const from = this.glide ? this.glide.from.snakes[seat] : to;
     // LINEAR in t (no easing): constant velocity within a cell, so combined with
-    // the fixed CELL_MS-per-cell cadence the snake glides at a uniform speed.
+    // the fixed cellMs-per-cell cadence the snake glides at a uniform speed.
     const cells = interpBody(from.cells, to.cells, t);
     if (cells.length === 0) return;
+
+    // Opt-in (?snakeDebug) test seam: publish seat 0's interpolated head in board
+    // CELL coordinates so the smoothness harness can read the exact rendered head
+    // each frame — far cleaner than colour-tracking the canvas through the juice.
+    if (this.showDebug && seat === 0) {
+      (window as unknown as { __snakeHead0?: { t: number; x: number; y: number } }).__snakeHead0 =
+        { t: performance.now(), x: cells[0][0], y: cells[0][1] };
+    }
 
     const ctx = this.c2d;
     // Center-of-cell points; the tube width tapers slightly toward the tail.
@@ -1137,6 +1157,12 @@ function lerp(a: number, b: number, t: number): number {
 
 function clamp(x: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, x));
+}
+
+function median(xs: number[]): number {
+  if (xs.length === 0) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  return s[s.length >> 1];
 }
 
 function easeOut(t: number): number {
