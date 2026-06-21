@@ -199,8 +199,7 @@ const STRAFE: [i8; 3] = [-40, 0, 40];
 // Doom BT_CHANGE weapon slot: 0 = keep current, 3 = shotgun, 5 = rocket.
 const WEAPONS: [u8; 3] = [0, 3, 5];
 
-pub const NUM_ACTIONS: usize =
-    TURNS.len() * MOVES.len() * STRAFE.len() * 2 * WEAPONS.len();
+pub const NUM_ACTIONS: usize = TURNS.len() * MOVES.len() * STRAFE.len() * 2 * WEAPONS.len();
 
 pub fn decode_action(idx: usize) -> Action {
     let weapon_sel = idx % WEAPONS.len();
@@ -242,12 +241,8 @@ pub fn encode_action(a: &Action) -> usize {
     let forward_i = nearest_i8(a.forward as i32, &MOVES);
     let strafe_i = nearest_i8(a.side as i32, &STRAFE);
     let fire = (a.fire != 0) as usize;
-    let weapon_sel = WEAPONS
-        .iter()
-        .position(|&w| w == a.weapon)
-        .unwrap_or(0);
-    (((turn_i * MOVES.len() + forward_i) * STRAFE.len() + strafe_i) * 2 + fire)
-        * WEAPONS.len()
+    let weapon_sel = WEAPONS.iter().position(|&w| w == a.weapon).unwrap_or(0);
+    (((turn_i * MOVES.len() + forward_i) * STRAFE.len() + strafe_i) * 2 + fire) * WEAPONS.len()
         + weapon_sel
 }
 
@@ -321,7 +316,11 @@ pub fn scripted_hunter(st: &PlayerState) -> Action {
     let (bearing, dist, visible) = if st.opponent_visible != 0 {
         (st.opp_bearing_deg, st.opp_dist, true)
     } else if st.opp_memory.valid != 0 && st.opp_memory.ticks_since_seen < 70 {
-        (st.opp_memory.last_bearing_deg, st.opp_memory.last_dist, false)
+        (
+            st.opp_memory.last_bearing_deg,
+            st.opp_memory.last_dist,
+            false,
+        )
     } else {
         // no opponent: steer toward the nearest available key item (item economy).
         let mut best: Option<(f32, f32)> = None;
@@ -347,7 +346,7 @@ pub fn scripted_hunter(st: &PlayerState) -> Action {
         a.side = if bearing >= 0.0 { 40 } else { -40 };
     }
     // switch to the rocket launcher once we own rockets (better duel weapon).
-    if st.ammo[3] > 0 && st.ready_weapon != WP_ROCKET as i32 {
+    if st.ammo[3] > 0 && st.ready_weapon != WP_ROCKET {
         a.weapon = WP_ROCKET as u8;
     } else if st.ready_weapon == 1 || st.ready_weapon == 2 {
         // off the fist/pistol: grab the chaingun/shotgun line via shotgun slot.
