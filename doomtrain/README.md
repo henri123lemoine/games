@@ -4,6 +4,42 @@ M3 of "RL on Doom": a reinforcement-learning trainer over the `doomrl` 1v1
 deathmatch substrate (M1/M2). Standalone `tch` crate, like `azt`/`azgo` — its
 own `[workspace]` so `libtorch` never touches the root `cargo test`.
 
+## STRATEGIC REDESIGN 2026-06-20 (branch `doom-strategic`) — RETRAIN REQUIRED
+
+The substrate, map, obs/action space and reward were rebuilt for *strategic* 1v1
+deathmatch (AltDeath item economy). The previous bot CANNOT play this — its obs
+had no item/map info and its action space could not strafe or switch weapons. The
+old checkpoints are stale; a full retrain on the new env is required.
+
+What changed (see `doomrl/STRATEGIC_CONTRACT.md` for the authoritative spec):
+- Map: the asymmetric **dumbbell** arena (`doomrl/assets/dumbbell.wad`, built by
+  `tools/make_arena_wad.py` + a real BSP node builder `tools/nodebuild.py`) —
+  two pockets + central hall, a sunken rocket-launcher altar, a raised megaarmor
+  ledge, a soulsphere, two LOS-breaking cover blocks, a choke.
+- Match runs **`-altdeath`**: items respawn on 30 s timers.
+- `OBS_DIM = 40`: self economy (armor type, all ammo, ready-weapon, position) +
+  opponent + 3 key items (available / respawn / bearing-by-distance).
+- `NUM_ACTIONS = 486`: 9 turn × 3 forward × **3 strafe** × 2 fire × **3 weapon**.
+- Reward: item-control shaping (grab/hold rocket, megaarmor, soulsphere) kept
+  well below the +5 frag.
+
+### Launch the full retrain (single command)
+
+```bash
+cd doomtrain
+DOOMTRAIN_MPS=1 ./run.sh ppo \
+    --iters=500 --steps=1024 --bc-iters=200 --self-play-at=0.6 \
+    --save=runs/strategic.ot --best=runs/strategic_best.ot
+# then export the deploy weights (round-trip verified):
+./run.sh ppo-export --net=runs/strategic_best.ot --out=doomppo_strategic.bin
+```
+
+This runs BC warmstart (clone the item-seeking scripted hunter) → curriculum
+(spawn distance + opponent skill ramp) → self-play, eval-gated keep-best, on the
+strategic env. A tiny CPU smoke of this exact entrypoint runs clean (finite
+losses, correct 40/486 shapes); strategic *play quality* requires the full GPU
+run (not yet done).
+
 ## STATUS — WORKING BOT 2026-06-20 (branch `doomrl-m1-substrate`, not merged)
 
 There is now a **genuinely winning 1v1 deathmatch bot**, trained with the
