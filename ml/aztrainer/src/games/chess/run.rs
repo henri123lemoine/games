@@ -1,14 +1,18 @@
-//! The snake training entry: the batched self-play + tch training loop, the
-//! benchmark, and the CLI dispatch. The net/optimizer/replay/run-dir machinery
-//! is the shared `aztrainer` core; this module supplies snake's config, the
-//! opponent-pool snapshot loading, and the per-iteration metric fields.
+//! The chess training entry: the batched self-play + tch training loop, the
+//! benchmark, and the architecture resolution. The net/optimizer/replay/run-dir
+//! machinery is the shared `aztrainer` core; this module supplies chess's
+//! config, the AlphaBeta/Stockfish eval ladder, and the per-iteration metrics.
+//!
+//! Chess gains the unified optimizer here: the original `azt` ran AdamW only,
+//! so `--optimizer sgd`, gradient clipping, SWA, and the LR warmup are new
+//! capabilities (AdamW with the 60%-budget LR drop remains the default).
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use game_core::Rng;
 use nn_infer::HeadKind;
-use tch::{Device, Kind};
+use tch::Kind;
 
 use super::eval::{Opponent, ladder};
 use super::selfplay::{SelfPlay, SelfPlayConfig, mix};
@@ -17,24 +21,26 @@ use crate::rundir::{append_line, device, epoch_secs, save_with_retry};
 use crate::train::{OptConfig, Replay, Trainer};
 use solvers::azero::PuctConfig;
 
-const DASHBOARD: &str = include_str!("../../../../assets/azsnake_dashboard.html");
-/// The four absolute headings the snake policy scores.
-const ACTIONS: i64 = 4;
+const DASHBOARD: &str = include_str!("../../../../../assets/azero_dashboard.html");
 
-pub fn config(blocks: usize, channels: i64, size: i64) -> NetConfig {
+pub fn config(blocks: usize, channels: i64) -> NetConfig {
     NetConfig {
         blocks,
         channels,
-        planes: snake::encode::PLANES as i64,
-        size,
-        head: HeadKind::GlobalPoolDense,
-        policy_len: ACTIONS,
+        planes: chess::encode::PLANE_COUNT as i64,
+        size: 8,
+        head: HeadKind::FlatConv,
+        policy_len: chess::encode::AZ_POLICY_LEN as i64,
         go_aux: false,
     }
 }
 
-fn arg<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> T {
+pub(super) fn parse_arg<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> T {
     arg_opt(args, name).unwrap_or(default)
+}
+
+fn arg<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> T {
+    parse_arg(args, name, default)
 }
 
 fn arg_opt<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
@@ -43,39 +49,22 @@ fn arg_opt<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
         .and_then(|w| w[1].parse().ok())
 }
 
-/// Net architecture for a checkpoint: explicit `--blocks`/`--ch`/`--size` flags
-/// win, then the checkpoint's own `<name>.json` sidecar, then the latest `start`
-/// event in the metrics.jsonl beside it.
-pub fn net_config_for(args: &[String], net_path: &Path) -> NetConfig {
-    let (blocks, channels, size) = crate::rundir::resolve_arch(
-        arg_opt(args, "--blocks"),
-        arg_opt(args, "--ch"),
-        arg_opt(args, "--size"),
-        net_path,
-        (4, 64, 20),
-    );
-    config(blocks, channels, size)
+pub(super) fn device_for() -> tch::Device {
+    device()
 }
 
-/// The most recent `pool_size` snapshot checkpoints (`ckpt-NNNNNN.ot`) in `dir`,
-/// oldest-to-newest. The opponent pool draws from these.
-fn snapshot_paths(dir: &Path, pool_size: usize) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut ckpts: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("ckpt-") && n.ends_with(".ot"))
-        })
-        .collect();
-    ckpts.sort();
-    if ckpts.len() > pool_size {
-        ckpts.drain(..ckpts.len() - pool_size);
-    }
-    ckpts
+/// Net architecture for a checkpoint: explicit `--blocks`/`--ch` flags win, then
+/// the checkpoint's own `<name>.json` sidecar, then the latest `start` event in
+/// the metrics.jsonl beside it. (Chess is board-fixed at 8×8.)
+pub fn net_config_for(args: &[String], net_path: &Path) -> NetConfig {
+    let (blocks, channels, _size) = crate::rundir::resolve_arch(
+        arg_opt(args, "--blocks"),
+        arg_opt(args, "--ch"),
+        Some(8),
+        net_path,
+        (8, 96, 8),
+    );
+    config(blocks, channels)
 }
 
 fn last_lr(path: &Path) -> Option<f64> {
@@ -92,51 +81,41 @@ fn last_lr(path: &Path) -> Option<f64> {
 
 #[allow(clippy::too_many_lines)]
 pub fn run(args: &[String]) {
-    let hours: f64 = arg(args, "--hours", 5.0);
-    let dir: PathBuf = arg(args, "--dir", PathBuf::from("../data/azsnake/run1"));
+    let hours: f64 = arg(args, "--hours", 24.0);
+    let dir: PathBuf = arg(args, "--dir", PathBuf::from("../../data/azt/run1"));
     let sims: u32 = arg(args, "--sims", 320);
     let leaves: u32 = arg(args, "--leaves", 8);
-    let concurrent: usize = arg(args, "--concurrent", 256);
-    let samples_per_iter: usize = arg(args, "--samples-per-iter", 8192);
-    let temp_plies: u16 = arg(args, "--temp-plies", 12);
-    let alpha: f64 = arg(args, "--alpha", 1.0);
+    let concurrent: usize = arg(args, "--concurrent", 512);
+    let samples_per_iter: usize = arg(args, "--samples-per-iter", 16384);
+    let temp_plies: u16 = arg(args, "--temp-plies", 24);
     let value_mix: f32 = arg(args, "--value-mix", 0.3);
     let resign_fp_target: f64 = arg(args, "--resign-fp-target", 0.05);
-    let resign_q: f64 = arg(args, "--resign-q", 0.95);
-    let resign_min_ply: u16 = arg(args, "--resign-ply", 20);
+    let resign_q: f64 = arg(args, "--resign-q", 0.99);
+    let resign_min_ply: u16 = arg(args, "--resign-ply", 40);
     let resign_off: f64 = arg(args, "--resign-off", 0.1);
-    let fast_sims: u32 = arg(args, "--fast-sims", 32);
-    let full_sims: u32 = arg(args, "--full-sims", sims.max(256));
-    let full_prob: f64 = arg(args, "--full-prob", 0.0);
-    let gamma: f32 = arg(args, "--gamma", 0.997);
-    let margin_w: f32 = arg(args, "--margin-w", 0.25);
-    let pool_frac: f64 = arg(args, "--pool-frac", 0.2);
-    let pool_size: usize = arg(args, "--pool-size", 5);
-    let forced_k: f32 = arg(args, "--forced-k", 0.0);
     let swa_decay: f64 = arg(args, "--swa-decay", 0.0);
     let use_sgd = arg(args, "--optimizer", String::from("adam")) == "sgd";
     let momentum: f64 = arg(args, "--momentum", 0.9);
     let grad_clip: f64 = arg(args, "--grad-clip", 0.0);
     let warmup_iters: u64 = arg(args, "--warmup-iters", 0);
-    let batch: usize = arg(args, "--batch", 512);
-    let reuse: f64 = arg(args, "--reuse", 1.8);
-    let replay_cap: usize = arg(args, "--replay", 400_000);
+    let batch: usize = arg(args, "--batch", 1024);
+    let reuse: f64 = arg(args, "--reuse", 1.7);
+    let replay_cap: usize = arg(args, "--replay", 1_500_000);
     let lr: f64 = arg(args, "--lr", 1e-3);
     let weight_decay: f64 = arg(args, "--wd", 1e-4);
     let eval_every: u64 = arg(args, "--eval-every", 4);
     let eval_pairs: u32 = arg(args, "--eval-pairs", 16);
-    let eval_sims: u32 = arg(args, "--eval-sims", 128);
-    let snapshot_every: u64 = arg(args, "--snapshot-every", 30);
+    let eval_sims: u32 = arg(args, "--eval-sims", 256);
+    let snapshot_every: u64 = arg(args, "--snapshot-every", 40);
     let max_iters: u64 = arg(args, "--max-iters", 0);
 
     let net_cfg = net_config_for(args, &dir.join("latest.ot"));
-    let (blocks, channels, size) = (net_cfg.blocks, net_cfg.channels, net_cfg.size);
+    let (blocks, channels) = (net_cfg.blocks, net_cfg.channels);
     let sp_cfg = SelfPlayConfig {
         puct: PuctConfig {
             sims,
             max_leaves: leaves,
-            dirichlet_alpha: alpha,
-            forced_playouts_k: forced_k,
+            cycle_draws: true,
             ..PuctConfig::default()
         },
         concurrent,
@@ -144,12 +123,7 @@ pub fn run(args: &[String]) {
         resign_q,
         resign_min_ply,
         resign_off,
-        fast_sims,
-        full_sims,
-        full_prob,
-        gamma,
-        margin_w,
-        pool_frac,
+        ..SelfPlayConfig::default()
     };
 
     std::fs::create_dir_all(&dir).expect("create run dir");
@@ -184,6 +158,8 @@ pub fn run(args: &[String]) {
         });
         println!("seeded weights from {} (transfer)", seed.display());
     }
+    // LR continuity across legs: if a previous leg's schedule dropped the rate,
+    // resume there instead of re-shocking the run at the base lr.
     let mut current_lr = lr;
     let mut lr_dropped = false;
     if iter > 0
@@ -195,8 +171,11 @@ pub fn run(args: &[String]) {
         lr_dropped = true;
         println!("restored lr {prev} from the previous leg (base {lr})");
     }
-    let mut pool = SelfPlay::new(sp_cfg, mix(0x60A1_5EED, 0));
+    let mut pool = SelfPlay::new(sp_cfg, 0xA12E_5EED);
     let mut replay: Replay<super::sample::Sample> = Replay::new(replay_cap);
+    // Rolling pool of control games' non-loser minimum Qs; the resignation
+    // threshold is the fp-target quantile of this distribution (AGZ-style
+    // auto-calibration), so no hand-tuned constant survives contact.
     let mut calib_pool: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
     let mut live_resign_q = resign_q;
 
@@ -204,48 +183,36 @@ pub fn run(args: &[String]) {
         &metrics,
         &serde_json::json!({
             "event": "start", "time": epoch_secs(), "iter": iter,
-            "blocks": blocks, "channels": channels, "size": size, "sims": sims,
+            "blocks": blocks, "channels": channels, "sims": sims,
             "concurrent": concurrent, "samples_per_iter": samples_per_iter,
             "batch_size": batch, "replay_capacity": replay_cap, "lr": lr,
             "eval_every": eval_every, "eval_pairs": eval_pairs,
             "eval_sims": eval_sims, "value_mix": value_mix,
-            "fast_sims": fast_sims, "full_sims": full_sims, "full_prob": full_prob,
-            "gamma": gamma, "margin_w": margin_w,
-            "pool_frac": pool_frac, "pool_size": pool_size,
-            "forced_k": forced_k, "swa_decay": swa_decay,
+            "resign_fp_target": resign_fp_target,
             "optimizer": if use_sgd { "sgd" } else { "adam" },
-            "grad_clip": grad_clip, "warmup_iters": warmup_iters,
-            "resign_fp_target": resign_fp_target, "alpha": alpha,
+            "grad_clip": grad_clip, "warmup_iters": warmup_iters, "swa_decay": swa_decay,
             "threads": rayon::current_num_threads(),
         })
         .to_string(),
     );
     println!(
-        "run: {hours:.1}h budget, {blocks}x{channels} resnet, {size}x{size} board on {dev:?}, \
-         {sims} sims/move, {concurrent} concurrent games, {samples_per_iter} samples/iter, dir {}",
+        "run: {hours:.1}h budget, {blocks}x{channels} resnet on {dev:?}, {sims} sims/move, \
+         {concurrent} concurrent games, {samples_per_iter} samples/iter, dir {}",
         dir.display()
     );
 
+    // Budget counts *work* time (self-play + train + eval), not wall clock.
     let budget_secs = hours * 3600.0;
     let mut work_secs = 0.0f64;
     let start = Instant::now();
-    let opponents = [Opponent::Random, Opponent::Greedy, Opponent::Mcts(256)];
-    let mut pool_paths: Vec<PathBuf> = Vec::new();
+    let opponents = [
+        Opponent::Random,
+        Opponent::AbMaterial(1),
+        Opponent::AbMaterial(2),
+        Opponent::AbMaterial(3),
+    ];
     loop {
         iter += 1;
-
-        if pool_size > 0 && pool_frac > 0.0 {
-            let latest_paths = snapshot_paths(&dir, pool_size);
-            if latest_paths != pool_paths {
-                let nets: Vec<Infer> = latest_paths
-                    .iter()
-                    .filter_map(|p| Infer::load(p, net_cfg, dev, Kind::Half).ok())
-                    .collect();
-                println!("opponent pool: {} past checkpoints", nets.len());
-                pool.set_pool(nets);
-                pool_paths = latest_paths;
-            }
-        }
         if warmup_iters > 0 {
             if iter <= warmup_iters {
                 trainer.set_lr(current_lr * iter as f64 / warmup_iters as f64);
@@ -253,9 +220,9 @@ pub fn run(args: &[String]) {
                 trainer.set_lr(current_lr);
             }
         }
-        let sp_start = Instant::now();
         let infer = Infer::snapshot(trainer.infer_vs(), net_cfg, Kind::Half);
-        let (samples, stats, calib) = pool.collect(&infer, samples_per_iter.max(1));
+        let sp_start = Instant::now();
+        let (samples, stats, calib) = pool.collect(&infer, samples_per_iter);
         let self_play_secs = sp_start.elapsed().as_secs_f32();
         let n_new = samples.len();
         replay.extend(samples);
@@ -323,12 +290,13 @@ pub fn run(args: &[String]) {
         let mut line = serde_json::json!({
             "iter": iter, "time": epoch_secs(), "elapsed_min": elapsed_min,
             "policy_loss": policy_loss, "value_loss": value_loss,
-            "n_new": n_new, "games": stats.games, "seat0_wins": stats.seat0_wins,
+            "n_new": n_new, "games": stats.games, "decisive": stats.decisive,
             "avg_plies": stats.avg_plies(), "buffer": replay.len(),
             "self_play_secs": self_play_secs, "train_secs": train_secs,
-            "resigned": stats.resigned, "capped": stats.capped,
-            "would_resign": stats.would_resign, "resign_fp": stats.resign_fp,
-            "resign_q": live_resign_q, "lr": current_lr,
+            "resigned": stats.resigned, "rep_draws": stats.repetition_draws,
+            "capped": stats.capped, "would_resign": stats.would_resign,
+            "resign_fp": stats.resign_fp, "resign_q": live_resign_q,
+            "lr": current_lr,
         });
         if let Some((eval_secs, table)) = eval_fields {
             line["eval_secs"] = serde_json::json!(eval_secs);
@@ -337,13 +305,12 @@ pub fn run(args: &[String]) {
         append_line(&metrics, &line.to_string());
         println!(
             "iter {iter:>4} [{elapsed_min:>6.1}m] loss {:.3} (p {policy_loss:.3} + v {value_loss:.3}) | \
-             {} games, {} seat0 wins ({} resign, {} capped), avg {:>3.0} plies, buffer {:>7} | \
+             {} games, {} decisive ({} resign), avg {:>3.0} plies, buffer {:>7} | \
              sp {self_play_secs:>5.1}s train {train_secs:>4.1}s{eval_human}",
             policy_loss + value_loss,
             stats.games,
-            stats.seat0_wins,
+            stats.decisive,
             stats.resigned,
-            stats.capped,
             stats.avg_plies(),
             replay.len(),
         );
@@ -382,21 +349,17 @@ pub fn run(args: &[String]) {
     }
 }
 
+/// Times one self-play burst and a training burst at the given sizes.
 pub fn bench(args: &[String]) {
-    use game_core::{Game, PolicyValueEncoder};
-    use snake::Duel;
-    use snake::encode::SnakeEncoder;
-
-    let blocks: usize = arg(args, "--blocks", 4);
+    let blocks: usize = arg(args, "--blocks", 6);
     let channels: i64 = arg(args, "--ch", 64);
-    let size: i64 = arg(args, "--size", 20);
     let sims: u32 = arg(args, "--sims", 320);
     let leaves: u32 = arg(args, "--leaves", 8);
-    let concurrent: usize = arg(args, "--concurrent", 256);
-    let samples: usize = arg(args, "--samples", 4096);
+    let concurrent: usize = arg(args, "--concurrent", 512);
+    let samples: usize = arg(args, "--samples", 8192);
 
     let dev = device();
-    let net_cfg = config(blocks, channels, size);
+    let net_cfg = config(blocks, channels);
     let trainer = Trainer::new(
         dev,
         net_cfg,
@@ -415,7 +378,7 @@ pub fn bench(args: &[String]) {
         puct: PuctConfig {
             sims,
             max_leaves: leaves,
-            dirichlet_alpha: 1.0,
+            cycle_draws: true,
             ..PuctConfig::default()
         },
         concurrent,
@@ -423,23 +386,17 @@ pub fn bench(args: &[String]) {
     };
     let mut pool = SelfPlay::new(sp_cfg, 0xBE7C);
 
-    println!(
-        "bench: {blocks}x{channels} resnet, {size}x{size} board on {dev:?}, {sims} sims, {concurrent} games"
-    );
+    println!("bench: {blocks}x{channels} resnet on {dev:?}, {sims} sims, {concurrent} games");
 
-    let game = Duel::new();
-    let enc = SnakeEncoder::new();
     let synth = |n: usize| {
-        let mut s = game.initial_state();
-        let outs = game.chance_outcomes(&s);
-        game.apply(&mut s, outs[0].0);
-        let actions = game.legal_actions(&s);
+        let board = chess::Board::start();
+        let moves = chess::legal_moves(&board);
         (0..n)
             .map(|_| crate::net::EvalRequest {
-                features: enc.encode_state(&game, &s),
-                support: actions
+                features: chess::encode::encode_planes(&board),
+                support: moves
                     .iter()
-                    .map(|&a| enc.action_index(&game, &s, a) as u16)
+                    .map(|&m| chess::encode::az_move_index(m, board.stm) as u16)
                     .collect(),
             })
             .collect::<Vec<_>>()
@@ -466,36 +423,28 @@ pub fn bench(args: &[String]) {
     let spg = stats.avg_plies().max(1.0) as f64;
     println!(
         "self-play: {} samples in {dt:.1}s = {:.0} samples/s ({} games, avg {:.0} plies; \
-         cpu {:.1}s gpu {:.1}s; {} seat0 wins, {} resign, {} cap)",
+         cpu {:.1}s gpu {:.1}s; {} decisive, {} resign, {} rep, {} cap)",
         s.len(),
         s.len() as f64 / dt,
         stats.games,
         spg,
         stats.cpu_secs,
         stats.gpu_secs,
-        stats.seat0_wins,
+        stats.decisive,
         stats.resigned,
+        stats.repetition_draws,
         stats.capped,
     );
 
     let mut trainer = trainer;
-    let mut replay: Replay<super::sample::Sample> = Replay::new(1_000_000);
+    let mut replay: Replay<super::sample::Sample> = Replay::new(2_000_000);
     replay.extend(s);
     let t1 = Instant::now();
     let steps = 30;
-    let (pl, vl) = trainer.train(&replay, steps, 512, &mut Rng::new(7));
+    let (pl, vl) = trainer.train(&replay, steps, 1024, &mut Rng::new(7));
     let dt = t1.elapsed().as_secs_f64();
     println!(
-        "train: {steps} steps of 512 in {dt:.1}s = {:.0} samples/s (losses p {pl:.3} v {vl:.3})",
-        steps as f64 * 512.0 / dt
+        "train: {steps} steps of 1024 in {dt:.1}s = {:.0} samples/s (losses p {pl:.3} v {vl:.3})",
+        steps as f64 * 1024.0 / dt
     );
-}
-
-/// The argument parser shared with the gauge module.
-pub(super) fn parse_arg<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> T {
-    arg(args, name, default)
-}
-
-pub(super) fn device_for() -> Device {
-    device()
 }

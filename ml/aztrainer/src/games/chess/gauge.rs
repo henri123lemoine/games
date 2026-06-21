@@ -127,7 +127,11 @@ pub fn calibrate(args: &[String]) {
 /// `{"event":"elo",...}` line to the run's metrics for the dashboard. `--watch
 /// N` re-gauges the latest checkpoint every N minutes.
 pub fn elo_gauge(args: &[String]) {
-    let net_path: PathBuf = arg(args, "--net", PathBuf::from("../data/azt/run2/latest.ot"));
+    let net_path: PathBuf = arg(
+        args,
+        "--net",
+        PathBuf::from("../../data/azt/run2/latest.ot"),
+    );
     let sims: u32 = arg(args, "--sims", 600);
     let pairs: u32 = arg(args, "--pairs", 8);
     let movetime: u32 = arg(args, "--movetime", 50);

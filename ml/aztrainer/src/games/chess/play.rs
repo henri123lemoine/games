@@ -50,7 +50,11 @@ fn run_to_done(
 pub fn play(args: &[String]) {
     use chess::{Adjudication, Color, adjudicate, legal_moves};
 
-    let net_path: PathBuf = arg(args, "--net", PathBuf::from("../data/azt/run2/latest.ot"));
+    let net_path: PathBuf = arg(
+        args,
+        "--net",
+        PathBuf::from("../../data/azt/run2/latest.ot"),
+    );
     let sims: u32 = arg(args, "--sims", 800);
     let human_is_white = arg(args, "--human", "w".to_string()) != "b";
 
@@ -149,7 +153,11 @@ pub fn uci_engine(args: &[String]) {
     use chess::legal_moves;
     use std::io::BufRead;
 
-    let net_path: PathBuf = arg(args, "--net", PathBuf::from("../data/azt/run2/latest.ot"));
+    let net_path: PathBuf = arg(
+        args,
+        "--net",
+        PathBuf::from("../../data/azt/run2/latest.ot"),
+    );
     let sims: u32 = arg(args, "--sims", 2000);
 
     let cfg = net_config_for(args, &net_path);

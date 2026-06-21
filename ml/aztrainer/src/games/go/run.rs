@@ -19,7 +19,7 @@ use crate::rundir::{append_line, device, epoch_secs, save_with_retry};
 use crate::train::{OptConfig, Replay, Trainer};
 use solvers::azero::PuctConfig;
 
-const DASHBOARD: &str = include_str!("../../../../assets/azgo_dashboard.html");
+const DASHBOARD: &str = include_str!("../../../../../assets/azgo_dashboard.html");
 
 pub fn config(blocks: usize, channels: i64, size: i64) -> NetConfig {
     NetConfig {
@@ -72,7 +72,7 @@ fn last_lr(path: &Path) -> Option<f64> {
 #[allow(clippy::too_many_lines)]
 pub fn run(args: &[String]) {
     let hours: f64 = arg(args, "--hours", 5.0);
-    let dir: PathBuf = arg(args, "--dir", PathBuf::from("../data/azgo/run1"));
+    let dir: PathBuf = arg(args, "--dir", PathBuf::from("../../data/azgo/run1"));
     let sims: u32 = arg(args, "--sims", 192);
     let leaves: u32 = arg(args, "--leaves", 8);
     let concurrent: usize = arg(args, "--concurrent", 768);

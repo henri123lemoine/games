@@ -37,12 +37,12 @@ pub fn export(args: &[String]) {
     let net_path: PathBuf = arg(
         args,
         "net",
-        PathBuf::from("../data/slither/slither-best-sym4-i130.ot"),
+        PathBuf::from("../../data/slither/slither-best-sym4-i130.ot"),
     );
     let out: PathBuf = arg(
         args,
         "out",
-        PathBuf::from("../web/app/public/slither/slither.weights"),
+        PathBuf::from("../../web/app/public/slither/slither.weights"),
     );
 
     let mut vs = nn::VarStore::new(Device::Cpu);
@@ -179,12 +179,12 @@ pub fn verify_export(args: &[String]) {
     let net_path: PathBuf = arg(
         args,
         "net",
-        PathBuf::from("../data/slither/slither-best-sym4-i130.ot"),
+        PathBuf::from("../../data/slither/slither-best-sym4-i130.ot"),
     );
     let export_path: PathBuf = arg(
         args,
         "export",
-        PathBuf::from("../web/app/public/slither/slither.weights"),
+        PathBuf::from("../../web/app/public/slither/slither.weights"),
     );
 
     let (max_dt, max_db, max_dv) = parity_check(&net_path, &export_path);

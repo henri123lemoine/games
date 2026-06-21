@@ -7,6 +7,6 @@ description = "Torch-free generic conv-resnet forward + the unified versioned AZ
 [dependencies]
 
 [dev-dependencies]
-chess = { path = "../games/chess" }
-go = { path = "../games/go" }
-snake = { path = "../games/snake" }
+chess = { path = "../../games/chess" }
+go = { path = "../../games/go" }
+snake = { path = "../../games/snake" }

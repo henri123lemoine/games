@@ -165,7 +165,7 @@ fn oldest_snapshot(dir: &Path) -> Option<(PathBuf, u64)> {
 /// low sims. A win rate above 0.5 means the net is still improving over the
 /// baseline. Appends `{"event":"rate",...}`; `--watch N` repeats every N min.
 pub fn rate(args: &[String]) {
-    let dir: PathBuf = arg(args, "--dir", PathBuf::from("../data/azgo/run19"));
+    let dir: PathBuf = arg(args, "--dir", PathBuf::from("../../data/azgo/run19"));
     let pairs: u32 = arg(args, "--pairs", 4);
     let sims: u32 = arg(args, "--sims", 128);
     let watch_min: f64 = arg(args, "--watch", 0.0);
@@ -235,7 +235,11 @@ pub fn rate(args: &[String]) {
 /// the dashboard. `--watch N` re-gauges the latest checkpoint every N
 /// minutes.
 pub fn elo_gauge(args: &[String]) {
-    let net_path: PathBuf = arg(args, "--net", PathBuf::from("../data/azgo/run1/latest.ot"));
+    let net_path: PathBuf = arg(
+        args,
+        "--net",
+        PathBuf::from("../../data/azgo/run1/latest.ot"),
+    );
     let sims: u32 = arg(args, "--sims", 400);
     let pairs: u32 = arg(args, "--pairs", 6);
     let watch_min: f64 = arg(args, "--watch", 0.0);

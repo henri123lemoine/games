@@ -36,7 +36,7 @@ fn export(args: &[String]) {
     let net: PathBuf = run::parse_arg(
         args,
         "--net",
-        PathBuf::from("../data/azgo/run_full/latest_swa.ot"),
+        PathBuf::from("../../data/azgo/run_full/latest_swa.ot"),
     );
     let out: PathBuf = run::parse_arg(args, "--out", net.with_file_name("azero-go.azweb"));
     let cfg = run::net_config_for(args, &net);
@@ -55,7 +55,7 @@ fn verify_export(args: &[String]) {
     let net: PathBuf = run::parse_arg(
         args,
         "--net",
-        PathBuf::from("../data/azgo/run_full/latest_swa.ot"),
+        PathBuf::from("../../data/azgo/run_full/latest_swa.ot"),
     );
     let out: PathBuf = run::parse_arg(args, "--out", net.with_file_name("azero-go.azweb"));
     let cfg = run::net_config_for(args, &net);

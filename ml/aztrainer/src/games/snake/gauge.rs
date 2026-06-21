@@ -41,7 +41,7 @@ fn oldest_snapshot(dir: &Path) -> Option<(PathBuf, u64)> {
 /// means the net is still improving. Appends `{"event":"rate",...}`; `--watch N`
 /// repeats every N minutes.
 pub fn rate(args: &[String]) {
-    let dir: PathBuf = arg(args, "--dir", PathBuf::from("../data/azsnake/run1"));
+    let dir: PathBuf = arg(args, "--dir", PathBuf::from("../../data/azsnake/run1"));
     let pairs: u32 = arg(args, "--pairs", 8);
     let sims: u32 = arg(args, "--sims", 96);
     let watch_min: f64 = arg(args, "--watch", 0.0);
@@ -107,7 +107,7 @@ pub fn elo_gauge(args: &[String]) {
     let net_path: PathBuf = arg(
         args,
         "--net",
-        PathBuf::from("../data/azsnake/run1/latest.ot"),
+        PathBuf::from("../../data/azsnake/run1/latest.ot"),
     );
     let sims: u32 = arg(args, "--sims", 200);
     let pairs: u32 = arg(args, "--pairs", 16);

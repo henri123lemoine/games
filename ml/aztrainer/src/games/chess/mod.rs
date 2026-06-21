@@ -33,7 +33,11 @@ impl VerifyGame for ChessVerify {
 }
 
 fn export(args: &[String]) {
-    let net: PathBuf = run::parse_arg(args, "--net", PathBuf::from("../data/azt/run2/latest.ot"));
+    let net: PathBuf = run::parse_arg(
+        args,
+        "--net",
+        PathBuf::from("../../data/azt/run2/latest.ot"),
+    );
     let out: PathBuf = run::parse_arg(args, "--out", net.with_file_name("azero-chess.azweb"));
     let cfg = run::net_config_for(args, &net);
     let len = crate::export::export(&net, cfg, &out).expect("export");
@@ -47,7 +51,11 @@ fn export(args: &[String]) {
 }
 
 fn verify_export(args: &[String]) {
-    let net: PathBuf = run::parse_arg(args, "--net", PathBuf::from("../data/azt/run2/latest.ot"));
+    let net: PathBuf = run::parse_arg(
+        args,
+        "--net",
+        PathBuf::from("../../data/azt/run2/latest.ot"),
+    );
     let out: PathBuf = run::parse_arg(args, "--out", net.with_file_name("azero-chess.azweb"));
     let cfg = run::net_config_for(args, &net);
     verify::<ChessVerify>(&net, cfg, &out, 120).expect("verify");

@@ -18,8 +18,8 @@ crate-type = ["cdylib", "rlib"]
 debug-hooks = []
 
 [dependencies]
-slither-rl = { path = "../../slither-rl" }
-slitherinfer = { path = "../../slitherinfer" }
+slither-rl = { path = "../../ml/slither-rl" }
+slitherinfer = { path = "../../ml/slitherinfer" }
 wasm-bindgen = "0.2"
 console_error_panic_hook = "0.1"
 

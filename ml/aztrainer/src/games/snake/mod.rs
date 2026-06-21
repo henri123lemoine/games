@@ -35,7 +35,7 @@ fn export(args: &[String]) {
     let net: PathBuf = run::parse_arg(
         args,
         "--net",
-        PathBuf::from("../data/azsnake/run3/latest.ot"),
+        PathBuf::from("../../data/azsnake/run3/latest.ot"),
     );
     let out: PathBuf = run::parse_arg(args, "--out", net.with_file_name("azero-snake.azweb"));
     let cfg = run::net_config_for(args, &net);
@@ -54,7 +54,7 @@ fn verify_export(args: &[String]) {
     let net: PathBuf = run::parse_arg(
         args,
         "--net",
-        PathBuf::from("../data/azsnake/run3/latest.ot"),
+        PathBuf::from("../../data/azsnake/run3/latest.ot"),
     );
     let out: PathBuf = run::parse_arg(args, "--out", net.with_file_name("azero-snake.azweb"));
     let cfg = run::net_config_for(args, &net);

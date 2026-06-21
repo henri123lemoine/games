@@ -35,8 +35,8 @@ cargo run --release --bin snake -- <run|bench|rate|elo|export|verify-export>
 A short example:
 
 ```
-cargo run --release --bin go -- run --dir ../data/azgo/run1 --hours 5 --size 9
-cargo run --release --bin go -- verify-export --net ../data/azgo/run1/latest.ot
+cargo run --release --bin go -- run --dir ../../data/azgo/run1 --hours 5 --size 9
+cargo run --release --bin go -- verify-export --net ../../data/azgo/run1/latest.ot
 ```
 
 ## Running the built binaries: the libtorch dylib path
@@ -49,7 +49,7 @@ the original trainers had:
 
 ```sh
 LIBT=$(find target/release/build -name libtorch_cpu.dylib | head -1 | xargs dirname)
-DYLD_LIBRARY_PATH="$LIBT" ./target/release/go verify-export --net ../data/azgo/run1/latest.ot
+DYLD_LIBRARY_PATH="$LIBT" ./target/release/go verify-export --net ../../data/azgo/run1/latest.ot
 ```
 
 (`cargo run` injects this automatically; only the standalone binary needs it.)

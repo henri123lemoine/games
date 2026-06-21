@@ -92,7 +92,7 @@ mod tests {
 
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../web/app/public/slither/slither.weights"
+            "/../../web/app/public/slither/slither.weights"
         );
         let Ok(bytes) = std::fs::read(path) else {
             eprintln!("skipping: {path} not exported yet");
