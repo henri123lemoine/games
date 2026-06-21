@@ -213,6 +213,9 @@ impl AzSnakeBot {
     /// first simulation and only sharpens with more, so an early read is the
     /// same kind of answer, just from a shallower search.
     pub fn best(&self) -> Result<String, JsError> {
+        if !self.search.has_root() {
+            return Err(JsError::new("search has not expanded the root yet"));
+        }
         let visits = self.search.root_visits();
         if visits.iter().all(|&v| v == 0) {
             return Err(JsError::new("search has no visits yet"));
@@ -225,6 +228,9 @@ impl AzSnakeBot {
     /// `{"value":…,"sims":…}` — the root's searched value (side to move) and
     /// total visits, for a thinking readout.
     pub fn stats(&self) -> String {
+        if !self.search.has_root() {
+            return "{\"value\":0,\"sims\":0}".to_string();
+        }
         let sims: u32 = self.search.root_visits().iter().sum();
         let value = if sims > 0 {
             self.search.root_value()
