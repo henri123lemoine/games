@@ -5,3 +5,6 @@ build/
 *.wad
 !assets/*.wad
 build_wasm/
+
+__pycache__/
+*.pyc

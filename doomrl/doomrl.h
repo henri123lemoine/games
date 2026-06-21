@@ -9,6 +9,17 @@ extern "C" {
 
 #define DOOMRL_MAX_ENEMIES 64
 
+/* Strategic 1v1: the three contested timed power items, fixed order:
+ * 0 = rocket launcher (2003), 1 = blue megaarmor (2019), 2 = soulsphere (2013). */
+#define DOOMRL_NUM_KEY_ITEMS 3
+
+typedef struct {
+    int   available;       /* 1 if the pickup mobj is on the map right now */
+    float respawn_secs;    /* seconds until it respawns (0 when available)  */
+    float bearing_deg;     /* egocentric bearing to its fixed map position  */
+    float dist;            /* planar distance to its fixed map position     */
+} doomrl_key_item_t;
+
 typedef struct {
     int   type;
     float x;
@@ -105,6 +116,8 @@ typedef struct {
     int   opp_health;
 
     doomrl_target_memory_t opp_memory;
+
+    doomrl_key_item_t key_items[DOOMRL_NUM_KEY_ITEMS];
 
     float reward;
 } doomrl_player_state_t;

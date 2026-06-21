@@ -17,9 +17,9 @@ if ! command -v emcc >/dev/null 2>&1; then
 fi
 
 IWAD="$HERE/../web/app/public/doom/doom1.wad"
-ARENA="$HERE/assets/flatarena.wad"
+ARENA="$HERE/assets/dumbbell.wad"
 [ -f "$IWAD" ] || { echo "missing $IWAD" >&2; exit 1; }
-[ -f "$ARENA" ] || { echo "missing $ARENA — run tools/make_arena_wad.py" >&2; exit 1; }
+[ -f "$ARENA" ] || { echo "missing $ARENA — run tools/make_arena_wad.py assets/dumbbell.wad" >&2; exit 1; }
 
 CFLAGS="-O2 -DNORMALUNIX -D_DEFAULT_SOURCE -DDOOMRL_ALLOW_FILE_DEFAULT \
   -Wno-deprecated-non-prototype -Wno-format -Wno-parentheses -I$DG -I$HERE"
@@ -59,7 +59,7 @@ emcc $CFLAGS "${OBJS[@]}" -lm \
   -s INITIAL_MEMORY=67108864 \
   -s ENVIRONMENT=web \
   --preload-file "$IWAD@doom1.wad" \
-  --preload-file "$ARENA@flatarena.wad" \
+  --preload-file "$ARENA@dumbbell.wad" \
   -o "$OUT/doomrl.js"
 
 echo "built: $OUT/doomrl.js $OUT/doomrl.wasm $OUT/doomrl.data"

@@ -161,18 +161,21 @@ def build():
     m.void_block(-150, 150, 70, 70, main, WALL)
     m.void_block(150, -150, 70, 70, main, WALL)
 
-    # --- Starter weapons near the spawns. ---
-    m.thing(-PX + 200, -POCKET_HY + 200, 0, 2002)   # chaingun, left-bottom spawn
-    m.thing(PX - 200, -POCKET_HY + 200, 0, 2001)    # shotgun, right-bottom spawn
-    m.thing(-PX + 200, POCKET_HY - 96, 0, 2001)     # shotgun, left-top
-    m.thing(PX - 320, -POCKET_HY + 200, 0, 2002)    # chaingun, right-bottom-2
+    # --- Starter weapons NEAR (but not ON) the spawns. They sit toward the hall
+    # side of each pocket so a player reborning on a corner DM start does not
+    # stand on a pickup (auto-grab during the reborn position check crashes the
+    # engine, and would be a bad spawn anyway). ---
+    m.thing(-PX + 480, -POCKET_HY + 240, 0, 2002)   # chaingun, left-bottom
+    m.thing(PX - 480, -POCKET_HY + 240, 0, 2001)    # shotgun, right-bottom
+    m.thing(-PX + 480, POCKET_HY - 240, 0, 2001)    # shotgun, left-top
+    m.thing(PX - 480, POCKET_HY - 360, 0, 2002)     # chaingun, right-top
 
     # --- Four inward-facing DM starts (type 11), in the pocket corners. ---
     starts = [
-        (-PX + 200, -POCKET_HY + 200, 0),     # left-bottom, face +x (inward)
-        (PX - 200, -POCKET_HY + 200, 180),    # right-bottom, face -x
-        (PX - 200, POCKET_HY - 200, 180),     # right-top, face -x
-        (-PX + 200, POCKET_HY - 100, 0),      # left-top, face +x
+        (-PX + 180, -POCKET_HY + 180, 0),     # left-bottom, face +x (inward)
+        (PX - 180, -POCKET_HY + 180, 180),    # right-bottom, face -x
+        (PX - 600, POCKET_HY - 180, 180),     # right-top (clear of the ledge), face -x
+        (-PX + 180, POCKET_HY - 120, 0),      # left-top, face +x
     ]
     for x, y, ang in starts:
         m.thing(x, y, ang, 11)

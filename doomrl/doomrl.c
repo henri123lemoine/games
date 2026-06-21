@@ -250,6 +250,109 @@ void doomrl_get_state(doomrl_state_t *out)
     out->target.last_dist = s_target.last_dist;
 }
 
+/* The three contested key items, fixed order matching doomrl.h:
+ * rocket launcher (2003 / MT_MISC27), megaarmor (2019 / MT_MISC1),
+ * soulsphere (2013 / MT_MISC12). */
+static const int s_key_mt[DOOMRL_NUM_KEY_ITEMS]    = { MT_MISC27, MT_MISC1, MT_MISC12 };
+static const int s_key_dnum[DOOMRL_NUM_KEY_ITEMS]  = { 2003, 2019, 2013 };
+
+/* Fixed map position of each key item, captured the first time we see the live
+ * pickup mobj (its spawn position is stable across respawns). */
+static struct {
+    int   known;
+    float x;
+    float y;
+    int   level_start_tic;
+} s_key_pos[DOOMRL_NUM_KEY_ITEMS];
+
+/* Scan live mobjs once: for each key item, is its pickup present, and record its
+ * map position the first time it is seen. */
+static void scan_key_items(int present[DOOMRL_NUM_KEY_ITEMS])
+{
+    for (int k = 0; k < DOOMRL_NUM_KEY_ITEMS; k++)
+        present[k] = 0;
+
+    /* reset the captured positions on a fresh level */
+    if (s_key_pos[0].level_start_tic != levelstarttic)
+    {
+        memset(s_key_pos, 0, sizeof(s_key_pos));
+        for (int k = 0; k < DOOMRL_NUM_KEY_ITEMS; k++)
+            s_key_pos[k].level_start_tic = levelstarttic;
+    }
+
+    int saved_validcount = validcount;
+    thinker_t *th = thinkercap.next;
+    while (th != &thinkercap)
+    {
+        if (th->function.acp1 == (actionf_p1)P_MobjThinker)
+        {
+            mobj_t *m = (mobj_t *)th;
+            for (int k = 0; k < DOOMRL_NUM_KEY_ITEMS; k++)
+            {
+                if (m->type == s_key_mt[k] && (m->flags & MF_SPECIAL))
+                {
+                    present[k] = 1;
+                    if (!s_key_pos[k].known)
+                    {
+                        s_key_pos[k].known = 1;
+                        s_key_pos[k].x = fx2f(m->x);
+                        s_key_pos[k].y = fx2f(m->y);
+                    }
+                }
+            }
+        }
+        th = th->next;
+    }
+    validcount = saved_validcount;
+}
+
+/* Seconds until item k respawns, from the engine's respawn queue. The queue
+ * holds picked-up specials by doomednum; P_RespawnSpecials waits 30s. Returns 0
+ * if not queued (already available / never picked up). */
+static float key_item_respawn_secs(int k)
+{
+    int i = iquetail;
+    while (i != iquehead)
+    {
+        if (itemrespawnque[i].type == s_key_dnum[k])
+        {
+            int waited = leveltime - itemrespawntime[i];
+            int remain = 30 * TICRATE - waited;
+            if (remain < 0) remain = 0;
+            return (float)remain / (float)TICRATE;
+        }
+        i = (i + 1) & (ITEMQUESIZE - 1);
+    }
+    return 0.0f;
+}
+
+/* Fill the per-player key-item view (availability, respawn timer, egocentric
+ * bearing+distance to the item's fixed map position). */
+static void fill_key_items(doomrl_key_item_t out[DOOMRL_NUM_KEY_ITEMS],
+                           float px, float py, float pang_deg)
+{
+    int present[DOOMRL_NUM_KEY_ITEMS];
+    scan_key_items(present);
+    for (int k = 0; k < DOOMRL_NUM_KEY_ITEMS; k++)
+    {
+        out[k].available = present[k];
+        out[k].respawn_secs = present[k] ? 0.0f : key_item_respawn_secs(k);
+        if (s_key_pos[k].known)
+        {
+            float dx = s_key_pos[k].x - px;
+            float dy = s_key_pos[k].y - py;
+            out[k].dist = sqrtf(dx * dx + dy * dy);
+            float abs_bearing = atan2f(dy, dx) * 180.0f / (float)M_PI;
+            out[k].bearing_deg = wrap180(abs_bearing - pang_deg);
+        }
+        else
+        {
+            out[k].dist = 0.0f;
+            out[k].bearing_deg = 0.0f;
+        }
+    }
+}
+
 static int s_dm_players = 0;
 
 static struct {
@@ -291,7 +394,7 @@ static void dm_setup_match(int first_time)
 {
     netgame = true;
     netdemo = true;
-    deathmatch = 1;
+    deathmatch = 2; /* altdeath: items respawn on 30s timers */
     consoleplayer = 0;
     displayplayer = 0;
     for (int i = 0; i < MAXPLAYERS; i++)
@@ -507,4 +610,6 @@ void doomrl_get_player_state(int seat, doomrl_player_state_t *out)
     out->opp_memory.ticks_since_seen = s_dm.opp_ticks_since_seen[seat];
     out->opp_memory.last_bearing_deg = s_dm.opp_last_bearing[seat];
     out->opp_memory.last_dist = s_dm.opp_last_dist[seat];
+
+    fill_key_items(out->key_items, out->x, out->y, out->angle_deg);
 }

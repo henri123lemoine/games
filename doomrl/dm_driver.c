@@ -103,7 +103,7 @@ int main(int argc, char **argv)
         "-iwad", "../web/app/public/doom/doom1.wad",
         "-warp", ep, mp,
         "-skill", "3",
-        "-deathmatch", "-solo-net", "-nomonsters",
+        "-altdeath", "-solo-net", "-nomonsters",
         "-nomusic", "-nosfx", "-nodraw",
     };
     char *arena_argv[] = {
@@ -112,7 +112,7 @@ int main(int argc, char **argv)
         "-file", arena ? (char *)arena : "",
         "-warp", ep, mp,
         "-skill", "3",
-        "-deathmatch", "-solo-net", "-nomonsters",
+        "-altdeath", "-solo-net", "-nomonsters",
         "-nomusic", "-nosfx", "-nodraw",
     };
     char **doom_argv = arena ? arena_argv : base_argv;
@@ -182,6 +182,14 @@ int main(int argc, char **argv)
                        "seat1[hp=%3d frags=%d deaths=%d vis=%d]\n",
                        t, s0.health, s0.frags, s0.deaths, s0.opponent_visible, s0.opp_bearing_deg, s0.opp_dist, s0.reward,
                        s1.health, s1.frags, s1.deaths, s1.opponent_visible);
+                printf("        items rocket[av=%d resp=%4.1f bear=%6.1f dist=%5.0f] "
+                       "armor[av=%d resp=%4.1f] soul[av=%d resp=%4.1f]  "
+                       "seat0[atype=%d rw=%d misl=%d]\n",
+                       s0.key_items[0].available, s0.key_items[0].respawn_secs,
+                       s0.key_items[0].bearing_deg, s0.key_items[0].dist,
+                       s0.key_items[1].available, s0.key_items[1].respawn_secs,
+                       s0.key_items[2].available, s0.key_items[2].respawn_secs,
+                       s0.armortype, s0.ready_weapon, s0.ammo[3]);
             }
         }
 
