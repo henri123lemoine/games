@@ -121,7 +121,8 @@ export type EngineRequest =
   | { id: number; op: 'snakePlayCpu'; view: string }
   | { id: number; op: 'snakeSetState'; view: string }
   | { id: number; op: 'snakeAdvance'; priors: Float32Array; values: Float32Array }
-  | { id: number; op: 'snakeBest' };
+  | { id: number; op: 'snakeBest' }
+  | { id: number; op: 'snakePolicyMove'; view: string };
 
 /** One gathered leaf batch from the wasm AZ search (empty when done). */
 export interface AzBatch {

@@ -150,6 +150,10 @@ function handle(req: EngineRequest): unknown {
       if (!snakeBot) throw new Error('no snake bot');
       return { uci: snakeBot.best(), stats: JSON.parse(snakeBot.stats()) };
     }
+    case 'snakePolicyMove': {
+      if (!snakeBot) throw new Error('no snake bot');
+      return snakeBot.policy_move(req.view);
+    }
   }
 }
 
