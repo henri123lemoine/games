@@ -36,7 +36,7 @@ fn main() {
         .unwrap_or_else(|| "smoke".to_string());
 
     let iwad = arg("iwad", "../web/app/public/doom/doom1.wad");
-    let arena = arg("arena", "../doomrl/assets/flatarena.wad");
+    let arena = arg("arena", "../doomrl/assets/dumbbell.wad");
     let steps: usize = arg("steps", "256").parse().unwrap();
     let lr: f64 = arg("lr", "1e-3").parse().unwrap();
 
@@ -297,14 +297,23 @@ fn ppo_trace_cmd(iwad: &str, arena: &str, device: Device, steps: usize) {
 
     for _ in 0..steps {
         let s = env.player_state(0);
-        let sf = [
+        // 39-float state vector, EXACTLY mirroring doomrl_web.c web_player_state
+        // (the parity reference forward.js reads). See STRATEGIC_CONTRACT.md.
+        let mut sf: Vec<f32> = vec![
             s.alive as f32, s.x, s.y, s.z, s.angle_deg, s.momx, s.momy,
-            s.health as f32, s.armor as f32, s.ready_weapon as f32, s.ammo[0] as f32,
+            s.health as f32, s.armor as f32, s.armortype as f32, s.ready_weapon as f32,
+            s.ammo[0] as f32, s.ammo[1] as f32, s.ammo[2] as f32, s.ammo[3] as f32,
             s.frags as f32, s.deaths as f32, s.opponent_visible as f32,
             s.opp_bearing_deg, s.opp_dist, s.opp_rel_vx, s.opp_rel_vy, s.opp_health as f32,
             s.opp_memory.valid as f32, s.opp_memory.ticks_since_seen as f32,
             s.opp_memory.last_bearing_deg, s.opp_memory.last_dist,
         ];
+        for it in &s.key_items {
+            sf.push(it.available as f32);
+            sf.push(it.respawn_secs);
+            sf.push(it.bearing_deg);
+            sf.push(it.dist);
+        }
         let obs = env::observation(&s);
         let obs_t = tch::Tensor::from_slice(&obs).unsqueeze(0).to_device(device);
         let (a0, ns) = tch::no_grad(|| {

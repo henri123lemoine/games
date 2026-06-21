@@ -11,6 +11,17 @@ pub struct TargetMemory {
     pub last_dist: f32,
 }
 
+pub const NUM_KEY_ITEMS: usize = 3;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct KeyItem {
+    pub available: c_int,
+    pub respawn_secs: f32,
+    pub bearing_deg: f32,
+    pub dist: f32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PlayerState {
@@ -40,6 +51,8 @@ pub struct PlayerState {
     pub opp_health: c_int,
 
     pub opp_memory: TargetMemory,
+
+    pub key_items: [KeyItem; NUM_KEY_ITEMS],
 
     pub reward: f32,
 }
