@@ -2,7 +2,7 @@
 // this driver supplies the leaf evaluations. With WebGPU it answers each parked
 // leaf batch with the GPU net (weights from the AZSNK1 export); without it, it
 // hands the same weights to the wasm engine and lets snakePlayCpu run the whole
-// search in-wasm against snakeinfer's reference forward.
+// search in-wasm against nn-infer's reference forward.
 //
 // Why GPU is the primary path for this tiny 4×64 net (measured, not assumed):
 // the conv forward is ~120M MACs, which the wasm CPU does in ~25 ms/leaf even

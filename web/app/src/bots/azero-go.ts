@@ -2,7 +2,7 @@
 // mirrors the game; this driver supplies the leaf evaluations. With WebGPU it
 // answers each parked leaf batch with the GPU net (weights from the AZWEBGO2
 // export); without it, it hands the same weights to the wasm engine and lets
-// `play_cpu` run the whole search in-wasm against goinfer's reference forward —
+// `play_cpu` run the whole search in-wasm against nn-infer's reference forward —
 // same net, so anyone can play, GPU or not.
 
 import { CPU_MAX_SIMS, isCpuFallback, TRIVIAL_SIMS } from '../shell/azero';

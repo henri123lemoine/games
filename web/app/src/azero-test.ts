@@ -1,5 +1,5 @@
 // Validation harness for the WebGPU evaluator (the /azero-test.html page):
-// checks the kernels against azinfer's reference forward over the committed
+// checks the kernels against nn-infer's reference forward over the committed
 // fixtures, compares the WebGPU and in-wasm CPU forwards head-to-head (the
 // exact two backends the bot picks between at runtime), then measures
 // throughput at an MCTS-ish batch.

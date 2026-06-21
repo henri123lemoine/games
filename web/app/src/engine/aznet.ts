@@ -30,7 +30,7 @@ const POOL_SIZE_REF = 19;
 /** Largest batch the pre-allocated buffers accept per `forward` call. */
 export const MAX_BATCH = 32;
 /** Chess flat value head: `v1` reduces the trunk to this many channels before
- * the dense MLP, and the MLP's hidden width. Fixed by the chess net (azt). */
+ * the dense MLP, and the MLP's hidden width. Fixed by the chess net. */
 export const CHESS_VALUE_CHANNELS = 8;
 export const CHESS_VALUE_HIDDEN = 256;
 /** Go/snake global-pool value head's hidden width. */

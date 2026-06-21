@@ -326,7 +326,7 @@ impl Net {
 }
 
 /// Chess value head: `v1` reduces the trunk to this many channels before the
-/// dense MLP. Fixed by the chess net's architecture (`azt`'s `net.rs`).
+/// dense MLP. Fixed by the chess net's architecture (aztrainer's `net.rs`).
 const CHESS_VALUE_CHANNELS: usize = 8;
 const CHESS_VALUE_HIDDEN: usize = 256;
 /// Go/snake global-pool value head's hidden width.

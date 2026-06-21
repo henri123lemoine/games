@@ -211,9 +211,8 @@ pub struct Linear {
     pub n_out: usize,
 }
 
-/// Sequential reader over the fp32 weight stream. Lifted verbatim from the
-/// canonical `snakeinfer` `Reader`; the `floats`/`conv`/`linear` primitives and
-/// the truncation check are the integrity boundary every old crate shared.
+/// Sequential reader over the fp32 weight stream. The `floats`/`conv`/`linear`
+/// primitives and the truncation check are the format's integrity boundary.
 pub struct Reader<'a> {
     data: &'a [u8],
     pos: usize,

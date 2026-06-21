@@ -538,7 +538,7 @@ pub fn entries() -> Vec<Entry> {
             opts: SNAKE_OPTS,
             make: Box::new(|o| {
                 // The AlphaZero seat is driven client-side (in-wasm search +
-                // snakeinfer forward, no GPU); leave it externally driven so
+                // nn-infer forward, no GPU); leave it externally driven so
                 // step() yields to the page, like go/chess azero-gpu.
                 if o.str("bot", "mcts-eval") == "azero-gpu" {
                     return make_external_versus(o, snake::Duel::new(), &["sims"]);

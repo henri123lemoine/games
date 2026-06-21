@@ -1,8 +1,8 @@
 //! Flat `f32` board features and dense move indices for policy/value
 //! networks (e.g. AlphaZero-style solvers). The flat encoding is bound to
 //! game-core's [`PolicyValueEncoder`] capability as [`FlatEncoder`] (MLPs)
-//! and [`PlanesEncoder`] (conv nets — azt, azinfer and the browser bind
-//! this one).
+//! and [`PlanesEncoder`] (conv nets — aztrainer, nn-infer and the browser
+//! bind this one).
 //!
 //! Two encodings live here:
 //!
