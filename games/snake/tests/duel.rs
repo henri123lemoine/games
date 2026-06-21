@@ -215,6 +215,86 @@ fn running_into_the_opponent_body_is_fatal() {
     assert_ne!(s.outcome(), Outcome::Win(0));
 }
 
+/// No two LIVE snakes may share a board cell — that is the core invariant a
+/// collision must enforce. Returns the offending cell if it is violated.
+fn live_overlap(s: &DuelState) -> Option<(usize, usize)> {
+    if !(s.worm(0).alive() && s.worm(1).alive()) {
+        return None;
+    }
+    s.worm(0)
+        .cells()
+        .find(|&a| s.worm(1).cells().any(|b| b == a))
+}
+
+#[test]
+fn probe_vacated_head_becomes_body_overlap() {
+    let g = Duel::new();
+    let mut s = g.initial_state();
+    let m = SIDE / 2; // 10
+
+    // Lift seat 1 up one row so the snakes run on adjacent rows (seat 0 on row
+    // m heading east, seat 1 on row m-1 heading west) rather than meeting head
+    // to head on the same row.
+    tick(&g, &mut s, Dir::Right, Dir::Up);
+    assert_eq!(s.worm(0).head(), (5, m));
+    assert_eq!(s.worm(1).head(), (5 + 10, m - 1));
+
+    // March them toward the same column; the x-gap (10) closes by two per tick.
+    for _ in 0..5 {
+        tick(&g, &mut s, Dir::Right, Dir::Left);
+        assert!(!g.is_terminal(&s), "no death while converging");
+        assert_eq!(live_overlap(&s), None, "no overlap while converging");
+    }
+    // Both heads in column m: seat 0 at (m, m), seat 1 one row above at (m, m-1).
+    assert_eq!(s.worm(0).head(), (m, m));
+    assert_eq!(s.worm(1).head(), (m, m - 1));
+
+    // The decisive tick: seat 0 steps east (its OLD head cell (m, m) becomes a
+    // body segment, NOT vacated — the segment behind shifts in), and seat 1
+    // turns down ONTO that very cell. The old bug exempted (m, m) via the
+    // head-to-head `skip_head`, so neither snake died and two LIVE snakes shared
+    // (m, m). Seat 1 must now die on that body cell.
+    tick(&g, &mut s, Dir::Right, Dir::Down);
+
+    assert_eq!(
+        live_overlap(&s),
+        None,
+        "two LIVE snakes must never share a cell"
+    );
+    assert!(g.is_terminal(&s), "the collision ends the game");
+    assert!(!s.worm(1).alive(), "seat 1 ran into seat 0's body and died");
+    assert!(s.worm(0).alive(), "seat 0 moved off the cell and survives");
+    assert_eq!(s.outcome(), Outcome::Win(0));
+}
+
+#[test]
+fn no_random_playthrough_leaves_two_live_snakes_overlapping() {
+    let g = Duel::new();
+    let mut rng = Rng::new(7);
+    for _ in 0..2000 {
+        let mut s = g.initial_state();
+        while !g.is_terminal(&s) {
+            match g.turn(&s) {
+                Turn::Chance => {
+                    let outs = g.chance_outcomes(&s);
+                    let i = game_core::rand::sample_outcome(&outs, &mut rng);
+                    g.apply(&mut s, outs[i].0);
+                }
+                Turn::Player(_) => {
+                    let acts = g.legal_actions(&s);
+                    let i = rng.below(acts.len());
+                    g.apply(&mut s, acts[i]);
+                }
+            }
+            assert_eq!(
+                live_overlap(&s),
+                None,
+                "two live snakes shared a cell after a move"
+            );
+        }
+    }
+}
+
 #[test]
 fn each_tick_without_eating_costs_one_health() {
     let g = Duel::new();
