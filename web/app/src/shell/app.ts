@@ -43,6 +43,14 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
 /** Games registered in the lab but not surfaced on the site. */
 const HIDDEN_GAMES = new Set<string>([]);
 
+/** Board-native real-time games: their frontend owns the whole screen and draws
+ * its own status/result (chips, HP, win/lose overlay). The shell's generic side
+ * panel — a per-move log and a "Thinking…" status — would just be a scrolling
+ * wall of narration over a game that needs none, so these get the full-width
+ * board and no side panel (no `.log`/`.status` elements, so the shell's
+ * per-move narration and status calls quietly no-op). */
+const BOARD_NATIVE_REALTIME = new Set<string>(["snake"]);
+
 /** Trained artifacts fetched as static assets, keyed by the path the
  * registry asks for. */
 const ARTIFACTS: Record<string, string> = {
@@ -622,7 +630,7 @@ export class App {
         </header>
         ${this.quickControlsHtml(game, opts)}
         <div class="cpu-note" hidden></div>
-        <div class="match-body${game.solo ? " match-body--solo" : ""}">
+        <div class="match-body${game.solo || BOARD_NATIVE_REALTIME.has(game.id) ? " match-body--solo" : ""}">
           <section class="board"></section>
           ${this.sideHtml(game)}
         </div>
@@ -734,7 +742,7 @@ export class App {
    * have board-native input). Solo games render their own score and game-over
    * overlay, so they get no side panel — the board takes the full width. */
   private sideHtml(game: GameInfo): string {
-    if (game.solo) return "";
+    if (game.solo || BOARD_NATIVE_REALTIME.has(game.id)) return "";
     const freeInput = hasFrontend(game.id)
       ? ""
       : `<form class="free-input">
