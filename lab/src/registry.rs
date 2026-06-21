@@ -406,7 +406,11 @@ const G2048_OPTS: &[OptSpec] = &[
 
 const SNAKE_OPTS: &[OptSpec] = &[
     opt("seat", "0|1|watch", "(0=Snake A)"),
-    opt("bot", "azero-gpu|mcts|mcts-eval", "(azero-gpu: browser only)"),
+    opt(
+        "bot",
+        "azero-gpu|mcts|mcts-eval",
+        "(azero-gpu: browser only)",
+    ),
     bot_opt("sims", "200", "", &["azero-gpu", "mcts", "mcts-eval"]),
     bot_opt("depth", "16", "", &["mcts-eval"]),
     opt("seed", "...", ""),
