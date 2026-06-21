@@ -23,7 +23,6 @@ import type { EngineHost } from '../engine/host';
 import type { ViewState } from '../engine/protocol';
 import { SnakeGpu, softmaxOver } from '../frontends/snake/azgpu';
 import { reportMove } from '../frontends/snake/telemetry';
-import { sleep } from '../frontends/types';
 import { isCpuFallback } from '../shell/azero';
 import { gpuLoader, weightsLoader } from './azero-net';
 import type { ClientBot } from './index';
@@ -38,15 +37,16 @@ const LEAVES = 32;
 const GPU_DEFAULT_SIMS = 64;
 /** GPU ceiling: ~5 round-trips, ~200 ms headless. */
 const GPU_MAX_SIMS = 128;
-/** Per-move wall-clock budget for the GPU search (an ANYTIME/time-budgeted
- * search, not a fixed sim count). Every move takes ~this long: a search that
- * finishes its sims early is PADDED to the budget, and one that would overrun
- * stops at the deadline and returns the best move so far. The result is
- * metronomic think-time → metronomic motion, with no single move able to stall
- * the snake. Tuned to comfortably fit a typical full GPU_MAX_SIMS search (~120-
- * 200ms headless, less in-browser), so the bot is NOT weakened — it still does
- * its full search in the common case; the budget only caps the rare overrun. */
-const GPU_MOVE_BUDGET_MS = 210;
+/** Per-move wall-clock CAP for the GPU search (an ANYTIME/time-budgeted search,
+ * not a fixed sim count): run PUCT batches until the sims are exhausted OR this
+ * deadline, then return the best move so far. No padding — the frontend paces
+ * the visual cadence — so a search that finishes early returns early and its
+ * think overlaps the glide. Sized to comfortably fit a typical full
+ * GPU_MAX_SIMS search (~120-200ms headless, less in-browser), so the bot is NOT
+ * weakened: it does its full search in the common case; the cap only bounds the
+ * rare overrun so a move can't stall the snake. Kept near the frontend's glide
+ * cadence so the next move is ready as the glide ends. */
+const GPU_MOVE_BUDGET_MS = 190;
 /** CPU fallback ceiling. The wasm forward is ~25 ms/leaf, so even this is
  * ~200 ms/move; anything higher is unplayable without a GPU. */
 const CPU_DEFAULT_SIMS = 4;
@@ -96,13 +96,11 @@ class AzeroSnakeGpu implements ClientBot {
       if (performance.now() >= deadline) break;
     }
     const { uci, stats } = await this.host.snakeBest();
-    // Pad a search that finished early up to the budget so EVERY move takes the
-    // same wall-clock time. Constant think-time is what lets the frontend glide
-    // at a single fixed cadence with zero stutter — metronomic thinking yields
-    // metronomic motion. (Cancellation during the pad just drops the move.)
-    const remaining = deadline - performance.now();
-    if (remaining > 0) await sleep(remaining);
-    if (this.cancelled) throw new Error('cancelled');
+    // Return as soon as the search is done — no padding. The FRONTEND now paces
+    // the cadence (it holds each glide a fixed CELL_MS and starts the next only
+    // when the current ends), so the bot returning early just lets its think
+    // overlap the glide and keeps latency minimal; the deadline only caps the
+    // rare overrun so a move can't stall the snake.
     reportMove({ backend: 'gpu', ms: performance.now() - t0, sims: stats.sims, trips });
     return uci;
   }
