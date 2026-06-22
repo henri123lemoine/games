@@ -1,6 +1,6 @@
-# Workspace for the games lab: `game-core` holds the algorithms (the Game trait,
-# CFR variants, exact exploitability, the arena); `games/*` are games
-# implemented against it.
+# Workspace for the games lab: `game-core` holds the shared contract (the Game
+# trait, capability traits, the match arena); `solvers` holds the algorithms;
+# `games/*` are games implemented against it.
 [workspace]
 resolver = "2"
 members = ["game-core", "solvers", "games/liars-dice", "games/twentyone", "games/chess", "games/othello", "games/go", "games/connect4", "games/g2048", "games/snake", "games/pente", "games/poker", "lab", "web/engine", "ml/nn-infer"]

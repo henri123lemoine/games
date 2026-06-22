@@ -5,26 +5,35 @@ The lab exists to answer one question well: **how do game-playing algorithms gen
 ## The layers
 
 ```
-                 ┌─────────────────────────────────────────────┐
-                 │ lab            registry · type-erased match │  ← CLI today,
-                 │                · generic terminal client    │    web server next
-                 └───────┬─────────────────────────┬───────────┘
-                         │                         │
-        ┌────────────────┴──────┐   ┌──────────────┴──────────────┐
-        │ solvers               │   │ games/*                     │
-        │ generic algorithms:   │   │ rules + game knowledge:     │
-        │ cfr · mccfr ·         │   │ Game impl · Eval ·          │
-        │ alpha-beta · rollout  │   │ Determinizer · SearchSpec · │
-        │ · exploitability      │   │ GameUi (+ bespoke solvers)  │
-        └───────────┬───────────┘   └──────────────┬──────────────┘
-                    │                              │
-                 ┌──┴──────────────────────────────┴──┐
-                 │ game-core    Game · Agent · arena · │
-                 │ capability traits · Rng             │
-                 └─────────────────────────────────────┘
+   ┌──────────────────────┐        ┌──────────────────────────────────┐
+   │ web/  arcade          │        │ ml/  training (standalone)        │
+   │ wasm engine over the  │        │ AlphaZero + PPO self-play; their  │
+   │ registry; torch-free  │◀─nets─▶│ exported nets are read by the     │
+   │ net inference         │        │ torch-free inference, kept off    │
+   └───────────┬───────────┘        │ the main build (own [workspace])  │
+               │                    └──────────────────────────────────┘
+               ▼
+   ┌─────────────────────────────────────────────┐
+   │ lab            registry · type-erased match │  ← terminal client
+   │                · generic serving surface     │    + the wasm engine
+   └───────┬─────────────────────────┬───────────┘
+           │                         │
+  ┌────────┴──────────────┐   ┌──────┴──────────────────────┐
+  │ solvers               │   │ games/*                     │
+  │ generic algorithms:   │   │ rules + game knowledge:     │
+  │ cfr · mccfr ·         │   │ Game impl · Eval ·          │
+  │ alpha-beta · rollout  │   │ Determinizer · SearchSpec · │
+  │ · mcts · puct/azero   │   │ GameUi (+ bespoke solvers)  │
+  │ · exploitability      │   │                             │
+  └───────────┬───────────┘   └──────────────┬──────────────┘
+              │                              │
+           ┌──┴──────────────────────────────┴──┐
+           │ game-core    Game · Agent · arena · │
+           │ capability traits · Rng             │
+           └─────────────────────────────────────┘
 ```
 
-Dependency rule: `game-core` depends on nothing; `solvers` and `games/*` depend only on `game-core` (games may use `solvers` in dev-dependencies for tests and experiments); `lab` binds everything. Games never depend on solvers at the library level, so adding an algorithm never recompiles a game and vice versa.
+Dependency rule: `game-core` depends on nothing; `solvers` and `games/*` depend only on `game-core` (games may use `solvers` in dev-dependencies for tests and experiments); `lab` binds everything. Games never depend on solvers at the library level, so adding an algorithm never recompiles a game and vice versa. The two outer tiers attach without leaking inward: the wasm engine wraps `lab`'s serving surface, and the training crates are *standalone* (their own `[workspace]`) so the tensor backend never enters the lab's build — the only thing crossing the boundary is an exported net file, which a torch-free forward reads (see *Learning: the ml tree*).
 
 ## The contract: capability traits
 
@@ -73,8 +82,19 @@ The CLI and the browser arcade are two thin frontends over exactly these calls; 
 | `Mccfr` / `OsMccfr` | — | — | — | — | — | OS handles the deep ladder | — | — | ✓ |
 | `AlphaBeta` | ✓ (the bot) | ✓ (the bot) | ✓ (the bot) | ✓ (the bot) | — (no eval) | — (imperfect info) | — | — | — |
 | `Mcts` | possible | possible | possible | possible | ✓ (the bot) | — | — | — | — |
-| `azero` (PUCT + self-play net) | ✓ (training) | possible | possible | possible | possible | — | — | — | — |
+| `azero` (PUCT + self-play net) | ✓ | possible | possible | possible | ✓ | — | — | — | — |
 | `Rollout` | possible | possible | possible | possible | possible | ✓ (the bot) | ✓ (a bot) | possible | — |
 | bespoke | — | — | — | — | — | belief policy | equity bot (the bot) | decomposed CFR+ (the bot) | — |
 
-The dashes are honest: tabular CFR can't fit big games, search can't see hidden information, Go has no hand-written eval. Notable measured facts: outcome-sampling MCCFR runs a 200-deep ladder in milliseconds/iteration where external sampling would need ~1e41 nodes; CFR+ regret flooring provably stalls outcome sampling (documented in `solvers/src/os_mccfr.rs`); the azero loop's checkpoint beats random at chess within minutes of CPU self-play, while real chess *strength* remains a GPU-scale endeavor — which is what `aztrainer/` is for: a deliberately *standalone* crate (not a workspace member, so libtorch never touches the main build) that trains an AlphaZero resnet on Apple-GPU via tch-rs, batching leaf evaluations across hundreds of concurrent games. One crate trains chess, go, and snake (per-game binaries over a shared net/optimizer/replay/run-dir core), having absorbed the former per-game `azt`/`azgo`/`azsnake` trainers. The search itself is not bespoke: there is exactly one PUCT implementation, the batched park/resume `solvers::azero::Search` (generic over `Game` + `PolicyValueEncoder`), which the MLP trainer drives synchronously, `aztrainer` drives with GPU batches through its config-driven net, and the browser drives with WebGPU through the `nn-infer` reference forward (the unified `AZNET1` weight format). `aztrainer` keeps the same run-dir contract (metrics.jsonl + dashboard + STOP) as the CPU harness.
+(The matrix is the two-player-search story. The single-player and real-time games — 2048, snake, slither — also live in the lab; their bots are MCTS/eval truncation or a learned net, trained as described below.)
+
+The dashes are honest: tabular CFR can't fit big games, search can't see hidden information, Go has no hand-written eval. Two durable facts the matrix doesn't show: outcome-sampling MCCFR runs the deep liar's-dice ladder in milliseconds/iteration where external sampling would need astronomically many nodes (~1e41), and CFR+ regret flooring empirically stalls outcome sampling (documented in `solvers/src/os_mccfr.rs`) — which is why liar's dice uses outcome sampling, not the CFR+ variant the perfect-recall games would. Where a learned net is the bot (the `azero` row), the net is trained out-of-tree; see *Learning: the ml tree* below.
+
+## Learning: the ml tree
+
+Some bots are neural nets rather than hand-written evaluators. Training them needs heavyweight, churn-prone machinery (a tensor library, GPUs, long-running self-play); inference needs none of that. The `ml/` tree keeps those two concerns apart, and keeps both off the main workspace's critical path:
+
+- **Training crates are standalone** (their own `[workspace]`, not members of the root one), so the tensor backend (`tch`/libtorch) never touches the lab's `cargo test` or wasm builds. One AlphaZero trainer covers the perfect-information net games (chess, go, snake) as per-game binaries over a shared self-play/replay/optimizer/run-dir core; a separate PPO stack trains the real-time slither bot. Both run long, write a run directory, and are driven from the CLI.
+- **Inference is torch-free and shared.** A net is exported to a small versioned weight file, and one reference fp32 forward — plain loops, built for correctness and wasm portability — reads it. This same forward is the ground truth the trainer's exported weights are validated against *and* the path the browser runs through (the WebGPU bots and the CPU fallback both check against it), so a deployed net plays exactly what training measured.
+
+The search itself is not duplicated: there is one PUCT implementation, the batched park/resume `solvers::azero::Search` (generic over `Game` + a policy/value encoder). The CPU harness drives it synchronously, the GPU trainer drives it with batched net forwards, and the browser drives it with WebGPU — same search, three evaluators.

@@ -1,28 +1,32 @@
 # Games lab
 
-Game-playing algorithms (CFR variants, alpha-beta search, determinized Monte-Carlo rollouts) written **once** against a shared `Game` trait, applied to many games — the OpenSpiel idea, scoped to a personal lab. Games contribute only their rules and knowledge (an evaluator, a determinizer, a UI surface); they never contain algorithm code. See [ARCHITECTURE.md](ARCHITECTURE.md); the in-browser arcade (everything compiled to wasm, per-game frontends) is designed in [web/DESIGN.md](web/DESIGN.md).
+Game-playing algorithms (CFR variants, alpha-beta search, MCTS, determinized Monte-Carlo rollouts, PUCT/AlphaZero) written **once** against a shared `Game` trait, applied to many games — the OpenSpiel idea, scoped to a personal lab. Games contribute only their rules and knowledge (an evaluator, a determinizer, a UI surface); they never contain algorithm code. See [ARCHITECTURE.md](ARCHITECTURE.md); the in-browser arcade (everything compiled to wasm, per-game frontends) is designed in [web/DESIGN.md](web/DESIGN.md).
 
 ```
 game-core/           foundations: Game trait, Agent, capability traits
                      (Eval, Determinizer, SearchSpec, GameUi), match arena
 solvers/             the algorithms, generic over any game with the right
                      capabilities: cfr, mccfr, os-mccfr, exploitability,
-                     alpha-beta, MCTS, determinized rollout, and an
-                     AlphaZero-style self-play learner (PUCT + pure-Rust net)
-games/
-  chess/             perft-validated rules + eval/search knowledge + net encoder
-  othello/           weighted-square eval; bot = generic alpha-beta
-  connect4/          windowed eval; bot = generic alpha-beta
-  pente/             custodial capture + five-in-a-row; threat-aware eval, bot = generic alpha-beta
-  go/                9x9+ area scoring; bot = generic MCTS
-  liars-dice/        N-player Liar's Dice + belief policy + determinization
-  poker/             No-Limit Texas Hold'em (6-max) + equity-rollout bot
-  twentyone/         Twenty-One + its bespoke decomposed CFR+ solver
+                     alpha-beta, MCTS, determinized rollout, and the
+                     PUCT/AlphaZero self-play search
+games/               one crate per game — perfect-information board games
+                     (chess, othello, connect4, pente, go), N-player imperfect
+                     info (liars-dice, poker, twentyone), and single-player /
+                     real-time (2048, snake). Each ships only rules + knowledge;
+                     its bot is a generic solver (alpha-beta / MCTS / rollout /
+                     azero) or, where the structure demands it, a bespoke
+                     in-crate solver exposed as an ordinary Agent
 lab/                 registry of games & bots, type-erased matches, and the
                      one terminal client for every game
 web/                 the same lab compiled to WebAssembly: engine bindings +
-                     a browser arcade with per-game frontends and live bot
-                     tournaments, all client-side (see web/README.md)
+                     a browser arcade with per-game frontends, plus standalone
+                     wasm games (slither, DOOM) that share the trained nets
+                     (see web/README.md)
+ml/                  the training side, deliberately standalone (own workspace,
+                     libtorch off the main build): an AlphaZero trainer for the
+                     net games and a PPO self-play stack for the real-time bot,
+                     plus the torch-free inference both the export-verify and
+                     the browser run through
 ```
 
 ## Play anything
@@ -38,6 +42,8 @@ cargo run --release -p lab -- play pente size=13 depth=4
 cargo run --release -p lab -- play liars-dice players=5 dice=5 rollouts=1000
 cargo run --release -p lab -- play poker players=6 samples=2000
 cargo run --release -p lab -- play twentyone hearts=6 iters=100000
+cargo run --release -p lab -- play 2048                       # or watch: bot=mcts-eval
+cargo run --release -p lab -- play snake                      # 1v1; the AlphaZero seat is browser-only
 ```
 
 One client drives every game: menus by number, or game-native input (`e2e4`, `open 2x4`, `d`/`s`). Hidden information is viewer-scoped throughout.

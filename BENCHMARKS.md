@@ -19,7 +19,6 @@ Cross-game benchmark round using the `lab compare` (SPRT) and `lab tourney` harn
 | go 9x9 | mcts-eval 500 vs mcts 500 | 23-0-17 (40) | +53 +/- 107 | inconclusive |
 | liars-dice 5p | rollout 400 vs belief field | 23-41 (64) | share 0.359 (fair 0.200) | accepted H1 |
 | 2048 | mcts-eval sims=200 depth=8, 50 eps | — | mean 15950, median 15752 | 10/50 reach 2048 |
-| snake 10x10 | mcts-eval sims=200 depth=12, 50 eps | — | length mean 3.0, median 3 | broken — never eats |
 
 ## connect4 — harness sanity: depth 7 vs depth 5
 
@@ -82,13 +81,7 @@ cargo run --release -p g2048 --example bench 50 200 8 1
 
 50 episodes of the registered `mcts-eval` bot (sims=200, depth=8 — the `lab play 2048` defaults), 14.8 s total: **score mean 15950, median 15752, min 7112, max 32180; 41/50 episodes reach the 1024 tile, 10/50 reach 2048.** Solid play for 200 sims/move — the Heuristic2048-truncated search reliably builds 1024+ positions, and a fifth of runs hit 2048.
 
-## snake 10x10 — registered bot score bench
-
-```
-cargo run --release -p snake --example bench 50 200 12 1
-```
-
-**Degenerate: length mean 3.0, median 3, min 3, max 3** — across all 50 episodes the bot dies at the starting length without eating a single food. This is not a bench-harness artifact: `lab play snake bot=mcts-eval` (and `bot=mcts`, and sims=2000) crashes at length 3 on every seed tried, usually by spiralling into itself. Likely cause: SnakeEval's food-shaping term is at most ~0.01 on the returns scale, far below the UCB exploration term, so the search is effectively value-blind at these budgets. The registered snake bot should be considered broken until the eval/exploration scaling is revisited.
+> Snake has since been reworked into a 1v1 game with a trained AlphaZero bot (`lab play snake`), so the single-player score bench from this round no longer applies and has been dropped rather than restated; snake strength now belongs with the trained-net results, not this handcrafted-search round.
 
 ## Deferred / caveats
 
