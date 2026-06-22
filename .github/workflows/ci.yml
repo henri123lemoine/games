@@ -1,6 +1,7 @@
-# Workspace CI: format, lint, test, and the wasm/web typecheck.
-# azt/ is deliberately not covered — it is a standalone crate that needs
-# libtorch (and trains on Apple-GPU), so it builds only on dev machines.
+# Workspace CI: format, lint, test, and the wasm/web typecheck. The root
+# workspace covers everything except the standalone ml/* training crates
+# (own [workspace], pulled out so libtorch never enters the lab build); the
+# `ml` job below covers the torch-dependent aztrainer separately.
 name: ci
 
 on:
@@ -18,6 +19,26 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --release --all-targets -- -D warnings
+      - run: cargo test --release
+
+  # The AlphaZero trainer is a standalone workspace (its own [workspace]) that
+  # needs libtorch, so the root `cargo test` never sees it. tch downloads a CPU
+  # libtorch via the download-libtorch feature, so it builds on a plain runner.
+  # The torch-free ml crates (nn-infer) are root-workspace members already
+  # covered by the `rust` job.
+  ml:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ml/aztrainer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ml/aztrainer
       - run: cargo fmt --check
       - run: cargo clippy --release --all-targets -- -D warnings
       - run: cargo test --release
