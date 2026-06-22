@@ -13,6 +13,7 @@ games/
   chess/             perft-validated rules + eval/search knowledge + net encoder
   othello/           weighted-square eval; bot = generic alpha-beta
   connect4/          windowed eval; bot = generic alpha-beta
+  pente/             custodial capture + five-in-a-row; threat-aware eval, bot = generic alpha-beta
   go/                9x9+ area scoring; bot = generic MCTS
   liars-dice/        N-player Liar's Dice + belief policy + determinization
   twentyone/         Twenty-One + its bespoke decomposed CFR+ solver
@@ -32,6 +33,7 @@ cargo run --release -p lab -- play chess bot=azero            # the self-play ne
 cargo run --release -p lab -- play go size=9 sims=6000
 cargo run --release -p lab -- play othello
 cargo run --release -p lab -- play connect4
+cargo run --release -p lab -- play pente size=13 depth=4
 cargo run --release -p lab -- play liars-dice players=5 dice=5 rollouts=1000
 cargo run --release -p lab -- play twentyone hearts=6 iters=100000
 ```

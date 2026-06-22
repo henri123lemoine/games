@@ -379,6 +379,15 @@ const CONNECT4_OPTS: &[OptSpec] = &[
     opt("seed", "...", ""),
 ];
 
+const PENTE_OPTS: &[OptSpec] = &[
+    opt("size", "13", "(13 or 15; tournament-standard)"),
+    opt("seat", "0|1|watch", "(0=Black, plays the forced center first)"),
+    opt("bot", "alphabeta|mcts", ""),
+    bot_opt("depth", "4", "", &["alphabeta"]),
+    bot_opt("sims", "4000", "", &["mcts"]),
+    opt("seed", "...", ""),
+];
+
 const GO_OPTS: &[OptSpec] = &[
     opt("size", "9", ""),
     opt("seat", "0|1|watch", "(0=Black)"),
@@ -524,6 +533,22 @@ pub fn entries() -> Vec<Entry> {
             )),
         },
         Entry {
+            id: "pente",
+            name: "Pente",
+            solo: false,
+            watch_bot: "",
+            summary: "Pente (custodial capture + five-in-a-row) vs alpha-beta",
+            opts: PENTE_OPTS,
+            make: Box::new(|o| make_versus(o, pente_game(o)?, "alphabeta", pente_bot)),
+            eval: Some(eval_entry(
+                "alphabeta[:depth=4] | mcts[:sims=4000] | random",
+                0,
+                false,
+                pente_game,
+                pente_bot,
+            )),
+        },
+        Entry {
             id: "2048",
             name: "2048",
             solo: true,
@@ -570,6 +595,14 @@ fn liars_dice_game(o: &Opts) -> Result<LiarsDice, String> {
 
 fn go_game(o: &Opts) -> Result<go::Go, String> {
     Ok(go::Go::new(o.get("size", 9)?))
+}
+
+fn pente_game(o: &Opts) -> Result<pente::Pente, String> {
+    let size: usize = o.get("size", 13)?;
+    if !(5..=19).contains(&size) {
+        return Err("pente size must be in 5..=19 (13 or 15 are standard)".into());
+    }
+    Ok(pente::Pente::new(size))
 }
 
 /// Single-player entry: with `bot=` set, that bot plays and you watch;
@@ -884,6 +917,26 @@ fn go_bot(spec: &BotSpec, o: &Opts) -> Result<BotBuilder<go::Go>, String> {
             return Err(format!(
                 "unknown go bot '{other}' (mcts|mcts-eval|mcts-spec)"
             ));
+        }
+    })
+}
+
+fn pente_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<pente::Pente>, String> {
+    Ok(match spec.name.as_str() {
+        "alphabeta" => {
+            let depth: u32 = spec.opts.get("depth", 4)?;
+            Box::new(move |_| {
+                Box::new(AlphaBeta::new(depth, pente::PenteEval, pente::PenteSpec))
+                    as BoxedAgent<pente::Pente>
+            })
+        }
+        "mcts" => {
+            let sims: u32 = spec.opts.get("sims", 4000)?;
+            Box::new(move |_| Box::new(Mcts::new(sims)) as BoxedAgent<pente::Pente>)
+        }
+        "random" => Box::new(|_| Box::new(game_core::RandomAgent) as BoxedAgent<pente::Pente>),
+        other => {
+            return Err(format!("unknown pente bot '{other}' (alphabeta|mcts|random)"));
         }
     })
 }

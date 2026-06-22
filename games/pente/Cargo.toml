@@ -1,0 +1,15 @@
+[package]
+name = "pente"
+version = "0.1.0"
+edition = "2024"
+description = "pente as a game-core Game"
+
+[lib]
+name = "pente"
+path = "src/lib.rs"
+
+[dependencies]
+game-core = { workspace = true }
+
+[dev-dependencies]
+solvers = { path = "../../solvers" }

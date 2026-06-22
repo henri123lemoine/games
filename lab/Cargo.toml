@@ -28,3 +28,4 @@ go = { path = "../games/go" }
 connect4 = { path = "../games/connect4" }
 g2048 = { path = "../games/g2048" }
 snake = { path = "../games/snake" }
+pente = { path = "../games/pente" }
