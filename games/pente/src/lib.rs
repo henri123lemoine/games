@@ -105,6 +105,13 @@ impl PenteState {
         self.moves
     }
 
+    /// Stones currently on the board. Each placement adds one and each captured
+    /// pair removes two, so this is `moves − 2·(captured pairs)` — never the raw
+    /// placement count, which overcounts by the stones captures have removed.
+    fn occupied(&self) -> usize {
+        (self.moves as usize).saturating_sub(2 * (self.pairs[0] as usize + self.pairs[1] as usize))
+    }
+
     /// Board index of the most recent placement, if any.
     pub fn last_move(&self) -> Option<u16> {
         self.last
@@ -383,8 +390,8 @@ impl Game for Pente {
         {
             state.winner = Some(state.to_move);
             state.over = true;
-        } else if state.moves as usize == self.size * self.size {
-            state.over = true; // full board, no winner: a draw
+        } else if state.occupied() == self.size * self.size {
+            state.over = true; // every intersection filled, no winner: a draw
         }
         state.to_move ^= 1;
     }
@@ -801,6 +808,44 @@ mod tests {
         assert_eq!(s.winner, None, "no five-line, no fifth pair");
         assert_eq!(g.returns(&s, 0), 0.0);
         assert_eq!(g.returns(&s, 1), 0.0);
+    }
+
+    #[test]
+    fn captures_do_not_trigger_a_premature_draw() {
+        // A capture removes two stones without rewinding the placement counter,
+        // so a board where placements equal the cell count can still hold empty
+        // intersections. The draw clause must key on actual occupancy, not on
+        // the raw placement count, or it ends a still-playable game as a draw.
+        let g = Pente::new(5);
+        // 25 cells. Lay a full-but-for-the-capture board: 24 stones placed, then
+        // a 25th placement that captures a pair — leaving the board with two
+        // empty cells even though 25 placements have happened.
+        // Build a position one placement before that capture.
+        let mut s = g.parse_state(
+            &[
+                "X O X O X",
+                "O X O X O",
+                "X O X O X",
+                "O X O X O",
+                "X O O . X", // d1 empty; b1,c1 are a white pair flanked by a1=X
+            ],
+            0, // Black to flank at d1, capturing b1,c1
+            [0, 0],
+        );
+        // Force the placement counter to the brink of a "full board": 24 stones
+        // are on the board, so the next placement is the 25th.
+        s.moves = 24;
+        assert!(!g.is_terminal(&s), "not terminal before the capturing move");
+        place(&g, &mut s, "d1");
+        assert_eq!(s.pairs(), [1, 0], "the white pair b1,c1 is captured");
+        assert!(
+            !g.is_terminal(&s),
+            "two cells were just emptied by the capture: the game is NOT a draw"
+        );
+        // The freshly-emptied cells are legal moves again.
+        let legal = g.legal_actions(&s);
+        assert!(legal.contains(&PenteAction(g.point("b1").unwrap())));
+        assert!(legal.contains(&PenteAction(g.point("c1").unwrap())));
     }
 
     #[test]
