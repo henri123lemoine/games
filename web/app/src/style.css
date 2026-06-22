@@ -431,6 +431,31 @@ button {
   background: radial-gradient(circle at 35% 30%, #fff, #d9d4c3);
 }
 
+.mini-pente {
+  background:
+    linear-gradient(rgba(150, 162, 210, 0.32) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(150, 162, 210, 0.32) 1px, transparent 1px),
+    linear-gradient(135deg, #2b3350, #171c30);
+  background-size: 22px 22px;
+}
+
+.mini-pstone {
+  position: absolute;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.5);
+}
+
+.mini-pstone-b {
+  background: radial-gradient(circle at 35% 30%, #5b6478, #070910);
+}
+
+.mini-pstone-w {
+  background: radial-gradient(circle at 35% 30%, #fff, #b9bfd2);
+}
+
 .mini-2048 {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

@@ -8,6 +8,7 @@ import { GenericFrontend } from './generic';
 import { createGoFrontend } from './go';
 import { createLiarsDiceFrontend } from './liars-dice';
 import { createOthelloFrontend } from './othello';
+import { createPenteFrontend } from './pente';
 import { createSnakeFrontend } from './snake';
 import { createTwentyOneFrontend } from './twentyone';
 import type { FrontendFactory, GameFrontend } from './types';
@@ -19,6 +20,7 @@ const registry: Record<string, FrontendFactory> = {
   go: createGoFrontend,
   'liars-dice': createLiarsDiceFrontend,
   othello: createOthelloFrontend,
+  pente: createPenteFrontend,
   snake: createSnakeFrontend,
   twentyone: createTwentyOneFrontend,
 };

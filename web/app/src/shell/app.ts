@@ -38,6 +38,7 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   twentyone: { hearts: "3" },
   othello: { depth: "5" },
   connect4: { depth: "7" },
+  pente: { size: "13", depth: "4" },
   go: { size: "9", bot: "azero-gpu", sims: "1500" },
   snake: { bot: "azero-gpu", sims: "128" },
   "2048": {},
@@ -122,6 +123,7 @@ const SEAT_LABELS: Record<string, string[]> = {
   chess: ["White", "Black"],
   othello: ["Black", "White"],
   go: ["Black", "White"],
+  pente: ["Black", "White"],
   connect4: ["Red", "Yellow"],
   twentyone: ["Player 1", "Player 2"],
 };
@@ -218,6 +220,8 @@ function miniFor(id: string): string {
       return `<div class="mini mini-c4"></div>`;
     case "go":
       return `<div class="mini mini-go"><span class="mini-stone mini-stone-b" style="left:30%;top:30%"></span><span class="mini-stone mini-stone-w" style="left:55%;top:47%"></span><span class="mini-stone mini-stone-b" style="left:38%;top:63%"></span></div>`;
+    case "pente":
+      return `<div class="mini mini-pente"><span class="mini-pstone mini-pstone-b" style="left:18%;top:50%"></span><span class="mini-pstone mini-pstone-w" style="left:40%;top:50%"></span><span class="mini-pstone mini-pstone-w" style="left:60%;top:50%"></span><span class="mini-pstone mini-pstone-b" style="left:82%;top:50%"></span></div>`;
     case "2048":
       return `<div class="mini mini-2048"><span>2</span><span class="v4">4</span><span class="v8">8</span><span class="v16">16</span></div>`;
     case "snake":

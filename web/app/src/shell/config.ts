@@ -42,6 +42,10 @@ export const DIFFICULTY: Record<string, Difficulty> = {
   "othello/mcts": { key: "sims", levels: [["Easy", "500"], ["Medium", "2000"], ["Hard", "6000"]] },
   "connect4/alphabeta": { key: "depth", levels: [["Easy", "5"], ["Medium", "7"], ["Hard", "9"]] },
   "connect4/mcts": { key: "sims", levels: [["Easy", "500"], ["Medium", "2000"], ["Hard", "6000"]] },
+  // Depth 6 is ~8-15s/move in wasm (too slow for the arcade); 5 is ~3-5s and
+  // still sharp, so Hard caps there. Easy/Medium stay snappy.
+  "pente/alphabeta": { key: "depth", levels: [["Easy", "2"], ["Medium", "4"], ["Hard", "5"]] },
+  "pente/mcts": { key: "sims", levels: [["Easy", "1000"], ["Medium", "4000"], ["Hard", "10000"]] },
   "go/mcts": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
   "go/mcts-eval": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
   "go/mcts-spec": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
@@ -65,7 +69,7 @@ export const OPT_CHOICES: Record<string, string[]> = {
   players: ["2", "3", "4", "5", "6"],
   dice: ["3", "4", "5", "6"],
   hearts: ["3", "6"],
-  size: ["9", "13", "19"],
+  size: ["9", "13", "15", "19"],
 };
 
 /** Bots that can't run in the tournament: they need a GPU or a trained
