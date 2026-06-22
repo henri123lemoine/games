@@ -1,7 +1,7 @@
 //! Score benchmark for the registered Snake bot (`lab play snake bot=mcts-eval`
 //! defaults: sims=200, depth=12, 10x10 board). Usage:
 //!
-//!     cargo run --release -p snake --example bench [episodes] [sims] [depth] [seed]
+//!     cargo run --release -p snake --example snake_bench [episodes] [sims] [depth] [seed]
 
 use game_core::{Agent, Game, Rng, Turn};
 use snake::{Snake, SnakeEval, SnakeState};

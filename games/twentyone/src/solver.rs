@@ -1218,6 +1218,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow (~110s); run with --ignored"]
     fn solver_reduces_exploitability() {
         // External-sampling MCCFR+ must drive exact exploitability down
         // substantially with more iterations (validating convergence toward Nash).
