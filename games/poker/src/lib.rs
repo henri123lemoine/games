@@ -79,6 +79,11 @@ pub enum Action {
     AllIn,
     /// Chance: deal `card` to the next undealt position.
     Deal(Card),
+    /// Chance (session only): clear the finished hand and start the next one.
+    /// A single deterministic outcome that fires between hands so the showdown
+    /// of the hand that just ended is still visible to the frontend before the
+    /// next hand's cards overwrite it.
+    NextHand,
 }
 
 #[derive(Clone)]
@@ -113,6 +118,12 @@ pub struct PokerState {
     deal_idx: u8,
     button: u8,
     done: bool,
+    /// A session hand has just settled and is waiting for the [`Action::NextHand`]
+    /// transition (its showdown stays on screen until then). Always false in a
+    /// one-hand game, where settlement sets `done` instead.
+    hand_over: bool,
+    /// Hands dealt so far this session — drives button rotation.
+    hand_no: u16,
 }
 
 /// The table parameters for a hand. Stacks and blinds are in chips; the natural
@@ -123,6 +134,16 @@ pub struct Poker {
     pub small_blind: u32,
     pub big_blind: u32,
     pub button: u8,
+    /// Cash-game session: when a hand ends, auto-deal the next one (carrying
+    /// stacks, rotating the button, topping a busted seat back to the starting
+    /// stack) instead of going terminal. The arcade table sets this so a player
+    /// sits and plays hand after hand; the arena/`bot_eval`/tests leave it off
+    /// so one `Game` is exactly one hand (the bb/hand metric stays intact).
+    pub session: bool,
+    /// Hands a session plays before it finally goes terminal. A safety bound so
+    /// non-interactive drivers (`advance()`, a spectated table) always finish; a
+    /// human sitting down never reaches it (then leaves by navigating away).
+    pub session_hands: u16,
 }
 
 impl Poker {
@@ -137,12 +158,20 @@ impl Poker {
             small_blind: 1,
             big_blind: 2,
             button: 0,
+            session: false,
+            session_hands: 500,
         }
     }
 
     pub fn with_stack(mut self, stack: u32) -> Self {
         assert!(stack >= self.big_blind, "a stack must cover the big blind");
         self.starting_stack = stack;
+        self
+    }
+
+    /// Turn this into a continuous cash-game session (see [`Poker::session`]).
+    pub fn with_session(mut self, session: bool) -> Self {
+        self.session = session;
         self
     }
 
@@ -239,6 +268,16 @@ impl PokerState {
     pub fn done(&self) -> bool {
         self.done
     }
+    /// Whether the current hand has finished (showdown reached) — true at a
+    /// one-hand game's terminal *and* between a session's hands. The UI reveals
+    /// hands and shows results whenever this holds.
+    pub fn resolved(&self) -> bool {
+        self.done || self.hand_over
+    }
+    /// Hands completed so far this session (0 during the first hand).
+    pub fn hand_no(&self) -> u16 {
+        self.hand_no
+    }
     pub fn payoff_bb(&self, seat: usize) -> f64 {
         self.payoff[seat] as f64 / BB_SCALE as f64
     }
@@ -299,8 +338,10 @@ impl Game for Poker {
             deal_idx: 0,
             button: self.button,
             done: false,
+            hand_over: false,
+            hand_no: 0,
         };
-        self.post_blinds(&mut s);
+        self.begin_hand(&mut s);
         s
     }
 
@@ -308,7 +349,8 @@ impl Game for Poker {
         if s.done {
             return Turn::Player(0);
         }
-        if (s.deal_idx as usize) < self.deals_needed(s) {
+        // A settled session hand waits at a chance node for `NextHand`.
+        if s.hand_over || (s.deal_idx as usize) < self.deals_needed(s) {
             Turn::Chance
         } else {
             Turn::Player(s.to_act as usize)
@@ -324,6 +366,9 @@ impl Game for Poker {
     }
 
     fn chance_outcomes(&self, s: &PokerState) -> Vec<(Action, f64)> {
+        if s.hand_over {
+            return vec![(Action::NextHand, 1.0)];
+        }
         let remaining: Vec<Card> = (0..cards::NUM_CARDS as u8)
             .filter(|&c| s.dealt & (1u64 << c) == 0)
             .collect();
@@ -375,6 +420,7 @@ impl Game for Poker {
     fn apply(&self, s: &mut PokerState, action: Action) {
         match action {
             Action::Deal(card) => self.apply_deal(s, card),
+            Action::NextHand => self.begin_hand(s),
             other => self.apply_bet(s, other),
         }
     }
@@ -413,11 +459,49 @@ impl Game for Poker {
             Action::AllIn => 4,
             Action::Raise(to) => 5 + *to as u64,
             Action::Deal(c) => 1 << 32 | *c as u64,
+            Action::NextHand => 2 << 32,
         }
     }
 }
 
 impl Poker {
+    /// Reset the per-hand fields, place the button for this hand, (in a session)
+    /// top any sub-blind seat back to the starting stack, then deal-and-post:
+    /// the board/hole reset to empty and the blinds go in. Called by
+    /// `initial_state` (hand 1) and the [`Action::NextHand`] transition.
+    fn begin_hand(&self, s: &mut PokerState) {
+        let n = self.seats();
+        // Button starts at the configured seat and walks one seat per hand.
+        s.button = ((self.button as u16 + s.hand_no) % self.seats as u16) as u8;
+        s.hole = [[NO_CARD; 2]; MAX_SEATS];
+        s.board = [NO_CARD; 5];
+        s.board_len = 0;
+        s.committed = [0; MAX_SEATS];
+        s.street_bet = [0; MAX_SEATS];
+        s.folded = [false; MAX_SEATS];
+        s.all_in = [false; MAX_SEATS];
+        s.payoff = [0; MAX_SEATS];
+        s.acted = [false; MAX_SEATS];
+        s.street = Street::Preflop;
+        s.current_bet = 0;
+        s.last_raise = self.big_blind;
+        s.run_out = false;
+        s.dealt = 0;
+        s.deal_idx = 0;
+        s.hand_over = false;
+        // Cash table: a busted seat rebuys to the starting stack so the table
+        // stays full and the player can keep sitting down. (No-op for any seat
+        // that already has chips, and for one-hand games, which begin full.)
+        if self.session {
+            for p in 0..n {
+                if s.stack[p] < self.big_blind {
+                    s.stack[p] = self.starting_stack;
+                }
+            }
+        }
+        self.post_blinds(s);
+    }
+
     fn post_blinds(&self, s: &mut PokerState) {
         let n = self.seats() as u8;
         // Heads-up: the button posts the small blind and acts first preflop.
@@ -478,7 +562,9 @@ impl Poker {
             Action::Call => self.put(s, p, s.to_call(pi)),
             Action::AllIn => self.put(s, p, s.stack[pi]),
             Action::Raise(to) => self.put(s, p, to - s.street_bet[pi]),
-            Action::Deal(_) => unreachable!("deal handled in apply_deal"),
+            Action::Deal(_) | Action::NextHand => {
+                unreachable!("chance actions handled in apply")
+            }
         }
         s.acted[pi] = true;
         let raised = s.street_bet[pi] > prev_bet;
@@ -555,9 +641,22 @@ impl Poker {
         let bb = self.big_blind as i64;
         for (p, &w) in won.iter().enumerate().take(n) {
             s.payoff[p] = (w as i64 - s.committed[p] as i64) * BB_SCALE / bb;
+            // Credit winnings to the stack so chips carry across a session's
+            // hands. (Harmless for one-hand games — nothing reads the stack
+            // after settlement there; `returns` reads `payoff`.)
+            s.stack[p] += w;
         }
-        s.done = true;
         s.street = Street::Showdown;
+        // In a session the hand is over but the table is not: hold the result
+        // for the showdown, then `NextHand` deals again (auto-rebuy keeps at
+        // least two seats funded). A safety cap eventually ends it so any
+        // non-interactive driver terminates; a human leaves long before then.
+        if self.session && s.hand_no + 1 < self.session_hands {
+            s.hand_over = true;
+            s.hand_no += 1;
+        } else {
+            s.done = true;
+        }
     }
 
     /// Split the pot into side pots by commitment level; each layer goes to the

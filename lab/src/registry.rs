@@ -492,7 +492,12 @@ pub fn entries() -> Vec<Entry> {
             watch_bot: "",
             summary: "No-Limit Texas Hold'em (6-max) vs equity-rollout bots",
             opts: POKER_OPTS,
-            make: Box::new(|o| make_versus(o, poker_game(o)?, "equity", poker_bot)),
+            // Sitting down to play is a continuous cash-game session (hand after
+            // hand, stacks carried, button rotating). The eval path below keeps
+            // the bare one-hand game so the bb/hand metric is unchanged.
+            make: Box::new(|o| {
+                make_versus(o, poker_game(o)?.with_session(true), "equity", poker_bot)
+            }),
             // `compare`/`tourney` here report win share, which understates a
             // poker bot badly: only one seat wins each pot, so a single rotated
             // hero can't beat the fair 1/N by much even when it dominates. The

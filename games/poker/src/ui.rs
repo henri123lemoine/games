@@ -18,6 +18,7 @@ impl Poker {
             Action::Raise(to) => format!("raise to {to}"),
             Action::AllIn => format!("all-in {}", s.stack(p) + s.street_bet(p)),
             Action::Deal(c) => format!("deal {}", card_str(c)),
+            Action::NextHand => "next hand".into(),
         }
     }
 }
@@ -152,7 +153,7 @@ impl GameUi for Poker {
         after: &PokerState,
         viewer: usize,
     ) -> Option<String> {
-        if !after.done() {
+        if !after.resolved() {
             return None;
         }
         let n = self.seats();
@@ -184,21 +185,23 @@ impl GameUi for Poker {
     fn view_data(&self, s: &PokerState, viewer: usize) -> Option<String> {
         let n = self.seats();
         let spectator = viewer >= n;
-        let phase = if s.done() {
+        let phase = if s.resolved() {
             "over"
         } else {
             street_str(s.street())
         };
         let seats = (0..n)
             .map(|p| {
-                let hole = if (spectator && s.done()) || p == viewer || (s.done() && !s.folded(p)) {
-                    match s.hole(p) {
-                        Some(h) if h[0] != NO_CARD => cards_json(&h),
-                        _ => "null".to_string(),
-                    }
-                } else {
-                    "null".to_string()
-                };
+                let hole =
+                    if (spectator && s.resolved()) || p == viewer || (s.resolved() && !s.folded(p))
+                    {
+                        match s.hole(p) {
+                            Some(h) if h[0] != NO_CARD => cards_json(&h),
+                            _ => "null".to_string(),
+                        }
+                    } else {
+                        "null".to_string()
+                    };
                 format!(
                     concat!(
                         r#"{{"seat":{p},"stack":{stack},"committed":{committed},"#,
@@ -211,8 +214,8 @@ impl GameUi for Poker {
                     bet = s.street_bet(p),
                     folded = s.folded(p),
                     allin = s.all_in(p),
-                    to_act = (!s.done() && self.is_to_act(s, p)),
-                    net = if s.done() {
+                    to_act = (!s.resolved() && self.is_to_act(s, p)),
+                    net = if s.resolved() {
                         format!("{:.3}", s.payoff_bb(p))
                     } else {
                         "null".to_string()
@@ -222,7 +225,7 @@ impl GameUi for Poker {
             })
             .collect::<Vec<_>>()
             .join(",");
-        let to_call = if spectator || s.done() {
+        let to_call = if spectator || s.resolved() {
             0
         } else {
             s.to_call(viewer)
@@ -265,10 +268,10 @@ impl GameUi for Poker {
             Action::Call => "call",
             Action::Raise(_) => "raise",
             Action::AllIn => "allin",
-            Action::Deal(_) => return None,
+            Action::Deal(_) | Action::NextHand => return None,
         };
         let seat = before.to_act();
-        let reveal = if after.done() {
+        let reveal = if after.resolved() {
             let shows = (0..n)
                 .filter(|&p| !after.folded(p))
                 .filter_map(|p| {
@@ -295,7 +298,7 @@ impl GameUi for Poker {
             seat = seat,
             amount = after.committed(seat).saturating_sub(before.committed(seat)),
             pot = self.pot(after),
-            over = after.done(),
+            over = after.resolved(),
             reveal = reveal,
         ))
     }

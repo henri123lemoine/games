@@ -99,16 +99,23 @@ async function main() {
     // The felt table mounts once the engine creates the match.
     await page.waitForSelector('.pk-felt', { timeout: 30000 });
 
-    // Observe a few hands. Track: hole cards rendered, a board that grows to
-    // five cards at least once, the pot changing, and a result banner.
+    // Observe a continuous session. Track per poll: the board size (a reset
+    // 5→0→grow marks a new hand), the dealer button seat (must rotate), and the
+    // first seat's stack (must carry/change across hands, not reset each hand).
     const seen = {
       seats: 0,
       maxBoard: 0,
       potValues: new Set(),
       sawBanner: false,
       sawBetChip: false,
+      hands: 0, // distinct dealt hands observed
+      buttons: new Set(), // distinct dealer-button seats seen
+      seat0Stacks: new Set(), // distinct seat-0 stack readings
+      sawGameOver: false, // did the shell ever show a 'game over'/rematch?
     };
-    for (let i = 0; i < 60; i++) {
+    let prevBoard = -1;
+    let everSawFullBoard = false;
+    for (let i = 0; i < 90; i++) {
       await page.waitForTimeout(500);
       const snap = await page.evaluate(() => {
         const board = document.querySelectorAll('.pk-board .pk-card').length;
@@ -117,43 +124,73 @@ async function main() {
         const pot = potEl ? potEl.textContent : '';
         const banner = document.querySelector('.pk-banner.show');
         const bet = document.querySelectorAll('.pk-bet').length;
-        const cards = document.querySelectorAll('.pk-seat .pk-card').length;
-        return { board, seats, pot, banner: banner ? banner.textContent : null, bet, cards };
+        // Dealer button seat: the .pk-seat whose pod contains the .pk-dealer chip.
+        let button = -1;
+        document.querySelectorAll('.pk-seat').forEach((el) => {
+          if (el.querySelector('.pk-dealer')) button = Number(el.getAttribute('data-seat'));
+        });
+        // Seat 0's stack text (e.g. "198 bb").
+        const s0 = document.querySelector('.pk-seat[data-seat="0"] .pk-stack');
+        const stack0 = s0 ? s0.textContent.trim() : '';
+        // Any shell-level "game over" / rematch UI (should NOT appear mid-session).
+        const statusEl = document.querySelector('.status, .result, .game-over');
+        const status = statusEl ? statusEl.textContent : '';
+        return { board, seats, pot, banner: banner?.textContent ?? null, bet, button, stack0, status };
       });
       seen.seats = Math.max(seen.seats, snap.seats);
       seen.maxBoard = Math.max(seen.maxBoard, snap.board);
+      if (snap.board === 5) everSawFullBoard = true;
+      // A new hand: the board dropped back toward empty after having had cards.
+      if (prevBoard >= 3 && snap.board <= 1) seen.hands++;
+      prevBoard = snap.board;
       if (snap.pot) seen.potValues.add(snap.pot);
       if (snap.bet > 0) seen.sawBetChip = true;
+      if (snap.button >= 0) seen.buttons.add(snap.button);
+      if (snap.stack0) seen.seat0Stacks.add(snap.stack0);
+      if (/game over|rematch|wins\.$/i.test(snap.status || '')) seen.sawGameOver = true;
       if (snap.banner) {
         seen.sawBanner = true;
-        // Capture a screenshot at a showdown/result banner — the climactic frame.
         if (/win|lose|takes|showdown|break even/i.test(snap.banner)) {
           await page.screenshot({ path: join(OUT_DIR, 'poker-showdown.png') });
         }
       }
-      // Mid-hand frame with a board out.
       if (snap.board >= 3 && !existsSync(join(OUT_DIR, 'poker-board.png'))) {
         await page.screenshot({ path: join(OUT_DIR, 'poker-board.png') });
       }
     }
     await page.screenshot({ path: join(OUT_DIR, 'poker.png') });
+    // +1 because the first hand never had a "reset" edge to count it.
+    const handsPlayed = seen.hands + 1;
 
     result.observed = {
       seats: seen.seats,
+      handsPlayed,
+      everSawFullBoard,
       maxBoardCards: seen.maxBoard,
+      distinctButtonSeats: seen.buttons.size,
+      buttonSeats: [...seen.buttons].sort((a, b) => a - b),
+      distinctSeat0Stacks: seen.seat0Stacks.size,
       distinctPots: seen.potValues.size,
       sawBetChip: seen.sawBetChip,
       sawBanner: seen.sawBanner,
+      sawGameOver: seen.sawGameOver,
     };
-    // Acceptance: 6 seats, the board reached at least the flop, the pot took on
-    // multiple values (chips moved), bets were posted, and a banner fired —
+    // Acceptance (continuous session): 6 seats; SEVERAL hands played in a row;
+    // the board reached the river at least once; the dealer button ROTATED
+    // (>=2 distinct seats); seat 0's stack CARRIED/changed across hands (>=2
+    // distinct readings, i.e. not reset to a fresh stack each hand); bets and a
+    // result banner fired; and the shell NEVER showed a 'game over' mid-session.
     // with no console errors.
     result.ok =
       seen.seats === 6 &&
-      seen.maxBoard >= 3 &&
+      handsPlayed >= 3 &&
+      everSawFullBoard &&
+      seen.buttons.size >= 2 &&
+      seen.seat0Stacks.size >= 2 &&
       seen.potValues.size >= 2 &&
       seen.sawBetChip &&
       seen.sawBanner &&
+      !seen.sawGameOver &&
       errors.length === 0;
   } catch (e) {
     result.error = String(e);

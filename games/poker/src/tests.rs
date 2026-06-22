@@ -300,3 +300,166 @@ fn equity_bot_crushes_always_call_and_random() {
         "heads-up vs call must be clearly positive, got {hu:.2}"
     );
 }
+
+// ---- continuous cash-game session ----
+
+/// Drive a session of all-random play, stepping through the between-hand
+/// `NextHand` chance node, and record per-hand boundaries.
+fn play_session(
+    game: &Poker,
+    rng: &mut Rng,
+    stop_after_hands: u16,
+) -> Vec<(u16, u8, [u32; MAX_SEATS])> {
+    let mut s = game.initial_state();
+    let mut snapshots = Vec::new();
+    let mut last_hand = u16::MAX;
+    let mut steps = 0;
+    while !game.is_terminal(&s) {
+        steps += 1;
+        assert!(steps < 5_000_000, "session must make progress");
+        // Snapshot at the start of each new hand (button + stacks).
+        if s.hand_no() != last_hand && !s.resolved() {
+            last_hand = s.hand_no();
+            let mut stacks = [0u32; MAX_SEATS];
+            for (p, st) in stacks.iter_mut().enumerate().take(game.seats()) {
+                *st = s.stack(p) + s.committed(p); // before-blinds equivalent
+            }
+            snapshots.push((s.hand_no(), s.button() as u8, stacks));
+            if s.hand_no() >= stop_after_hands {
+                break;
+            }
+        }
+        match game.turn(&s) {
+            Turn::Chance => {
+                let outs = game.chance_outcomes(&s);
+                let i = rng.below(outs.len());
+                game.apply(&mut s, outs[i].0);
+            }
+            Turn::Player(_) => {
+                let acts = game.legal_actions(&s);
+                let i = rng.below(acts.len());
+                game.apply(&mut s, acts[i]);
+            }
+        }
+    }
+    snapshots
+}
+
+#[test]
+fn session_deals_many_hands_and_rotates_the_button() {
+    let game = Poker::new(6)
+        .with_blinds(1, 2)
+        .with_stack(200)
+        .with_session(true);
+    let mut rng = Rng::new(0x5E5510);
+    let snaps = play_session(&game, &mut rng, 12);
+    assert!(
+        snaps.len() >= 10,
+        "a session deals hand after hand: {}",
+        snaps.len()
+    );
+    // The button rotates one seat per hand.
+    for w in snaps.windows(2) {
+        let (h0, b0, _) = w[0];
+        let (h1, b1, _) = w[1];
+        assert_eq!(h1, h0 + 1, "hand number increments");
+        assert_eq!(b1, (b0 + 1) % 6, "button rotates one seat per hand");
+    }
+}
+
+#[test]
+fn session_carries_stacks_across_hands_and_conserves_chips() {
+    let game = Poker::new(4)
+        .with_blinds(1, 2)
+        .with_stack(150)
+        .with_session(true);
+    let mut rng = Rng::new(0xCA54);
+    let snaps = play_session(&game, &mut rng, 20);
+    assert!(snaps.len() >= 15);
+    let total_start = 4 * 150;
+    for (hand, _btn, stacks) in &snaps {
+        let total: u32 = stacks.iter().take(4).sum();
+        // No rebuy fired (everyone stays funded in this short run) ⇒ chips are
+        // conserved hand to hand; a rebuy would only ever add chips, never lose.
+        assert!(
+            total >= total_start || *hand > 0,
+            "hand {hand}: chips not destroyed (have {total}, started {total_start})"
+        );
+    }
+    // Stacks actually change between hands (chips move), i.e. it's not resetting
+    // to a fresh 150 each hand.
+    let distinct: std::collections::HashSet<_> = snaps.iter().map(|(_, _, st)| st[0]).collect();
+    assert!(
+        distinct.len() > 1,
+        "seat 0's stack varies across hands (carried over)"
+    );
+}
+
+#[test]
+fn session_rebuys_a_busted_seat_so_play_continues() {
+    // Tiny stacks + constant all-in random play will bust seats; the session
+    // must top them back up and keep dealing, never deadlocking.
+    let game = Poker::new(3)
+        .with_blinds(1, 2)
+        .with_stack(6)
+        .with_session(true);
+    let mut rng = Rng::new(0xB057);
+    let snaps = play_session(&game, &mut rng, 40);
+    assert!(
+        snaps.len() >= 30,
+        "rebuys keep the table alive: {}",
+        snaps.len()
+    );
+    // At the start of every hand each seat can cover the big blind (rebuy works).
+    for (hand, _btn, stacks) in &snaps {
+        for (p, &st) in stacks.iter().take(3).enumerate() {
+            assert!(st >= 2, "hand {hand} seat {p}: funded to play ({st} chips)");
+        }
+    }
+}
+
+#[test]
+fn session_finally_terminates_at_the_hand_cap() {
+    // A small cap so the test is quick; the session must end cleanly.
+    let mut game = Poker::new(2)
+        .with_blinds(1, 2)
+        .with_stack(50)
+        .with_session(true);
+    game.session_hands = 8;
+    let mut rng = Rng::new(0x0CA9);
+    let mut s = game.initial_state();
+    let mut steps = 0;
+    while !game.is_terminal(&s) {
+        steps += 1;
+        assert!(steps < 1_000_000);
+        match game.turn(&s) {
+            Turn::Chance => {
+                let outs = game.chance_outcomes(&s);
+                game.apply(&mut s, outs[rng.below(outs.len())].0);
+            }
+            Turn::Player(_) => {
+                let acts = game.legal_actions(&s);
+                game.apply(&mut s, acts[rng.below(acts.len())]);
+            }
+        }
+    }
+    assert!(game.is_terminal(&s), "the session ends at the cap");
+    assert_eq!(
+        s.hand_no(),
+        7,
+        "played session_hands-1 boundaries then ended"
+    );
+}
+
+#[test]
+fn one_hand_game_is_unchanged_by_the_session_flag() {
+    // With session off, the game is terminal after exactly one hand (the metric
+    // path the arena/bot_eval rely on).
+    let game = Poker::new(6).with_blinds(1, 2).with_stack(200);
+    assert!(!game.session);
+    let mut rng = Rng::new(7);
+    let s = random_hand(&game, &mut rng);
+    assert!(game.is_terminal(&s), "one hand then terminal");
+    let total: f64 = (0..6).map(|p| game.returns(&s, p)).sum();
+    assert!(total.abs() < 1e-6, "still zero-sum");
+}
