@@ -493,6 +493,10 @@ pub fn entries() -> Vec<Entry> {
             summary: "No-Limit Texas Hold'em (6-max) vs equity-rollout bots",
             opts: POKER_OPTS,
             make: Box::new(|o| make_versus(o, poker_game(o)?, "equity", poker_bot)),
+            // `compare`/`tourney` here report win share, which understates a
+            // poker bot badly: only one seat wins each pot, so a single rotated
+            // hero can't beat the fair 1/N by much even when it dominates. The
+            // honest strength metric is bb/100 — run `poker`'s `bot_eval` example.
             eval: Some(eval_entry(
                 "equity[:samples=2000] | rollout[:rollouts=300] | call | random",
                 0,

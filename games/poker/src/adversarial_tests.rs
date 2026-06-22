@@ -271,35 +271,34 @@ mod indep {
         groups.sort_by(|a, b| b.cmp(a));
         let shape: Vec<i32> = groups.iter().map(|g| g.0).collect();
 
-        let (category, ordered_ranks): (u64, Vec<i32>) = if let (Some(top), true) =
-            (straight_high, is_flush)
-        {
-            (8, vec![top])
-        } else if shape == [4, 1] {
-            (7, groups.iter().map(|g| g.1).collect())
-        } else if shape == [3, 2] {
-            (6, groups.iter().map(|g| g.1).collect())
-        } else if is_flush {
-            (5, {
-                let mut r = ranks.clone();
-                r.sort_by(|a, b| b.cmp(a));
-                r
-            })
-        } else if let Some(top) = straight_high {
-            (4, vec![top])
-        } else if shape == [3, 1, 1] {
-            (3, groups.iter().map(|g| g.1).collect())
-        } else if shape == [2, 2, 1] {
-            (2, groups.iter().map(|g| g.1).collect())
-        } else if shape == [2, 1, 1, 1] {
-            (1, groups.iter().map(|g| g.1).collect())
-        } else {
-            (0, {
-                let mut r = ranks.clone();
-                r.sort_by(|a, b| b.cmp(a));
-                r
-            })
-        };
+        let (category, ordered_ranks): (u64, Vec<i32>) =
+            if let (Some(top), true) = (straight_high, is_flush) {
+                (8, vec![top])
+            } else if shape == [4, 1] {
+                (7, groups.iter().map(|g| g.1).collect())
+            } else if shape == [3, 2] {
+                (6, groups.iter().map(|g| g.1).collect())
+            } else if is_flush {
+                (5, {
+                    let mut r = ranks.clone();
+                    r.sort_by(|a, b| b.cmp(a));
+                    r
+                })
+            } else if let Some(top) = straight_high {
+                (4, vec![top])
+            } else if shape == [3, 1, 1] {
+                (3, groups.iter().map(|g| g.1).collect())
+            } else if shape == [2, 2, 1] {
+                (2, groups.iter().map(|g| g.1).collect())
+            } else if shape == [2, 1, 1, 1] {
+                (1, groups.iter().map(|g| g.1).collect())
+            } else {
+                (0, {
+                    let mut r = ranks.clone();
+                    r.sort_by(|a, b| b.cmp(a));
+                    r
+                })
+            };
 
         let mut v = category << 40;
         for (i, &r) in ordered_ranks.iter().take(5).enumerate() {
