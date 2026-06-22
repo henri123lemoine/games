@@ -4,6 +4,7 @@
 // and narration, frontends own the board.
 
 import { type ClientBot, clientBotFor } from "../bots";
+import { createSnakeBot, type SnakeBot } from "../bots/snake-search";
 import { EngineHost } from "../engine/host";
 import type {
   GameInfo,
@@ -14,6 +15,8 @@ import type {
 } from "../engine/protocol";
 import { frontendFor, hasFrontend } from "../frontends";
 import type { SlitherScreen } from "../frontends/slither";
+import type { RealtimeBoard } from "./snake-realtime";
+import { SnakeRealtime } from "./snake-realtime";
 import type { FrontendCtx, GameFrontend } from "../frontends/types";
 import { CPU_LEVELS, isCpuFallback, TRIVIAL_SIMS } from "./azero";
 import {
@@ -42,6 +45,14 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
 
 /** Games registered in the lab but not surfaced on the site. */
 const HIDDEN_GAMES = new Set<string>([]);
+
+/** Board-native real-time games: their frontend owns the whole screen and draws
+ * its own status/result (chips, HP, win/lose overlay). The shell's generic side
+ * panel — a per-move log and a "Thinking…" status — would just be a scrolling
+ * wall of narration over a game that needs none, so these get the full-width
+ * board and no side panel (no `.log`/`.status` elements, so the shell's
+ * per-move narration and status calls quietly no-op). */
+const BOARD_NATIVE_REALTIME = new Set<string>(["snake"]);
 
 /** Trained artifacts fetched as static assets, keyed by the path the
  * registry asks for. */
@@ -234,6 +245,10 @@ export class App {
   private submitResolve: ((input: string) => void) | null = null;
   private logEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
+  /** Snake play runs on a dedicated real-time driver (fixed clock, bot's policy
+   * floor + search off the critical path) instead of the serial match loop. */
+  private snakeRealtime: SnakeRealtime | null = null;
+  private snakeBot: SnakeBot | null = null;
 
   constructor(private root: HTMLElement) {
     window.addEventListener("hashchange", () => this.route());
@@ -563,12 +578,15 @@ export class App {
       opts.bot === "azero-gpu" ||
       splitSpecs(opts.bots ?? "").some((s) => s.split(":")[0] === "azero-gpu");
     if (azeroSeat && isCpuFallback()) this.showCpuNote();
+    // Snake PLAY (human seated, AlphaZero opponent) runs real-time: a dedicated
+    // fixed-clock driver with the bot's search off the critical path, so the
+    // player's snake is never gated by the bot's compute. Watch mode and the
+    // CPU/keyboard fallback keep the generic serial loop.
+    const snakePlay =
+      game.id === "snake" && usesAzeroGpu && opts.seat !== "watch";
     try {
       await this.loadArtifacts(game, opts);
       const st = await this.host.create(game.id, opts);
-      if (gen !== this.gen) return;
-      const makeBot = clientBotFor(game.id, usesAzeroGpu ? "azero-gpu" : opts.bot);
-      this.clientBot = makeBot ? await makeBot(this.host, opts) : null;
       if (gen !== this.gen) return;
       const boardEl = this.root.querySelector<HTMLElement>(".board")!;
       this.frontend = frontendFor(game.id);
@@ -583,12 +601,48 @@ export class App {
       this.frontend.mount(boardEl, ctx);
       this.frontend.render(st);
       this.fillSeatSlots(game, opts);
+
+      if (snakePlay) {
+        await this.startSnakeRealtime(gen, opts, st);
+        return;
+      }
+
+      const makeBot = clientBotFor(game.id, usesAzeroGpu ? "azero-gpu" : opts.bot);
+      this.clientBot = makeBot ? await makeBot(this.host, opts) : null;
+      if (gen !== this.gen) return;
       this.setStatus(st.humanSeat < 0 ? "Bots playing…" : "Thinking…");
       void this.runLoop(gen);
     } catch (e) {
       if (gen === this.gen)
         this.setStatus(`Could not start: ${message(e)}`, "error");
     }
+  }
+
+  /** Wire snake's real-time driver: the bot (CPU policy floor + background
+   * search, each on its own worker) plus the fixed-clock driver that reads the
+   * player's input every tick without ever awaiting the heavy search. */
+  private async startSnakeRealtime(
+    gen: number,
+    opts: Record<string, string>,
+    initial: ViewState,
+  ): Promise<void> {
+    const bot = await createSnakeBot(opts);
+    if (gen !== this.gen) {
+      bot.stop();
+      return;
+    }
+    this.snakeBot = bot;
+    const board = this.frontend as unknown as RealtimeBoard;
+    this.snakeRealtime = new SnakeRealtime(
+      this.host,
+      bot,
+      board,
+      () => gen === this.gen,
+      () => {
+        /* the frontend draws its own game-over overlay */
+      },
+    );
+    this.snakeRealtime.start(initial);
   }
 
   private renderMatchSkeleton(
@@ -622,7 +676,7 @@ export class App {
         </header>
         ${this.quickControlsHtml(game, opts)}
         <div class="cpu-note" hidden></div>
-        <div class="match-body${game.solo ? " match-body--solo" : ""}">
+        <div class="match-body${game.solo || BOARD_NATIVE_REALTIME.has(game.id) ? " match-body--solo" : ""}">
           <section class="board"></section>
           ${this.sideHtml(game)}
         </div>
@@ -734,7 +788,7 @@ export class App {
    * have board-native input). Solo games render their own score and game-over
    * overlay, so they get no side panel — the board takes the full width. */
   private sideHtml(game: GameInfo): string {
-    if (game.solo) return "";
+    if (game.solo || BOARD_NATIVE_REALTIME.has(game.id)) return "";
     const freeInput = hasFrontend(game.id)
       ? ""
       : `<form class="free-input">
@@ -1111,6 +1165,10 @@ export class App {
   private teardownMatch(): void {
     this.clientBot?.cancel();
     this.clientBot = null;
+    this.snakeRealtime?.stop();
+    this.snakeRealtime = null;
+    this.snakeBot?.stop();
+    this.snakeBot = null;
     this.frontend?.unmount();
     this.frontend = null;
     this.submitResolve = null;

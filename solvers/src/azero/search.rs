@@ -365,6 +365,13 @@ impl<G: Game> Search<G> {
         }
     }
 
+    /// Whether the root node exists yet — false on a fresh search before the
+    /// first `advance` allocates it. Callers that may read the root mid-search
+    /// (an anytime/best-so-far read) must check this first.
+    pub fn has_root(&self) -> bool {
+        !self.tree.nodes.is_empty()
+    }
+
     /// Visit counts over the root's actions, aligned with `root_actions`.
     pub fn root_visits(&self) -> &[u32] {
         &self.tree.nodes[self.tree.root].n

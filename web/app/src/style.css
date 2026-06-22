@@ -465,6 +465,7 @@ button {
 }
 
 .mini-snake {
+  position: relative;
   background:
     linear-gradient(rgba(120, 220, 150, 0.08) 1px, transparent 1px),
     linear-gradient(90deg, rgba(120, 220, 150, 0.08) 1px, transparent 1px),

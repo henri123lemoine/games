@@ -312,6 +312,20 @@ impl Duel {
         let same_cell = !wall0 && !wall1 && nx0 == nx1 && ny0 == ny1;
         let swap =
             !wall0 && !wall1 && (nx0 as u8, ny0 as u8) == old1 && (nx1 as u8, ny1 as u8) == old0;
+
+        // A head landing on the opponent's OLD-head cell — when that is NOT the
+        // mutual swap above — is a body collision, not a head-to-head meet: the
+        // opponent's head moved off that cell, but the segment behind it shifts
+        // in, so the cell stays occupied and is fatal. `skip_head=true` above
+        // exempted it (so two NEW heads meeting can be resolved by the length
+        // rule); restore the collision for this distinct case. A snake only
+        // vacates its old-head cell if its whole body is length 1, which never
+        // happens — snakes start length 3 and only grow.
+        let vacated0 = state.worms[0].len() <= 1;
+        let vacated1 = state.worms[1].len() <= 1;
+        dead1 |= !swap && !wall1 && (nx1 as u8, ny1 as u8) == old0 && !vacated0;
+        dead0 |= !swap && !wall0 && (nx0 as u8, ny0 as u8) == old1 && !vacated1;
+
         if same_cell || swap {
             match state.worms[0].len().cmp(&state.worms[1].len()) {
                 std::cmp::Ordering::Greater => dead1 = true,

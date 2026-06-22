@@ -37,6 +37,16 @@ const LEAVES = 32;
 const GPU_DEFAULT_SIMS = 64;
 /** GPU ceiling: ~5 round-trips, ~200 ms headless. */
 const GPU_MAX_SIMS = 128;
+/** Per-move wall-clock CAP for the GPU search (an ANYTIME/time-budgeted search,
+ * not a fixed sim count): run PUCT batches until the sims are exhausted OR this
+ * deadline, then return the best move so far. No padding — the frontend paces
+ * the visual cadence — so a search that finishes early returns early and its
+ * think overlaps the glide. Sized to comfortably fit a typical full
+ * GPU_MAX_SIMS search (~120-200ms headless, less in-browser), so the bot is NOT
+ * weakened: it does its full search in the common case; the cap only bounds the
+ * rare overrun so a move can't stall the snake. Kept near the frontend's glide
+ * cadence so the next move is ready as the glide ends. */
+const GPU_MOVE_BUDGET_MS = 190;
 /** CPU fallback ceiling. The wasm forward is ~25 ms/leaf, so even this is
  * ~200 ms/move; anything higher is unplayable without a GPU. */
 const CPU_DEFAULT_SIMS = 4;
@@ -60,10 +70,15 @@ class AzeroSnakeGpu implements ClientBot {
   async chooseMove(st: ViewState): Promise<string> {
     if (this.cancelled) throw new Error('cancelled');
     const t0 = performance.now();
+    const deadline = t0 + GPU_MOVE_BUDGET_MS;
     await this.host.snakeSetState(JSON.stringify(st.viewData));
     let priors = new Float32Array(0);
     let values = new Float32Array(0);
     let trips = 0;
+    // Anytime search: run PUCT batches until the search exhausts its sims OR the
+    // wall-clock deadline passes, then take the best move so far. Checking the
+    // deadline between batches (one GPU round-trip each) makes the search
+    // time-bounded — no single move can overrun the budget and stall the snake.
     for (;;) {
       if (this.cancelled) throw new Error('cancelled');
       const batch = await this.host.snakeAdvance(priors, values);
@@ -78,8 +93,14 @@ class AzeroSnakeGpu implements ClientBot {
       }
       priors = Float32Array.from(flat);
       values = v.slice(0, batch.n);
+      if (performance.now() >= deadline) break;
     }
     const { uci, stats } = await this.host.snakeBest();
+    // Return as soon as the search is done — no padding. The FRONTEND now paces
+    // the cadence (it holds each glide a fixed CELL_MS and starts the next only
+    // when the current ends), so the bot returning early just lets its think
+    // overlap the glide and keeps latency minimal; the deadline only caps the
+    // rare overrun so a move can't stall the snake.
     reportMove({ backend: 'gpu', ms: performance.now() - t0, sims: stats.sims, trips });
     return uci;
   }
@@ -130,7 +151,9 @@ export async function createAzeroSnake(
       const sims = Math.min(wantSims || GPU_DEFAULT_SIMS, GPU_MAX_SIMS);
       // GPU path evaluates leaves page-side, so the wasm bot needs no weights.
       await host.snakeNew(sims, LEAVES, seed);
-      console.info(`[snake] WebGPU backend, ${sims} sims`);
+      console.info(
+        `[snake] WebGPU backend, ${sims} sims, ${GPU_MOVE_BUDGET_MS}ms anytime budget`,
+      );
       return new AzeroSnakeGpu(host, gpu);
     } catch (e) {
       console.warn('[snake] WebGPU init failed, falling back to the slow CPU forward:', e);

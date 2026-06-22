@@ -183,6 +183,12 @@ export class EngineHost {
     return this.call({ op: 'snakeBest' }) as Promise<AzBest>;
   }
 
+  /** A fast, always-available move from a single policy forward + 1-ply safety
+   * (the CPU floor for real-time play). Requires `snakeNew` with weights. */
+  snakePolicyMove(view: string): Promise<string> {
+    return this.call({ op: 'snakePolicyMove', view }) as Promise<string>;
+  }
+
   terminate(): void {
     this.worker.terminate();
     this.rejectAll('engine terminated');
