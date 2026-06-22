@@ -80,7 +80,7 @@ The CLI and the browser arcade are two thin frontends over exactly these calls; 
 |----------------|:-----:|:-------:|:--------:|:-----:|:--:|:----------:|:-----:|:---------:|:-----------:|
 | `Cfr` (+ exact exploitability) | — | — | — | — | — | tiny configs | — | — | ✓ → Nash |
 | `Mccfr` / `OsMccfr` | — | — | — | — | — | OS handles the deep ladder | — | — | ✓ |
-| `AlphaBeta` | ✓ (the bot) | ✓ (the bot) | ✓ (the bot) | ✓ (the bot) | — (no eval) | — (imperfect info) | — | — | — |
+| `AlphaBeta` | ✓ (the bot) | ✓ (the bot) | ✓ (the bot) | ✓ (the bot) | — (MCTS/azero instead) | — (imperfect info) | — | — | — |
 | `Mcts` | possible | possible | possible | possible | ✓ (the bot) | — | — | — | — |
 | `azero` (PUCT + self-play net) | ✓ | possible | possible | possible | ✓ | — | — | — | — |
 | `Rollout` | possible | possible | possible | possible | possible | ✓ (the bot) | ✓ (a bot) | possible | — |
@@ -88,13 +88,13 @@ The CLI and the browser arcade are two thin frontends over exactly these calls; 
 
 (The matrix is the two-player-search story. The single-player and real-time games — 2048, snake, slither — also live in the lab; their bots are MCTS/eval truncation or a learned net, trained as described below.)
 
-The dashes are honest: tabular CFR can't fit big games, search can't see hidden information, Go has no hand-written eval. Two durable facts the matrix doesn't show: outcome-sampling MCCFR runs the deep liar's-dice ladder in milliseconds/iteration where external sampling would need astronomically many nodes (~1e41), and CFR+ regret flooring empirically stalls outcome sampling (documented in `solvers/src/os_mccfr.rs`) — which is why liar's dice uses outcome sampling, not the CFR+ variant the perfect-recall games would. Where a learned net is the bot (the `azero` row), the net is trained out-of-tree; see *Learning: the ml tree* below.
+The dashes are honest: tabular CFR can't fit big games, search can't see hidden information, and Go's `GoEval` feeds MCTS/azero rather than alpha-beta. Two durable facts the matrix doesn't show: outcome-sampling MCCFR runs the deep liar's-dice ladder in milliseconds/iteration where external sampling would need astronomically many nodes (~1e41), and CFR+ regret flooring empirically stalls outcome sampling (documented in `solvers/src/os_mccfr.rs`) — which is why liar's dice uses outcome sampling, not the CFR+ variant the perfect-recall games would. Where a learned net is the bot (the `azero` row), the net is trained out-of-tree; see *Learning: the ml tree* below.
 
 ## Learning: the ml tree
 
 Some bots are neural nets rather than hand-written evaluators. Training them needs heavyweight, churn-prone machinery (a tensor library, GPUs, long-running self-play); inference needs none of that. The `ml/` tree keeps those two concerns apart, and keeps both off the main workspace's critical path:
 
 - **Training crates are standalone** (their own `[workspace]`, not members of the root one), so the tensor backend (`tch`/libtorch) never touches the lab's `cargo test` or wasm builds. One AlphaZero trainer covers the perfect-information net games (chess, go, snake) as per-game binaries over a shared self-play/replay/optimizer/run-dir core; a separate PPO stack trains the real-time slither bot. Both run long, write a run directory, and are driven from the CLI.
-- **Inference is torch-free and shared.** A net is exported to a small versioned weight file, and one reference fp32 forward — plain loops, built for correctness and wasm portability — reads it. This same forward is the ground truth the trainer's exported weights are validated against *and* the path the browser runs through (the WebGPU bots and the CPU fallback both check against it), so a deployed net plays exactly what training measured.
+- **Inference is torch-free.** A net is exported to a small versioned weight file read by a reference fp32 forward — plain loops, built for correctness and wasm portability. There are two such formats: `nn-infer`'s `AZNET1` for the AlphaZero net games (chess/go/snake) and `ml/slitherinfer`'s `SLNET1` for the PPO slither bot. Each reference forward is the ground truth its exported weights are validated against *and* the path the browser runs through (the WebGPU bots and the CPU fallback both check against it), so a deployed net plays exactly what training measured.
 
 The search itself is not duplicated: there is one PUCT implementation, the batched park/resume `solvers::azero::Search` (generic over `Game` + a policy/value encoder). The CPU harness drives it synchronously, the GPU trainer drives it with batched net forwards, and the browser drives it with WebGPU — same search, three evaluators.

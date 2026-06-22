@@ -78,7 +78,7 @@ web/app/
     _generic/         fallback: renders text view + action buttons
     chess/            SVG board, drag-to-move, piece animation
     liars-dice/       dice cups, bid ladder, reveal choreography
-    connect4/ othello/ go/ g2048/ snake/ twentyone/
+    connect4/ othello/ go/ 2048/ snake/ twentyone/ pente/ poker/ slither/
 ```
 
 Each frontend is a framework-free TS package implementing one interface:
@@ -96,7 +96,7 @@ interface GameFrontend {
 
 The shell owns the match loop and *awaits* `animate()` between events — pacing for spectating falls out of the same mechanism. Frontends register in a manifest keyed by game id; **a game with no custom frontend automatically gets `_generic`**, so a new Rust game is playable in the browser the moment its registry entry exists, and the polished frontend can come later — same default-capability philosophy as `NoSpec`/`Identity` in game-core.
 
-The shell is the only place with a framework (Svelte or React — small, one screen); frontends stay vanilla TS + DOM/canvas/SVG so each can have its own visual identity and no shared styling constraints beyond a theme token file (dark/light, spacing) for page coherence.
+The shell is plain TypeScript + DOM, no framework; frontends likewise stay vanilla TS + DOM/canvas/SVG so each can have its own visual identity and no shared styling constraints beyond a theme token file (dark/light, spacing) for page coherence.
 
 ### Workers
 

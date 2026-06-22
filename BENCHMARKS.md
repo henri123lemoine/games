@@ -4,7 +4,7 @@ Cross-game benchmark round using the `lab compare` (SPRT) and `lab tourney` harn
 
 - **Date:** 2026-06-10
 - **Machine:** Apple M5 Max, 18 cores, 64 GB RAM, macOS 26.5
-- **Toolchain:** rustc 1.92.0, `--release` builds
+- **Toolchain:** stable rustc, `--release` builds
 - **Harness defaults:** GSPRT on H0 elo=0 vs H1 elo=20, alpha=beta=0.05, paired seat-swapped games with a shared random opening book; N-player games use a hero-vs-field binomial SPRT (H1: win share >= 1/n + delta). Elo intervals below are the harness's 95% margins.
 
 ## Summary

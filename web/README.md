@@ -29,18 +29,19 @@ Published models are committed under `web/app/public/artifacts/` and ship as sta
 
 ```bash
 cp data/azero/chess.bin web/app/public/artifacts/azero-chess.bin   # chess bot=azero (~22 MB)
-# chess bot=azero-gpu (WebGPU; ~6 MB):
-DYLD_LIBRARY_PATH=... azt/target/release/azt export --net data/azt/<run>/latest.ot \
-    --out web/app/public/azero/azero-chess.azweb
-cargo run --release -p azinfer --example gen_fixtures -- \
-    web/app/public/azero/azero-chess.azweb web/app/public/azero/fixtures.json
+# chess bot=azero-gpu (WebGPU; ~6 MB) — export to AZNET1, then check the
+# tch forward against nn-infer's torch-free forward. Run from ml/aztrainer/:
+DYLD_LIBRARY_PATH=... cargo run --release --bin chess -- export \
+    --net <run>/latest.ot --out web/app/public/azero/azero-chess.azweb
+DYLD_LIBRARY_PATH=... cargo run --release --bin chess -- verify-export \
+    --net <run>/latest.ot --out web/app/public/azero/azero-chess.azweb
 ```
 
-Without a model file, every other bot works; selecting a net bot reports the missing artifact. `/azero-test.html` and `/go-azero-test.html` (also served in the built site) validate the WebGPU kernels against the reference forward over the committed fixtures, compare the WebGPU and in-wasm CPU forwards head-to-head (the two backends the bot picks between — see below), and print eval throughput — open them after publishing a new export. The reference end is pinned in CI too: `goinfer`/`azinfer`'s `calibration` tests reproduce the fixtures, so CPU ≡ fixtures ≡ GPU stays locked.
+Without a model file, every other bot works; selecting a net bot reports the missing artifact. `/azero-test.html` and `/go-azero-test.html` (also served in the built site) validate the WebGPU kernels against the reference forward over the committed fixtures, compare the WebGPU and in-wasm CPU forwards head-to-head (the two backends the bot picks between — see below), and print eval throughput — open them after publishing a new export. The reference end is `nn-infer`'s torch-free `AZNET1` forward; `aztrainer`'s `verify-export` is the parity gate that asserts the tch forward matches it, so CPU ≡ fixtures ≡ GPU stays locked.
 
 ### AlphaZero without a GPU
 
-`azero-gpu` evaluates leaves with WebGPU when the browser has it; otherwise the driver hands the same `.azweb` net to the wasm engine, which runs the whole search against `goinfer`/`azinfer`'s reference forward (`AzGoBot::play_cpu` / `AzChessBot::play_cpu`). The CPU forward is correctness-first, not fast, so the no-GPU path is locked to the trivial visit budget (1 simulation ≈ the network's raw policy move) and the match screen says so. Same net either way — the calibration tests above are what guarantee it.
+`azero-gpu` evaluates leaves with WebGPU when the browser has it; otherwise the driver hands the same `.azweb` net to the wasm engine, which runs the whole search against `nn-infer`'s reference `AZNET1` forward (`AzGoBot::play_cpu` / `AzChessBot::play_cpu`). The CPU forward is correctness-first, not fast, so the no-GPU path is locked to the trivial visit budget (1 simulation ≈ the network's raw policy move) and the match screen says so. Same net either way — the export parity gate above is what guarantees it.
 
 ## Deploying / embedding
 

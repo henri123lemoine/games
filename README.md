@@ -41,7 +41,7 @@ cargo run --release -p lab -- play connect4
 cargo run --release -p lab -- play pente size=13 depth=4
 cargo run --release -p lab -- play liars-dice players=5 dice=5 rollouts=1000
 cargo run --release -p lab -- play poker players=6 samples=2000
-cargo run --release -p lab -- play twentyone hearts=6 iters=100000
+cargo run --release -p lab -- play twentyone hearts=6
 cargo run --release -p lab -- play 2048                       # or watch: bot=mcts-eval
 cargo run --release -p lab -- play snake                      # 1v1; the AlphaZero seat is browser-only
 ```
