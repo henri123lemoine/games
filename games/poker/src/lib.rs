@@ -252,6 +252,11 @@ impl PokerState {
         self.stack[seat] = chips;
         self.all_in[seat] = chips == 0;
     }
+
+    #[cfg(test)]
+    pub(crate) fn debug_last_raise(&self) -> u32 {
+        self.last_raise
+    }
 }
 
 impl Game for Poker {
@@ -605,3 +610,6 @@ impl Poker {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod adversarial_tests;
