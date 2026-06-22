@@ -375,6 +375,42 @@ button {
   letter-spacing: 2px;
 }
 
+.mini-poker {
+  background: radial-gradient(closest-side at 50% 42%, #2f6043, #173a26 92%);
+}
+.mini-pcard {
+  position: absolute;
+  left: 28%;
+  top: 24%;
+  width: 36px;
+  height: 50px;
+  background: #f4efe1;
+  color: #232323;
+  border-radius: 5px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 3px 4px;
+  transform: rotate(7deg);
+  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.5);
+}
+.mini-pcard-r {
+  left: 16%;
+  top: 28%;
+  transform: rotate(-9deg);
+  color: #c01f2e;
+}
+.mini-chip {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px dashed rgba(255, 255, 255, 0.7);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+}
+.mini-chip-1 { right: 22%; bottom: 22%; background: #c0392b; }
+.mini-chip-2 { right: 30%; bottom: 30%; background: #2b6cb0; }
+.mini-chip-3 { right: 16%; bottom: 34%; background: #1e1e1e; }
+
 .mini-othello {
   background:
     linear-gradient(rgba(0, 0, 0, 0.18) 1px, transparent 1px),

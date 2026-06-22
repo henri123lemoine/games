@@ -67,14 +67,14 @@ The CLI and the browser arcade are two thin frontends over exactly these calls; 
 
 ## Current algorithm/game matrix
 
-|                | chess | othello | connect4 | pente | go | liars-dice | twentyone | kuhn (test) |
-|----------------|:-----:|:-------:|:--------:|:-----:|:--:|:----------:|:---------:|:-----------:|
-| `Cfr` (+ exact exploitability) | — | — | — | — | — | tiny configs | — | ✓ → Nash |
-| `Mccfr` / `OsMccfr` | — | — | — | — | — | OS handles the deep ladder | — | ✓ |
-| `AlphaBeta` | ✓ (the bot) | ✓ (the bot) | ✓ (the bot) | ✓ (the bot) | — (no eval) | — (imperfect info) | — | — |
-| `Mcts` | possible | possible | possible | possible | ✓ (the bot) | — | — | — |
-| `azero` (PUCT + self-play net) | ✓ (training) | possible | possible | possible | possible | — | — | — |
-| `Rollout` | possible | possible | possible | possible | possible | ✓ (the bot) | possible | — |
-| bespoke | — | — | — | — | — | belief policy | decomposed CFR+ (the bot) | — |
+|                | chess | othello | connect4 | pente | go | liars-dice | poker | twentyone | kuhn (test) |
+|----------------|:-----:|:-------:|:--------:|:-----:|:--:|:----------:|:-----:|:---------:|:-----------:|
+| `Cfr` (+ exact exploitability) | — | — | — | — | — | tiny configs | — | — | ✓ → Nash |
+| `Mccfr` / `OsMccfr` | — | — | — | — | — | OS handles the deep ladder | — | — | ✓ |
+| `AlphaBeta` | ✓ (the bot) | ✓ (the bot) | ✓ (the bot) | ✓ (the bot) | — (no eval) | — (imperfect info) | — | — | — |
+| `Mcts` | possible | possible | possible | possible | ✓ (the bot) | — | — | — | — |
+| `azero` (PUCT + self-play net) | ✓ (training) | possible | possible | possible | possible | — | — | — | — |
+| `Rollout` | possible | possible | possible | possible | possible | ✓ (the bot) | ✓ (a bot) | possible | — |
+| bespoke | — | — | — | — | — | belief policy | equity bot (the bot) | decomposed CFR+ (the bot) | — |
 
 The dashes are honest: tabular CFR can't fit big games, search can't see hidden information, Go has no hand-written eval. Notable measured facts: outcome-sampling MCCFR runs a 200-deep ladder in milliseconds/iteration where external sampling would need ~1e41 nodes; CFR+ regret flooring provably stalls outcome sampling (documented in `solvers/src/os_mccfr.rs`); the azero loop's checkpoint beats random at chess within minutes of CPU self-play, while real chess *strength* remains a GPU-scale endeavor — which is what `aztrainer/` is for: a deliberately *standalone* crate (not a workspace member, so libtorch never touches the main build) that trains an AlphaZero resnet on Apple-GPU via tch-rs, batching leaf evaluations across hundreds of concurrent games. One crate trains chess, go, and snake (per-game binaries over a shared net/optimizer/replay/run-dir core), having absorbed the former per-game `azt`/`azgo`/`azsnake` trainers. The search itself is not bespoke: there is exactly one PUCT implementation, the batched park/resume `solvers::azero::Search` (generic over `Game` + `PolicyValueEncoder`), which the MLP trainer drives synchronously, `aztrainer` drives with GPU batches through its config-driven net, and the browser drives with WebGPU through the `nn-infer` reference forward (the unified `AZNET1` weight format). `aztrainer` keeps the same run-dir contract (metrics.jsonl + dashboard + STOP) as the CPU harness.

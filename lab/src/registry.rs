@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use game_core::{Agent, Game, NoSpec, hash};
 use liars_dice::{BidConditioned, LiarsDice, ProbabilisticAgent};
+use poker::{HoleSampler, Poker, PokerBot};
 use solvers::azero::{Mlp, Puct, PuctAgent};
 use solvers::mcts::Mcts;
 use solvers::{AlphaBeta, Rollout};
@@ -381,10 +382,29 @@ const CONNECT4_OPTS: &[OptSpec] = &[
 
 const PENTE_OPTS: &[OptSpec] = &[
     opt("size", "13", "(13 or 15; tournament-standard)"),
-    opt("seat", "0|1|watch", "(0=Black, plays the forced center first)"),
+    opt(
+        "seat",
+        "0|1|watch",
+        "(0=Black, plays the forced center first)",
+    ),
     opt("bot", "alphabeta|mcts", ""),
     bot_opt("depth", "4", "", &["alphabeta"]),
     bot_opt("sims", "4000", "", &["mcts"]),
+    opt("seed", "...", ""),
+];
+
+const POKER_OPTS: &[OptSpec] = &[
+    opt("players", "6", "(2..=9 seats)"),
+    opt("stack", "200", "(starting stack in big blinds × SB; chips)"),
+    opt("bot", "equity|rollout|call|random", ""),
+    bot_opt(
+        "samples",
+        "2000",
+        "(equity Monte-Carlo samples)",
+        &["equity"],
+    ),
+    bot_opt("rollouts", "300", "", &["rollout"]),
+    opt("seat", "0|..|watch", ""),
     opt("seed", "...", ""),
 ];
 
@@ -463,6 +483,22 @@ pub fn entries() -> Vec<Entry> {
                 true,
                 liars_dice_game,
                 liars_dice_bot,
+            )),
+        },
+        Entry {
+            id: "poker",
+            name: "Texas Hold'em",
+            solo: false,
+            watch_bot: "",
+            summary: "No-Limit Texas Hold'em (6-max) vs equity-rollout bots",
+            opts: POKER_OPTS,
+            make: Box::new(|o| make_versus(o, poker_game(o)?, "equity", poker_bot)),
+            eval: Some(eval_entry(
+                "equity[:samples=2000] | rollout[:rollouts=300] | call | random",
+                0,
+                true,
+                poker_game,
+                poker_bot,
             )),
         },
         Entry {
@@ -591,6 +627,18 @@ fn liars_dice_game(o: &Opts) -> Result<LiarsDice, String> {
         o.get("dice", 5)?,
         o.get("faces", 6)?,
     ))
+}
+
+fn poker_game(o: &Opts) -> Result<Poker, String> {
+    let seats: u8 = o.get("players", 6)?;
+    if !(2..=poker::MAX_SEATS as u8).contains(&seats) {
+        return Err("poker players must be in 2..=9".into());
+    }
+    let stack: u32 = o.get("stack", 200)?;
+    if stack < 2 {
+        return Err("poker stack must be at least one big blind (2 chips)".into());
+    }
+    Ok(Poker::new(seats).with_blinds(1, 2).with_stack(stack))
 }
 
 fn go_game(o: &Opts) -> Result<go::Go, String> {
@@ -936,7 +984,9 @@ fn pente_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<pente::Pente>, Stri
         }
         "random" => Box::new(|_| Box::new(game_core::RandomAgent) as BoxedAgent<pente::Pente>),
         other => {
-            return Err(format!("unknown pente bot '{other}' (alphabeta|mcts|random)"));
+            return Err(format!(
+                "unknown pente bot '{other}' (alphabeta|mcts|random)"
+            ));
         }
     })
 }
@@ -960,6 +1010,34 @@ fn liars_dice_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<LiarsDice>, St
         other => {
             return Err(format!(
                 "unknown liars-dice bot '{other}' (rollout|belief|random)"
+            ));
+        }
+    })
+}
+
+fn poker_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<Poker>, String> {
+    Ok(match spec.name.as_str() {
+        "equity" => {
+            let samples: u32 = spec.opts.get("samples", 2000)?;
+            Box::new(move |_| {
+                Box::new(PokerBot::new(poker::PokerStyle {
+                    samples,
+                    ..Default::default()
+                })) as BoxedAgent<Poker>
+            })
+        }
+        "rollout" => {
+            let rollouts: u32 = spec.opts.get("rollouts", 300)?;
+            Box::new(move |_| {
+                Box::new(Rollout::new(rollouts, PokerBot::default_bot(), HoleSampler))
+                    as BoxedAgent<Poker>
+            })
+        }
+        "call" => Box::new(|_| Box::new(poker::AlwaysCall) as BoxedAgent<Poker>),
+        "random" => Box::new(|_| Box::new(game_core::RandomAgent) as BoxedAgent<Poker>),
+        other => {
+            return Err(format!(
+                "unknown poker bot '{other}' (equity|rollout|call|random)"
             ));
         }
     })

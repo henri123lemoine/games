@@ -214,6 +214,8 @@ function miniFor(id: string): string {
         <span class="mini-cup"></span></div>`;
     case "twentyone":
       return `<div class="mini mini-t21"><span class="mini-card">7♠</span><span class="mini-card mini-card-2">9♦</span><span class="mini-heart">♥♥♥</span></div>`;
+    case "poker":
+      return `<div class="mini mini-poker"><span class="mini-pcard mini-pcard-r">A♥</span><span class="mini-pcard">K♠</span><span class="mini-chip mini-chip-1"></span><span class="mini-chip mini-chip-2"></span><span class="mini-chip mini-chip-3"></span></div>`;
     case "othello":
       return `<div class="mini mini-othello"><span class="mini-disc mini-disc-b" style="left:28%;top:28%"></span><span class="mini-disc mini-disc-w" style="left:52%;top:28%"></span><span class="mini-disc mini-disc-w" style="left:28%;top:52%"></span><span class="mini-disc mini-disc-b" style="left:52%;top:52%"></span></div>`;
     case "connect4":

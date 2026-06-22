@@ -1,0 +1,15 @@
+[package]
+name = "poker"
+version = "0.1.0"
+edition = "2024"
+description = "No-Limit Texas Hold'em (6-max) as a game-core Game, with an equity-rollout bot"
+
+[lib]
+name = "poker"
+path = "src/lib.rs"
+
+[dependencies]
+game-core = { workspace = true }
+
+[dev-dependencies]
+solvers = { path = "../../solvers" }
