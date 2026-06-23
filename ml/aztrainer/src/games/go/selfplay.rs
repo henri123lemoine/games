@@ -243,8 +243,14 @@ impl Worker {
         // This move's search budget is the Playout Cap Randomization roll;
         // unrecorded (fast) moves also skip root exploration noise, which only
         // exists to diversify the *recorded* policy targets.
+        // Root-noise concentration scales with board area (AlphaGo Zero):
+        // alpha · legal-moves ≈ 10.8, so 19×19 draws ~0.03 and 9×9 ~0.13. A flat
+        // alpha over-concentrates the largest board, where opening variety — and
+        // thus moyo / whole-board learning — matters most.
+        let dirichlet_alpha = (10.83 / (go.size() * go.size()) as f64).clamp(0.03, 0.30);
         let puct = PuctConfig {
             sims: self.cur_sims,
+            dirichlet_alpha,
             root_noise: if self.record_move {
                 cfg.puct.root_noise
             } else {
@@ -348,7 +354,12 @@ impl Worker {
             }
         }
 
-        let choice = if self.plies < cfg.temp_plies {
+        // Sample the opening in proportion to board area, not a flat ply count:
+        // a ~360-move 19×19 game needs ~30 exploratory plies to diversify
+        // openings where a 9×9 game needs ~6. The configured temp_plies is a
+        // floor.
+        let temp_plies = cfg.temp_plies.max((go.size() * go.size() / 12) as u16);
+        let choice = if self.plies < temp_plies {
             sample_visits(&visits, &mut self.rng)
         } else {
             argmax(&visits)
