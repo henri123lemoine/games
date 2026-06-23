@@ -12,7 +12,7 @@ import { GoGpu, policyLen, softmaxOver } from '../frontends/go/azgpu';
 import { gpuLoader, weightsLoader } from './azero-net';
 import type { ClientBot } from './index';
 
-const DEFAULT_SIMS = 400;
+const DEFAULT_SIMS = 1500;
 const LEAVES = 8;
 const getWeights = weightsLoader(`${import.meta.env.BASE_URL}azero/azero-go.azweb`);
 const getGpu = gpuLoader(GoGpu.init, getWeights);
