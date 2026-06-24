@@ -15,6 +15,9 @@ Thumbs.db
 data/
 .claude/
 .worktrees/
+# training-run outputs (net checkpoints + logs); the final published net is
+# committed under web/app/public/artifacts/, not here
+/runs/
 
 # wasm build outputs (public/artifacts/ and public/azero/ are NOT ignored:
 # published nets and their validation fixtures are committed so CI and

@@ -16,3 +16,7 @@ game-core = { workspace = true }
 # `parallel`) to match `lab` and avoid forcing rayon on dependents; the small
 # verification configs solve fast single-threaded.
 solvers = { path = "../../solvers", default-features = false }
+# Parallel self-play data generation for net training (`train.rs`); rayon is
+# already in the workspace (used by `solvers`). Fans independent per-round solves
+# across a bounded thread pool.
+rayon = { workspace = true }

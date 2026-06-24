@@ -20,6 +20,7 @@ mod agents;
 pub mod features;
 mod solve;
 mod subgame;
+pub mod train;
 mod ui;
 pub use agents::{BidConditioned, ProbConfig, ProbabilisticAgent};
 pub use features::{

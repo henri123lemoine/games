@@ -148,6 +148,7 @@ name = "liars-dice"
 version = "0.1.0"
 dependencies = [
  "game-core",
+ "rayon",
  "solvers",
 ]
 
