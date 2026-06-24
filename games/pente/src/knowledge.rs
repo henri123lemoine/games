@@ -5,7 +5,10 @@
 
 use game_core::{Eval, SearchSpec};
 
-use crate::{DIRECTIONS, EMPTY, LINE_TO_WIN, PAIRS_TO_WIN, Pente, PenteAction, PenteState};
+use crate::{
+    DIRECTIONS, EMPTY, LINE_TO_WIN, PAIRS_TO_WIN, Pente, PenteAction, PenteState, completes_line,
+    for_each_captured_pair,
+};
 
 /// Per-pair captured: a pair is a third of the way to half the win-by-line
 /// horizon in practice, but its real weight is that five pairs simply win, so
@@ -94,20 +97,9 @@ fn side_score(game: &Pente, state: &PenteState, color: u8) -> i32 {
 /// direction (the `[mover][opp][opp][mover]` custodial pattern). Pure lookahead
 /// on `cells` — does not mutate.
 fn would_capture(cells: &[u8], size: usize, p: usize, mover: u8, opp: u8) -> bool {
-    let (row, col) = (p / size, p % size);
-    DIRECTIONS.iter().any(|&(dr, dc)| {
-        [1, -1].iter().any(|&sign| {
-            let (dr, dc) = (dr * sign, dc * sign);
-            match (
-                at(cells, size, row, col, dr, dc, 1),
-                at(cells, size, row, col, dr, dc, 2),
-                at(cells, size, row, col, dr, dc, 3),
-            ) {
-                (Some(a), Some(b), Some(c)) => a == opp && b == opp && c == mover,
-                _ => false,
-            }
-        })
-    })
+    let mut hit = false;
+    for_each_captured_pair(cells, size, p, mover, opp, |_, _| hit = true);
+    hit
 }
 
 /// The cell `steps` along `(dr, dc)` from `(row, col)`, or `None` off-board.
@@ -243,34 +235,6 @@ impl SearchSpec<Pente> for PenteSpec {
             || completes_line(&s.cells, size, row, col, color)
             || completes_line(&s.cells, size, row, col, color ^ 1)
     }
-}
-
-/// Whether a `color` stone at `(row, col)` makes a line of at least five.
-fn completes_line(cells: &[u8], size: usize, row: usize, col: usize, color: u8) -> bool {
-    DIRECTIONS.iter().any(|&(dr, dc)| {
-        let run = 1
-            + run_in_dir(cells, size, row, col, dr, dc, color)
-            + run_in_dir(cells, size, row, col, -dr, -dc, color);
-        run >= LINE_TO_WIN
-    })
-}
-
-fn run_in_dir(
-    cells: &[u8],
-    size: usize,
-    row: usize,
-    col: usize,
-    dr: i32,
-    dc: i32,
-    color: u8,
-) -> usize {
-    let mut n = 0;
-    let mut steps = 1;
-    while at(cells, size, row, col, dr, dc, steps) == Some(color) {
-        n += 1;
-        steps += 1;
-    }
-    n
 }
 
 /// Occupied intersections within the 8-neighborhood (Chebyshev distance ≤ 2) of

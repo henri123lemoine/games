@@ -23,10 +23,14 @@
 //! terminal detection is O(1) in the board after each move and recorded on the
 //! state.
 
+pub mod encode;
 mod knowledge;
+pub mod solver;
 mod ui;
 
+pub use encode::PenteEncoder;
 pub use knowledge::{PenteEval, PenteSpec};
+pub use solver::{VcfConfig, winning_move};
 
 use game_core::hash::splitmix64;
 use game_core::{Game, Turn};
@@ -245,18 +249,6 @@ impl Pente {
         pairs
     }
 
-    /// Whether a stone of `color` at `(row, col)` completes a line of at least
-    /// [`LINE_TO_WIN`]. Scans each orientation outward from the placed stone in
-    /// both directions and sums the contiguous run.
-    fn makes_line(&self, cells: &[u8], row: usize, col: usize, color: u8) -> bool {
-        DIRECTIONS.iter().any(|&(dr, dc)| {
-            let run = 1
-                + run_length(cells, self.size, row, col, dr, dc, color)
-                + run_length(cells, self.size, row, col, -dr, -dc, color);
-            run >= LINE_TO_WIN
-        })
-    }
-
     /// Whether some stone lies within [`RELEVANCE_RADIUS`] (Chebyshev) of `p`.
     fn near_stone(&self, s: &PenteState, p: usize) -> bool {
         let size = self.size as i32;
@@ -284,24 +276,8 @@ impl Pente {
     /// probing the eight `[p=YOU][OPP][OPP][YOU]` arms directly, without
     /// committing the move or cloning the board (a hot path for move ordering).
     pub(crate) fn capture_pairs_at(&self, s: &PenteState, p: usize, color: u8) -> u8 {
-        let opp = color ^ 1;
-        let (row, col) = (p / self.size, p % self.size);
         let mut pairs = 0;
-        for (dr, dc) in DIRECTIONS {
-            for sign in [1, -1] {
-                let (dr, dc) = (dr * sign, dc * sign);
-                if let (Some(a), Some(b), Some(c)) = (
-                    step(self.size, row, col, dr, dc, 1),
-                    step(self.size, row, col, dr, dc, 2),
-                    step(self.size, row, col, dr, dc, 3),
-                ) && s.cells[a] == opp
-                    && s.cells[b] == opp
-                    && s.cells[c] == color
-                {
-                    pairs += 1;
-                }
-            }
-        }
+        for_each_captured_pair(&s.cells, self.size, p, color, color ^ 1, |_, _| pairs += 1);
         pairs
     }
 }
@@ -386,7 +362,7 @@ impl Game for Pente {
         state.moves += 1;
 
         if state.pairs[state.to_move] >= PAIRS_TO_WIN
-            || self.makes_line(&state.cells, row, col, color)
+            || completes_line(&state.cells, self.size, row, col, color)
         {
             state.winner = Some(state.to_move);
             state.over = true;
@@ -443,6 +419,50 @@ fn run_length(
         }
     }
     n
+}
+
+/// Whether a `color` stone at `(row, col)` completes a line of at least
+/// [`LINE_TO_WIN`]. The single win-by-line scan, shared by `apply`, the
+/// eval/ordering knowledge, and the VCF solver.
+pub(crate) fn completes_line(cells: &[u8], size: usize, row: usize, col: usize, color: u8) -> bool {
+    DIRECTIONS.iter().any(|&(dr, dc)| {
+        let run = 1
+            + run_length(cells, size, row, col, dr, dc, color)
+            + run_length(cells, size, row, col, -dr, -dc, color);
+        run >= LINE_TO_WIN
+    })
+}
+
+/// Invokes `f(a, b)` for each direction in which `placer` placing at empty `p`
+/// flanks a `victim` pair — the `[p=placer][a=victim][b=victim][placer]`
+/// custodial pattern. The single source of the capture scan, shared by capture
+/// counting, the eval's capture tactics, and the encoder's capturable-pair
+/// planes. (`resolve_captures` keeps its own copy: it removes pairs as it scans,
+/// which would alias this immutable borrow.)
+pub(crate) fn for_each_captured_pair(
+    cells: &[u8],
+    size: usize,
+    p: usize,
+    placer: u8,
+    victim: u8,
+    mut f: impl FnMut(usize, usize),
+) {
+    let (row, col) = (p / size, p % size);
+    for (dr, dc) in DIRECTIONS {
+        for sign in [1i32, -1] {
+            let (dr, dc) = (dr * sign, dc * sign);
+            if let (Some(a), Some(b), Some(c)) = (
+                step(size, row, col, dr, dc, 1),
+                step(size, row, col, dr, dc, 2),
+                step(size, row, col, dr, dc, 3),
+            ) && cells[a] == victim
+                && cells[b] == victim
+                && cells[c] == placer
+            {
+                f(a, b);
+            }
+        }
+    }
 }
 
 pub(crate) fn col_letter(col: usize) -> char {
