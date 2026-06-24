@@ -133,10 +133,8 @@ const CSS = `
 .pente-stone-icon-w { background: radial-gradient(circle at 34% 28%, #ffffff, #e7eaf4 58%, #b9bfd2); }
 .pente-pinfo { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .pente-pname { font-weight: 600; line-height: 1.2; }
-.pente-pcaps { margin-left: auto; display: flex; align-items: baseline; gap: 5px;
+.pente-pcaps { margin-left: auto; display: flex; align-items: center; gap: 5px;
   color: var(--text-dim); line-height: 1; white-space: nowrap; }
-.pente-pcaps b { font-size: 17px; color: var(--text); font-variant-numeric: tabular-nums; }
-.pente-pcaps-of { font-size: 12px; }
 .pente-pips { display: inline-flex; gap: 3px; align-self: center; }
 .pente-pip { width: 7px; height: 7px; border-radius: 50%; background: var(--border);
   transition: background .25s, box-shadow .25s; }
@@ -186,12 +184,11 @@ const CSS = `
   .pente-hud { grid-template-columns: 1fr 1fr; }
   .pente-turn-chip { order: 3; grid-column: 1 / -1; justify-self: center; }
   .pente-turn-chip.pente-chip-hidden { display: none; }
-  /* Narrow plaque: the dropdown takes the width, so dock the captured count to
-     the name row and drop the pips — "N/5" alone reads clearly. */
+  /* Narrow plaque: the dropdown takes the width, so stack the pips under the
+     name row. */
   .pente-player { align-items: flex-start; }
   .pente-stone-icon { margin-top: 1px; }
   .pente-pcaps { align-self: flex-start; }
-  .pente-pips { display: none; }
 }
 `;
 
@@ -214,7 +211,6 @@ class PenteFrontend implements GameFrontend {
   private toastEl!: HTMLElement;
   private turnChip!: HTMLElement;
   private plaques: HTMLElement[] = [];
-  private capEls: HTMLElement[] = [];
   private pipRows: HTMLElement[] = [];
 
   private size = 0;
@@ -234,13 +230,13 @@ class PenteFrontend implements GameFrontend {
           <div class="pente-player" data-seat="0">
             <span class="pente-stone-icon pente-stone-icon-b"></span>
             <span class="pente-pinfo"><span class="pente-pname">Black</span><span class="seat-slot" data-seat="0"></span></span>
-            <span class="pente-pcaps"><b>0</b><span class="pente-pcaps-of">/${PAIRS_TO_WIN}</span><span class="pente-pips" data-seat="0"></span></span>
+            <span class="pente-pcaps"><span class="pente-pips" data-seat="0"></span></span>
           </div>
           <div class="pente-turn-chip"><span class="pente-turn-dot"></span><span class="pente-turn-text"></span></div>
           <div class="pente-player" data-seat="1">
             <span class="pente-stone-icon pente-stone-icon-w"></span>
             <span class="pente-pinfo"><span class="pente-pname">White</span><span class="seat-slot" data-seat="1"></span></span>
-            <span class="pente-pcaps"><b>0</b><span class="pente-pcaps-of">/${PAIRS_TO_WIN}</span><span class="pente-pips" data-seat="1"></span></span>
+            <span class="pente-pcaps"><span class="pente-pips" data-seat="1"></span></span>
           </div>
         </div>
         <div class="pente-board-wrap">
@@ -252,7 +248,6 @@ class PenteFrontend implements GameFrontend {
     this.toastEl = host.querySelector('.pente-toast')!;
     this.turnChip = host.querySelector('.pente-turn-chip')!;
     this.plaques = [...host.querySelectorAll<HTMLElement>('.pente-player')];
-    this.capEls = this.plaques.map((p) => p.querySelector<HTMLElement>('.pente-pcaps b')!);
     this.pipRows = [...host.querySelectorAll<HTMLElement>('.pente-pips')];
     for (const row of this.pipRows) {
       for (let i = 0; i < PAIRS_TO_WIN; i++) {
@@ -438,7 +433,6 @@ class PenteFrontend implements GameFrontend {
     this.winLineEl.setAttribute('opacity', '0');
     this.drawStones(v);
     for (let seat = 0; seat < 2; seat++) {
-      this.capEls[seat].textContent = String(v.pairs[seat]);
       const pips = this.pipRows[seat].children;
       for (let i = 0; i < pips.length; i++) {
         pips[i].classList.toggle('pente-pip-on', i < v.pairs[seat]);
