@@ -9,7 +9,7 @@ GPU / visual behavior can be validated without a human reloading localhost.
 ```bash
 npm run validate:browser            # builds dist/, validates snake (default)
 npm run validate:browser -- snake   # snake card, two AlphaZero bots (watch mode)
-npm run validate:browser -- slither # slither standalone
+npm run validate:browser -- coil    # coil standalone
 
 # Without rebuilding (faster; uses the existing dist/):
 node scripts/browser-validate.mjs snake

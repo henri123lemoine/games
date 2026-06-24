@@ -241,10 +241,10 @@ function miniFor(id: string): string {
       return `<div class="mini mini-2048"><span>2</span><span class="v4">4</span><span class="v8">8</span><span class="v16">16</span></div>`;
     case "snake":
       return `<div class="mini mini-snake"><span class="mini-seg mini-seg-a" style="left:18%;top:50%"></span><span class="mini-seg mini-seg-a" style="left:34%;top:50%"></span><span class="mini-seg mini-seg-a mini-head-a" style="left:50%;top:50%"></span><span class="mini-seg mini-seg-b mini-head-b" style="left:74%;top:28%"></span><span class="mini-seg mini-seg-b" style="left:74%;top:44%"></span><span class="mini-food" style="left:62%;top:70%"></span></div>`;
-    case "slither":
+    case "coil":
       return `<div class="mini mini-slither"><span class="mini-worm mini-worm-b" style="left:20%;top:34%"></span><span class="mini-worm mini-worm-b" style="left:34%;top:30%"></span><span class="mini-worm mini-worm-b mini-worm-head-b" style="left:48%;top:30%"></span><span class="mini-worm mini-worm-a" style="left:58%;top:66%"></span><span class="mini-worm mini-worm-a" style="left:70%;top:60%"></span><span class="mini-worm mini-worm-a mini-worm-head-a" style="left:80%;top:50%"></span><span class="mini-pellet" style="left:40%;top:62%"></span><span class="mini-pellet" style="left:66%;top:32%"></span></div>`;
-    case "doom":
-      return `<div class="mini mini-doom"><span class="mini-doom-word">DOOM</span></div>`;
+    case "dood":
+      return `<div class="mini mini-doom"><span class="mini-doom-word">DOOD</span></div>`;
     default:
       return `<div class="mini"></div>`;
   }
@@ -296,11 +296,11 @@ export class App {
       this.renderTournament();
       return;
     }
-    if (segs[0] === "doom" || segs[0] === "doom-ai") {
+    if (segs[0] === "dood") {
       this.renderDoom();
       return;
     }
-    if (segs[0] === "slither") {
+    if (segs[0] === "coil") {
       void this.renderSlither();
       return;
     }
@@ -347,20 +347,20 @@ export class App {
         </div>`,
       )
       .join("");
-    // DOOM and Slither are not engine games (real-time, not Game-trait matches);
+    // DOOD and Coil are not engine games (real-time, not Game-trait matches);
     // their cards open standalone screens instead of starting a match.
     const slitherCard = `
-        <div class="card card-slither" data-special="slither" role="button" tabindex="0">
-          ${miniFor("slither")}
+        <div class="card card-slither" data-special="coil" role="button" tabindex="0">
+          ${miniFor("coil")}
           <div class="card-text">
-            <span class="card-name">Slither</span>
+            <span class="card-name">Coil</span>
           </div>
         </div>`;
     const doomCard = `
-        <div class="card card-doom" data-special="doom" role="button" tabindex="0">
-          ${miniFor("doom")}
+        <div class="card card-doom" data-special="dood" role="button" tabindex="0">
+          ${miniFor("dood")}
           <div class="card-text">
-            <span class="card-name">DOOM</span>
+            <span class="card-name">DOOD</span>
           </div>
         </div>`;
     this.root.innerHTML = `
@@ -394,9 +394,9 @@ export class App {
         this.navTo(`/g/${game.id}?mode=watch`);
       };
     }
-    const doomEl = this.root.querySelector<HTMLElement>('.card[data-special="doom"]');
+    const doomEl = this.root.querySelector<HTMLElement>('.card[data-special="dood"]');
     if (doomEl) {
-      const openDoom = () => this.navTo("/doom");
+      const openDoom = () => this.navTo("/dood");
       doomEl.onclick = openDoom;
       doomEl.onkeydown = (e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -406,10 +406,10 @@ export class App {
       };
     }
     const slitherEl = this.root.querySelector<HTMLElement>(
-      '.card[data-special="slither"]',
+      '.card[data-special="coil"]',
     );
     if (slitherEl) {
-      const openSlither = () => this.navTo("/slither");
+      const openSlither = () => this.navTo("/coil");
       slitherEl.onclick = openSlither;
       slitherEl.onkeydown = (e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -422,7 +422,7 @@ export class App {
       this.navTo("/lab");
   }
 
-  /** DOOM: the doomgeneric RL-deathmatch build. The human plays one seat; the
+  /** DOOD: the doomgeneric RL-deathmatch build. The human plays one seat; the
    * other is driven by a PPO net trained by self-play, run tch-free in the
    * browser from the same LOS-gated state it trained on. Standalone page in an
    * iframe. */
@@ -433,12 +433,12 @@ export class App {
       <div class="match doom-screen">
         <header class="match-bar">
           <button type="button" class="link back">&larr; games</button>
-          <span class="match-title">DOOM</span>
+          <span class="match-title">DOOD</span>
           <span class="spacer"></span>
           <span class="muted doom-note">self-play bot · click the frame, then fight</span>
         </header>
         <div class="doom-frame-wrap">
-          <iframe class="doom-frame" src="${src}" title="DOOM"
+          <iframe class="doom-frame" src="${src}" title="DOOD"
             allow="autoplay; fullscreen"></iframe>
         </div>
       </div>`;
@@ -446,7 +446,7 @@ export class App {
       this.navTo("/");
   }
 
-  /** Slither: the lab's own real-time game, played against the PPO-trained
+  /** Coil: the lab's own real-time game, played against the PPO-trained
    * encircle bot. Not a Game-trait match, so it runs standalone on its own
    * screen (its wasm steps the world and drives the bots each frame). */
   private async renderSlither(): Promise<void> {
@@ -455,7 +455,7 @@ export class App {
       <div class="match slither-screen">
         <header class="match-bar">
           <button type="button" class="link back">&larr; games</button>
-          <span class="match-title">Slither</span>
+          <span class="match-title">Coil</span>
           <span class="spacer"></span>
           <span class="muted">vs. the trained encircle bot · runs in your browser</span>
         </header>

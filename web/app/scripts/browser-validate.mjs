@@ -8,7 +8,7 @@
 //
 //   npm run validate:browser            # default game: snake
 //   npm run validate:browser -- snake   # snake card vs the AlphaZero bot
-//   npm run validate:browser -- slither # slither standalone
+//   npm run validate:browser -- coil    # coil standalone
 //   node scripts/browser-validate.mjs snake --headed   # show the window
 //
 // WHY full Chromium + --headless=new and not headless:true:
@@ -92,8 +92,8 @@ const GAMES = {
     canvasSelector: '.snk-canvas',
     ready: '.snk-canvas',
   },
-  slither: {
-    route: '/#/slither',
+  coil: {
+    route: '/#/coil',
     overlaySelector: null,
     canvasSelector: 'canvas',
     ready: 'canvas',

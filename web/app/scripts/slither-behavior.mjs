@@ -124,9 +124,9 @@ async function main() {
   await mkdir(OUT_DIR, { recursive: true });
 
   const { server, port } = await startServer(DIST);
-  const url = `http://localhost:${port}/#/slither`;
-  console.log(`[slither-behavior] serving dist/ at http://localhost:${port}`);
-  console.log(`[slither-behavior] url=${url} secs=${secs} pattern=${pattern} headed=${headed}`);
+  const url = `http://localhost:${port}/#/coil`;
+  console.log(`[coil-behavior] serving dist/ at http://localhost:${port}`);
+  console.log(`[coil-behavior] url=${url} secs=${secs} pattern=${pattern} headed=${headed}`);
 
   const browser = await chromium.launch({
     headless: false,

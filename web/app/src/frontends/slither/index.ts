@@ -271,7 +271,7 @@ export class SlitherScreen {
       this.start(weights);
       bootEl.remove();
     } catch (e) {
-      bootEl.textContent = `Could not load slither: ${e instanceof Error ? e.message : e}`;
+      bootEl.textContent = `Could not load Coil: ${e instanceof Error ? e.message : e}`;
     }
   }
 
