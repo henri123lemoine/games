@@ -18,7 +18,7 @@
 
 use crate::geometry::Vec2;
 use crate::obs::{self, CHANNELS, GRID, Obs, SCALARS, SEMANTIC_CHANNELS, view_radius};
-use crate::world::{World, WorldConfig};
+use crate::world::{World, WorldConfig, out_of_bounds};
 
 /// Discrete relative-turn buckets, symmetric about straight-ahead. 9 buckets ≈
 /// ±max-turn in 22.5°-ish steps after scaling, which composes cleanly with the
@@ -279,10 +279,7 @@ impl Env {
                 foe.head().x + dir.cos() * probe,
                 foe.head().y + dir.sin() * probe,
             );
-            let leaves = tip.x <= 0.0
-                || tip.x >= crate::world::WORLD
-                || tip.y <= 0.0
-                || tip.y >= crate::world::WORLD;
+            let leaves = out_of_bounds(tip, 0.0);
             let blocked = leaves || ray_crosses_body(foe.head(), tip, &me.segments, me.radius());
             if !blocked {
                 open += 1;

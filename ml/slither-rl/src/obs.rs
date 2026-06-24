@@ -17,7 +17,7 @@
 //! scalar vector (own length, speed fraction, boost-available) rounds it out.
 
 use crate::geometry::Vec2;
-use crate::world::{START_LENGTH, WORLD, World};
+use crate::world::{START_LENGTH, WORLD_RADIUS, World, world_center};
 
 pub const GRID: usize = 32;
 pub const SEMANTIC_CHANNELS: usize = 5;
@@ -135,18 +135,21 @@ pub fn observe(world: &World, idx: usize, prev_semantic: &mut [f32]) -> Obs {
         }
     }
 
-    // Wall mask: mark cells whose world position is outside the arena. Only a
-    // worm within `bound` of a wall can see one, so skip the sweep otherwise.
-    let near_wall =
-        head.x < bound || head.x > WORLD - bound || head.y < bound || head.y > WORLD - bound;
+    // Wall mask: mark cells whose world position is outside the circular arena.
+    // Only a worm within `bound` of the rim can see one, so skip otherwise.
+    let center = world_center();
+    let near_wall = head.dist(center) > WORLD_RADIUS - bound;
     if near_wall {
+        let wall2 = WORLD_RADIUS * WORLD_RADIUS;
         for row in 0..GRID {
             for col in 0..GRID {
                 let ex = (col as f32 + 0.5) * cell - radius;
                 let ey = (row as f32 + 0.5) * cell - radius;
                 let wx = head.x + ex * c - ey * s;
                 let wy = head.y + ex * s + ey * c;
-                if wx <= 0.0 || wx >= WORLD || wy <= 0.0 || wy >= WORLD {
+                let dx = wx - center.x;
+                let dy = wy - center.y;
+                if dx * dx + dy * dy >= wall2 {
                     obs.grid[Obs::semantic_index(CH_WALL, row, col)] = 1.0;
                 }
             }

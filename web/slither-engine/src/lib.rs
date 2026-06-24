@@ -13,7 +13,10 @@ use slither_rl::Rng;
 use slither_rl::env::Action;
 use slither_rl::geometry::Vec2;
 use slither_rl::obs::view_radius;
-use slither_rl::world::{START_LENGTH, WORLD, World, WorldConfig, Worm, WormControl};
+use slither_rl::world::{
+    START_LENGTH, WORLD, WORLD_RADIUS, World, WorldConfig, Worm, WormControl, random_in_arena,
+    world_center,
+};
 use slitherinfer::Model;
 use slitherinfer::obs::{ObsMemory, act};
 use wasm_bindgen::prelude::*;
@@ -38,24 +41,20 @@ const SPAWN_CLEARANCE: f32 = 700.0;
 /// the no-instant-ram spawn clearance.
 fn build_world(seed: u64, bot_count: usize, pellet_target: usize) -> World {
     let mut rng = Rng::new(seed);
-    let center = Vec2::new(WORLD * 0.5, WORLD * 0.5);
+    let center = world_center();
     let mut worms = Vec::with_capacity(bot_count + 1);
     worms.push(Worm::spawn(
         center,
         rng.range(0.0, std::f32::consts::TAU),
         START_LENGTH,
     ));
-    let margin = 320.0;
     for _ in 0..bot_count {
         // Rejection-sample a spawn that clears the human's center.
-        let mut pos = center;
+        let mut pos = random_in_arena(&mut rng, 320.0);
         for _ in 0..16 {
-            let p = Vec2::new(
-                rng.range(margin, WORLD - margin),
-                rng.range(margin, WORLD - margin),
-            );
+            let p = random_in_arena(&mut rng, 320.0);
+            pos = p;
             if p.dist(center) >= SPAWN_CLEARANCE {
-                pos = p;
                 break;
             }
         }
@@ -223,13 +222,9 @@ impl SlitherGame {
     /// clear spot is found in a bounded number of tries (a packed arena), which
     /// is still better than leaving the bot dead.
     fn pick_respawn(&mut self, idx: usize) -> (Vec2, f32) {
-        let margin = 320.0;
-        let mut pos = Vec2::new(WORLD * 0.5, WORLD * 0.5);
+        let mut pos = world_center();
         for _ in 0..24 {
-            let cand = Vec2::new(
-                self.respawn_rng.range(margin, WORLD - margin),
-                self.respawn_rng.range(margin, WORLD - margin),
-            );
+            let cand = random_in_arena(&mut self.respawn_rng, 320.0);
             pos = cand;
             if self.spawn_is_clear(cand, idx) {
                 break;
@@ -287,6 +282,10 @@ impl SlitherGame {
 
     pub fn world_size(&self) -> f32 {
         WORLD
+    }
+
+    pub fn world_radius(&self) -> f32 {
+        WORLD_RADIUS
     }
 
     pub fn worm_count(&self) -> usize {

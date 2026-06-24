@@ -552,15 +552,16 @@ export class SlitherScreen {
     }
 
     // Beyond the arena, darken the floor so the bounded play area reads as a
-    // pocket of light. Punch the arena rect out of a full-screen scrim.
+    // pocket of light. Punch the circular arena out of a full-screen scrim.
     const size = game.world_size();
-    const ax = ox;
-    const ay = oy;
-    const aw = size * s;
+    const radius = game.world_radius();
+    const cx = (size / 2) * s + ox;
+    const cy = (size / 2) * s + oy;
+    const cr = radius * s;
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, 0, w, h);
-    ctx.rect(ax + aw, ay, -aw, aw); // arena, reverse-wound → even-odd hole
+    ctx.arc(cx, cy, cr, 0, Math.PI * 2, true); // reverse-wound circle -> even-odd hole
     ctx.fillStyle = 'rgba(2,4,9,0.62)';
     ctx.fill('evenodd');
     ctx.restore();
@@ -658,25 +659,29 @@ export class SlitherScreen {
   ): void {
     const ctx = this.c2d;
     const size = game.world_size();
-    const x0 = ox;
-    const y0 = oy;
-    const side = size * s;
+    const radius = game.world_radius();
+    const cx = (size / 2) * s + ox;
+    const cy = (size / 2) * s + oy;
+    const cr = radius * s;
 
-    // Glowing danger ring on the arena boundary; pulses faintly.
+    // Glowing danger ring on the circular arena boundary; pulses faintly.
     const pulse = 0.5 + 0.5 * Math.sin(now / 380);
     ctx.save();
-    ctx.lineJoin = 'round';
     // Outer soft glow.
     ctx.strokeStyle = `rgba(255, 90, 20, ${0.28 + 0.12 * pulse})`;
     ctx.lineWidth = Math.max(6, 16 * s);
     ctx.shadowColor = 'rgba(255, 70, 20, 0.8)';
     ctx.shadowBlur = 24 * Math.min(1.5, s + 0.3);
-    ctx.strokeRect(x0, y0, side, side);
+    ctx.beginPath();
+    ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+    ctx.stroke();
     // Inner bright edge.
     ctx.shadowBlur = 0;
     ctx.strokeStyle = `rgba(255, 59, 31, ${0.85})`;
     ctx.lineWidth = Math.max(2, 4 * s);
-    ctx.strokeRect(x0, y0, side, side);
+    ctx.beginPath();
+    ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+    ctx.stroke();
     ctx.restore();
   }
 

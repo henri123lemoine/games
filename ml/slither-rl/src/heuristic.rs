@@ -24,7 +24,7 @@
 use crate::env::{Action, TURN_BUCKETS};
 use crate::geometry::{Vec2, angle_diff};
 use crate::rng::Rng;
-use crate::world::{WORLD, World};
+use crate::world::{WORLD_RADIUS, World, world_center};
 
 /// Tunables ported from the j-c-m bot, renamed for clarity. Distances are world
 /// units; angles radians.
@@ -251,12 +251,11 @@ fn nearest_pellet(world: &World, from: Vec2, max_dist: f32) -> Option<Vec2> {
     best
 }
 
-/// Bearing to, and distance from, each of the four walls relative to `head`.
-fn wall_bearings(head: Vec2) -> [(f32, f32); 4] {
-    [
-        (std::f32::consts::PI, head.x),                // left wall (x=0)
-        (0.0, WORLD - head.x),                         // right wall
-        (-std::f32::consts::FRAC_PI_2, head.y),        // top wall (y=0)
-        (std::f32::consts::FRAC_PI_2, WORLD - head.y), // bottom wall
-    ]
+/// Bearing to, and distance from, the circular wall relative to `head`.
+fn wall_bearings(head: Vec2) -> [(f32, f32); 1] {
+    let center = world_center();
+    let dx = head.x - center.x;
+    let dy = head.y - center.y;
+    let dist_from_center = (dx * dx + dy * dy).sqrt();
+    [(dy.atan2(dx), WORLD_RADIUS - dist_from_center)]
 }

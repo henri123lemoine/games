@@ -12,8 +12,30 @@
 use crate::geometry::{Vec2, turn_toward};
 use crate::rng::Rng;
 
-pub const WORLD: f32 = 4200.0;
+/// Bounding box for the circular arena. Coordinates still live in `[0, WORLD]`,
+/// but the playable area is the centered circle with radius [`WORLD_RADIUS`].
+pub const WORLD: f32 = 2000.0;
+pub const WORLD_RADIUS: f32 = WORLD * 0.5 - 40.0;
 pub const DT: f32 = 1.0 / 30.0;
+
+#[inline]
+pub fn world_center() -> Vec2 {
+    Vec2::new(WORLD * 0.5, WORLD * 0.5)
+}
+
+#[inline]
+pub fn out_of_bounds(p: Vec2, margin: f32) -> bool {
+    p.dist(world_center()) >= WORLD_RADIUS - margin
+}
+
+/// Uniformly sample a point inside the circular play area, keeping `margin` from
+/// the death boundary.
+pub fn random_in_arena(rng: &mut Rng, margin: f32) -> Vec2 {
+    let c = world_center();
+    let theta = rng.range(0.0, std::f32::consts::TAU);
+    let r = (WORLD_RADIUS - margin).max(0.0) * rng.unit().sqrt();
+    Vec2::new(c.x + theta.cos() * r, c.y + theta.sin() * r)
+}
 
 pub const START_LENGTH: f32 = 22.0;
 const SEG_SPACING: f32 = 4.4;
@@ -124,8 +146,17 @@ impl Worm {
     /// smooth ribbon (the TS `step`). Clamps the head to the arena.
     fn advance(&mut self, dist: f32) {
         let head = self.head();
-        let nx = (head.x + self.angle.cos() * dist).clamp(0.0, WORLD);
-        let ny = (head.y + self.angle.sin() * dist).clamp(0.0, WORLD);
+        let mut nx = head.x + self.angle.cos() * dist;
+        let mut ny = head.y + self.angle.sin() * dist;
+        let c = world_center();
+        let dx = nx - c.x;
+        let dy = ny - c.y;
+        let d = (dx * dx + dy * dy).sqrt();
+        if d > WORLD_RADIUS {
+            let k = WORLD_RADIUS / d;
+            nx = c.x + dx * k;
+            ny = c.y + dy * k;
+        }
         self.segments.insert(0, Vec2::new(nx, ny));
 
         let want = (self.length.round() as usize).max(START_LENGTH as usize);
@@ -212,12 +243,8 @@ impl World {
     pub fn new(seed: u64, cfg: WorldConfig) -> Self {
         let mut rng = Rng::new(seed);
         let mut worms = Vec::with_capacity(cfg.worms);
-        let margin = 300.0;
         for i in 0..cfg.worms {
-            let pos = Vec2::new(
-                rng.range(margin, WORLD - margin),
-                rng.range(margin, WORLD - margin),
-            );
+            let pos = random_in_arena(&mut rng, 300.0);
             let angle = rng.range(0.0, std::f32::consts::TAU);
             let length = if i == 0 {
                 cfg.seat0_length
@@ -260,10 +287,7 @@ impl World {
 
     fn random_pellet(&mut self) -> Pellet {
         Pellet {
-            pos: Vec2::new(
-                self.rng.range(20.0, WORLD - 20.0),
-                self.rng.range(20.0, WORLD - 20.0),
-            ),
+            pos: random_in_arena(&mut self.rng, 20.0),
             value: PELLET_VALUE,
         }
     }
@@ -353,7 +377,7 @@ impl World {
             let head = self.worms[w].head();
             let wr = self.worms[w].radius();
 
-            if head.x <= wr || head.x >= WORLD - wr || head.y <= wr || head.y >= WORLD - wr {
+            if out_of_bounds(head, wr) {
                 dying.push((w, None));
                 continue;
             }
