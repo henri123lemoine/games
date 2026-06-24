@@ -139,6 +139,7 @@ fn round_opening_state(
     s.first_round = first_round;
     s.hist = [0; HIST_K];
     s.endorsed = [0; MAX_PLAYERS];
+    s.raises_this_round = [0; MAX_PLAYERS];
     s.rounds = start_round;
     s.done = false;
     s.winner = 0;

@@ -129,7 +129,7 @@ pub struct FitResult {
     /// Max within-round exact best-response exploitability over the lattice
     /// states (only filled when [`FitConfig::measure_exploitability`], else
     /// `NaN`). It is floored by the game's deliberately lossy infoset
-    /// abstraction (truncated bid history, dropped round counter), not driven to
+    /// abstraction (position-relative key, dropped round counter), not driven to
     /// 0 — but that floor is shared with the full-game CFR, so it does not move
     /// the value-level gate (see the module docs).
     pub max_within_round_exploitability: f64,

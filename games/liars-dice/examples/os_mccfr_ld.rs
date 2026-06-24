@@ -1,5 +1,6 @@
 //! Can outcome-sampling MCCFR learn Liar's Dice through the existing
-//! abstracted information-set key (own hand + bid + last-K history)?
+//! abstracted information-set key (own hand + bid + structured per-seat
+//! raise-path / endorsed faces)?
 //!
 //! Trains [`solvers::os_mccfr::OsMccfr`] to several iteration checkpoints per
 //! configuration and evaluates the learned *average strategy* as an arena

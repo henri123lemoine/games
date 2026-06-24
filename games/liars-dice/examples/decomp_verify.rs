@@ -143,7 +143,7 @@ fn main() {
     );
     eprintln!(
         "\nNote: the within-round best-response exploitability is bounded by the\n\
-         game's deliberately lossy infoset abstraction (truncated bid history,\n\
+         game's deliberately lossy infoset abstraction (position-relative key,\n\
          dropped round counter); it is the *same* abstraction the full-game CFR\n\
          uses, so the value-level gate above is unaffected (both sides solve the\n\
          identical abstracted game and agree to solver noise)."

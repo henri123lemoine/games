@@ -8,10 +8,14 @@
 //! zero dice is eliminated. Last player standing wins.
 //!
 //! Hidden dice are rolled by chance at the start of each round, so a player's
-//! information set is their own hand plus the public bidding context. To keep
-//! learning tractable on large configurations the information-set key abstracts
-//! the bid history to the last few actions (full history is infeasible for, e.g.,
-//! 5 players × 5 dice).
+//! information set is their own hand plus the public bidding context. Bids are
+//! monotonic (+1 quantity or +1 face), so the *current* bid already carries the
+//! round's high-water mark; what a full history adds is the *path* — who raised
+//! and which face each seat committed to (hand signaling). The information-set
+//! key captures that path structurally with per-seat raise counts and endorsed
+//! faces (both position-relative) rather than retaining a window of raw action
+//! codes, which keeps it bounded yet history-aware on large configurations like
+//! 5 players × 5 dice.
 
 use game_core::hash::{combine, splitmix64};
 use game_core::{Game, Turn};
@@ -34,7 +38,8 @@ pub use subgame::{ContinuationValue, DiceShareValue, RoundSubgame};
 
 pub const MAX_FACES: usize = 6;
 pub const MAX_PLAYERS: usize = 8;
-/// Bid-history actions retained in the information-set key (an abstraction).
+/// Raise codes retained for the UI's bid-trail reconstruction (see `ui.rs`); not
+/// part of the information-set key, which carries history structurally instead.
 const HIST_K: usize = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,8 +63,9 @@ pub struct LdState {
     turn: u8,        // current actor (a live player)
     last_bidder: u8, // who owns the current bid (for call resolution)
     first_round: bool,
-    hist: [u16; HIST_K],
+    hist: [u16; HIST_K], // last `HIST_K` raise codes, for UI bid-trail reconstruction
     endorsed: [u8; MAX_PLAYERS], // face each player last bid this round (0 = none)
+    raises_this_round: [u8; MAX_PLAYERS], // bids each seat has made this round
     rounds: u16,
     done: bool,
     winner: u8,
@@ -176,6 +182,7 @@ impl LiarsDice {
         s.first_round = false;
         s.hist = [0; HIST_K];
         s.endorsed = [0; MAX_PLAYERS];
+        s.raises_this_round = [0; MAX_PLAYERS];
         s.rolled = 0;
         s.hands = [[0; MAX_FACES]; MAX_PLAYERS];
     }
@@ -354,6 +361,8 @@ impl Game for LiarsDice {
             first_round: true,
             hist: [0; HIST_K],
             endorsed: [0; MAX_PLAYERS],
+            // The forced 1x1 is the phantom seat's; no live seat has bid yet.
+            raises_this_round: [0; MAX_PLAYERS],
             rounds: 1,
             done: false,
             winner: 0,
@@ -449,6 +458,7 @@ impl Game for LiarsDice {
                 s.face = f;
                 self.push_hist(s, encode(a, self.faces));
                 s.endorsed[s.turn as usize] = s.face;
+                s.raises_this_round[s.turn as usize] += 1;
                 s.last_bidder = s.turn;
                 s.turn = self.next_alive(s, s.turn);
             }
@@ -456,6 +466,7 @@ impl Game for LiarsDice {
                 s.qty += 1;
                 self.push_hist(s, encode(a, self.faces));
                 s.endorsed[s.turn as usize] = s.face;
+                s.raises_this_round[s.turn as usize] += 1;
                 s.last_bidder = s.turn;
                 s.turn = self.next_alive(s, s.turn);
             }
@@ -468,6 +479,7 @@ impl Game for LiarsDice {
                 }
                 self.push_hist(s, encode(a, self.faces));
                 s.endorsed[s.turn as usize] = s.face;
+                s.raises_this_round[s.turn as usize] += 1;
                 s.last_bidder = s.turn;
                 s.turn = self.next_alive(s, s.turn);
             }
@@ -490,23 +502,42 @@ impl Game for LiarsDice {
         }
     }
 
-    /// Own hand plus the public bidding context. Deliberately lossy
-    /// abstractions, so distinct histories can share a key: the bid history is
-    /// truncated to the last `HIST_K` actions, and the round number is
-    /// excluded (near `max_rounds` the dice-count adjudication makes
-    /// continuation values round-dependent; the cap is an anti-stall guard,
-    /// not a rule worth spending key entropy on).
+    /// Own hand plus the public bidding context, keyed *structurally* and
+    /// position-relative to `player` (see the module docs for why the bid path,
+    /// not a raw-action window, is what a history needs to capture).
+    ///
+    /// Folds: own hand, the full dice vector, the current bid
+    /// `(qty, face, first_round)`, the relative turn-vs-bid-owner position, and —
+    /// rotated so `player` is reference seat 0, matching `features::encode` — the
+    /// per-seat `raises_this_round` and per-seat `endorsed` face. The rotation
+    /// makes the key position-relative (not seat-absolute), so equivalent
+    /// situations under different seatings share a key. The round number is
+    /// excluded: near `max_rounds` the cap adjudication is an anti-stall guard,
+    /// not a rule worth key entropy. Deterministic and stable.
     fn infoset_key(&self, s: &LdState, player: usize) -> u64 {
-        // position relative to the bid owner conveys turn order without the path.
+        let p = self.players as usize;
+        let seat = |k: usize| (player + k) % p;
+        // position relative to the bid owner conveys turn order.
         let rel = (s.turn + self.players - s.last_bidder) % self.players;
         let bid = u64::from(s.qty) << 24
             | u64::from(s.face) << 16
             | u64::from(s.first_round) << 8
             | u64::from(rel);
-        let hist = s.hist.iter().fold(0, |h, &c| combine(h, u64::from(c)));
-        [pack(&s.hands[player]), pack(&s.dice_left), bid, hist]
-            .into_iter()
-            .fold(splitmix64(player as u64 + 1), combine)
+        let mut raises_rot = [0u8; MAX_PLAYERS];
+        let mut endorsed_rot = [0u8; MAX_PLAYERS];
+        for k in 0..p {
+            raises_rot[k] = s.raises_this_round[seat(k)];
+            endorsed_rot[k] = s.endorsed[seat(k)];
+        }
+        [
+            pack(&s.hands[player]),
+            pack(&s.dice_left),
+            bid,
+            pack(&raises_rot),
+            pack(&endorsed_rot),
+        ]
+        .into_iter()
+        .fold(splitmix64(player as u64 + 1), combine)
     }
 
     fn state_key(&self, s: &LdState) -> Option<u64> {
@@ -518,11 +549,19 @@ impl Game for LiarsDice {
             | u64::from(s.first_round) << 1
             | u64::from(s.done);
         let hands = s.hands.iter().fold(0, |h, hand| combine(h, pack(hand)));
-        let hist = s.hist.iter().fold(0, |h, &c| combine(h, u64::from(c)));
+        // `raises_this_round` distinguishes genuinely different histories that
+        // share the same current bid; the god's-eye best-response memo must keep
+        // them distinct.
         Some(
-            [pack(&s.dice_left), hands, fields, hist, pack(&s.endorsed)]
-                .into_iter()
-                .fold(splitmix64(0x11A5), combine),
+            [
+                pack(&s.dice_left),
+                hands,
+                fields,
+                pack(&s.raises_this_round),
+                pack(&s.endorsed),
+            ]
+            .into_iter()
+            .fold(splitmix64(0x11A5), combine),
         )
     }
 }
@@ -648,6 +687,40 @@ mod tests {
         assert_eq!(game.num_alive(&s), 1, "must end by elimination");
         assert!(game.alive(&s, s.winner));
         assert_eq!(game.returns(&s, s.winner as usize), 1.0);
+    }
+
+    /// The key is now history-aware: two states with the same hand and current
+    /// bid but a different raise *path* (one seat raised twice vs once) must hash
+    /// to distinct infoset and state keys — the structured fields carry the path
+    /// the monotonic current bid alone omits.
+    #[test]
+    fn raise_path_distinguishes_keys() {
+        let game = LiarsDice::new(3, 4, 6);
+        let base = rolled(
+            &game,
+            &[[4, 0, 0, 0, 0, 0], [0, 4, 0, 0, 0, 0], [0, 0, 4, 0, 0, 0]],
+        );
+        let mut a = base.clone();
+        a.qty = 3;
+        a.face = 4;
+        a.last_bidder = 2;
+        a.turn = 0;
+        a.raises_this_round = [1, 0, 2, 0, 0, 0, 0, 0];
+        // Same hand, dice, bid, turn order — only the raise path differs.
+        let mut b = a.clone();
+        b.raises_this_round = [2, 0, 1, 0, 0, 0, 0, 0];
+        for p in 0..3 {
+            assert_ne!(
+                game.infoset_key(&a, p),
+                game.infoset_key(&b, p),
+                "differing raise paths must give distinct infoset keys (seat {p})"
+            );
+        }
+        assert_ne!(
+            game.state_key(&a),
+            game.state_key(&b),
+            "differing raise paths must give distinct state keys"
+        );
     }
 
     #[test]

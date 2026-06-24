@@ -12,7 +12,7 @@
 use game_core::{Agent, Game, Rng};
 use solvers::azero::{InferCache, Mlp};
 
-use crate::{Action, HIST_K, LdState, LiarsDice, MAX_FACES, MAX_PLAYERS};
+use crate::{Action, LdState, LiarsDice, MAX_FACES, MAX_PLAYERS};
 
 /// Seats the featurization reserves room for (= [`MAX_PLAYERS`]).
 pub const MP: usize = MAX_PLAYERS;
@@ -40,7 +40,7 @@ pub const fn feature_len() -> usize {
     + 3       // G: position relative to the bid owner
     + (MP + 1)// H: per-seat endorsed face + endorsers of the bid face
     + 2       // I: config (faces, players)
-    + 3 // J: recent-history action mix
+    + (MP + 1) // J: per-seat raises this round (rotated) + total round bid-depth
 }
 
 /// Policy-head index for an action. `Open(q, f)` occupies the grid above the
@@ -179,20 +179,21 @@ pub fn encode(game: &LiarsDice, s: &LdState, player: usize) -> Vec<f32> {
     // I: config.
     x.push(f32::from(faces) / MF as f32);
     x.push(p as f32 / MP as f32);
-    // J: recent-history action mix (codes per `crate::encode`: 1=RaiseQty,
-    // 2=RaiseFace, >=5=Open; 0=empty; calls are not pushed to history).
-    let (mut rq, mut rf, mut op) = (0u32, 0u32, 0u32);
-    for &c in &s.hist {
-        match c {
-            1 => rq += 1,
-            2 => rf += 1,
-            c if c >= 5 => op += 1,
-            _ => {}
-        }
+    // J: structured round history. Per-seat number of bids made this round
+    // (rotated so index 0 = me), conveying who has raised how often — the
+    // signaling path the monotonic current bid alone omits — plus a scalar
+    // round bid-depth = total raises this round.
+    let mut depth = 0u32;
+    for k in 0..MP {
+        let r = if k < p {
+            s.raises_this_round[seat(k)]
+        } else {
+            0
+        };
+        x.push(f32::from(r) / MAX_DICE_PER as f32);
+        depth += u32::from(r);
     }
-    x.push(rq as f32 / HIST_K as f32);
-    x.push(rf as f32 / HIST_K as f32);
-    x.push(op as f32 / HIST_K as f32);
+    x.push(depth as f32 / MAXTOTAL as f32);
 
     debug_assert_eq!(x.len(), feature_len());
     x
@@ -355,6 +356,48 @@ mod tests {
         // is_opening is the last entry of block F.
         let is_opening_off = bid_onehot_off + MF + 3; // after one-hot + my_count,need_frac,need_raw,first_round
         assert_eq!(x[is_opening_off], 1.0);
+        // J: at a fresh opening no live seat has bid, so every per-seat raise
+        // count and the round bid-depth scalar are zero.
+        let j_off = MF + 1 + MP + MP + 3 + 13 + 3 + (MP + 1) + 2;
+        assert!(x[j_off..j_off + MP + 1].iter().all(|&v| v == 0.0));
+        assert_eq!(j_off + MP + 1, feature_len(), "J is the final block");
+    }
+
+    #[test]
+    fn block_j_rotates_per_seat_raise_counts() {
+        // 3 players: seat 0 has bid twice this round, seat 2 once, seat 1 none.
+        let game = LiarsDice::new(3, 4, 6);
+        let mut s = rolled_state(
+            &game,
+            &[[4, 0, 0, 0, 0, 0], [0, 4, 0, 0, 0, 0], [0, 0, 4, 0, 0, 0]],
+        );
+        s.qty = 3;
+        s.face = 4;
+        s.raises_this_round = [2, 0, 1, 0, 0, 0, 0, 0];
+        let p = game.players as usize;
+        let j_off = MF + 1 + MP + MP + 3 + 13 + 3 + (MP + 1) + 2;
+        // Viewed from each seat, J[0] is that seat's own raise count (rotated).
+        for player in 0..p {
+            let x = encode(&game, &s, player);
+            assert_eq!(
+                x[j_off],
+                s.raises_this_round[player] as f32 / MAX_DICE_PER as f32,
+                "J[0] is the acting seat's own raise count"
+            );
+            // Total round bid-depth (3 raises) is seat-invariant.
+            assert!(
+                (x[j_off + MP] - 3.0 / MAXTOTAL as f32).abs() < 1e-6,
+                "round bid-depth scalar"
+            );
+        }
+        // Seat 1's view: their two later neighbours (seats 2, 0) carry 1, 2.
+        let x1 = encode(&game, &s, 1);
+        assert_eq!(
+            x1[j_off + 1],
+            1.0 / MAX_DICE_PER as f32,
+            "next seat = seat 2"
+        );
+        assert_eq!(x1[j_off + 2], 2.0 / MAX_DICE_PER as f32, "then seat 0");
     }
 
     #[test]
