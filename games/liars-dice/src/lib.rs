@@ -392,6 +392,30 @@ impl Game for LiarsDice {
             .collect()
     }
 
+    /// Roll the rolling player's dice directly instead of enumerating the full
+    /// multinomial: O(dice) rather than O(C(dice + faces - 1, faces - 1)) — the
+    /// difference between fast and unusable on large hands for outcome-sampling
+    /// solvers. Returns the rolled counts and their (multinomial) probability,
+    /// matching the distribution of `chance_outcomes` exactly.
+    fn sample_chance(&self, s: &LdState, rng: &mut game_core::Rng) -> (Action, f64) {
+        let d = s.dice_left[s.rolled as usize];
+        if d == 0 {
+            return (Action::Roll([0; MAX_FACES]), 1.0);
+        }
+        let mut counts = [0u8; MAX_FACES];
+        for _ in 0..d {
+            counts[rng.below(self.faces as usize)] += 1;
+        }
+        let mut ways = (1..=u64::from(d)).product::<u64>() as f64;
+        for &c in &counts {
+            for k in 1..=u64::from(c) {
+                ways /= k as f64;
+            }
+        }
+        let prob = ways * (1.0 / f64::from(self.faces)).powi(i32::from(d));
+        (Action::Roll(counts), prob)
+    }
+
     fn legal_actions(&self, s: &LdState) -> Vec<Action> {
         let total = self.total_dice(s);
         let mut acts = Vec::new();

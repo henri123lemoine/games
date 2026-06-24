@@ -15,7 +15,6 @@ use std::io::Write as _;
 use std::path::Path;
 use std::time::Instant;
 
-use game_core::rand::sample_outcome;
 use game_core::{Game, Rng, Turn, win_rate};
 use rayon::prelude::*;
 use solvers::azero::{Mlp, Sample, SgdMomentum};
@@ -79,8 +78,8 @@ impl Default for TrainConfig {
             playouts: 12,
             hidden: 256,
             cfr_iters: 2_000,
-            os_iters: 40_000,
-            small_total: 10,
+            os_iters: 6_000,
+            small_total: 4,
             batch: 1024,
             epochs: 2,
             buffer_cap: 300_000,
@@ -95,15 +94,25 @@ impl Default for TrainConfig {
     }
 }
 
+/// Largest per-seat starting dice count generated during training — the full
+/// supported range (2..=8). Big rounds are now affordable thanks to direct-roll
+/// chance sampling, so the config range is not curtailed.
+const MAX_TRAIN_DICE: usize = 8;
+/// Cap on total dice in a sampled round = the natural maximum (6 players x 8
+/// dice). Effectively no curtailment; kept as an explicit, generous bound and a
+/// resample guard so a degenerate draw can't blow up.
+const MAX_TRAIN_TOTAL: u32 = 48;
+
 /// Sample one configuration + dice vector + opener, biased toward small totals
 /// (which solve fast and where exact play matters most), with at least two live
-/// seats.
+/// seats and a bounded total (so no round dominates the parallel pool).
 fn sample_round(rng: &mut Rng) -> (u8, u8, u8, [u8; crate::MAX_PLAYERS], u8, bool) {
     let p = 2 + rng.below(5); // 2..=6
-    let d = 2 + rng.below(7); // 2..=8
+    let d = 2 + rng.below(MAX_TRAIN_DICE - 1); // 2..=MAX_TRAIN_DICE
     let f = 2 + rng.below(5); // 2..=6
     let mut dice = [0u8; crate::MAX_PLAYERS];
-    loop {
+    let mut ok = false;
+    for _ in 0..32 {
         for die in dice.iter_mut().take(p) {
             *die = if rng.unit() < 0.85 {
                 // min of two draws -> bias toward fewer dice.
@@ -114,9 +123,17 @@ fn sample_round(rng: &mut Rng) -> (u8, u8, u8, [u8; crate::MAX_PLAYERS], u8, boo
                 0
             };
         }
-        if (0..p).filter(|&i| dice[i] > 0).count() >= 2 {
+        let total: u32 = dice[..p].iter().map(|&x| u32::from(x)).sum();
+        if (0..p).filter(|&i| dice[i] > 0).count() >= 2 && total <= MAX_TRAIN_TOTAL {
+            ok = true;
             break;
         }
+    }
+    if !ok {
+        // Degenerate fallback: a minimal two-seat round.
+        dice = [0u8; crate::MAX_PLAYERS];
+        dice[0] = 1;
+        dice[1] = 1;
     }
     let all_full = (0..p).all(|i| dice[i] == d as u8);
     let first_round = all_full && rng.unit() < 0.5;
@@ -149,9 +166,8 @@ fn collect<S: RoundSolver>(
         while !round.is_terminal(&s) {
             match round.turn(&s) {
                 Turn::Chance => {
-                    let outs = round.chance_outcomes(&s);
-                    let i = sample_outcome(&outs, rng);
-                    round.apply(&mut s, outs[i].0);
+                    let (a, _p) = round.sample_chance(&s, rng);
+                    round.apply(&mut s, a);
                 }
                 Turn::Player(pl) => {
                     let (acts, sup) = legal_actions_and_support(feat, &s);
@@ -206,24 +222,30 @@ fn gen_round_samples(rng: &mut Rng, cfg: &TrainConfig) -> Vec<Sample> {
     let solver_round = RoundSubgame::new(p, d, f, dice, opener, first_round, 1, DiceShareValue);
     let play_round = RoundSubgame::new(p, d, f, dice, opener, first_round, 1, DiceShareValue);
     if p == 2 && total <= u32::from(cfg.small_total) {
+        // Tiny 2-player endgame rounds: exact CFR (best targets, cheap here).
         let mut sol = Cfr::new(solver_round);
-        sol.solve(cfr_iters_for(total, cfg));
+        sol.solve(cfg.cfr_iters);
         collect(&play_round, &sol, &feat, cfg.playouts, rng, &mut out);
     } else {
+        // Everything else: outcome-sampling MCCFR with a budget scaled DOWN for
+        // bigger rounds, so no single round can stall the parallel batch (the
+        // long-tail that was collapsing the pool to one core). Big rounds get
+        // rougher targets, but the net aggregates over many and generalizes via
+        // its features.
         let mut sol = OsMccfr::new(solver_round, rng.next_u64());
-        sol.run(cfg.os_iters);
+        sol.run(adaptive_os_iters(p, total, cfg.os_iters));
         collect(&play_round, &sol, &feat, cfg.playouts, rng, &mut out);
     }
     out
 }
 
-fn cfr_iters_for(total: u32, cfg: &TrainConfig) -> u64 {
-    // Small rounds converge fast; give the larger exact rounds a few more passes.
-    if total <= 4 {
-        cfg.cfr_iters
-    } else {
-        cfg.cfr_iters * 2
-    }
+/// OsMccfr iteration budget bounded by round size (cost ~ iters x players x
+/// ladder-depth, and depth grows with total dice). Reference work is a 2-player,
+/// total-6 round; larger rounds are scaled down and clamped so per-round
+/// wall-time stays roughly constant.
+fn adaptive_os_iters(p: u8, total: u32, base: u64) -> u64 {
+    let work = u64::from(p) * u64::from(total);
+    (base * 12 / work.max(1)).clamp(1000, base)
 }
 
 fn fisher_yates(buf: &mut [Sample], rng: &mut Rng) {
@@ -236,7 +258,10 @@ fn fisher_yates(buf: &mut [Sample], rng: &mut Rng) {
 /// keep-best metric); lower is closer to equilibrium.
 fn validate_exploitability(net: &Mlp) -> f64 {
     let cache = net.infer_cache();
-    let configs = [(1u8, 6u8), (2, 6), (2, 4), (3, 4)];
+    // Small configs only: exact best-response on bigger rounds (more dice/faces)
+    // is serial and dominates iteration time. These two are the fast endgame
+    // probes; the deeper configs are checked once in the final evaluation.
+    let configs = [(1u8, 6u8), (2, 4)];
     let mut sum = 0.0;
     for &(d, f) in &configs {
         let feat = LiarsDice::new(2, d, f);
@@ -256,7 +281,7 @@ fn validate_exploitability(net: &Mlp) -> f64 {
 fn validate_winrate(net: &Mlp, games: u32, seed: u64) -> Vec<(String, f64)> {
     let agent = NetAgent::new(clone_net(net));
     let bot = Rollout::new(
-        200,
+        50,
         ProbabilisticAgent::default_agent(),
         BidConditioned::default(),
     );
@@ -296,6 +321,7 @@ pub fn train(cfg: &TrainConfig) -> std::io::Result<Mlp> {
         let t = Instant::now();
         // Parallel data generation; each round gets a deterministic seed.
         let base = cfg.seed ^ ((iter as u64) << 32);
+        let t_gen = Instant::now();
         let fresh: Vec<Sample> = (0..cfg.rounds_per_iter)
             .into_par_iter()
             .flat_map_iter(|k| {
@@ -303,6 +329,7 @@ pub fn train(cfg: &TrainConfig) -> std::io::Result<Mlp> {
                 gen_round_samples(&mut r, cfg)
             })
             .collect();
+        let gen_s = t_gen.elapsed().as_secs_f64();
         let n_fresh = fresh.len();
         buffer.extend(fresh);
         if buffer.len() > cfg.buffer_cap {
@@ -310,6 +337,7 @@ pub fn train(cfg: &TrainConfig) -> std::io::Result<Mlp> {
             buffer.drain(0..drop);
         }
 
+        let t_train = Instant::now();
         let (mut ce, mut mse, mut nb) = (0.0f32, 0.0f32, 0u32);
         for _ in 0..cfg.epochs {
             fisher_yates(&mut buffer, &mut rng);
@@ -322,12 +350,13 @@ pub fn train(cfg: &TrainConfig) -> std::io::Result<Mlp> {
                 nb += 1;
             }
         }
+        let train_s = t_train.elapsed().as_secs_f64();
         let nb = nb.max(1) as f32;
         net.save(Path::new(&format!("{}/ckpt.bin", cfg.outdir)))?;
 
         let secs = t.elapsed().as_secs_f64();
         let mut line = format!(
-            "iter {iter:4}  buf {:7}  fresh {n_fresh:6}  ce {:.4}  mse {:.4}  {secs:5.1}s",
+            "iter {iter:4}  buf {:7}  fresh {n_fresh:6}  ce {:.4}  mse {:.4}  {secs:5.1}s (gen {gen_s:.1} tr {train_s:.1})",
             buffer.len(),
             ce / nb,
             mse / nb,
@@ -340,9 +369,14 @@ pub fn train(cfg: &TrainConfig) -> std::io::Result<Mlp> {
                 net.save(Path::new(&format!("{}/best.bin", cfg.outdir)))?;
                 line.push_str(" *best");
             }
-            let wr = validate_winrate(&net, 400, cfg.seed ^ iter as u64);
-            for (name, w) in &wr {
-                line.push_str(&format!("  {name} {w:.3}"));
+            // Win-rate vs the rollout bot is expensive (nested rollouts per
+            // decision), so only at the very end; per-round exploitability is
+            // the cheap, principled keep-best metric during the run.
+            if iter + 1 == cfg.iters {
+                let wr = validate_winrate(&net, 200, cfg.seed ^ iter as u64);
+                for (name, w) in &wr {
+                    line.push_str(&format!("  {name} {w:.3}"));
+                }
             }
         }
         println!("{line}");

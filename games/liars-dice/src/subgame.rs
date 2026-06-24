@@ -232,6 +232,10 @@ impl<V: ContinuationValue> Game for RoundSubgame<V> {
         self.inner.chance_outcomes(s)
     }
 
+    fn sample_chance(&self, s: &LdState, rng: &mut game_core::Rng) -> (Action, f64) {
+        self.inner.sample_chance(s, rng)
+    }
+
     fn apply(&self, s: &mut LdState, a: Action) {
         self.inner.apply(s, a);
     }

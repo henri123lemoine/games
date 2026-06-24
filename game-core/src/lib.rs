@@ -85,6 +85,19 @@ pub trait Game: Sync {
     /// Chance outcomes and their probabilities at a chance node (sum to 1).
     fn chance_outcomes(&self, state: &Self::State) -> Vec<(Self::Action, f64)>;
 
+    /// Sample one chance outcome and return it with its probability. The default
+    /// materializes the full [`Game::chance_outcomes`] distribution and samples
+    /// from it; games whose chance fan-out is large (e.g. dice rolls, where the
+    /// number of distinct outcomes grows combinatorially) should override this
+    /// with a direct, allocation-free sampler. Sampling-based solvers
+    /// (outcome-sampling MCCFR, rollouts) call this on the hot path, so the
+    /// override is a large speedup there while exact solvers keep enumerating.
+    fn sample_chance(&self, state: &Self::State, rng: &mut Rng) -> (Self::Action, f64) {
+        let outs = self.chance_outcomes(state);
+        let i = rand::sample_outcome(&outs, rng);
+        (outs[i].0, outs[i].1)
+    }
+
     /// Apply an action (decision or chance outcome), mutating the state.
     fn apply(&self, state: &mut Self::State, action: Self::Action);
 
