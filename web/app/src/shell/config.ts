@@ -74,6 +74,19 @@ export const OPT_CHOICES: Record<string, string[]> = {
   size: ["9", "13", "15", "19"],
 };
 
+/** Per-game narrowings of [`OPT_CHOICES`]: a game that should expose fewer
+ * values than the generic list. Pente is 19×19 only. */
+const OPT_CHOICES_BY_GAME: Record<string, Record<string, string[]>> = {
+  pente: { size: ["19"] },
+};
+
+/** The choices a game offers for an option — its own narrowing, else the
+ * generic list. A single-element result means the option is fixed (the shell
+ * hides its dropdown). */
+export function optChoicesFor(gameId: string, key: string): string[] | undefined {
+  return OPT_CHOICES_BY_GAME[gameId]?.[key] ?? OPT_CHOICES[key];
+}
+
 /** Bots that can't run in the tournament: they need a GPU or a trained
  * artifact the tournament pool doesn't load. */
 const TOURNEY_EXCLUDE = new Set(["azero", "azero-gpu"]);

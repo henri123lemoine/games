@@ -21,10 +21,10 @@ import type { FrontendCtx, GameFrontend } from "../frontends/types";
 import { CPU_LEVELS, isCpuFallback, TRIVIAL_SIMS } from "./azero";
 import {
   DIFFICULTY,
-  OPT_CHOICES,
   botLabel,
   botSpec,
   mediumLevel,
+  optChoicesFor,
   splitSpecs,
 } from "./config";
 import { TournamentScreen } from "./tournament";
@@ -40,7 +40,7 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   twentyone: { hearts: "3" },
   othello: { depth: "5" },
   connect4: { depth: "7" },
-  pente: { size: "13", depth: "4" },
+  pente: { size: "19", depth: "4" },
   go: { size: "9", bot: "azero-gpu", sims: "1500" },
   snake: { bot: "azero-gpu", sims: "128" },
   "2048": {},
@@ -846,8 +846,9 @@ export class App {
     for (const o of game.optsSchema) {
       if (o.bots.length || o.key === "seat" || o.key === "seed" || o.nativeOnly)
         continue;
-      const choices = OPT_CHOICES[o.key];
-      if (!choices) continue;
+      const choices = optChoicesFor(game.id, o.key);
+      // A single fixed value (e.g. Pente's 19×19) needs no picker.
+      if (!choices || choices.length <= 1) continue;
       const cur = opts[o.key] ?? o.value.split("|")[0];
       cells.push(cell(o.key, o.key, choices.map((c) => [c, c]), cur, false));
     }
@@ -1259,7 +1260,7 @@ export class App {
             opts[diff.key] ?? (cpu ? String(TRIVIAL_SIMS) : diff.levels[1][1]),
           );
       const fieldRows = fields.map((f) => {
-        const choices = OPT_CHOICES[f.key];
+        const choices = optChoicesFor(game.id, f.key);
         return choices
           ? selectRow(f.key, f.key, choices.map((c) => [c, c]), f.value)
           : row(f.key, `<input name="d-${esc(f.key)}" value="${esc(f.value)}" autocomplete="off" />`, f.note);
