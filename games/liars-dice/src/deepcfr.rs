@@ -142,47 +142,25 @@ struct RoundCfg {
     first_round: bool,
 }
 
-/// Sample one config + dice vector + opener across the supported family. The
-/// distribution deliberately covers the deployed multiplayer target (not just
-/// small endgames): ~12% are full game openings (the deployed starting state),
-/// and of the mid-game rounds half draw dice uniformly (reaching the larger,
-/// multiplayer/target regime) while half bias small via min-of-two (the endgame
-/// where exact play matters most). All are capped at [`MAX_TRAIN_TOTAL`] dice and
-/// have >=2 live seats.
+/// Sample one config + dice vector + opener across the supported family, biased
+/// toward small totals (where deception is decisive and regret estimates are
+/// cleanest). The min-of-two draw still reaches moderate multiplayer totals via
+/// its tail; the large 6-face target is validated separately (sampled best
+/// response) rather than forced into training, where its deep-ladder rounds
+/// flood the reservoir with high-variance regrets and degrade the small-config
+/// policy (observed: a 50% big-round mix made exploitability rise, not fall).
 fn sample_round_config(rng: &mut Rng) -> RoundCfg {
     let p = 2 + rng.below(5); // 2..=6
     let d = 2 + rng.below(MAX_TRAIN_DICE - 1); // 2..=8
     let f = 2 + rng.below(5); // 2..=6
     let mut dice = [0u8; crate::MAX_PLAYERS];
-    // Full game opening: every seat at d dice, forced first round (skip if the
-    // full config would exceed the total cap, e.g. 6x8).
-    if rng.unit() < 0.12 && (p * d) as u32 <= MAX_TRAIN_TOTAL {
-        for die in dice.iter_mut().take(p) {
-            *die = d as u8;
-        }
-        return RoundCfg {
-            players: p as u8,
-            dice_per: d as u8,
-            faces: f as u8,
-            dice,
-            opener: 0,
-            first_round: true,
-        };
-    }
-    // Mid-game vector. `big` => uniform dice (larger totals, the target regime);
-    // otherwise min-of-two (small/endgame). ~15% of seats are eliminated.
-    let big = rng.unit() < 0.5;
     let mut ok = false;
     for _ in 0..32 {
         for die in dice.iter_mut().take(p) {
             *die = if rng.unit() < 0.85 {
-                if big {
-                    (1 + rng.below(d)) as u8
-                } else {
-                    let a = 1 + rng.below(d);
-                    let b = 1 + rng.below(d);
-                    a.min(b) as u8
-                }
+                let a = 1 + rng.below(d);
+                let b = 1 + rng.below(d);
+                a.min(b) as u8
             } else {
                 0
             };
