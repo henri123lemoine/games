@@ -144,24 +144,24 @@ interface RosterBot {
 }
 
 /** Opt-in allowlist of the opponents each game publishes on the site, keyed by
- * `game.id` and listed in display order. The lab registry declares *every* bot
- * (including research variants like `mcts-eval`/`mcts-spec` and the obsolete CPU
- * `azero` net); the public arcade shows only what is listed here. A game absent
- * here — or a bot not in its list — is hidden by default, so nothing new leaks
- * onto the site until it is deliberately published. (`azero-gpu` is the trained
- * net: WebGPU when the browser has it, the identical in-wasm CPU forward
- * otherwise — one opponent, never a GPU/CPU choice; the superseded `azero` net
- * is simply never listed.) */
+ * `game.id`. The lab registry declares *every* bot (research variants, weak
+ * baselines, the obsolete CPU `azero` net); the public arcade lists only the
+ * ones curated here — each game's opponent(s) strong enough to be a genuine
+ * challenge, omitting random/weak/research bots. A game or bot absent here is
+ * hidden by default, so nothing leaks onto the site until deliberately
+ * published. (`azero-gpu` is the trained net: WebGPU when the browser has it,
+ * the identical in-wasm CPU forward otherwise — one opponent, never a GPU/CPU
+ * choice; the superseded `azero` net is never listed.) */
 const SHOWN_BOTS: Record<string, readonly string[]> = {
-  chess: ["azero-gpu", "alphabeta", "alphabeta-rich"],
-  "liars-dice": ["rollout", "belief", "random"],
-  poker: ["equity", "rollout", "call", "random"],
-  othello: ["alphabeta", "mcts"],
-  connect4: ["alphabeta", "mcts"],
+  chess: ["azero-gpu"],
+  "liars-dice": ["rollout"],
+  poker: ["equity"],
+  othello: ["alphabeta"],
+  connect4: ["alphabeta"],
   go: ["azero-gpu"],
-  pente: ["alphabeta", "mcts", "random"],
+  pente: ["alphabeta"],
   "2048": ["mcts"],
-  snake: ["azero-gpu", "mcts"],
+  snake: ["azero-gpu"],
 };
 
 /** Opponents a seat can be filled with: the game's published [`SHOWN_BOTS`]
