@@ -40,6 +40,65 @@
       #start:disabled { opacity: 0.4; cursor: wait; }
       #status { font-size: 14px; color: #6f6244; min-height: 1.2em; }
       kbd { background: #2a2418; border: 1px solid #5a4d33; border-radius: 4px; padding: 1px 6px; color: #ffcf6a; }
+
+      /* Twin-stick touch controls: hidden by default; .touch on <body> reveals
+         them on coarse-pointer devices (set via JS feature-detect). Left half is
+         a floating movement stick, right half is a drag-to-turn zone, with FIRE
+         and USE as action buttons over the turn zone. */
+      #touch { display: none; }
+      body.touch #touch {
+        display: block; position: fixed; inset: 0; z-index: 8;
+        touch-action: none; user-select: none;
+        -webkit-user-select: none; -webkit-tap-highlight-color: transparent;
+      }
+      body.touch.menu #touch { display: none; }
+
+      /* Full-height halves capture the raw drags; the buttons sit above them. */
+      #move-zone { position: absolute; inset: 0 50% 0 0; }
+      #turn-zone { position: absolute; inset: 0 0 0 50%; }
+
+      /* Floating joystick: base ring follows touch-down, knob tracks the drag. */
+      #stick {
+        position: absolute; width: 120px; height: 120px; margin: -60px 0 0 -60px;
+        border-radius: 50%; border: 2px solid rgba(255, 207, 106, 0.35);
+        background: radial-gradient(circle, rgba(255,207,106,0.06), rgba(20,16,8,0.32));
+        opacity: 0; transition: opacity 0.12s; pointer-events: none;
+      }
+      #stick.active { opacity: 1; }
+      #knob {
+        position: absolute; left: 50%; top: 50%; width: 56px; height: 56px;
+        margin: -28px 0 0 -28px; border-radius: 50%;
+        background: rgba(255, 207, 106, 0.5); box-shadow: 0 0 12px rgba(0,0,0,0.6);
+      }
+      /* A faint home hint for the stick so the left half doesn't read as dead. */
+      #stick-hint {
+        position: absolute; left: max(54px, env(safe-area-inset-left));
+        bottom: max(54px, env(safe-area-inset-bottom));
+        width: 96px; height: 96px; border-radius: 50%;
+        border: 2px dashed rgba(255, 207, 106, 0.18); pointer-events: none;
+      }
+      body.touch.aiming #stick-hint { opacity: 0.4; }
+
+      .btn {
+        position: absolute; display: flex; align-items: center; justify-content: center;
+        font-family: inherit; font-weight: 900; letter-spacing: 0.06em;
+        color: #ffcf6a; background: rgba(20, 16, 8, 0.55);
+        border: 1.5px solid rgba(255, 207, 106, 0.45); border-radius: 14px;
+        text-shadow: 0 1px 2px #000; touch-action: none;
+      }
+      .btn.pressed { background: rgba(255, 207, 106, 0.32); color: #1a0505; }
+      #fire {
+        right: max(22px, env(safe-area-inset-right));
+        bottom: max(28px, env(safe-area-inset-bottom));
+        width: 92px; height: 92px; border-radius: 50%; font-size: 18px;
+        border-color: rgba(220, 60, 50, 0.7); color: #ff7a5a;
+      }
+      #fire.pressed { background: rgba(220, 60, 50, 0.55); color: #1a0505; }
+      #use {
+        right: max(128px, calc(env(safe-area-inset-right) + 106px));
+        bottom: max(28px, env(safe-area-inset-bottom));
+        width: 76px; height: 64px; font-size: 17px;
+      }
     </style>
   </head>
   <body>
@@ -58,6 +117,14 @@
       </p>
       <button id="start" disabled>Fight</button>
       <div id="status">loading…</div>
+    </div>
+    <div id="touch" aria-hidden="true">
+      <div id="move-zone"></div>
+      <div id="turn-zone"></div>
+      <div id="stick-hint"></div>
+      <div id="stick"><div id="knob"></div></div>
+      <div id="use" class="btn" data-code="KeyE">USE</div>
+      <div id="fire" class="btn" data-code="Space">FIRE</div>
     </div>
     <script type="module" src="./game.js"></script>
   </body>

@@ -22,6 +22,176 @@ const els = {
 const keys = Object.create(null);
 let running = false;
 
+// Twin-stick touch controls feed the SAME `keys` map the keyboard writes, so the
+// rest of the pipeline (humanAction) is untouched. Three independent systems —
+// left move stick, right drag-to-turn, and fire/use buttons — each track their
+// own pointerId so move + turn + fire register simultaneously and one finger's
+// release never clears another's keys.
+const STICK_DEADZONE = 16; // px from stick centre before a move key engages
+const STICK_RADIUS = 52; // knob travel cap
+const TURN_DEADZONE = 4; // px of horizontal drag before a turn key engages
+const TURN_IDLE_MS = 90; // release turn keys after the finger stops moving
+
+function setupTouchControls() {
+  const isTouch =
+    "ontouchstart" in window ||
+    navigator.maxTouchPoints > 0 ||
+    matchMedia("(pointer: coarse)").matches;
+  if (!isTouch) return;
+  document.body.classList.add("touch", "menu");
+
+  setupMoveStick();
+  setupTurnZone();
+  for (const btn of document.querySelectorAll("#touch .btn")) setupActionButton(btn);
+}
+
+// Pointer capture keeps a drag bound to its zone even if the finger wanders over
+// a sibling button; harmless if it throws (synthetic events, unsupported).
+function capture(el, pointerId) {
+  try {
+    el.setPointerCapture(pointerId);
+  } catch {}
+}
+
+function clearMoveKeys() {
+  keys["KeyW"] = keys["KeyS"] = keys["KeyA"] = keys["KeyD"] = false;
+}
+
+function setupMoveStick() {
+  const zone = document.getElementById("move-zone");
+  const stick = document.getElementById("stick");
+  const knob = document.getElementById("knob");
+  let pointerId = null;
+  let originX = 0;
+  let originY = 0;
+
+  const place = (el, x, y) => {
+    el.style.left = x + "px";
+    el.style.top = y + "px";
+  };
+
+  const onDown = (e) => {
+    if (pointerId !== null) return;
+    e.preventDefault();
+    pointerId = e.pointerId;
+    capture(zone, pointerId);
+    originX = e.clientX;
+    originY = e.clientY;
+    place(stick, originX, originY);
+    knob.style.transform = "translate(0px, 0px)";
+    stick.classList.add("active");
+  };
+
+  const onMove = (e) => {
+    if (e.pointerId !== pointerId) return;
+    e.preventDefault();
+    let dx = e.clientX - originX;
+    let dy = e.clientY - originY;
+    const dist = Math.hypot(dx, dy);
+    // 8-way thresholding off the drag angle keeps strafing crisp like a D-pad
+    // while feeling analog: forward/back from vertical, strafe from horizontal.
+    clearMoveKeys();
+    if (dist >= STICK_DEADZONE) {
+      const ax = Math.abs(dx);
+      const ay = Math.abs(dy);
+      if (dy < 0 && ay > ax * 0.4) keys["KeyW"] = true;
+      if (dy > 0 && ay > ax * 0.4) keys["KeyS"] = true;
+      if (dx < 0 && ax > ay * 0.4) keys["KeyA"] = true;
+      if (dx > 0 && ax > ay * 0.4) keys["KeyD"] = true;
+    }
+    const clamp = Math.min(dist, STICK_RADIUS) / (dist || 1);
+    knob.style.transform = `translate(${dx * clamp}px, ${dy * clamp}px)`;
+  };
+
+  const onUp = (e) => {
+    if (e.pointerId !== pointerId) return;
+    e.preventDefault();
+    pointerId = null;
+    clearMoveKeys();
+    stick.classList.remove("active");
+  };
+
+  zone.addEventListener("pointerdown", onDown);
+  zone.addEventListener("pointermove", onMove);
+  zone.addEventListener("pointerup", onUp);
+  zone.addEventListener("pointercancel", onUp);
+}
+
+function clearTurnKeys() {
+  keys["ArrowLeft"] = keys["ArrowRight"] = false;
+}
+
+function setupTurnZone() {
+  const zone = document.getElementById("turn-zone");
+  let pointerId = null;
+  let lastX = 0;
+  let idle = null;
+
+  const stopTurning = () => clearTurnKeys();
+
+  const onDown = (e) => {
+    if (pointerId !== null) return;
+    e.preventDefault();
+    pointerId = e.pointerId;
+    capture(zone, pointerId);
+    lastX = e.clientX;
+    document.body.classList.add("aiming");
+  };
+
+  // DOOM auto-aims vertically, so only horizontal drag turns. The key is held
+  // for the direction of the most recent horizontal motion and released shortly
+  // after the finger stops, giving continuous turning while dragging.
+  const onMove = (e) => {
+    if (e.pointerId !== pointerId) return;
+    e.preventDefault();
+    const dx = e.clientX - lastX;
+    lastX = e.clientX;
+    if (Math.abs(dx) >= TURN_DEADZONE) {
+      keys["ArrowRight"] = dx > 0;
+      keys["ArrowLeft"] = dx < 0;
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(stopTurning, TURN_IDLE_MS);
+    }
+  };
+
+  const onUp = (e) => {
+    if (e.pointerId !== pointerId) return;
+    e.preventDefault();
+    pointerId = null;
+    if (idle) clearTimeout(idle);
+    clearTurnKeys();
+    document.body.classList.remove("aiming");
+  };
+
+  zone.addEventListener("pointerdown", onDown);
+  zone.addEventListener("pointermove", onMove);
+  zone.addEventListener("pointerup", onUp);
+  zone.addEventListener("pointercancel", onUp);
+}
+
+function setupActionButton(btn) {
+  const code = btn.dataset.code;
+  let pointerId = null;
+  const press = (e) => {
+    if (pointerId !== null) return;
+    e.preventDefault();
+    pointerId = e.pointerId;
+    keys[code] = true;
+    btn.classList.add("pressed");
+  };
+  const release = (e) => {
+    if (e.pointerId !== pointerId) return;
+    e.preventDefault();
+    pointerId = null;
+    keys[code] = false;
+    btn.classList.remove("pressed");
+  };
+  btn.addEventListener("pointerdown", press);
+  btn.addEventListener("pointerup", release);
+  btn.addEventListener("pointercancel", release);
+  btn.addEventListener("pointerleave", release);
+}
+
 function humanAction() {
   // Keyboard -> seat 0 ticcmd. Arrows/WASD move + turn; Ctrl/Space fire; E use.
   let forward = 0,
@@ -154,6 +324,7 @@ async function boot() {
   els.start.addEventListener("click", () => {
     els.overlay.style.display = "none";
     els.canvas.focus();
+    document.body.classList.remove("menu");
     running = true;
     last = performance.now();
     acc = 0;
@@ -180,6 +351,12 @@ window.addEventListener(
   },
   { passive: false },
 );
+
+setupTouchControls();
+
+// expose the synthesized human intent so the validation harness can assert the
+// touch wiring without the WASM engine loaded
+window.__doomInput = humanAction;
 
 boot().catch((err) => {
   console.error(err);
