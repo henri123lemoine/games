@@ -121,7 +121,7 @@ function winLine(cells: string, size: number, color: string): number[] | null {
 }
 
 const CSS = `
-.pente { display: flex; flex-direction: column; gap: 14px; }
+.pente { display: flex; flex-direction: column; gap: 14px; width: min(100%, var(--board-fit)); margin: 0 auto; }
 .pente-hud { display: grid; grid-template-columns: 1fr auto 1fr; align-items: stretch; gap: 10px; }
 .pente-player { display: flex; align-items: center; gap: 11px; padding: 9px 14px; min-width: 0;
   border-radius: var(--radius); background: var(--bg-raised); border: 1px solid var(--border);
@@ -148,7 +148,7 @@ const CSS = `
 .pente-turn-chip.pente-chip-hidden { opacity: 0; }
 .pente-turn-dot { width: 11px; height: 11px; border-radius: 50%; flex: none;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .25), 0 1px 2px rgba(0, 0, 0, .4); }
-.pente-board-wrap { position: relative; width: 100%; max-width: min(100%, var(--board-fit)); margin: 0 auto; }
+.pente-board-wrap { position: relative; width: 100%; margin: 0 auto; }
 .pente-svg { display: block; width: 100%; height: auto; border-radius: 12px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .26), 0 2px 6px rgba(0, 0, 0, .18); }
 .dark .pente-svg { box-shadow: 0 14px 40px rgba(0, 0, 0, .55), 0 2px 8px rgba(0, 0, 0, .42); }
