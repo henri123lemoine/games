@@ -179,6 +179,7 @@ export const STYLE = `
   flex-direction: column;
   align-items: center;
   gap: 6px;
+  min-width: 108px;
   padding: 8px 12px;
   background: rgba(10, 13, 9, 0.6);
   border: 1px solid #2d352c;
@@ -644,35 +645,22 @@ export const STYLE = `
   padding: 12px;
 }
 
-/* Per-seat opponent + difficulty pickers, sitting on each player. Their own
-   layer so pod re-renders don't disturb them. */
-.ld-seat-controls {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 7;
-}
-.ld-seat-ctrl {
-  position: absolute;
-  pointer-events: auto;
-  width: 108px;
-  padding: 3px;
-  border-radius: 7px;
-  background: rgba(8, 12, 9, 0.62);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
-}
-.ld-seat-ctrl .seat-slot {
+/* The shell's opponent + difficulty picker, tucked into the pod right under the
+   player's name. Compact and full-width so it reads as part of the box. */
+.ld-pod .seat-slot {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 3px;
   width: 100%;
+  margin: 4px 0 1px;
 }
-.ld-seat-ctrl .seat-select,
-.ld-seat-ctrl .seat-level {
+.ld-pod .seat-select,
+.ld-pod .seat-level {
   width: 100%;
-  font-size: 0.72rem;
-  padding: 3px 6px;
+  font-size: 10px;
+  padding: 2px 4px;
+  border-radius: 5px;
 }
 
 @media (prefers-reduced-motion: reduce) {

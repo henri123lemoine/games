@@ -119,9 +119,9 @@ class LiarsDiceFrontend implements GameFrontend {
   private ladder: LdHistoryEntry[] = [];
   private ladderRound = -1;
   private dead = false;
-  /** Per-seat opponent/difficulty pickers live in their own layer (built once,
-   * positioned per seat) so re-rendering the pods never wipes them. */
-  private seatCtrlBuilt = false;
+  /** Pods are built once; only their dynamic parts re-render, so the shell's
+   * per-seat picker (placed in the pod, under the name) is never wiped. */
+  private seatsBuilt = false;
   private openQty = 1;
   private openFace = 1;
 
@@ -166,7 +166,6 @@ class LiarsDiceFrontend implements GameFrontend {
     this.view = view;
     this.syncLadder(view);
     this.renderSeats(view);
-    this.buildSeatControls(view);
     this.renderCenter(view);
     if (state.toAct !== state.humanSeat || state.isOver) this.controlsEl.replaceChildren();
   }
@@ -227,70 +226,55 @@ class LiarsDiceFrontend implements GameFrontend {
     return hand.dice.map((d) => dieHtml(d)).join('');
   }
 
-  private renderSeats(view: LdView): void {
+  /** Build the positioned pods once: their seat position, name, and the
+   * shell-filled opponent/difficulty picker (under the name) are stable, so the
+   * per-action re-render of the dynamic parts never disturbs the picker. */
+  private buildSeats(view: LdView): void {
+    if (this.seatsBuilt) return;
+    this.seatsBuilt = true;
     const n = view.players;
     const anchor = this.ctx.humanSeat >= 0 ? this.ctx.humanSeat : 0;
-    const parts: string[] = [];
+    this.seatsEl.innerHTML = view.hands
+      .map((hand) => {
+        const pos = seatPos((hand.seat - anchor + n) % n, n);
+        return `
+        <div class="ld-seat" data-seat="${hand.seat}"
+             style="left:${pos.x.toFixed(2)}%;top:${pos.y.toFixed(2)}%">
+          <div class="ld-pod">
+            <span class="ld-bubble-slot"></span>
+            <div class="ld-hand"></div>
+            <div class="ld-name"><span class="ld-crown-slot"></span>${this.name(hand.seat)}<span class="ld-tag-slot"></span></div>
+            <span class="seat-slot" data-seat="${hand.seat}"></span>
+          </div>
+        </div>`;
+      })
+      .join('');
+  }
+
+  /** Refresh only the dynamic parts of each pod (state, bid bubble, dice, the
+   * crown and die-count tag); the pod shell and its picker stay put. */
+  private renderSeats(view: LdView): void {
+    this.buildSeats(view);
     for (const hand of view.hands) {
-      const pos = seatPos((hand.seat - anchor + n) % n, n);
+      const seatEl = this.seatsEl.querySelector<HTMLElement>(`.ld-seat[data-seat="${hand.seat}"]`);
+      if (!seatEl) continue;
+      const won = view.phase === 'over' && view.winner === hand.seat;
       const classes = ['ld-seat'];
       if (!hand.alive) classes.push('ld-out');
-      if (hand.alive && view.phase === 'bidding' && view.turn === hand.seat)
-        classes.push('ld-turn');
+      if (hand.alive && view.phase === 'bidding' && view.turn === hand.seat) classes.push('ld-turn');
       if (hand.alive && view.phase === 'rolling') classes.push('ld-roll');
-      const won = view.phase === 'over' && view.winner === hand.seat;
       if (won) classes.push('ld-winner');
-      const bubble =
+      seatEl.className = classes.join(' ');
+      seatEl.querySelector('.ld-bubble-slot')!.innerHTML =
         view.bid && !view.bid.forced && view.phase === 'bidding' && view.bid.by === hand.seat
           ? `<span class="ld-bubble">${view.bid.qty}×${dieHtml(view.bid.face)}</span>`
           : '';
-      const crown = won ? '<span class="ld-crown">★</span>' : '';
-      const tag = hand.alive
-        ? `<span class="ld-tag">${hand.count} ${hand.count === 1 ? 'die' : 'dice'}</span>`
-        : '<span class="ld-out-tag">OUT</span>';
-      parts.push(`
-        <div class="${classes.join(' ')}" data-seat="${hand.seat}"
-             style="left:${pos.x.toFixed(2)}%;top:${pos.y.toFixed(2)}%">
-          <div class="ld-pod">
-            ${bubble}
-            <div class="ld-hand">${this.handHtml(hand)}</div>
-            <div class="ld-name">${crown}${this.name(hand.seat)} ${tag}</div>
-          </div>
-        </div>`);
+      seatEl.querySelector('.ld-hand')!.innerHTML = this.handHtml(hand);
+      seatEl.querySelector('.ld-crown-slot')!.innerHTML = won ? '<span class="ld-crown">★</span>' : '';
+      seatEl.querySelector('.ld-tag-slot')!.innerHTML = hand.alive
+        ? ` <span class="ld-tag">${hand.count} ${hand.count === 1 ? 'die' : 'dice'}</span>`
+        : ' <span class="ld-out-tag">OUT</span>';
     }
-    this.seatsEl.innerHTML = parts.join('');
-  }
-
-  /** Build the per-seat opponent/difficulty pickers once, in their own layer
-   * outside `.ld-seats` so the pod re-render leaves them alone. The picker tucks
-   * onto each player: toward table-centre for the top/bottom pods, beside the
-   * side pods so they never stack on each other. */
-  private buildSeatControls(view: LdView): void {
-    if (this.seatCtrlBuilt) return;
-    this.seatCtrlBuilt = true;
-    const n = view.players;
-    const anchor = this.ctx.humanSeat >= 0 ? this.ctx.humanSeat : 0;
-    const layer = document.createElement('div');
-    layer.className = 'ld-seat-controls';
-    for (const hand of view.hands) {
-      const pos = seatPos((hand.seat - anchor + n) % n, n);
-      const cx = pos.x - 50;
-      const cy = pos.y - 50;
-      const cell = document.createElement('div');
-      cell.className = 'ld-seat-ctrl';
-      cell.style.left = `${pos.x.toFixed(2)}%`;
-      cell.style.top = `${pos.y.toFixed(2)}%`;
-      if (Math.abs(cx) <= 18) {
-        cell.style.transform = `translate(-50%, ${cy > 0 ? 'calc(-100% - 44px)' : '44px'})`;
-      } else {
-        const ang = Math.atan2(cy, cx);
-        cell.style.transform =
-          `translate(calc(-50% + ${(Math.cos(ang) * 84).toFixed(0)}px), calc(-50% + ${(Math.sin(ang) * 52).toFixed(0)}px))`;
-      }
-      cell.innerHTML = `<span class="seat-slot" data-seat="${hand.seat}"></span>`;
-      layer.append(cell);
-    }
-    this.tableEl.append(layer);
   }
 
   private renderCenter(view: LdView): void {

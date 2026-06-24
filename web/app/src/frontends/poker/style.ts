@@ -135,7 +135,7 @@ export const STYLE = `
 .pk-seat {
   position: absolute;
   transform: translate(-50%, -50%);
-  width: clamp(118px, 16vw, 150px);
+  width: clamp(130px, 17vw, 162px);
 }
 .pk-pod {
   position: relative;
@@ -200,6 +200,9 @@ export const STYLE = `
 }
 .pk-seat.below .pk-bet { top: -16px; }
 .pk-seat:not(.below) .pk-bet { bottom: -16px; }
+.pk-bet:empty { display: none; }
+/* The decoration holder doesn't lay out — its tag/dealer position off the pod. */
+.pk-deco { display: contents; }
 
 .pk-dealer {
   position: absolute;
@@ -297,34 +300,21 @@ export const STYLE = `
   padding: 12px;
 }
 
-/* Per-seat opponent + difficulty pickers, sitting on each player at the table
-   edge. Their own layer so pod re-renders don't disturb them. */
-.pk-seat-controls {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 7;
-}
-.pk-seat-ctrl {
-  position: absolute;
-  pointer-events: auto;
-  width: 108px;
-  padding: 3px;
-  border-radius: 7px;
-  background: rgba(8, 12, 9, 0.62);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
-}
-.pk-seat-ctrl .seat-slot {
+/* The shell's opponent + difficulty picker, tucked into the pod right under the
+   player's name. Compact and full-width so it reads as part of the box. */
+.pk-pod .seat-slot {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 3px;
   width: 100%;
+  margin: 3px 0 1px;
 }
-.pk-seat-ctrl .seat-select,
-.pk-seat-ctrl .seat-level {
+.pk-pod .seat-select,
+.pk-pod .seat-level {
   width: 100%;
-  font-size: 0.72rem;
-  padding: 3px 6px;
+  font-size: 10px;
+  padding: 2px 4px;
+  border-radius: 5px;
 }
 `;
