@@ -13,7 +13,7 @@
 //! and the browser bot plays the identical hybrid the native one does. Pente
 //! has no pass and no ownership head, so there is no pass/adjudication logic.
 
-use game_core::{Game, GameUi, Rng};
+use game_core::{Game, GameUi, PolicyValueEncoder, Rng};
 use nn_infer::Net;
 use pente::encode::PenteEncoder;
 use pente::{Pente, PenteAction, PenteState, VcfConfig};
@@ -282,6 +282,28 @@ impl AzPenteBot {
     /// engine's literal result stands. Kept for the shared `azFinalResult` op.
     pub fn final_result(&self) -> String {
         String::new()
+    }
+
+    /// `{"value":…,"pairs":[b,w]}` for the position-quality readout: one net
+    /// forward on the current root (no search, mirroring Go's snapshot).
+    /// `value` is Black's win probability in `[0,1]` (the net's mover-POV value
+    /// flipped to Black and mapped from `[-1,1]`). Pente has no score head, so
+    /// the captured-pair counts (Black, White) stand in for a material readout.
+    /// Empty string until the net is loaded (the GPU path skips `load_weights`).
+    pub fn eval(&self) -> String {
+        let Some(model) = self.model.as_ref() else {
+            return String::new();
+        };
+        let planes = self.enc.encode_state(&self.game, &self.state);
+        let value = f64::from(model.forward(&planes, &[]).value);
+        let to_black = if self.state.to_move() == 0 { 1.0 } else { -1.0 };
+        let black_value = (value * to_black).clamp(-1.0, 1.0);
+        let win_prob = ((black_value + 1.0) / 2.0).clamp(0.0, 1.0);
+        let pairs = self.state.pairs();
+        format!(
+            "{{\"value\":{win_prob},\"pairs\":[{},{}]}}",
+            pairs[0], pairs[1]
+        )
     }
 
     /// `{"value":…,"sims":…}` — the root's searched value (side to move) and

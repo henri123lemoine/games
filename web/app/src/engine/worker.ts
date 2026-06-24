@@ -138,6 +138,10 @@ function handle(req: EngineRequest): unknown {
       if (!(azBot instanceof AzGoBot)) throw new Error('no go bot');
       return parseMaybe(azBot.eval());
     }
+    case 'penteEval': {
+      if (!(azBot instanceof AzPenteBot)) throw new Error('no pente bot');
+      return parseMaybe(azBot.eval());
+    }
     case 'chessEval': {
       if (!(azBot instanceof AzChessBot)) throw new Error('no chess bot');
       return parseMaybe(azBot.eval());

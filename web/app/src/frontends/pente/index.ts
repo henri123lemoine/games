@@ -11,6 +11,7 @@
 //   {move: "g7", seat, point, captured: number[]}   // captured = removed indices
 
 import type { MatchEventData, ViewState } from '../../engine/protocol';
+import { penteEval } from './eval-bridge';
 import type { FrontendCtx, GameFrontend } from '../types';
 import { sleep } from '../types';
 
@@ -220,6 +221,8 @@ class PenteFrontend implements GameFrontend {
   private labelIndex = new Map<string, number>();
   private legalPoints = new Set<number>();
   private stoneEls = new Map<number, SVGCircleElement>();
+  private unsubDebug: (() => void) | null = null;
+  private evalGen = 0;
 
   mount(host: HTMLElement, ctx: FrontendCtx): void {
     this.ctx = ctx;
@@ -256,6 +259,10 @@ class PenteFrontend implements GameFrontend {
         row.append(pip);
       }
     }
+    this.unsubDebug = ctx.onDebugChange((on) => {
+      if (on) this.refreshEval();
+      else this.ctx.setDebugReadout([]);
+    });
   }
 
   private xy(p: number): { x: number; y: number } {
@@ -462,6 +469,7 @@ class PenteFrontend implements GameFrontend {
     // mid-game. Hide it then.
     this.turnChip.classList.toggle('pente-chip-hidden', text.textContent === '');
     if (state.toAct !== state.humanSeat) this.setInteractive(false);
+    this.refreshEval();
   }
 
   async animate(event: MatchEventData, after: ViewState): Promise<void> {
@@ -502,6 +510,29 @@ class PenteFrontend implements GameFrontend {
     }
   }
 
+  /** Push the position-quality readout when debug is on. The eval is one wasm
+   * net forward; skip it entirely when debug is off (no compute spent) and drop
+   * a result that a newer settle has superseded. */
+  private refreshEval(): void {
+    if (!this.ctx.debug()) return;
+    const gen = ++this.evalGen;
+    void penteEval()
+      .then((e) => {
+        if (gen !== this.evalGen) return;
+        if (!e) {
+          this.ctx.setDebugReadout([]);
+          return;
+        }
+        const pct = Math.round(e.value * 100);
+        this.ctx.setDebugReadout([
+          `AlphaZero: Black ${pct}% · captures ${e.pairs[0]}–${e.pairs[1]}`,
+        ]);
+      })
+      .catch(() => {
+        if (gen === this.evalGen) this.ctx.setDebugReadout([]);
+      });
+  }
+
   promptAction(labels: string[]): void {
     this.labelIndex = new Map(labels.map((l, i) => [l, i]));
     this.legalPoints = new Set(
@@ -510,7 +541,10 @@ class PenteFrontend implements GameFrontend {
     this.setInteractive(true);
   }
 
-  unmount(): void {}
+  unmount(): void {
+    this.unsubDebug?.();
+    this.unsubDebug = null;
+  }
 }
 
 export function createPenteFrontend(): GameFrontend {

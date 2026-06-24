@@ -10,6 +10,7 @@ import type {
   GoEval,
   Manifest,
   MatchEventData,
+  PenteEval,
   ViewState,
   Wdl,
 } from './protocol';
@@ -181,6 +182,12 @@ export class EngineHost {
    * or `null` when the live bot is not a Go bot or carries no ownership head. */
   goEval(): Promise<GoEval | null> {
     return this.call({ op: 'goEval' }) as Promise<GoEval | null>;
+  }
+
+  /** One Pente net forward on the current root for the position-quality
+   * readout, or `null` when the live bot is not a Pente bot with weights. */
+  penteEval(): Promise<PenteEval | null> {
+    return this.call({ op: 'penteEval' }) as Promise<PenteEval | null>;
   }
 
   /** One chess net forward on the current root for the position-quality

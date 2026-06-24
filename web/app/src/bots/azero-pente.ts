@@ -15,6 +15,7 @@ import { CPU_MAX_SIMS, isCpuFallback, TRIVIAL_SIMS } from '../shell/azero';
 import type { EngineHost } from '../engine/host';
 import type { MatchEventData, ViewState } from '../engine/protocol';
 import { PenteGpu, policyLen, softmaxOver } from '../frontends/pente/azgpu';
+import { setPenteEval } from '../frontends/pente/eval-bridge';
 import { gpuLoader, weightsLoader } from './azero-net';
 import type { ClientBot } from './index';
 
@@ -64,6 +65,7 @@ class AzeroPenteGpu implements ClientBot {
 
   cancel(): void {
     this.cancelled = true;
+    setPenteEval(null);
   }
 }
 
@@ -87,6 +89,7 @@ class AzeroPenteCpu implements ClientBot {
 
   cancel(): void {
     this.cancelled = true;
+    setPenteEval(null);
   }
 }
 
@@ -106,6 +109,7 @@ export async function createAzeroPente(
       // GPU path evaluates leaves page-side, so the wasm bot needs no weights;
       // the VCF hybrid is net-free and runs regardless.
       await host.penteNew(sims, LEAVES, seed, SIZE, vcfDepth, vcfNodes, await getWeights());
+      setPenteEval(() => host.penteEval());
       return new AzeroPenteGpu(host, gpu);
     } catch {
       // fall through to the CPU forward
@@ -114,5 +118,6 @@ export async function createAzeroPente(
   // CPU: the chosen level, capped so moves stay responsive without a GPU.
   const sims = Math.min(Number(opts.sims) > 0 ? Number(opts.sims) : TRIVIAL_SIMS, CPU_MAX_SIMS);
   await host.penteNew(sims, LEAVES, seed, SIZE, vcfDepth, vcfNodes, await getWeights());
+  setPenteEval(() => host.penteEval());
   return new AzeroPenteCpu(host);
 }

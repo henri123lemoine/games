@@ -122,6 +122,7 @@ export type EngineRequest =
   | { id: number; op: 'azFinalResult' }
   | { id: number; op: 'azBest' }
   | { id: number; op: 'goEval' }
+  | { id: number; op: 'penteEval' }
   | { id: number; op: 'chessEval' }
   | {
       id: number;
@@ -158,6 +159,14 @@ export interface AzBest {
 export interface GoEval {
   value: number;
   scoreLead: number;
+}
+
+/** Position-quality readout from one Pente net forward (value head only — the
+ * net has no score head). `value` is Black's win probability in `[0,1]`;
+ * `pairs` is the captured-pair counts `[black, white]`. */
+export interface PenteEval {
+  value: number;
+  pairs: [number, number];
 }
 
 /** Position-quality readout from one chess net forward (value head only — the
