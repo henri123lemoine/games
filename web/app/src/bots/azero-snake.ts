@@ -23,7 +23,7 @@ import type { EngineHost } from '../engine/host';
 import type { ViewState } from '../engine/protocol';
 import { SnakeGpu, softmaxOver } from '../frontends/snake/azgpu';
 import { reportMove } from '../frontends/snake/telemetry';
-import { isCpuFallback } from '../shell/azero';
+import { cpuFallbackMessage, isCpuFallback } from '../shell/azero';
 import { gpuLoader, weightsLoader } from './azero-net';
 import type { ClientBot } from './index';
 
@@ -115,7 +115,10 @@ class AzeroSnakeGpu implements ClientBot {
  * loop to cancel — just a guard so a torn-down match drops its move. */
 class AzeroSnakeCpu implements ClientBot {
   private cancelled = false;
-  constructor(private host: EngineHost) {}
+  constructor(
+    private host: EngineHost,
+    readonly cpuFallback: string,
+  ) {}
 
   onMove(): Promise<void> {
     return Promise.resolve();
@@ -141,6 +144,7 @@ export async function createAzeroSnake(
 ): Promise<ClientBot> {
   const seed = Number(opts.seed) >>> 0 || 1;
   const wantSims = Number(opts.sims) > 0 ? Number(opts.sims) : 0;
+  let cpuReason = 'No compatible WebGPU device was detected';
   // Prefer WebGPU; it is the only backend that can run a real search on this
   // net responsively. Fall back to the CPU forward only if there is no device
   // or it fails to come up — and say so loudly, since the fallback is far
@@ -156,6 +160,7 @@ export async function createAzeroSnake(
       );
       return new AzeroSnakeGpu(host, gpu);
     } catch (e) {
+      cpuReason = 'WebGPU was detected, but initialization failed';
       console.warn('[snake] WebGPU init failed, falling back to the slow CPU forward:', e);
     }
   } else {
@@ -165,5 +170,5 @@ export async function createAzeroSnake(
   const sims = Math.min(wantSims || CPU_DEFAULT_SIMS, CPU_MAX_SIMS);
   await host.snakeNew(sims, LEAVES, seed, await getWeights());
   console.info(`[snake] CPU fallback backend, ${sims} sims (degraded — no GPU)`);
-  return new AzeroSnakeCpu(host);
+  return new AzeroSnakeCpu(host, cpuFallbackMessage(cpuReason, sims));
 }

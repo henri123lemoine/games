@@ -21,7 +21,7 @@
 import { EngineHost } from '../engine/host';
 import { SnakeGpu, softmaxOver } from '../frontends/snake/azgpu';
 import { reportMove } from '../frontends/snake/telemetry';
-import { isCpuFallback } from '../shell/azero';
+import { cpuFallbackMessage, isCpuFallback } from '../shell/azero';
 import { gpuLoader, weightsLoader } from './azero-net';
 
 const LEAVES = 32;
@@ -228,6 +228,7 @@ export interface SnakeBot {
   /** The background refinement search, or null if it couldn't start (the policy
    * floor alone still plays). */
   search: SnakeSearchHandle | null;
+  cpuFallback?: string;
   stop(): void;
 }
 
@@ -250,6 +251,8 @@ export async function createSnakeBot(opts: Record<string, string>): Promise<Snak
   // The refinement search on a second worker.
   const searchHost = new EngineHost();
   let search: SnakeSearchHandle | null = null;
+  let cpuFallback = '';
+  let cpuReason = 'No compatible WebGPU device was detected';
   if (!isCpuFallback()) {
     try {
       const gpu = await getGpu();
@@ -258,6 +261,7 @@ export async function createSnakeBot(opts: Record<string, string>): Promise<Snak
       console.info(`[snake] policy floor + background WebGPU search (${sims} sims)`);
       search = new GpuSearch(searchHost, gpu);
     } catch (e) {
+      cpuReason = 'WebGPU was detected, but initialization failed';
       console.warn('[snake] WebGPU init failed; policy floor + slow CPU search:', e);
     }
   } else {
@@ -267,11 +271,13 @@ export async function createSnakeBot(opts: Record<string, string>): Promise<Snak
     const sims = Math.min(wantSims || CPU_DEFAULT_SIMS, CPU_MAX_SIMS);
     await searchHost.snakeNew(sims, LEAVES, seed, weights);
     search = new CpuSearch(searchHost);
+    cpuFallback = cpuFallbackMessage(cpuReason, sims);
   }
 
   return {
     policy,
     search,
+    cpuFallback: cpuFallback || undefined,
     stop() {
       search?.stop();
       searchHost.terminate();

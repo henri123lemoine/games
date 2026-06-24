@@ -5,7 +5,7 @@
 // `play_cpu` run the whole search in-wasm against nn-infer's reference forward —
 // same net, so anyone can play, GPU or not.
 
-import { CPU_MAX_SIMS, isCpuFallback, TRIVIAL_SIMS } from '../shell/azero';
+import { CPU_MAX_SIMS, cpuFallbackMessage, isCpuFallback, TRIVIAL_SIMS } from '../shell/azero';
 import type { EngineHost } from '../engine/host';
 import type { MatchEventData, ViewState } from '../engine/protocol';
 import { AzGpu, POLICY_LEN, softmaxOver } from '../frontends/chess/azgpu';
@@ -59,7 +59,10 @@ class AzeroChessGpu implements ClientBot {
  * advance loop to cancel — just a guard so a torn-down match drops its move. */
 class AzeroChessCpu implements ClientBot {
   private cancelled = false;
-  constructor(private host: EngineHost) {}
+  constructor(
+    private host: EngineHost,
+    readonly cpuFallback: string,
+  ) {}
 
   onMove(ev: MatchEventData): Promise<void> {
     return this.host.azPush(ev.label);
@@ -82,6 +85,7 @@ export async function createAzeroChess(
   opts: Record<string, string>,
 ): Promise<ClientBot> {
   const seed = Number(opts.seed) >>> 0 || 1;
+  let cpuReason = 'No compatible WebGPU device was detected';
   // Prefer WebGPU; if the device fails to come up even where it is advertised,
   // fall through to CPU rather than failing the match.
   if (!isCpuFallback()) {
@@ -91,11 +95,12 @@ export async function createAzeroChess(
       await host.azNew(sims, LEAVES, seed);
       return new AzeroChessGpu(host, gpu);
     } catch {
+      cpuReason = 'WebGPU was detected, but initialization failed';
       // fall through to the CPU forward
     }
   }
   // CPU: the chosen level, capped so moves stay responsive without a GPU.
   const sims = Math.min(Number(opts.sims) > 0 ? Number(opts.sims) : TRIVIAL_SIMS, CPU_MAX_SIMS);
   await host.azNew(sims, LEAVES, seed, await getWeights());
-  return new AzeroChessCpu(host);
+  return new AzeroChessCpu(host, cpuFallbackMessage(cpuReason, sims));
 }

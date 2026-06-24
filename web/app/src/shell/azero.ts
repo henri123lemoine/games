@@ -24,3 +24,8 @@ export const CPU_LEVELS: [string, string][] = [
 
 /** Safety cap on the CPU visit budget, matching the top `CPU_LEVELS` entry. */
 export const CPU_MAX_SIMS = 16;
+
+export function cpuFallbackMessage(reason: string, sims: number): string {
+  const unit = sims === 1 ? 'sim' : 'sims';
+  return `CPU FALLBACK ACTIVE: ${reason}. AlphaZero is running on the CPU at ${sims} ${unit}, so it will be much slower and weaker than WebGPU.`;
+}

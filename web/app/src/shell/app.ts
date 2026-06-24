@@ -584,6 +584,7 @@ export class App {
       const makeBot = clientBotFor(game.id, usesAzeroGpu ? "azero-gpu" : opts.bot);
       this.clientBot = makeBot ? await makeBot(this.host, opts) : null;
       if (gen !== this.gen) return;
+      if (this.clientBot?.cpuFallback) this.showCpuNote(this.clientBot.cpuFallback);
       this.setStatus(st.humanSeat < 0 ? "Bots playing…" : "Thinking…");
       void this.runLoop(gen);
     } catch (e) {
@@ -606,6 +607,7 @@ export class App {
       return;
     }
     this.snakeBot = bot;
+    if (bot.cpuFallback) this.showCpuNote(bot.cpuFallback);
     const board = this.frontend as unknown as RealtimeBoard;
     this.snakeRealtime = new SnakeRealtime(
       this.host,
@@ -747,13 +749,13 @@ export class App {
     }
   }
 
-  /** Surfaces, in-match, that AlphaZero is on the CPU forward (no WebGPU) — the
-   * honest "it'll be slower, fewer levels" note. */
-  private showCpuNote(): void {
+  /** Surfaces, in-match, that AlphaZero is on the CPU forward. */
+  private showCpuNote(text?: string): void {
     const note = this.root.querySelector<HTMLElement>(".cpu-note");
     if (!note) return;
     note.textContent =
-      "No GPU detected — AlphaZero is running on the CPU, which is much slower, so only the Trivial and Light levels are offered. Open it in a WebGPU browser (recent Chrome/Edge) for the full difficulty ladder.";
+      text ??
+      "CPU FALLBACK ACTIVE: No compatible WebGPU device was detected. AlphaZero is running on the CPU, so only the Trivial and Light levels are offered. Open it in a WebGPU browser (recent Chrome/Edge) for the full difficulty ladder.";
     note.hidden = false;
   }
 

@@ -5,7 +5,7 @@
 // `play_cpu` run the whole search in-wasm against nn-infer's reference forward —
 // same net, so anyone can play, GPU or not.
 
-import { CPU_MAX_SIMS, isCpuFallback, TRIVIAL_SIMS } from '../shell/azero';
+import { CPU_MAX_SIMS, cpuFallbackMessage, isCpuFallback, TRIVIAL_SIMS } from '../shell/azero';
 import type { EngineHost } from '../engine/host';
 import type { MatchEventData, ViewState } from '../engine/protocol';
 import { GoGpu, policyLen, softmaxOver } from '../frontends/go/azgpu';
@@ -67,7 +67,10 @@ class AzeroGoGpu implements ClientBot {
  * advance loop to cancel — just a guard so a torn-down match drops its move. */
 class AzeroGoCpu implements ClientBot {
   private cancelled = false;
-  constructor(private host: EngineHost) {}
+  constructor(
+    private host: EngineHost,
+    readonly cpuFallback: string,
+  ) {}
 
   onMove(ev: MatchEventData): Promise<void> {
     return this.host.azPush(ev.label);
@@ -94,6 +97,7 @@ export async function createAzeroGo(
   opts: Record<string, string>,
 ): Promise<ClientBot> {
   const seed = Number(opts.seed) >>> 0 || 1;
+  let cpuReason = 'No compatible WebGPU device was detected';
   // Prefer WebGPU; if the device fails to come up even where it is advertised,
   // fall through to CPU rather than failing the match.
   if (!isCpuFallback()) {
@@ -108,6 +112,7 @@ export async function createAzeroGo(
       await host.goNew(sims, LEAVES, seed, size, await getWeights());
       return new AzeroGoGpu(host, gpu, size);
     } catch {
+      cpuReason = 'WebGPU was detected, but initialization failed';
       // fall through to the CPU forward
     }
   }
@@ -115,5 +120,5 @@ export async function createAzeroGo(
   const size = Number(opts.size) > 0 ? Number(opts.size) : 19;
   const sims = Math.min(Number(opts.sims) > 0 ? Number(opts.sims) : TRIVIAL_SIMS, CPU_MAX_SIMS);
   await host.goNew(sims, LEAVES, seed, size, await getWeights());
-  return new AzeroGoCpu(host);
+  return new AzeroGoCpu(host, cpuFallbackMessage(cpuReason, sims));
 }

@@ -900,13 +900,15 @@ button {
 
 .cpu-note {
   margin-bottom: 16px;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
+  padding: 10px 12px;
+  border: 1px solid var(--bad);
+  border-left: 5px solid var(--bad);
   border-radius: 6px;
   background: var(--bg-inset);
-  color: var(--text-dim);
-  font-size: 0.85rem;
+  background: color-mix(in srgb, var(--bad) 10%, var(--bg));
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 700;
   line-height: 1.4;
 }
 

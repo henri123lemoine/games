@@ -21,6 +21,8 @@ export interface ClientBot {
   /** A result string to show in place of the engine's at game over (e.g. an
    * ownership-adjudicated go score), or `''`/absent to keep the engine's. */
   finalResult?(): Promise<string>;
+  /** Non-empty when a requested GPU bot is actually running on CPU. */
+  cpuFallback?: string;
 }
 
 export type ClientBotFactory = (
