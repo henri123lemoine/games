@@ -10,7 +10,11 @@
 //!    determinized-rollout bot the arcade ships, across a config spread?
 //! 2. **Head-to-head A vs B** — the decisive who-beats-whom (only with `b=`).
 //! 3. **Per-round exploitability** — equilibrium quality on small 2p configs,
-//!    via exact best-response NashConv over the net's policy.
+//!    via exact best-response NashConv over the net's policy. A companion
+//!    **multiplayer (n>=3)** section reports the profile best-response gain (the
+//!    single-seat best response while all other seats follow the net) — the only
+//!    well-defined exploitability for the constant-sum-but-not-zero-sum N-player
+//!    game, where no Nash oracle exists.
 //! 4. **Thin-bluff endgame probe** — does the net call a thin single-die bid it
 //!    should be suspicious of? (The user's original complaint.)
 //!
@@ -32,12 +36,13 @@ use std::time::Instant;
 
 use game_core::{Agent, Game, Rng, hash, play_n, win_share};
 use liars_dice::{
-    Action, BidConditioned, DiceShareValue, LiarsDice, NetAgent, ProbabilisticAgent, RoundSubgame,
-    net_policy,
+    Action, BidConditioned, DiceShareValue, LdState, LiarsDice, NetAgent, ProbabilisticAgent,
+    RoundSubgame, net_policy,
 };
 use rayon::prelude::*;
 use solvers::Rollout;
-use solvers::exploit::nash_conv;
+use solvers::azero::{InferCache, Mlp};
+use solvers::exploit::{Policy, nash_conv, profile_exploitability};
 
 /// The deployed bot, exactly as `lab`'s registry builds it for `bot=rollout`.
 fn deployed_bot(rollouts: u32) -> Rollout<LiarsDice, ProbabilisticAgent, BidConditioned> {
@@ -85,6 +90,21 @@ const STRENGTH_CONFIGS: &[(u8, u8, u8)] = &[
 /// Small 2p configs whose first-round subgame is cheap to best-respond against
 /// exactly — the equilibrium-quality lens.
 const EXPLOIT_CONFIGS: &[(u8, u8, u8)] = &[(2, 1, 6), (2, 2, 4), (2, 2, 6), (2, 3, 4)];
+
+/// Small *multiplayer* (n>=3) configs whose first-round subgame is still cheap
+/// enough to enumerate exactly. The N-player game is constant-sum but not
+/// zero-sum, so there is no Nash oracle; the per-seat best-response gain is the
+/// well-defined measure of how exploitable the profile is.
+///
+/// The cost is steep: the exact walk enumerates the full game DAG, which grows
+/// combinatorially in *both* faces (the `Open(q, f)` grid and the per-seat hand
+/// chance fan-out) and total dice (the bid-quantity ceiling). Measured net-policy
+/// runtimes (memoized on infoset): 3p2d3f ~0.2s, 3p2d4f ~1.5s, 4p2d3f ~9s,
+/// 3p3d3f ~15s — all kept here. Beyond that it blows past "a few seconds":
+/// 3p2d6f ~50s, 4p2d4f >1min, 3p3d4f ~7.5min, 4p2d6f minutes more. Those larger
+/// configs (the real 6-face target) are too expensive to enumerate exactly and
+/// want a *sampled* best response instead — flagged, not run here.
+const MULTI_EXPLOIT_CONFIGS: &[(u8, u8, u8)] = &[(3, 2, 3), (3, 2, 4), (3, 3, 3), (4, 2, 3)];
 
 fn cfg_label(p: u8, d: u8, f: u8) -> String {
     format!("{p}p{d}d{f}f")
@@ -229,6 +249,7 @@ fn main() -> ExitCode {
         head_to_head_section(&net_a, b, games, seed);
     }
     exploitability_section(&net_a, net_b.as_ref());
+    multiplayer_exploit_section(&net_a, net_b.as_ref());
     thin_bluff_section(&net_a, net_b.as_ref());
 
     println!("\nfinished in {:.1?}", t0.elapsed());
@@ -343,40 +364,131 @@ fn exploitability_section(net_a: &Net, net_b: Option<&Net>) {
     println!();
 }
 
+/// `agent`'s net policy over a [`RoundSubgame`], memoized on infoset so each
+/// distinct infoset costs one forward pass.
+///
+/// `net_policy` reads the policy head over the legal actions at a state — the
+/// `Policy` an exact best response measures against. The policy is a pure
+/// function of the (position-relative) infoset, while a best-response walk
+/// queries it at every node of its passes and at states that share an infoset;
+/// memoizing on `infoset_key` collapses those repeated forwards — the difference
+/// between an instant config and a slow one once the bid lattice grows (e.g.
+/// 2p3d4f), and it matters more for `profile_exploitability`'s 2n passes than
+/// for `nash_conv`'s two. `RefCell` supplies the interior mutability the
+/// `Policy` trait's `&self` signature needs.
+struct MemoNetPolicy<'a> {
+    net: &'a Mlp,
+    cache: InferCache,
+    cfg: &'a LiarsDice,
+    memo: RefCell<HashMap<u64, Vec<f64>>>,
+}
+
+impl Policy<RoundSubgame<DiceShareValue>> for MemoNetPolicy<'_> {
+    fn action_probs(
+        &self,
+        game: &RoundSubgame<DiceShareValue>,
+        state: &LdState,
+        player: usize,
+    ) -> Vec<f64> {
+        let key = game.infoset_key(state, player);
+        if let Some(p) = self.memo.borrow().get(&key) {
+            return p.clone();
+        }
+        let probs = net_policy(self.net, &self.cache, self.cfg, state, player);
+        self.memo.borrow_mut().insert(key, probs.clone());
+        probs
+    }
+}
+
+/// Runs `measure` over the first-round subgame of `(p, d, f)` and `agent`'s
+/// memoized net policy — the shared setup for both exploitability lenses. The
+/// policy borrows the subgame's config, so the two cannot escape together;
+/// `measure` consumes them in-scope and returns its result.
+fn with_round_policy<T>(
+    agent: &NetAgent,
+    p: u8,
+    d: u8,
+    f: u8,
+    measure: impl FnOnce(&RoundSubgame<DiceShareValue>, &MemoNetPolicy<'_>) -> T,
+) -> T {
+    let mut dice_left = [0u8; liars_dice::MAX_PLAYERS];
+    for slot in dice_left.iter_mut().take(p as usize) {
+        *slot = d;
+    }
+    let round = RoundSubgame::new(p, d, f, dice_left, 0, true, 1, DiceShareValue);
+    let net = agent.net();
+    let policy = MemoNetPolicy {
+        net,
+        cache: net.infer_cache(),
+        cfg: round.config(),
+        memo: RefCell::new(HashMap::new()),
+    };
+    measure(&round, &policy)
+}
+
 /// Exact best-response exploitability of `agent`'s policy on the first-round
 /// subgame of `(p, d, f)`.
 fn round_exploit(agent: &NetAgent, p: u8, d: u8, f: u8) -> f64 {
-    let dice_left = {
-        let mut v = [0u8; liars_dice::MAX_PLAYERS];
-        for slot in v.iter_mut().take(p as usize) {
-            *slot = d;
+    with_round_policy(agent, p, d, f, |round, policy| {
+        nash_conv(round, policy).2 / 2.0
+    })
+}
+
+/// Section 3b — MULTIPLAYER EXPLOITABILITY (n>=3). The N-player game is
+/// constant-sum but not zero-sum, so there is no Nash oracle; instead we report
+/// the *profile* best-response exploitability: for each seat, the gain it would
+/// realize by switching to its exact information-set-level best response while
+/// every other seat (and chance) keeps playing the net. The mean over seats is a
+/// symmetric measure of how far the whole profile is from a best-response
+/// equilibrium (lower = less exploitable). Built on the first-round subgame with
+/// a `DiceShareValue` continuation, exactly like the 2p lens; for 2p the mean
+/// would equal the 2p exploitability above, so only n>=3 configs run here.
+fn multiplayer_exploit_section(net_a: &Net, net_b: Option<&Net>) {
+    println!(
+        "[3b] MULTIPLAYER EXPLOITABILITY (n>=3)  (first-round subgame; mean per-seat \
+         best-response gain; lower = nearer a best-response equilibrium)"
+    );
+    println!("     no Nash oracle exists for n>=3; this is the single-seat-BR profile measure.");
+    if net_b.is_some() {
+        println!("     {:>9} {:>14} {:>14}", "config", "A mean", "B mean");
+        println!("     {}", "-".repeat(39));
+    } else {
+        println!("     {:>9} {:>14}", "config", "A mean");
+        println!("     {}", "-".repeat(24));
+    }
+
+    for &(p, d, f) in MULTI_EXPLOIT_CONFIGS {
+        let (a_gains, a_mean) = round_profile_exploit(&net_a.agent, p, d, f);
+        if let Some(b) = net_b {
+            let (b_gains, b_mean) = round_profile_exploit(&b.agent, p, d, f);
+            println!(
+                "     {:>9} {:>14.5} {:>14.5}",
+                cfg_label(p, d, f),
+                a_mean,
+                b_mean,
+            );
+            println!("       A per-seat: {}", fmt_gains(&a_gains));
+            println!("       B per-seat: {}", fmt_gains(&b_gains));
+        } else {
+            println!("     {:>9} {:>14.5}", cfg_label(p, d, f), a_mean);
+            println!("       A per-seat: {}", fmt_gains(&a_gains));
         }
-        v
-    };
-    let round = RoundSubgame::new(p, d, f, dice_left, 0, true, 1, DiceShareValue);
-    let cfg = round.config();
-    let net = agent.net();
-    let cache = net.infer_cache();
-    // `net_policy` reads the policy head over the legal actions at a state — the
-    // `Policy` the exact best response measures against. The policy is a pure
-    // function of the (position-relative) infoset, while `nash_conv` queries the
-    // opponent's policy at every node of two best-response passes and at states
-    // that share an infoset; memoizing on `infoset_key` collapses those repeated
-    // forwards — the difference between an instant config and a slow one once the
-    // bid lattice grows (e.g. 2p3d4f). `RefCell` gives the `Fn` closure the
-    // interior mutability the `Policy` trait's `&self` signature needs.
-    let memo: RefCell<HashMap<u64, Vec<f64>>> = RefCell::new(HashMap::new());
-    let policy = |game: &RoundSubgame<DiceShareValue>, state: &_, player: usize| {
-        let key = game.infoset_key(state, player);
-        if let Some(p) = memo.borrow().get(&key) {
-            return p.clone();
-        }
-        let probs = net_policy(net, &cache, cfg, state, player);
-        memo.borrow_mut().insert(key, probs.clone());
-        probs
-    };
-    let (_, _, nc) = nash_conv(&round, &policy);
-    nc / 2.0
+    }
+    println!();
+}
+
+/// Per-seat best-response gains and their mean for `agent`'s policy on the
+/// first-round subgame of `(p, d, f)`.
+fn round_profile_exploit(agent: &NetAgent, p: u8, d: u8, f: u8) -> (Vec<f64>, f64) {
+    with_round_policy(agent, p, d, f, |round, policy| {
+        profile_exploitability(round, policy)
+    })
+}
+
+/// A compact `[s0, s1, ...]` rendering of the per-seat gains.
+fn fmt_gains(gains: &[f64]) -> String {
+    let parts: Vec<String> = gains.iter().map(|g| format!("{g:.5}")).collect();
+    format!("[{}]", parts.join(", "))
 }
 
 /// Section 4 — thin-bluff endgame probe. Builds 2p1d6f endgames where the net

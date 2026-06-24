@@ -32,7 +32,7 @@ mod tabular;
 
 pub use cfr::Cfr;
 pub use deepcfr::{DeepCfr, DeepCfrConfig, Encoder};
-pub use exploit::{CfrPolicy, Policy, nash_conv};
+pub use exploit::{CfrPolicy, Policy, nash_conv, profile_exploitability, seat_best_response_gain};
 pub use mccfr::Mccfr;
 pub use rollout::Rollout;
 pub use search::AlphaBeta;
