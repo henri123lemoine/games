@@ -34,13 +34,20 @@ import { type ConformanceResult, runGoConformance } from "../frontends/go/confor
 /** What clicking a card starts: browser-tuned, no questions asked. Chess and
  * Go open against AlphaZero (Medium); with no WebGPU the driver runs the same
  * net on the CPU at the trivial budget. `sims` here is the AlphaZero budget. */
+/** The Pente AlphaZero net is trained at 19×19; single-sourced pin so the
+ * default and the buildOpts guard below can't drift. */
+const PENTE_AZ_SIZE = "19";
+
 const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   chess: { bot: "azero-gpu", sims: "256" },
   "liars-dice": { players: "5", dice: "5", rollouts: "400" },
   twentyone: { hearts: "3" },
   othello: { depth: "5" },
   connect4: { depth: "7" },
-  pente: { size: "19", depth: "4" },
+  // AlphaZero Pente is trained at 19×19 and the human opens (Black, seat 0); a
+  // ~88% first-player game, so the human gets the edge. The net plays the same
+  // VCF hybrid the native bot does.
+  pente: { size: PENTE_AZ_SIZE, bot: "azero-gpu", sims: "400" },
   go: { size: "19", bot: "azero-gpu", sims: "1500" },
   snake: { bot: "azero-gpu", sims: "128" },
   "2048": {},
@@ -161,7 +168,7 @@ const SHOWN_BOTS: Record<string, readonly string[]> = {
   othello: ["alphabeta"],
   connect4: ["alphabeta"],
   go: ["azero-gpu"],
-  pente: ["alphabeta"],
+  pente: ["azero-gpu", "alphabeta"],
   "2048": ["mcts"],
   snake: ["azero-gpu"],
 };
@@ -650,6 +657,13 @@ export class App {
         const allowed = new Set(CPU_LEVELS.map(([, v]) => v));
         if (!allowed.has(opts[diff.key] ?? "")) opts[diff.key] = String(TRIVIAL_SIMS);
       }
+    }
+    // The Pente AlphaZero net is trained at 19×19 and the client driver pins the
+    // board there, so force the engine match to 19 too whenever that bot plays —
+    // a stale size from the drawer would desync the page-side search from the
+    // engine board.
+    if (game.id === "pente" && effectiveBot(game, opts) === "azero-gpu") {
+      opts.size = PENTE_AZ_SIZE;
     }
     opts.seed ||= String(randomSeed());
     return opts;

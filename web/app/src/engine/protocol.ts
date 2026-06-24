@@ -105,6 +105,17 @@ export type EngineRequest =
       size: number;
       weights?: ArrayBuffer;
     }
+  | {
+      id: number;
+      op: 'penteNew';
+      sims: number;
+      leaves: number;
+      seed: number;
+      size: number;
+      vcfDepth: number;
+      vcfNodes: number;
+      weights?: ArrayBuffer;
+    }
   | { id: number; op: 'azPush'; uci: string }
   | { id: number; op: 'azAdvance'; priors: Float32Array; values: Float32Array }
   | { id: number; op: 'azPlayCpu' }

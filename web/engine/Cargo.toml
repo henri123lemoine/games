@@ -12,6 +12,7 @@ nn-infer = { path = "../../ml/nn-infer" }
 solvers = { path = "../../solvers", default-features = false }
 chess = { path = "../../games/chess" }
 go = { path = "../../games/go" }
+pente = { path = "../../games/pente" }
 snake = { path = "../../games/snake" }
 game-core = { workspace = true }
 lab = { path = "../../lab", default-features = false }

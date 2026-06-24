@@ -389,17 +389,31 @@ const PENTE_OPTS: &[OptSpec] = &[
         "0|1|watch",
         "(0=Black, plays the forced center first)",
     ),
-    opt("bot", "alphabeta|mcts|azero", ""),
+    opt(
+        "bot",
+        "alphabeta|mcts|azero|azero-gpu",
+        "(azero-gpu: browser only)",
+    ),
     bot_opt("depth", "4", "", &["alphabeta"]),
-    bot_opt("sims", "4000", "(azero default 400)", &["mcts", "azero"]),
+    bot_opt(
+        "sims",
+        "4000",
+        "(azero default 400)",
+        &["mcts", "azero", "azero-gpu"],
+    ),
     bot_opt("net", "data/azpente/azero-pente.azweb", "", &["azero"]),
     bot_opt(
         "vcf-nodes",
         "4000",
         "(move-time VCF node budget)",
-        &["azero"],
+        &["azero", "azero-gpu"],
     ),
-    bot_opt("vcf-depth", "8", "(VCF max attacker plies)", &["azero"]),
+    bot_opt(
+        "vcf-depth",
+        "8",
+        "(VCF max attacker plies)",
+        &["azero", "azero-gpu"],
+    ),
     opt("seed", "...", ""),
 ];
 
@@ -594,7 +608,20 @@ pub fn entries() -> Vec<Entry> {
             watch_bot: "",
             summary: "Pente (custodial capture + five-in-a-row) vs alpha-beta",
             opts: PENTE_OPTS,
-            make: Box::new(|o| make_versus(o, pente_game(o)?, "alphabeta", pente_bot)),
+            make: Box::new(|o| {
+                // The GPU AlphaZero seat is driven client-side (in-wasm search +
+                // WebGPU leaf forward + the move-time VCF hybrid); leave it
+                // externally driven so step() yields to the page, like
+                // go/chess azero-gpu. The client reads size/sims/vcf-* itself.
+                if o.str("bot", "alphabeta") == "azero-gpu" {
+                    return make_external_versus(
+                        o,
+                        pente_game(o)?,
+                        &["sims", "size", "vcf-nodes", "vcf-depth"],
+                    );
+                }
+                make_versus(o, pente_game(o)?, "alphabeta", pente_bot)
+            }),
             eval: Some(eval_entry(
                 "alphabeta[:depth=4] | mcts[:sims=4000] | random",
                 0,

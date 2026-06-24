@@ -5,6 +5,7 @@
 
 mod az;
 mod azgo;
+mod azpente;
 mod azsnake;
 mod mcts;
 
@@ -15,6 +16,7 @@ use wasm_bindgen::prelude::*;
 
 pub use az::AzChessBot;
 pub use azgo::AzGoBot;
+pub use azpente::AzPenteBot;
 pub use azsnake::AzSnakeBot;
 
 #[wasm_bindgen(start)]
@@ -166,6 +168,19 @@ pub(crate) fn eval_batch(
 /// `PLANES·size²`). Logit stride is `size²+1` (placements then pass).
 #[wasm_bindgen]
 pub fn go_reference_forward(
+    weights: &[u8],
+    features: &[f32],
+    n: usize,
+    size: usize,
+) -> Result<RefForward, JsError> {
+    ref_forward(weights, features, n, size)
+}
+
+/// The Pente reference forward over `n` positions (`features` flat, each
+/// `PLANES·size²`). Logit stride is `size²+1` (placements then the unused pass
+/// slot) — the same spatial head as go.
+#[wasm_bindgen]
+pub fn pente_reference_forward(
     weights: &[u8],
     features: &[f32],
     n: usize,

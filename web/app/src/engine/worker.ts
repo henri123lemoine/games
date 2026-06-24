@@ -4,6 +4,7 @@
 import init, {
   AzChessBot,
   AzGoBot,
+  AzPenteBot,
   AzSnakeBot,
   WebMatch,
   create_match,
@@ -18,9 +19,9 @@ import wasmUrl from 'web-engine/web_engine_bg.wasm?url';
 import type { EngineRequest, EngineResponse, ViewState } from './protocol';
 
 let match: WebMatch | null = null;
-// One client-driven search bot at a time; chess and go share the push/
+// One client-driven search bot at a time; chess, go, and pente share the push/
 // advance/best surface, so the rest of the az* ops are bot-agnostic.
-let azBot: AzChessBot | AzGoBot | null = null;
+let azBot: AzChessBot | AzGoBot | AzPenteBot | null = null;
 // Snake has its own surface: it reconstructs its search root from the view
 // JSON each move (chance nodes make move-mirroring unsound), so it does not
 // share the push/advance protocol.
@@ -92,6 +93,18 @@ function handle(req: EngineRequest): unknown {
     case 'goNew':
       azBot?.free();
       azBot = new AzGoBot(req.sims, req.leaves, req.seed, req.size);
+      if (req.weights) azBot.load_weights(new Uint8Array(req.weights));
+      return null;
+    case 'penteNew':
+      azBot?.free();
+      azBot = new AzPenteBot(
+        req.sims,
+        req.leaves,
+        req.seed,
+        req.size,
+        req.vcfDepth,
+        req.vcfNodes,
+      );
       if (req.weights) azBot.load_weights(new Uint8Array(req.weights));
       return null;
     case 'azPush': {

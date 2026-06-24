@@ -424,6 +424,7 @@ dependencies = [
  "go",
  "lab",
  "nn-infer",
+ "pente",
  "serde_json",
  "snake",
  "solvers",

@@ -127,6 +127,31 @@ export class EngineHost {
     return this.call({ op: 'goNew', sims, leaves, seed, size, weights }) as Promise<void>;
   }
 
+  /** Creates the in-wasm Pente AlphaZero bot (shares the `azPush`/`azAdvance`/
+   * `azBest`/`azPlayCpu` surface with chess and go). `weights` enables the
+   * in-wasm CPU path; `vcfDepth`/`vcfNodes` bound the move-time forcing solver
+   * the hybrid runs in front of the search. */
+  penteNew(
+    sims: number,
+    leaves: number,
+    seed: number,
+    size: number,
+    vcfDepth: number,
+    vcfNodes: number,
+    weights?: ArrayBuffer,
+  ): Promise<void> {
+    return this.call({
+      op: 'penteNew',
+      sims,
+      leaves,
+      seed,
+      size,
+      vcfDepth,
+      vcfNodes,
+      weights,
+    }) as Promise<void>;
+  }
+
   azPush(uci: string): Promise<void> {
     return this.call({ op: 'azPush', uci }) as Promise<void>;
   }

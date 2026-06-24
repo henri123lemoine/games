@@ -46,6 +46,7 @@ export const DIFFICULTY: Record<string, Difficulty> = {
   // still sharp, so Hard caps there. Easy/Medium stay snappy.
   "pente/alphabeta": { key: "depth", levels: [["Easy", "2"], ["Medium", "4"], ["Hard", "5"]] },
   "pente/mcts": { key: "sims", levels: [["Easy", "1000"], ["Medium", "4000"], ["Hard", "10000"]] },
+  "pente/azero-gpu": { key: "sims", levels: [["Trivial", "1"], ["Easy", "100"], ["Medium", "400"], ["Hard", "1000"]] },
   "go/mcts": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
   "go/mcts-eval": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
   "go/mcts-spec": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
