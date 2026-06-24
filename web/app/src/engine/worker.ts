@@ -121,6 +121,14 @@ function handle(req: EngineRequest): unknown {
       if (!azBot) throw new Error('no az bot');
       return azBot.final_result();
     }
+    case 'goEval': {
+      if (!(azBot instanceof AzGoBot)) throw new Error('no go bot');
+      return parseMaybe(azBot.eval());
+    }
+    case 'chessEval': {
+      if (!(azBot instanceof AzChessBot)) throw new Error('no chess bot');
+      return parseMaybe(azBot.eval());
+    }
     case 'snakeNew':
       snakeBot?.free();
       snakeBot = new AzSnakeBot(req.sims, req.leaves, req.seed);

@@ -11,8 +11,9 @@
 
 use std::collections::HashMap;
 
-use chess::{Board, Move, legal_moves};
-use game_core::Rng;
+use chess::encode::PlanesEncoder;
+use chess::{Board, Chess, Color, Move, legal_moves};
+use game_core::{PolicyValueEncoder, Rng};
 use nn_infer::Net;
 use solvers::azero::{EvalRequest, EvalResult, argmax};
 use wasm_bindgen::prelude::*;
@@ -227,6 +228,28 @@ impl AzChessBot {
         String::new()
     }
 
+    /// `{"value":…}` for the position-quality readout: one net forward on the
+    /// current root (no search, mirroring Go's snapshot). `value` is White's win
+    /// probability in `[0,1]` (the net's mover-POV tanh value flipped to White
+    /// and mapped from `[-1,1]`). The chess net has only a value head — no score
+    /// head — so the readout is win-probability only. Empty string until the net
+    /// is loaded (the GPU path skips `load_weights`).
+    pub fn eval(&self) -> String {
+        let Some(model) = self.model.as_ref() else {
+            return String::new();
+        };
+        let planes = PlanesEncoder.encode_state(&Chess, &self.board);
+        let value = f64::from(model.forward(&planes, &[]).value);
+        let to_white = if self.board.stm == Color::White {
+            1.0
+        } else {
+            -1.0
+        };
+        let white_value = (value * to_white).clamp(-1.0, 1.0);
+        let win_prob = ((white_value + 1.0) / 2.0).clamp(0.0, 1.0);
+        format!("{{\"value\":{win_prob}}}")
+    }
+
     /// `{"value":…,"sims":…}` — the root's searched value (side to move)
     /// and total visits, for a thinking readout.
     pub fn stats(&self) -> String {
@@ -241,5 +264,17 @@ impl AzChessBot {
             0.0
         };
         format!("{{\"value\":{value},\"sims\":{sims}}}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eval_is_empty_without_weights() {
+        // The GPU path never loads weights, so the readout must degrade quietly.
+        let bot = AzChessBot::new(8, 8, 1);
+        assert_eq!(bot.eval(), "");
     }
 }

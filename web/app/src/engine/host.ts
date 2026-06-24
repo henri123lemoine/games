@@ -4,8 +4,10 @@
 import type {
   AzBatch,
   AzBest,
+  ChessEval,
   EngineRequest,
   EngineResponse,
+  GoEval,
   Manifest,
   MatchEventData,
   ViewState,
@@ -148,6 +150,18 @@ export class EngineHost {
    * ownership net, or the board isn't settled enough to trust). */
   azFinalResult(): Promise<string> {
     return this.call({ op: 'azFinalResult' }) as Promise<string>;
+  }
+
+  /** One Go net forward on the current root for the position-quality readout,
+   * or `null` when the live bot is not a Go bot or carries no ownership head. */
+  goEval(): Promise<GoEval | null> {
+    return this.call({ op: 'goEval' }) as Promise<GoEval | null>;
+  }
+
+  /** One chess net forward on the current root for the position-quality
+   * readout, or `null` when the live bot is not a chess bot with weights. */
+  chessEval(): Promise<ChessEval | null> {
+    return this.call({ op: 'chessEval' }) as Promise<ChessEval | null>;
   }
 
   /** Creates the in-wasm snake AlphaZero bot. `weights` (the `.azweb` bytes)

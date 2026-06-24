@@ -14,6 +14,7 @@
 // Action labels are UCI coordinate moves ("e2e4"; promotions "e7e8q").
 
 import type { MatchEventData, ViewState } from '../../engine/protocol';
+import { chessEval } from './eval-bridge';
 import type { FrontendCtx, GameFrontend } from '../types';
 import { sleep } from '../types';
 
@@ -147,6 +148,8 @@ class ChessFrontend implements GameFrontend {
   private drag: DragState | null = null;
   private skipSlide = false;
   private promoFromDrag = false;
+  private unsubDebug: (() => void) | null = null;
+  private evalGen = 0;
 
   mount(host: HTMLElement, ctx: FrontendCtx): void {
     this.ctx = ctx;
@@ -237,6 +240,10 @@ class ChessFrontend implements GameFrontend {
         this.select(null);
       }
     });
+    this.unsubDebug = ctx.onDebugChange((on) => {
+      if (on) this.refreshEval();
+      else this.ctx.setDebugReadout([]);
+    });
   }
 
   render(state: ViewState): void {
@@ -245,6 +252,7 @@ class ChessFrontend implements GameFrontend {
     this.view = view;
     this.gameOver = state.isOver;
     this.syncAll();
+    this.refreshEval();
   }
 
   async animate(event: MatchEventData, after: ViewState): Promise<void> {
@@ -260,6 +268,7 @@ class ChessFrontend implements GameFrontend {
     if (move && scale > 0 && !skip) await this.slide(move, scale);
     this.view = view;
     this.syncAll();
+    this.refreshEval();
     if (scale > 0 && !skip) await sleep(SETTLE_MS * scale);
   }
 
@@ -284,7 +293,30 @@ class ChessFrontend implements GameFrontend {
     for (const from of this.moves.keys()) this.squareEls[from].classList.add('chess-sq-movable');
   }
 
+  /** Push the position-quality readout when debug is on. The eval is one wasm
+   * net forward — the chess net has only a value head, so the readout is the
+   * White win probability, nothing more. Skip it when debug is off and drop a
+   * result a newer settle has superseded. */
+  private refreshEval(): void {
+    if (!this.ctx.debug()) return;
+    const gen = ++this.evalGen;
+    void chessEval()
+      .then((e) => {
+        if (gen !== this.evalGen || !e) {
+          if (gen === this.evalGen) this.ctx.setDebugReadout([]);
+          return;
+        }
+        const pct = Math.round(e.value * 100);
+        this.ctx.setDebugReadout([`Win: ${pct}% (White)`]);
+      })
+      .catch(() => {
+        if (gen === this.evalGen) this.ctx.setDebugReadout([]);
+      });
+  }
+
   unmount(): void {
+    this.unsubDebug?.();
+    this.unsubDebug = null;
     this.host.replaceChildren();
   }
 

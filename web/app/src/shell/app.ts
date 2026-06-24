@@ -28,6 +28,8 @@ import {
   splitSpecs,
 } from "./config";
 import { TournamentScreen } from "./tournament";
+import { getGoGpu, getGoWeights } from "../bots/azero-go";
+import { type ConformanceResult, runGoConformance } from "../frontends/go/conformance";
 
 /** What clicking a card starts: browser-tuned, no questions asked. Chess and
  * Go open against AlphaZero (Medium); with no WebGPU the driver runs the same
@@ -711,6 +713,10 @@ export class App {
       this.clientBot = makeBot ? await makeBot(this.host, opts) : null;
       if (gen !== this.gen) return;
       if (this.clientBot?.cpuFallback) this.showCpuNote(this.clientBot.cpuFallback);
+      // The GPU bot booted with no CPU-fallback note, so WebGPU really ran:
+      // validate this device's forward against the reference, non-blocking.
+      if (game.id === "go" && usesAzeroGpu && !this.clientBot?.cpuFallback)
+        void this.checkGoConformance();
       this.setStatus(st.humanSeat < 0 ? "Bots playing…" : "Thinking…");
       void this.runLoop(gen);
     } catch (e) {
@@ -778,6 +784,7 @@ export class App {
         </header>
         ${this.quickControlsHtml(game, opts)}
         <div class="cpu-note" hidden></div>
+        <div class="cpu-note gpu-mismatch-note" hidden></div>
         <div class="match-body${game.solo || BOARD_NATIVE_REALTIME.has(game.id) ? " match-body--solo" : ""}">
           <section class="board"></section>
           ${this.sideHtml(game)}
@@ -878,6 +885,54 @@ export class App {
       text ??
       "CPU FALLBACK ACTIVE: No compatible WebGPU device was detected. AlphaZero is running on the CPU, so only the Trivial and Light levels are offered. Open it in a WebGPU browser (recent Chrome/Edge) for the full difficulty ladder.";
     note.hidden = false;
+  }
+
+  /** Persistent warning that this device's WebGPU forward diverges from the
+   * reference. Warn-only: the bot keeps running on the GPU it booted. */
+  private showGpuMismatchNote(msg: string): void {
+    const note = this.root.querySelector<HTMLElement>(".gpu-mismatch-note");
+    if (!note) return;
+    note.textContent = msg;
+    note.hidden = false;
+  }
+
+  /** Confirms this device computes the go net the same as the reference,
+   * warning the visitor if it does not. Reuses the GPU device + weights the bot
+   * just booted, runs once per device per net version (cached in localStorage),
+   * and never blocks the bot's first move. */
+  private async checkGoConformance(): Promise<void> {
+    const gen = this.gen;
+    try {
+      const [gpu, weights] = await Promise.all([getGoGpu(), getGoWeights()]);
+      const key = goSelfcheckKey(weights);
+      const cached = readSelfcheck(key);
+      if (cached?.pass) {
+        console.info("[go-selfcheck] cached pass; skipping re-run");
+        return;
+      }
+      const result = await runGoConformance(gpu, weights, { limit: 10 });
+      if (gen !== this.gen) return;
+      writeSelfcheck(key, result);
+      console.info(
+        `[go-selfcheck] pass=${result.pass} maxDp=${result.maxDp.toExponential(2)} ` +
+          `maxDv=${result.maxDv.toExponential(2)} over ${result.count} fixtures`,
+      );
+      if (!result.pass) this.reportGoMismatch(result);
+    } catch (e) {
+      console.info(`[go-selfcheck] skipped: ${message(e)}`);
+    }
+  }
+
+  private reportGoMismatch(result: ConformanceResult): void {
+    const where = result.worst
+      ? ` at ply ${result.worst.plies}, ${result.worst.size}×${result.worst.size}`
+      : "";
+    this.showGpuMismatchNote(
+      `Inference check: this browser's GPU computes the AlphaZero network ` +
+        `differently from the reference (max policy Δ ${result.maxDp.toExponential(2)}, ` +
+        `value Δ ${result.maxDv.toExponential(2)}${where}). Move quality may be ` +
+        `degraded on this device.`,
+    );
   }
 
   /** The match side panel: status + move log for the turn-based versus games,
@@ -1455,6 +1510,36 @@ export class App {
 
 function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/** Cheap net-version signature: byte length plus a few sampled bytes, so the
+ * cached verdict is invalidated whenever the shipped weights change. */
+function goSelfcheckKey(weights: ArrayBuffer): string {
+  const b = new Uint8Array(weights);
+  const n = b.length;
+  const sample = n
+    ? [b[0], b[(n >> 2) | 0], b[(n >> 1) | 0], b[((3 * n) >> 2) | 0], b[n - 1]].join(".")
+    : "0";
+  return `azeroGoSelfcheck:${n}:${sample}`;
+}
+
+/** A passing cached verdict skips the re-run; a cached FAIL is overwritten so a
+ * driver update that fixes the divergence can clear the warning. */
+function readSelfcheck(key: string): ConformanceResult | null {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as ConformanceResult) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSelfcheck(key: string, result: ConformanceResult): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(result));
+  } catch {
+    // localStorage may be unavailable/full; the check still warns this session.
+  }
 }
 
 export type { Manifest, ViewState };

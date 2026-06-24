@@ -2,20 +2,14 @@
 // page): checks the kernels against nn-infer's reference forward over the
 // committed fixtures, compares the WebGPU and in-wasm CPU forwards head-to-head
 // (the exact two backends the bot picks between at runtime), then measures
-// throughput at an MCTS-ish batch.
+// throughput at an MCTS-ish batch. The per-fixture comparison is the same
+// helper the live per-visitor self-check runs, so the dev gate and the field
+// alarm can never drift.
 
-import init, { go_reference_forward } from 'web-engine';
+import init from 'web-engine';
 import wasmUrl from 'web-engine/web_engine_bg.wasm?url';
-import { GoGpu, PLANES, policyLen, softmaxOver } from './frontends/go/azgpu';
-
-interface Fixture {
-  size: number;
-  plies: number;
-  planes: number[];
-  support: number[];
-  priors: number[];
-  value: number;
-}
+import { GoGpu, PLANES, policyLen } from './frontends/go/azgpu';
+import { compareFixture, fetchFixtures } from './frontends/go/conformance';
 
 const logEl = document.getElementById('log')!;
 logEl.innerHTML = '';
@@ -28,7 +22,7 @@ const log = (html: string): void => {
     const base = import.meta.env.BASE_URL;
     const [bin, fixtures] = await Promise.all([
       fetch(`${base}azero/azero-go.azweb`).then((r) => r.arrayBuffer()),
-      fetch(`${base}azero/go-fixtures.json`).then((r) => r.json() as Promise<Fixture[]>),
+      fetchFixtures(),
     ]);
     const gpu = await GoGpu.init(bin);
     log(
@@ -37,16 +31,21 @@ const log = (html: string): void => {
     );
     const stride = policyLen(gpu.model.size);
 
+    // The reference forward runs in-wasm, so init the engine before comparing.
+    await init({ module_or_path: wasmUrl });
+    const weights = new Uint8Array(bin);
+
     let maxDp = 0;
     let maxDv = 0;
+    let maxGpuCpuP = 0;
+    let maxGpuCpuV = 0;
     for (const fx of fixtures) {
-      const { logits, values } = await gpu.forward(new Float32Array(fx.planes), 1, fx.size);
-      const priors = softmaxOver(logits, fx.support);
-      fx.priors.forEach((p, i) => {
-        maxDp = Math.max(maxDp, Math.abs(p - priors[i]));
-      });
-      maxDv = Math.max(maxDv, Math.abs(values[0] - fx.value));
-      log(`fixture @ply ${fx.plies}  v=${values[0].toFixed(4)} (exp ${fx.value.toFixed(4)})`);
+      const cmp = await compareFixture(gpu, weights, fx);
+      maxDp = Math.max(maxDp, cmp.dpVsGolden);
+      maxDv = Math.max(maxDv, cmp.dvVsGolden);
+      maxGpuCpuP = Math.max(maxGpuCpuP, cmp.dpVsRef);
+      maxGpuCpuV = Math.max(maxGpuCpuV, cmp.dvVsRef);
+      log(`fixture @ply ${fx.plies}  v=${cmp.gpuValue.toFixed(4)} (exp ${fx.value.toFixed(4)})`);
     }
     const pass = maxDp < 1e-3 && maxDv < 1e-3;
     log(
@@ -60,21 +59,6 @@ const log = (html: string): void => {
     // Live GPU-vs-CPU calibration: the no-GPU fallback plays this same net
     // through the wasm reference forward, so confirm the two backends a real
     // visitor's browser picks between agree on the same positions.
-    await init({ module_or_path: wasmUrl });
-    const weights = new Uint8Array(bin);
-    let maxGpuCpuP = 0;
-    let maxGpuCpuV = 0;
-    for (const fx of fixtures) {
-      const planes = new Float32Array(fx.planes);
-      const g = await gpu.forward(planes, 1, fx.size);
-      const c = go_reference_forward(weights, planes, 1, fx.size);
-      const gp = softmaxOver(g.logits, fx.support);
-      const cp = softmaxOver(c.logits, fx.support);
-      gp.forEach((p, i) => {
-        maxGpuCpuP = Math.max(maxGpuCpuP, Math.abs(p - cp[i]));
-      });
-      maxGpuCpuV = Math.max(maxGpuCpuV, Math.abs(g.values[0] - c.values[0]));
-    }
     const calPass = maxGpuCpuP < 1e-3 && maxGpuCpuV < 1e-3;
     log(
       `GPU vs CPU (live): max |Δprior| = <span class="brass">${maxGpuCpuP.toExponential(2)}</span>, ` +

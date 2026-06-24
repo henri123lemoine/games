@@ -156,6 +156,29 @@ impl AzGoBot {
             .is_some_and(|own| self.game.result_decided(&own, TAU))
     }
 
+    /// `{"value":…,"scoreLead":…}` for the position-quality readout: one net
+    /// forward on the current root. `value` is Black's win probability in
+    /// `[0,1]` (the net's mover-view value, flipped to Black and mapped from
+    /// `[-1,1]`); `scoreLead` is the expected Black−White point lead from the
+    /// summed Black-positive ownership minus komi, Black POV. Empty string
+    /// without an ownership-carrying net (no usable score signal).
+    pub fn eval(&self) -> String {
+        let Some(model) = self.model.as_ref() else {
+            return String::new();
+        };
+        let planes = self.enc.encode_state(&self.game, &self.state);
+        let out = model.forward_at(&planes, &[], self.size);
+        let Some(mover_own) = out.ownership else {
+            return String::new();
+        };
+        let to_black = if self.state.to_move() == 0 { 1.0 } else { -1.0 };
+        let black_value = f64::from(out.value) * to_black;
+        let win_prob = (black_value + 1.0) / 2.0;
+        let owned: f64 = mover_own.iter().map(|o| f64::from(*o) * to_black).sum();
+        let score_lead = owned - self.game.komi();
+        format!("{{\"value\":{win_prob},\"scoreLead\":{score_lead}}}")
+    }
+
     /// The adjudicated final result (dead stones scored by ownership) as display
     /// text, or `""` when there is no ownership net or the board is not settled
     /// enough to trust — in which case the engine's literal score stands.
@@ -386,6 +409,62 @@ mod tests {
         bot.load_weights(&synth_net(2, 6, 3, None)).unwrap();
         assert!(bot.ownership_abs().is_none());
         assert_eq!(bot.final_result(), "");
+    }
+
+    /// `eval`'s score lead must equal the summed Black-positive ownership minus
+    /// komi, and its value must be the Black-POV win probability — both
+    /// expressed via the already-trusted `ownership_abs` + the raw mover value,
+    /// so a sign or POV regression in `eval` is caught regardless of the net's
+    /// particular ownership pattern.
+    #[test]
+    fn eval_matches_black_pov_ownership_and_value() {
+        let mut bot = AzGoBot::new(4, 8, 7, 3);
+        bot.load_weights(&synth_net(2, 6, 3, Some(0.1))).unwrap();
+        let check = |bot: &AzGoBot| {
+            let j: serde_json::Value = serde_json::from_str(&bot.eval()).unwrap();
+            let (value, lead) = (
+                j["value"].as_f64().unwrap(),
+                j["scoreLead"].as_f64().unwrap(),
+            );
+            let own: f64 = bot
+                .ownership_abs()
+                .unwrap()
+                .iter()
+                .map(|o| f64::from(*o))
+                .sum();
+            assert!((lead - (own - bot.game.komi())).abs() < 1e-4);
+
+            let planes = bot.enc.encode_state(&bot.game, &bot.state);
+            let raw = f64::from(
+                bot.model
+                    .as_ref()
+                    .unwrap()
+                    .forward_at(&planes, &[], bot.size)
+                    .value,
+            );
+            let to_black = if bot.state.to_move() == 0 { 1.0 } else { -1.0 };
+            let expect = (raw * to_black + 1.0) / 2.0;
+            assert!(
+                (value - expect).abs() < 1e-4,
+                "value={value} expect={expect}"
+            );
+            assert!(
+                (0.0..=1.0).contains(&value),
+                "win prob in [0,1], got {value}"
+            );
+        };
+        assert_eq!(bot.state.to_move(), 0);
+        check(&bot);
+        bot.push("b2").unwrap();
+        assert_eq!(bot.state.to_move(), 1);
+        check(&bot);
+    }
+
+    #[test]
+    fn eval_is_empty_without_an_ownership_net() {
+        let mut bot = AzGoBot::new(4, 8, 7, 3);
+        bot.load_weights(&synth_net(2, 6, 3, None)).unwrap();
+        assert_eq!(bot.eval(), "");
     }
 
     #[test]

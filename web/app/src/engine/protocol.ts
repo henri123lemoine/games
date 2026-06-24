@@ -110,6 +110,8 @@ export type EngineRequest =
   | { id: number; op: 'azPlayCpu' }
   | { id: number; op: 'azFinalResult' }
   | { id: number; op: 'azBest' }
+  | { id: number; op: 'goEval' }
+  | { id: number; op: 'chessEval' }
   | {
       id: number;
       op: 'snakeNew';
@@ -137,6 +139,20 @@ export interface AzBatch {
 export interface AzBest {
   uci: string;
   stats: { value: number; sims: number };
+}
+
+/** Position-quality readout from one Go net forward (value + ownership head).
+ * `value` is Black's win probability in `[0,1]`; `scoreLead` is the expected
+ * Black−White point lead in stones (Black POV, komi already subtracted). */
+export interface GoEval {
+  value: number;
+  scoreLead: number;
+}
+
+/** Position-quality readout from one chess net forward (value head only — the
+ * net has no score head). `value` is White's win probability in `[0,1]`. */
+export interface ChessEval {
+  value: number;
 }
 
 export type EngineResponse =

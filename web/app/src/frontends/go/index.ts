@@ -8,6 +8,7 @@
 //   {move: "c3"|"pass", seat, point?, captured?: number[]}
 
 import type { MatchEventData, ViewState } from '../../engine/protocol';
+import { goEval } from './eval-bridge';
 import type { FrontendCtx, GameFrontend } from '../types';
 import { sleep } from '../types';
 
@@ -109,7 +110,8 @@ const CSS = `
 .go-turn-chip { align-self: center; display: flex; align-items: center; gap: 8px; padding: 7px 14px;
   border-radius: 999px; background: var(--bg-inset); border: 1px solid var(--border);
   font-size: 13px; color: var(--text-dim); white-space: nowrap; }
-.go-turn-dot { width: 11px; height: 11px; border-radius: 50%; flex: none;
+.go-turn-chip:has(.go-turn-text:empty) { padding: 7px 11px; }
+.go-turn-dot { width: 13px; height: 13px; border-radius: 50%; flex: none;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .25), 0 1px 2px rgba(0, 0, 0, .4); }
 .go-board-wrap { position: relative; width: 100%; max-width: min(74vh, 640px); margin: 0 auto; }
 .go-svg { display: block; width: 100%; height: auto; border-radius: 12px;
@@ -175,6 +177,8 @@ class GoFrontend implements GameFrontend {
   private labelIndex = new Map<string, number>();
   private legalPoints = new Set<number>();
   private stoneEls = new Map<number, SVGCircleElement>();
+  private unsubDebug: (() => void) | null = null;
+  private evalGen = 0;
 
   mount(host: HTMLElement, ctx: FrontendCtx): void {
     this.ctx = ctx;
@@ -184,13 +188,13 @@ class GoFrontend implements GameFrontend {
         <div class="go-hud">
           <div class="go-player" data-seat="0">
             <span class="go-stone-icon go-stone-icon-b"></span>
-            <span class="go-pinfo"><span class="go-pname">Black</span><span class="go-psub"></span><span class="seat-slot" data-seat="0"></span></span>
+            <span class="go-pinfo"><span class="go-pname">Black</span><span class="seat-slot" data-seat="0"></span></span>
             <span class="go-pcaps"><b>0</b>captures</span>
           </div>
           <div class="go-turn-chip"><span class="go-turn-dot"></span><span class="go-turn-text"></span></div>
           <div class="go-player" data-seat="1">
             <span class="go-stone-icon go-stone-icon-w"></span>
-            <span class="go-pinfo"><span class="go-pname">White</span><span class="go-psub"></span><span class="seat-slot" data-seat="1"></span></span>
+            <span class="go-pinfo"><span class="go-pname">White</span><span class="seat-slot" data-seat="1"></span></span>
             <span class="go-pcaps"><b>0</b>captures</span>
           </div>
         </div>
@@ -208,12 +212,6 @@ class GoFrontend implements GameFrontend {
     this.turnChip = host.querySelector('.go-turn-chip')!;
     this.plaques = [...host.querySelectorAll<HTMLElement>('.go-player')];
     this.capEls = this.plaques.map((p) => p.querySelector<HTMLElement>('.go-pcaps b')!);
-    for (const [seat, plaque] of this.plaques.entries()) {
-      const sub = plaque.querySelector<HTMLElement>('.go-psub')!;
-      const bits = [seat === ctx.humanSeat ? 'you' : 'bot'];
-      if (seat === 1) bits.push(`+${this.view?.komi ?? 7.5} komi`);
-      sub.textContent = bits.join(' · ');
-    }
     if (ctx.humanSeat < 0) this.passBtn.style.display = 'none';
     this.passBtn.onclick = () => {
       const idx = this.labelIndex.get('pass');
@@ -221,6 +219,10 @@ class GoFrontend implements GameFrontend {
       this.setInteractive(false);
       this.ctx.submit(String(idx));
     };
+    this.unsubDebug = ctx.onDebugChange((on) => {
+      if (on) this.refreshEval();
+      else this.ctx.setDebugReadout([]);
+    });
   }
 
   private xy(p: number): { x: number; y: number } {
@@ -386,10 +388,11 @@ class GoFrontend implements GameFrontend {
     const text = this.turnChip.querySelector<HTMLElement>('.go-turn-text')!;
     if (state.isOver) {
       text.textContent = 'Game over';
-      dot.style.background = 'var(--text-dim)';
+      dot.style.display = 'none';
       this.plaques.forEach((pl) => pl.classList.remove('go-active'));
     } else {
-      text.textContent = v.turn === 0 ? 'Black to move' : 'White to move';
+      text.textContent = '';
+      dot.style.display = '';
       dot.style.background =
         v.turn === 0
           ? 'radial-gradient(circle at 35% 30%, #7c8088, #0a0a0d)'
@@ -397,6 +400,7 @@ class GoFrontend implements GameFrontend {
       this.plaques.forEach((pl, seat) => pl.classList.toggle('go-active', seat === v.turn));
     }
     if (state.toAct !== state.humanSeat) this.setInteractive(false);
+    this.refreshEval();
   }
 
   async animate(event: MatchEventData, after: ViewState): Promise<void> {
@@ -440,6 +444,34 @@ class GoFrontend implements GameFrontend {
     }
   }
 
+  /** Push the position-quality readout when debug is on. The eval is one wasm
+   * net forward; skip it entirely when debug is off (no compute spent) and drop
+   * a result that a newer settle has superseded. */
+  private refreshEval(): void {
+    if (!this.ctx.debug()) return;
+    const komi = this.view?.komi ?? 7.5;
+    const gen = ++this.evalGen;
+    void goEval()
+      .then((e) => {
+        if (gen !== this.evalGen) return;
+        if (!e) {
+          this.ctx.setDebugReadout([`Komi: ${komi}`]);
+          return;
+        }
+        const lead = e.scoreLead;
+        const score = lead >= 0 ? `B+${lead.toFixed(1)}` : `W+${(-lead).toFixed(1)}`;
+        const pct = Math.round(e.value * 100);
+        this.ctx.setDebugReadout([
+          `Score: ${score}`,
+          `Win: ${pct}% (Black)`,
+          `Komi: ${komi}`,
+        ]);
+      })
+      .catch(() => {
+        if (gen === this.evalGen) this.ctx.setDebugReadout([`Komi: ${komi}`]);
+      });
+  }
+
   promptAction(labels: string[]): void {
     this.labelIndex = new Map(labels.map((l, i) => [l, i]));
     this.legalPoints = new Set(
@@ -450,7 +482,10 @@ class GoFrontend implements GameFrontend {
     this.setInteractive(true);
   }
 
-  unmount(): void {}
+  unmount(): void {
+    this.unsubDebug?.();
+    this.unsubDebug = null;
+  }
 }
 
 export function createGoFrontend(): GameFrontend {
