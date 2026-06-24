@@ -466,10 +466,18 @@ export class App {
     history.replaceState(null, "", `#/g/${game.id}${q}`);
   }
 
+  /** Show the corner "‹ Games" crumb (beside the site link) on every screen
+   * except the home grid, where it would point back to where you already are. */
+  private setGamesLink(visible: boolean): void {
+    const el = document.querySelector<HTMLElement>("[data-games-link]");
+    if (el) el.hidden = !visible;
+  }
+
   // ---------- home ----------
 
   private renderHome(): void {
     this.teardown();
+    this.setGamesLink(false);
     const cards = this.manifest.games
       .map(
         (g) => `
@@ -563,7 +571,6 @@ export class App {
     this.root.innerHTML = `
       <div class="match doom-screen">
         <header class="match-bar">
-          <button type="button" class="back">games</button>
           <span class="match-title">DOOD</span>
           <span class="spacer"></span>
           <span class="muted doom-note">self-play bot · click the frame, then fight</span>
@@ -573,8 +580,7 @@ export class App {
             allow="autoplay; fullscreen"></iframe>
         </div>
       </div>`;
-    this.root.querySelector<HTMLButtonElement>(".back")!.onclick = () =>
-      this.navTo("/");
+    this.setGamesLink(true);
   }
 
   /** Coil: the lab's own real-time game, played against the PPO-trained
@@ -585,15 +591,13 @@ export class App {
     this.root.innerHTML = `
       <div class="match slither-screen">
         <header class="match-bar">
-          <button type="button" class="back">games</button>
           <span class="match-title">Coil</span>
           <span class="spacer"></span>
           <span class="muted">vs. the trained encircle bot · runs in your browser</span>
         </header>
         <div class="slither-mount"></div>
       </div>`;
-    this.root.querySelector<HTMLButtonElement>(".back")!.onclick = () =>
-      this.navTo("/");
+    this.setGamesLink(true);
     const mount = this.root.querySelector<HTMLElement>(".slither-mount")!;
     const { SlitherScreen } = await import("../frontends/slither");
     // A navigation during the dynamic import bumps `gen`; bail rather than
@@ -609,6 +613,7 @@ export class App {
 
   private renderTournament(): void {
     this.teardown();
+    this.setGamesLink(true);
     this.tourney = new TournamentScreen(
       this.root,
       this.manifest.compare,
@@ -789,7 +794,6 @@ export class App {
     this.root.innerHTML = `
       <div class="match">
         <header class="match-bar">
-          <button type="button" class="back">games</button>
           <span class="match-title">${esc(game.name || game.id)}</span>
           <span class="spacer"></span>
           ${speedControl}
@@ -821,8 +825,7 @@ export class App {
     const debugCheck = this.root.querySelector<HTMLInputElement>(".debug-check");
     if (debugCheck)
       debugCheck.onchange = () => this.setDebug(debugCheck.checked);
-    this.root.querySelector<HTMLButtonElement>(".back")!.onclick = () =>
-      this.navTo("/");
+    this.setGamesLink(true);
     this.root.querySelector<HTMLButtonElement>(".again")!.onclick = () =>
       void this.startMatch(game, mode, { ...opts, seed: String(randomSeed()) });
     const speed = this.root.querySelector<HTMLSelectElement>(".speed");

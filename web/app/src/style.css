@@ -88,11 +88,19 @@ body {
   transform: scale(1.1);
 }
 
-.home-link {
+/* Top-left corner navigation: the back-to-site link and, once you're inside a
+   game, a matching back-to-games crumb beside it. Both read as the same quiet
+   control, so the hierarchy (site › games › this game) is legible at a glance. */
+.corner-nav {
   position: fixed;
   top: 1rem;
   left: 1rem;
   z-index: 50;
+  display: flex;
+  align-items: center;
+}
+
+.home-link {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -103,6 +111,30 @@ body {
   color: var(--text-dim);
   text-decoration: none;
   transition: color 0.2s ease;
+}
+
+/* The shell toggles [hidden] on the games crumb per route; .home-link sets an
+   explicit display, so the attribute needs its own rule to win. */
+.home-link[hidden] {
+  display: none;
+}
+
+/* A hairline sets the games crumb apart from the site link. */
+.games-link {
+  position: relative;
+  margin-left: 2px;
+  padding-left: 13px;
+}
+
+.games-link::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 1px;
+  height: 15px;
+  background: var(--border);
+  transform: translateY(-50%);
 }
 
 .home-link-arrow {
@@ -806,45 +838,6 @@ button {
   font-size: 1.1em;
 }
 
-/* The back-to-games control: a quiet rounded chip with a leading arrow that
-   nudges left on hover — reads as a deliberate button, not an underlined
-   afterthought. */
-.back {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 13px 5px 11px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg-inset);
-  color: var(--text-dim);
-  font-size: 0.85rem;
-  font-weight: 500;
-  line-height: 1;
-  text-decoration: none;
-  transition:
-    color 0.18s ease,
-    border-color 0.18s ease,
-    background 0.18s ease;
-}
-
-.back::before {
-  content: "←";
-  font-size: 1.05em;
-  transition: transform 0.18s ease;
-}
-
-.back:hover {
-  color: var(--text);
-  border-color: var(--accent);
-  background: var(--bg-raised);
-}
-
-.back:hover::before {
-  transform: translateX(-3px);
-  color: var(--accent);
-}
-
 /* ---------- seat roster ---------- */
 
 .roster {
@@ -1008,11 +1001,6 @@ button {
 
   .link {
     padding: 8px 8px;
-  }
-
-  .back {
-    min-height: 40px;
-    padding: 8px 16px 8px 14px;
   }
 }
 
