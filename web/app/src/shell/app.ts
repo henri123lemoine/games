@@ -143,23 +143,36 @@ interface RosterBot {
   sendsBot: boolean;
 }
 
-/** Bots the web hides from selection. `azero` is the old CPU MLP net (random
- * strength — superseded by `azero-gpu`, which now also runs on the CPU via the
- * reference forward). `mcts-eval`/`mcts-spec` are research variants of plain
- * `mcts` that only clutter a play page (kept in the registry for the lab); the
- * site offers one "MCTS". */
-const HIDDEN_BOTS = new Set(["azero", "mcts-eval", "mcts-spec"]);
+/** Opt-in allowlist of the opponents each game publishes on the site, keyed by
+ * `game.id` and listed in display order. The lab registry declares *every* bot
+ * (including research variants like `mcts-eval`/`mcts-spec` and the obsolete CPU
+ * `azero` net); the public arcade shows only what is listed here. A game absent
+ * here — or a bot not in its list — is hidden by default, so nothing new leaks
+ * onto the site until it is deliberately published. (`azero-gpu` is the trained
+ * net: WebGPU when the browser has it, the identical in-wasm CPU forward
+ * otherwise — one opponent, never a GPU/CPU choice; the superseded `azero` net
+ * is simply never listed.) */
+const SHOWN_BOTS: Record<string, readonly string[]> = {
+  chess: ["azero-gpu", "alphabeta", "alphabeta-rich"],
+  "liars-dice": ["rollout", "belief", "random"],
+  poker: ["equity", "rollout", "call", "random"],
+  othello: ["alphabeta", "mcts"],
+  connect4: ["alphabeta", "mcts"],
+  go: ["azero-gpu"],
+  pente: ["alphabeta", "mcts", "random"],
+  "2048": ["mcts"],
+  snake: ["azero-gpu", "mcts"],
+};
 
-/** Opponents a seat can be filled with. Reads the game's `bot` schema (real
- * bots), or the synthetic solver for games without one. AlphaZero (`azero-gpu`)
- * is always offered — it falls back to the in-wasm CPU forward where WebGPU is
- * missing, so it is never a dead choice. */
+/** Opponents a seat can be filled with: the game's published [`SHOWN_BOTS`]
+ * allowlist intersected with the bots the engine actually declares, or the
+ * synthetic solver for games without a `bot` schema. */
 function rosterBots(game: GameInfo): RosterBot[] {
   const spec = game.optsSchema.find((o) => o.key === "bot");
   if (!spec) return [SOLVER_OPPONENT];
-  return spec.value
-    .split("|")
-    .filter((b) => !HIDDEN_BOTS.has(b))
+  const available = new Set(spec.value.split("|"));
+  return (SHOWN_BOTS[game.id] ?? [])
+    .filter((b) => available.has(b))
     .map((b) => ({ value: b, label: botLabel(b), sendsBot: true }));
 }
 
