@@ -12,9 +12,14 @@
 //! Stage-B fitted-value-iteration target); [`DiceShareValue`] is the Stage-A
 //! heuristic placeholder.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use game_core::hash::combine;
 use game_core::{Game, Turn};
+use solvers::azero::{InferCache, Mlp};
 
+use crate::features::encode;
 use crate::{Action, HIST_K, LdState, LiarsDice, MAX_FACES, MAX_PLAYERS};
 
 /// Expected game return for `player` given the post-round dice vector and who
@@ -64,6 +69,97 @@ impl ContinuationValue for DiceShareValue {
         // total > 0 here: alive >= 2 means at least two seats hold a die.
         let win_prob = f64::from(dice_left[player]) / total as f64;
         win_prob - (1.0 - win_prob) / (n as f64 - 1.0)
+    }
+}
+
+/// `(dice_vector, next_opener) -> per-seat zero-sum continuation values`, the
+/// per-round memo guarding [`NetValue`]'s bounded set of net forwards.
+type ContMemo = Mutex<HashMap<(Vec<u8>, usize), Vec<f64>>>;
+
+/// Stage-B continuation backed by the policy/value net's value head — the
+/// fitted-value-iteration target. A leaf's value is the net's own prediction of
+/// the game equity from the round-opening public state, so solving rounds
+/// against it and training the value head on the backed-up round-leaf values is
+/// one Bellman backup per training iteration (fitted value iteration).
+///
+/// The continuation is *not* a pure function of the dice vector: the value head
+/// reads the round-opening public state, which carries who opens next, so the
+/// positional opener effect is captured (unlike [`DiceShareValue`]). Per
+/// `(dice_vector, next_opener)` the per-seat raw values are read once and then
+/// zero-sum normalized (the mean is subtracted) so they sum to ~0 on the game's
+/// `+1 / -1/(n-1)` scale — keeping the continuation consistent with the terminal
+/// returns even though the net's tanh head is only approximately zero-sum.
+///
+/// A single round queries only ~2n distinct keys (the post-round dice vectors,
+/// each opened by either live seat), so the per-round [`Mutex`]-guarded memo is
+/// uncontended and the net forwards are bounded. The memo makes the type `Sync`,
+/// so a fresh `NetValue` per round can safely reference the shared `&Mlp` /
+/// `&InferCache` across rayon's parallel data generation.
+pub struct NetValue<'a> {
+    net: &'a Mlp,
+    cache: &'a InferCache,
+    players: u8,
+    faces: u8,
+    memo: ContMemo,
+}
+
+impl<'a> NetValue<'a> {
+    pub fn new(net: &'a Mlp, cache: &'a InferCache, players: u8, faces: u8) -> Self {
+        Self {
+            net,
+            cache,
+            players,
+            faces,
+            memo: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Per-seat zero-sum continuation values for `(dice_left, next_opener)`,
+    /// computed by reading the value head at the round-opening public state from
+    /// each seat's perspective and subtracting the mean.
+    fn compute(&self, dice_left: &[u8], next_opener: usize) -> Vec<f64> {
+        let n = dice_left.len();
+        let mut dice = [0u8; MAX_PLAYERS];
+        dice[..n].copy_from_slice(dice_left);
+        // The round-opening public state (hands unrolled, the opener to act). A
+        // free open (`first_round = false`) matches every continuing round; the
+        // value head only reads the public dice vector / opener position, which
+        // this reconstructs exactly. `DiceShareValue` here is inert — the
+        // opening state is terminal-free, so the continuation is never queried.
+        let round = RoundSubgame::new(
+            self.players,
+            1,
+            self.faces,
+            dice,
+            next_opener as u8,
+            false,
+            1,
+            DiceShareValue,
+        );
+        let opening = round.initial_state();
+        let feat = LiarsDice::new(self.players, 1, self.faces);
+        let mut raw = vec![0.0f64; n];
+        for (q, slot) in raw.iter_mut().enumerate() {
+            let x = encode(&feat, &opening, q);
+            let (_, v) = self.net.policy_value_cached(self.cache, &x, &[]);
+            *slot = f64::from(v);
+        }
+        let mean = raw.iter().sum::<f64>() / n as f64;
+        for r in &mut raw {
+            *r -= mean;
+        }
+        raw
+    }
+}
+
+impl ContinuationValue for NetValue<'_> {
+    fn value(&self, _faces: u8, dice_left: &[u8], next_opener: usize, player: usize) -> f64 {
+        let key = (dice_left.to_vec(), next_opener);
+        let mut memo = self.memo.lock().expect("net-value memo poisoned");
+        let vals = memo
+            .entry(key)
+            .or_insert_with(|| self.compute(dice_left, next_opener));
+        vals[player]
     }
 }
 

@@ -34,7 +34,7 @@ pub use solve::{
     FitConfig, FitResult, LatticeValue, decomposed_game_value, decomposed_value_capped,
     entry_round_value, fit_capped, fit_two_player, round_exploitabilities,
 };
-pub use subgame::{ContinuationValue, DiceShareValue, RoundSubgame};
+pub use subgame::{ContinuationValue, DiceShareValue, NetValue, RoundSubgame};
 
 pub const MAX_FACES: usize = 6;
 pub const MAX_PLAYERS: usize = 8;

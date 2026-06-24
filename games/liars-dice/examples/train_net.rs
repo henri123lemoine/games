@@ -1,13 +1,17 @@
 //! Train the Liar's Dice policy/value net by distilling per-round CFR/MCCFR
 //! equilibria (see [`liars_dice::train`]). CPU only.
 //!
+//! `warmup_iters` solves against the fixed dice-share heuristic; afterwards the
+//! net's own value head closes the round leaves (fitted value iteration). Set
+//! `warmup_iters >= iters` to reproduce the pure-distillation baseline.
+//!
 //!     # quick smoke run (~1-2 min)
 //!     cargo run --release -p liars-dice --example train_net -- \
 //!         iters=3 rounds_per_iter=80 hidden=128 threads=4 outdir=runs/ld_smoke
 //!
 //!     # overnight-scale run
 //!     cargo run --release -p liars-dice --example train_net -- \
-//!         iters=400 rounds_per_iter=600 hidden=256 threads=4 outdir=runs/ld_net
+//!         iters=400 warmup_iters=8 rounds_per_iter=600 hidden=256 threads=4 outdir=runs/ld_net
 
 use liars_dice::train::{TrainConfig, train};
 
@@ -20,6 +24,7 @@ fn main() -> std::io::Result<()> {
         };
         match k {
             "iters" => cfg.iters = v.parse().unwrap(),
+            "warmup_iters" => cfg.warmup_iters = v.parse().unwrap(),
             "rounds_per_iter" => cfg.rounds_per_iter = v.parse().unwrap(),
             "playouts" => cfg.playouts = v.parse().unwrap(),
             "hidden" => cfg.hidden = v.parse().unwrap(),
@@ -40,8 +45,8 @@ fn main() -> std::io::Result<()> {
         }
     }
     println!(
-        "training: iters={} rounds/iter={} hidden={} threads={} -> {}",
-        cfg.iters, cfg.rounds_per_iter, cfg.hidden, cfg.threads, cfg.outdir
+        "training: iters={} warmup={} rounds/iter={} hidden={} threads={} -> {}",
+        cfg.iters, cfg.warmup_iters, cfg.rounds_per_iter, cfg.hidden, cfg.threads, cfg.outdir
     );
     train(&cfg)?;
     println!("done. best net at {}/best.bin", cfg.outdir);
