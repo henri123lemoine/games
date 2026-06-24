@@ -6,17 +6,19 @@
 //! game: `push` every applied move — both sides' — so the searched subtree
 //! carries over between turns (Pente is deterministic, no chance node).
 //!
-//! The difference from go is the hybrid: before deferring to the net-MCTS move
-//! this bot runs the same sound, capture-aware VCF root solver the native lab
-//! bot does (`pente::winning_move` with a move-time `VcfConfig`) and plays a
-//! proven forced win immediately. The VCF is pure Rust, so it compiles to wasm
-//! and the browser bot plays the identical hybrid the native one does. Pente
-//! has no pass and no ownership head, so there is no pass/adjudication logic.
+//! The difference from go is the solver: this bot wires the sound, capture-aware
+//! VCF+VCT forcing solver (`pente::PenteProver`) into the search as its
+//! [`game_core::TerminalProver`], so it proves a forced win at every leaf the
+//! search expands and the MCTS-solver backs it up as an exact ±1 — the same
+//! integration the native lab bot uses. The solver is pure Rust, so it compiles
+//! to wasm and the browser bot plays the identical search the native one does.
+//! Pente has no pass and no ownership head, so there is no pass/adjudication
+//! logic.
 
-use game_core::{Game, GameUi, PolicyValueEncoder, Rng};
+use game_core::{Game, GameUi, PolicyValueEncoder, Proof, Rng};
 use nn_infer::Net;
 use pente::encode::PenteEncoder;
-use pente::{Pente, PenteAction, PenteState, VcfConfig};
+use pente::{Pente, PenteProver, PenteState, VcfConfig};
 use solvers::azero::{EvalRequest, EvalResult, Gather, PuctConfig, Search, argmax};
 use wasm_bindgen::prelude::*;
 
@@ -36,9 +38,6 @@ pub struct AzPenteBot {
     model: Option<Net>,
     /// Requests parked by the last `advance`, awaiting page-side evaluation.
     batch: Vec<EvalRequest>,
-    /// A VCF-proven forced win for the side to move, found once when a move
-    /// begins and played in place of the search (cleared by `push`).
-    forced: Option<PenteAction>,
     /// The tree holds at least an expanded root (safe to read/extract).
     has_tree: bool,
     /// The last search ran to its visit budget (best move is readable).
@@ -48,9 +47,12 @@ pub struct AzPenteBot {
 #[wasm_bindgen]
 impl AzPenteBot {
     /// A fresh bot at the empty `size`×`size` board. Play is deterministic
-    /// argmax over visit counts with no root noise — full strength; `seed` only
-    /// feeds chance-free tie paths. `vcf_depth`/`vcf_nodes` bound the move-time
-    /// forcing solver (the native bot's defaults: depth 8, ~4000 nodes).
+    /// argmax over visit counts — or the root's proven win when the solver
+    /// proves one — with no root noise (full strength); `seed` only feeds
+    /// chance-free tie paths. `vcf_depth`/`vcf_nodes` bound the *per-leaf*
+    /// forcing solver wired in as the search's prover (the native bot's
+    /// per-leaf defaults: depth 7, ~1500 nodes); keep them conservative, the
+    /// solver runs at every expanded leaf.
     #[wasm_bindgen(constructor)]
     pub fn new(
         sims: u32,
@@ -81,7 +83,6 @@ impl AzPenteBot {
             rng: Rng::new(u64::from(seed)),
             model: None,
             batch: Vec::new(),
-            forced: None,
             has_tree: false,
             done: false,
         }
@@ -95,30 +96,18 @@ impl AzPenteBot {
         Ok(())
     }
 
-    /// Whether a sound forcing line wins for the side to move right now; caches
-    /// the winning move in `forced` so `best` can return it without searching.
-    fn check_forced(&mut self) -> bool {
-        if self.forced.is_none() {
-            self.forced = pente::winning_move(&self.game, &self.state, self.vcf);
-        }
-        self.forced.is_some()
-    }
-
-    /// Runs the whole search to its visit budget in-wasm, evaluating every
-    /// parked leaf with the reference forward, and returns the chosen move —
-    /// unless the VCF proves a forced win first, in which case it plays that.
+    /// Runs the whole search to its visit budget in-wasm — the forcing solver
+    /// proving every expanded leaf — evaluating each parked leaf with the
+    /// reference forward, and returns the chosen move.
     pub fn play_cpu(&mut self) -> Result<String, JsError> {
         if !self.batch.is_empty() {
             return Err(JsError::new("play_cpu while evaluations are in flight"));
-        }
-        if self.check_forced() {
-            self.done = true;
-            return self.best();
         }
         let model = self
             .model
             .as_ref()
             .ok_or_else(|| JsError::new("CPU weights not loaded"))?;
+        let prover = PenteProver { cfg: self.vcf };
         let mut results = Vec::new();
         while let Gather::Requests(reqs) = self.search.advance(
             &self.game,
@@ -128,7 +117,7 @@ impl AzPenteBot {
             &mut self.rng,
             std::mem::take(&mut results),
             &|_| false,
-            None,
+            Some(&prover),
         ) {
             results = eval_batch(model, &reqs);
         }
@@ -162,7 +151,6 @@ impl AzPenteBot {
         };
         self.has_tree = reuse.is_some();
         self.search = Search::new(reuse);
-        self.forced = None;
         self.done = false;
         self.game.apply(&mut self.state, action);
         Ok(())
@@ -171,16 +159,9 @@ impl AzPenteBot {
     /// Resumes the search with the page's evaluations for the previous batch
     /// (pass empty arrays on the first call), gathers the next batch, and
     /// returns its size — 0 means the move is ready and `best` is readable. The
-    /// first call also runs the VCF: when it proves a forced win the search is
-    /// skipped entirely and this returns 0 immediately.
+    /// forcing solver proves every expanded leaf as the search runs; a root the
+    /// solver proves a win ends the search early (the next batch is empty).
     pub fn advance(&mut self, priors: &[f32], values: &[f32]) -> Result<u32, JsError> {
-        if self.batch.is_empty() && self.check_forced() {
-            if !priors.is_empty() || !values.is_empty() {
-                return Err(JsError::new("no batch outstanding, expected empty results"));
-            }
-            self.done = true;
-            return Ok(0);
-        }
         let results = if self.batch.is_empty() {
             if !priors.is_empty() || !values.is_empty() {
                 return Err(JsError::new("no batch outstanding, expected empty results"));
@@ -213,6 +194,7 @@ impl AzPenteBot {
             out
         };
         self.batch.clear();
+        let prover = PenteProver { cfg: self.vcf };
         match self.search.advance(
             &self.game,
             &self.enc,
@@ -221,7 +203,7 @@ impl AzPenteBot {
             &mut self.rng,
             results,
             &|_| false,
-            None,
+            Some(&prover),
         ) {
             Gather::Requests(reqs) => {
                 self.has_tree = true;
@@ -267,14 +249,26 @@ impl AzPenteBot {
         out
     }
 
-    /// The chosen move as a board label (`"k10"`): a VCF-proven forced win when
-    /// there is one, otherwise the argmax over root visits.
+    /// The chosen move as a board label (`"k10"`): the root's solver-proven
+    /// forced win when the search proved one, otherwise the argmax over root
+    /// visits.
     pub fn best(&self) -> Result<String, JsError> {
-        if let Some(action) = self.forced {
-            return Ok(self.game.action_label(&self.state, action));
-        }
         if !self.done {
             return Err(JsError::new("search is not done"));
+        }
+        // A solver-proven root win is exact. `best_proven_action` witnesses the
+        // edge when the proof bubbled up from a winning child; a root proven
+        // *directly* by the prover (its own leaf, before any child is expanded)
+        // carries the verdict but no edge, so resolve the witnessing move from
+        // the solver itself, which proved it and returns the move.
+        if self.search.root_proof() == Some(Proof::Win) {
+            if let Some(win) = pente::winning_move(&self.game, &self.state, self.vcf) {
+                return Ok(self.game.action_label(&self.state, win));
+            }
+            if let Some(idx) = self.search.best_proven_action() {
+                let action = self.search.root_actions()[idx];
+                return Ok(self.game.action_label(&self.state, action));
+            }
         }
         let idx = argmax(self.search.root_visits());
         let action = self.search.root_actions()[idx];
@@ -310,11 +304,12 @@ impl AzPenteBot {
     }
 
     /// `{"value":…,"sims":…}` — the root's searched value (side to move) and
-    /// total visits, for a thinking readout. A VCF win reports a decisive value
-    /// with no visits.
+    /// total visits, for a thinking readout. A solver-proven root win reports a
+    /// decisive value.
     pub fn stats(&self) -> String {
-        if self.forced.is_some() {
-            return "{\"value\":1,\"sims\":0}".to_string();
+        if self.search.root_proof() == Some(Proof::Win) {
+            let sims: u32 = self.search.root_visits().iter().sum();
+            return format!("{{\"value\":1,\"sims\":{sims}}}");
         }
         let sims: u32 = if self.has_tree {
             self.search.root_visits().iter().sum()
@@ -333,6 +328,7 @@ impl AzPenteBot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pente::PenteAction;
 
     /// A synthetic `AZNET1` Pente net of the right shape (8 planes, no
     /// ownership head): uniform tiny fill, just enough to forward.
@@ -383,10 +379,13 @@ mod tests {
     }
 
     #[test]
-    fn plays_a_proven_forcing_win_without_the_net() {
+    fn plays_a_solver_proven_forcing_win() {
         // A position with four black stones in a row and both ends open: the
-        // VCF proves a one-move win, which the bot must play even though no
-        // weights are loaded (the forcing solver is net-free).
+        // forcing solver — wired into the search as its prover — proves the root
+        // a one-move win, and the bot plays the proof-witnessing move (the
+        // winning placement) rather than the visit argmax. The solver runs at
+        // the root leaf, so the win is proven on the first net round-trip even
+        // with a uniform (uninformative) synthetic net.
         let game = Pente::new(9);
         let state = game.parse_state(
             &[
@@ -403,17 +402,21 @@ mod tests {
             0,
             [0, 0],
         );
-        let mut bot = AzPenteBot::new(1, 8, 1, 9, 8, 4000);
+        let mut bot = AzPenteBot::new(64, 8, 1, 9, 8, 4000);
+        bot.load_weights(&synth_net(2, 6, 9)).unwrap();
         bot.game = game;
         bot.enc = PenteEncoder::new(9);
         bot.state = state;
-        // No weights loaded: only the VCF can produce a move here.
-        assert!(bot.model.is_none());
         let mv = bot.play_cpu().unwrap();
         let completes = ["b5", "g5"]; // either open end completes the five
         assert!(
             completes.contains(&mv.as_str()),
-            "VCF plays the winning move, got {mv}"
+            "the bot plays the solver-proven winning move, got {mv}"
+        );
+        assert_eq!(
+            bot.search.root_proof(),
+            Some(Proof::Win),
+            "the root must be proven a win"
         );
     }
 }

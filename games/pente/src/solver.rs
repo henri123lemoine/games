@@ -110,19 +110,28 @@ impl Budget {
     }
 }
 
-/// The hybrid move choice a net-MCTS Pente bot makes at the root: try the
-/// sound forcing solver first and play a proven forced win immediately,
-/// otherwise defer to `chooser` (the net-guided search). Keeping the
-/// composition here — beside the solver it leans on — lets a caller drive any
-/// search (`solvers::azero::Search`, MCTS, …) without forking the solver, and
-/// makes the "forced-win-or-fallback" decision testable with a stub chooser.
-pub fn hybrid_move<F: FnOnce() -> PenteAction>(
-    game: &Pente,
-    state: &PenteState,
-    cfg: VcfConfig,
-    chooser: F,
-) -> PenteAction {
-    winning_move(game, state, cfg).unwrap_or_else(chooser)
+/// A [`game_core::TerminalProver`] backed by the sound forcing solver: at any
+/// leaf the net-MCTS search expands, prove a forced **Win** for the side to move
+/// when [`winning_move`] finds one within `cfg`'s budget. The search treats that
+/// proof exactly like a terminal win and backs it up as an exact ±1, so the
+/// solver's tactical knowledge flows through every node it visits — not just the
+/// root pre-check this replaces.
+///
+/// It proves **Win only**: a Loss or Draw is never asserted from a single leaf
+/// (the attacker not having a forced win does not make the *defender* won) —
+/// those fall out of the solver's own backup when every child of a node is
+/// proven.
+/// `winning_move` is sound — it never returns a move that is not a proven forced
+/// win — so this prover is sound, as [`TerminalProver`](game_core::TerminalProver)
+/// requires.
+pub struct PenteProver {
+    pub cfg: VcfConfig,
+}
+
+impl game_core::TerminalProver<Pente> for PenteProver {
+    fn prove(&self, game: &Pente, state: &PenteState) -> Option<game_core::Proof> {
+        winning_move(game, state, self.cfg).map(|_| game_core::Proof::Win)
+    }
 }
 
 /// The forced win for the side to move, if the bounded forcing search proves
@@ -518,11 +527,13 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_plays_the_forced_win_over_the_chooser() {
-        // The open-four position has a proven VCF win at e5; the hybrid must take
-        // it and never consult the (here-poisoned) fallback chooser.
+    fn prover_proves_a_win_at_a_forced_position_and_nothing_quiet() {
+        // The `PenteProver` is the `winning_move` solver behind a
+        // `TerminalProver`: it must report `Proof::Win` exactly where the solver
+        // finds a forced win, and `None` in a quiet position.
+        use game_core::{Proof, TerminalProver};
         let g = Pente::new(9);
-        let s = g.parse_state(
+        let forced = g.parse_state(
             &[
                 ". . . . . . . . .",
                 ". . . . . . . . .",
@@ -537,18 +548,7 @@ mod tests {
             0,
             [0, 0],
         );
-        let chosen = hybrid_move(&g, &s, VcfConfig::default(), || {
-            panic!("the chooser must not run when the VCF proves a win")
-        });
-        assert_eq!(chosen, PenteAction(g.point("e5").unwrap()));
-    }
-
-    #[test]
-    fn hybrid_defers_to_the_chooser_in_a_quiet_position() {
-        // No forcing win here, so the hybrid falls through to whatever the
-        // net-guided search would play — modeled by a sentinel-returning stub.
-        let g = Pente::new(9);
-        let s = g.parse_state(
+        let quiet = g.parse_state(
             &[
                 ". . . . . . . . .",
                 ". . . . . . . . .",
@@ -563,9 +563,11 @@ mod tests {
             0,
             [0, 0],
         );
-        let sentinel = PenteAction(g.point("e6").unwrap());
-        let chosen = hybrid_move(&g, &s, VcfConfig::default(), || sentinel);
-        assert_eq!(chosen, sentinel);
+        let prover = PenteProver {
+            cfg: VcfConfig::default(),
+        };
+        assert_eq!(prover.prove(&g, &forced), Some(Proof::Win));
+        assert_eq!(prover.prove(&g, &quiet), None);
     }
 
     // ---- VCT-specific tests ------------------------------------------------

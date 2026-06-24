@@ -11,9 +11,9 @@
 //! guards a zero visit total just in case.
 
 use game_core::rand::sample_visits;
-use game_core::{Game, PolicyValueEncoder, Rng};
+use game_core::{Game, PolicyValueEncoder, Proof, Rng};
 use pente::encode::PenteEncoder;
-use pente::{Pente, PenteState};
+use pente::{Pente, PenteProver, PenteState, VcfConfig};
 use rayon::prelude::*;
 use solvers::azero::{self, Gather, PuctConfig, argmax};
 
@@ -47,6 +47,12 @@ pub struct SelfPlayConfig {
     pub fast_sims: u32,
     pub full_sims: u32,
     pub full_prob: f64,
+    /// The *per-leaf* forcing-solver budget: the VCF+VCT prover runs at every
+    /// MCTS leaf as the search's `TerminalProver`, backing up proven wins as
+    /// exact ±1. The budget is deliberately small — it runs at every expanded
+    /// leaf and `winning_move` clones state — so it never tanks throughput while
+    /// still proving the short forcing wins that sharpen value targets.
+    pub vcf: VcfConfig,
 }
 
 impl Default for SelfPlayConfig {
@@ -65,6 +71,20 @@ impl Default for SelfPlayConfig {
             fast_sims: 100,
             full_sims: 400,
             full_prob: 0.0,
+            // Conservative per-leaf budget for self-play *throughput*: the prover
+            // runs at every expanded leaf across hundreds of concurrent games, so
+            // it must be cheap. Iterative-deepening cost is dominated by depth
+            // (each quiet leaf spends its whole budget proving no win exists), so
+            // a shallow depth 5 / 250 nodes keeps self-play moving (~10× the
+            // no-prover floor here, vs ~35× at the depth-7/1500 play-time budget)
+            // while still proving every short forcing win — open/double fours,
+            // fifth-pair captures. The richer play-time budget lives in the
+            // native/wasm bots, which run one game at a time.
+            vcf: VcfConfig {
+                max_depth: 5,
+                max_nodes: 250,
+                ..VcfConfig::default()
+            },
         }
     }
 }
@@ -205,6 +225,7 @@ impl Worker {
             },
             ..cfg.puct
         };
+        let prover = PenteProver { cfg: cfg.vcf };
         loop {
             match self.search.advance(
                 &pente,
@@ -214,7 +235,7 @@ impl Worker {
                 &mut self.rng,
                 std::mem::take(&mut results),
                 &|_| false,
-                None,
+                Some(&prover),
             ) {
                 Gather::Requests(reqs) => return WorkerStep::Requests(reqs),
                 Gather::Done => {
@@ -302,10 +323,25 @@ impl Worker {
             }
         }
 
-        let choice = if self.plies < cfg.temp_plies {
-            sample_visits(&visits, &mut self.rng)
-        } else {
-            argmax(&visits)
+        // A solver-proven root win is exact — play the winning move over the
+        // visit-based choice. The proof bubbled up from a winning child witnesses
+        // its edge; a root the prover proves *directly* (its own leaf) carries
+        // the verdict but no edge, so resolve the witnessing move from the
+        // solver itself. The policy target above is still the visit distribution
+        // (the net learns the search's policy, not the single forcing move), and
+        // the value target benefits automatically: a proven node backs up its
+        // exact ±1.
+        let proven_win = (self.search.root_proof() == Some(Proof::Win))
+            .then(|| {
+                pente::winning_move(&pente, &self.state, cfg.vcf)
+                    .and_then(|win| actions.iter().position(|&a| a == win))
+                    .or_else(|| self.search.best_proven_action())
+            })
+            .flatten();
+        let choice = match proven_win {
+            Some(idx) => idx,
+            None if self.plies < cfg.temp_plies => sample_visits(&visits, &mut self.rng),
+            None => argmax(&visits),
         };
         pente.apply(&mut self.state, actions[choice]);
         self.plies += 1;

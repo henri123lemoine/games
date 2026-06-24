@@ -130,8 +130,8 @@ export class EngineHost {
 
   /** Creates the in-wasm Pente AlphaZero bot (shares the `azPush`/`azAdvance`/
    * `azBest`/`azPlayCpu` surface with chess and go). `weights` enables the
-   * in-wasm CPU path; `vcfDepth`/`vcfNodes` bound the move-time forcing solver
-   * the hybrid runs in front of the search. */
+   * in-wasm CPU path; `vcfDepth`/`vcfNodes` bound the per-leaf forcing solver
+   * wired into the search as its terminal prover. */
   penteNew(
     sims: number,
     leaves: number,

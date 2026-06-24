@@ -1015,12 +1015,15 @@ fn go_bot(spec: &BotSpec, o: &Opts) -> Result<BotBuilder<go::Go>, String> {
     })
 }
 
-/// The native hybrid Pente bot: a capture-aware VCF root solver in front of an
-/// AlphaZero net-guided PUCT search. Per move it plays a proven forced win when
-/// the (move-time-budgeted) VCF finds one, else runs `sims` of `Search<Pente>`
-/// against the reference `nn-infer` forward and plays the most-visited root
-/// move. The search is composed at the caller (never forked) via
-/// [`pente::hybrid_move`]; the net is shared across compare workers via `Arc`.
+/// The native Pente bot: an AlphaZero net-guided PUCT search with the
+/// capture-aware VCF+VCT forcing solver wired in as the search's
+/// [`game_core::TerminalProver`]. The solver proves a forced win at every leaf
+/// the search expands (a cheap per-leaf budget), and the MCTS-solver backs that
+/// proof up as an exact ±1 — so the tactical knowledge flows through the whole
+/// tree, not just a root pre-check. Per move it runs `sims` of `Search<Pente>`
+/// against the reference `nn-infer` forward, then plays the root's proven win
+/// when the solver proves one, else the most-visited root move. The net is
+/// shared across compare workers via `Arc`.
 struct AzeroPenteBot {
     net: std::sync::Arc<Net>,
     enc: pente::PenteEncoder,
@@ -1036,33 +1039,29 @@ impl Agent<pente::Pente> for AzeroPenteBot {
         _player: usize,
         rng: &mut game_core::Rng,
     ) -> usize {
-        let action =
-            pente::hybrid_move(game, state, self.vcf, || self.search_move(game, state, rng));
-        // `Agent::act` returns an index into `legal_actions`; both the VCF win
-        // and the searched move are legal here, so the position is exact.
-        game.legal_actions(state)
-            .iter()
-            .position(|&a| a == action)
-            .expect("hybrid move is a legal action")
+        self.search_move(game, state, rng)
     }
 }
 
 impl AzeroPenteBot {
-    /// Runs the whole PUCT search to its visit budget on the CPU, evaluating
-    /// every parked leaf with the reference forward (mirrors the wasm CPU
-    /// driver), and returns the most-visited root move. No root noise: this is
-    /// deterministic full-strength play, not self-play.
+    /// Runs the whole PUCT search to its visit budget on the CPU — the forcing
+    /// solver proving every expanded leaf — evaluating each parked leaf with the
+    /// reference forward (mirrors the wasm CPU driver). Returns the index (into
+    /// `legal_actions`) of the root's proven win if the search proved one, else
+    /// the most-visited root move. No root noise: deterministic full-strength
+    /// play, not self-play.
     fn search_move(
         &self,
         game: &pente::Pente,
         state: &pente::PenteState,
         rng: &mut game_core::Rng,
-    ) -> pente::PenteAction {
+    ) -> usize {
         let cfg = PuctConfig {
             sims: self.sims,
             root_noise: 0.0,
             ..PuctConfig::default()
         };
+        let prover = pente::PenteProver { cfg: self.vcf };
         let mut search = Search::new(None);
         let mut results = Vec::new();
         while let Gather::Requests(reqs) = search.advance(
@@ -1073,7 +1072,7 @@ impl AzeroPenteBot {
             rng,
             std::mem::take(&mut results),
             &|_| false,
-            None,
+            Some(&prover),
         ) {
             results = reqs
                 .iter()
@@ -1083,8 +1082,27 @@ impl AzeroPenteBot {
                 })
                 .collect();
         }
-        let idx = solvers::azero::argmax(search.root_visits());
-        search.root_actions()[idx]
+        // A proven win at the root is exact — play it over the visit argmax. The
+        // returned value is an index into `root_actions`, which is exactly the
+        // `legal_actions` order the search expanded, so it is the action index
+        // `Agent::act` owes its caller.
+        // A solver-proven root win is exact — play the winning move over the
+        // visit argmax. `best_proven_action` witnesses the edge when the proof
+        // bubbled up from a winning child; a root the prover proves *directly*
+        // (its own leaf, before any child is expanded) carries the verdict but
+        // no edge, so resolve the witnessing move from the solver itself, which
+        // proved it and returns the move. Both are exact and net-independent.
+        if search.root_proof() == Some(game_core::Proof::Win) {
+            if let Some(win) = pente::winning_move(game, state, self.vcf)
+                && let Some(idx) = game.legal_actions(state).iter().position(|&a| a == win)
+            {
+                return idx;
+            }
+            if let Some(idx) = search.best_proven_action() {
+                return idx;
+            }
+        }
+        solvers::azero::argmax(search.root_visits())
     }
 }
 
@@ -1111,24 +1129,32 @@ fn pente_bot(spec: &BotSpec, o: &Opts) -> Result<BotBuilder<pente::Pente>, Strin
         "azero" => {
             let net = load_pente_net(&spec.opts.str("net", "data/azpente/azero-pente.azweb"))?;
             let sims: u32 = spec.opts.get("sims", 400)?;
-            // A move-time VCF budget: the default 200k-node depth-12 search is
-            // tuned for offline analysis and is too slow to run before every
-            // PUCT search on a 19×19 board. A few thousand nodes still proves the
-            // short forcing wins (open fours, double-fours, fifth-pair captures)
-            // that matter at the root while returning in well under a move's time.
-            let vcf_nodes: u64 = spec.opts.get("vcf-nodes", 4000)?;
-            let vcf_depth: u32 = spec.opts.get("vcf-depth", 8)?;
+            // A *per-leaf* forcing budget: the solver runs at every MCTS leaf as
+            // the search's `TerminalProver`, so the default 200k-node depth-12
+            // search (tuned for offline analysis) would tank throughput. A small
+            // budget still proves the short forcing wins (open fours,
+            // double-fours, fifth-pair captures, and at VCT double-threes) that
+            // matter while staying cheap per leaf. `vct=1` widens forcing moves
+            // to bounded continuous threats (default VCF).
+            let vcf_nodes: u64 = spec.opts.get("vcf-nodes", 1500)?;
+            let vcf_depth: u32 = spec.opts.get("vcf-depth", 7)?;
+            let vct: u32 = spec.opts.get("vct", 0)?;
+            let vcf = if vct != 0 {
+                pente::VcfConfig::vct(vcf_depth, vcf_nodes, 2)
+            } else {
+                pente::VcfConfig {
+                    max_depth: vcf_depth,
+                    max_nodes: vcf_nodes,
+                    ..pente::VcfConfig::default()
+                }
+            };
             let size: usize = o.get("size", 13)?;
             Box::new(move |_| {
                 Box::new(AzeroPenteBot {
                     net: net.clone(),
                     enc: pente::PenteEncoder::new(size),
                     sims,
-                    vcf: pente::VcfConfig {
-                        max_depth: vcf_depth,
-                        max_nodes: vcf_nodes,
-                        ..pente::VcfConfig::default()
-                    },
+                    vcf,
                 }) as BoxedAgent<pente::Pente>
             })
         }
@@ -1207,4 +1233,94 @@ fn default_seed() -> u64 {
 #[cfg(target_arch = "wasm32")]
 fn default_seed() -> u64 {
     0x5EED_BA5E_D00D | 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use game_core::Game;
+
+    /// A synthetic `AZNET1` Pente net of the right shape (8 planes,
+    /// global-pool-spatial head, no ownership/score head): a tiny uniform fill,
+    /// just enough to forward. The uniform priors/value make the *search* an
+    /// uninformative baseline, so the forced win in the end-to-end test below
+    /// can only come from the wired-in forcing solver, not the net.
+    fn synth_pente_net(blocks: usize, c: usize, size: usize) -> Vec<u8> {
+        let planes = pente::encode::PLANES;
+        let floats = c * planes * 9
+            + c
+            + blocks * 2 * (c * c * 9 + c)
+            + (c * c + c)
+            + (3 * c * c + c)
+            + c
+            + (3 * c + 1)
+            + (c * c + c)
+            + (128 * 3 * c + 128)
+            + (128 + 1);
+        let arch = nn_infer::Arch {
+            blocks,
+            channels: c,
+            planes,
+            size,
+            scalars: 0,
+            head: nn_infer::HeadKind::GlobalPoolSpatial,
+            policy_len: 0,
+            flags: nn_infer::HeadFlags(0),
+        };
+        let mut b = arch.header_bytes();
+        for _ in 0..floats {
+            b.extend_from_slice(&0.02f32.to_le_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn azero_pente_bot_plays_a_solver_proven_forced_win() {
+        // The end-to-end native path: build the `bot=azero` agent with the
+        // forcing solver wired in as the search's prover, and confirm it plays
+        // a proven forced win. The position is an open four (both ends free),
+        // which the solver proves at the root; with only a uniform synthetic
+        // net the search alone could not reliably pick the exact win, so the
+        // bot returning the winning completion shows the integrated
+        // solver path drove the move.
+        let game = pente::Pente::new(9);
+        let state = game.parse_state(
+            &[
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . X X X X . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+            ],
+            0,
+            [0, 0],
+        );
+        let net = Net::parse(&synth_pente_net(2, 6, 9)).expect("synthetic pente net");
+        let bot = AzeroPenteBot {
+            net: std::sync::Arc::new(net),
+            enc: pente::PenteEncoder::new(9),
+            sims: 64,
+            vcf: pente::VcfConfig {
+                max_depth: 7,
+                max_nodes: 1500,
+                ..pente::VcfConfig::default()
+            },
+        };
+        let mut rng = game_core::Rng::new(7);
+        let idx = bot.act(&game, &state, 0, &mut rng);
+        let action = game.legal_actions(&state)[idx];
+        // Either open end completes the five — the only proven wins here.
+        let wins = [
+            pente::PenteAction(game.point("b5").unwrap()),
+            pente::PenteAction(game.point("g5").unwrap()),
+        ];
+        assert!(
+            wins.contains(&action),
+            "the azero bot must play the solver-proven winning move, got {action:?}"
+        );
+    }
 }

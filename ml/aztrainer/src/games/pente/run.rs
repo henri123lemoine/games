@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use game_core::Rng;
 use nn_infer::HeadKind;
+use pente::VcfConfig;
 use tch::{Device, Kind};
 
 use super::eval::{Opponent, ladder};
@@ -103,9 +104,25 @@ pub fn run(args: &[String]) {
     let eval_sims: u32 = arg(args, "--eval-sims", 160);
     let snapshot_every: u64 = arg(args, "--snapshot-every", 30);
     let max_iters: u64 = arg(args, "--max-iters", 0);
+    // The per-leaf forcing-solver budget: the VCF+VCT prover runs at every MCTS
+    // leaf across hundreds of concurrent games, so keep it shallow — its cost is
+    // dominated by depth (each quiet leaf spends its budget proving no win
+    // exists). Depth 5 / 250 nodes still proves every short forcing win.
+    let vcf_nodes: u64 = arg(args, "--vcf-nodes", 250);
+    let vcf_depth: u32 = arg(args, "--vcf-depth", 5);
+    let vct: u32 = arg(args, "--vct", 0);
 
     let net_cfg = net_config_for(args, &dir.join("latest.ot"));
     let (blocks, channels, size) = (net_cfg.blocks, net_cfg.channels, net_cfg.size);
+    let vcf = if vct != 0 {
+        VcfConfig::vct(vcf_depth, vcf_nodes, 2)
+    } else {
+        VcfConfig {
+            max_depth: vcf_depth,
+            max_nodes: vcf_nodes,
+            ..VcfConfig::default()
+        }
+    };
     let sp_cfg = SelfPlayConfig {
         puct: PuctConfig {
             sims,
@@ -122,6 +139,7 @@ pub fn run(args: &[String]) {
         fast_sims,
         full_sims,
         full_prob,
+        vcf,
     };
 
     std::fs::create_dir_all(&dir).expect("create run dir");

@@ -5,11 +5,12 @@
 // and lets play_cpu run the whole search in-wasm against nn-infer's reference
 // forward — same net, so anyone can play, GPU or not.
 //
-// The wasm bot also runs the same move-time VCF hybrid the native lab bot does:
-// before deferring to the searched move it plays a sound, capture-aware forced
-// win when the bounded forcing solver proves one. That is pure Rust inside the
-// engine, so it happens transparently here — the advance/best loop is identical
-// to go's; a VCF win just makes advance return 0 immediately with best ready.
+// The wasm bot wires the sound, capture-aware VCF+VCT forcing solver into the
+// search as its terminal prover, the same integration the native lab bot uses:
+// it proves a forced win at every leaf the search expands and the MCTS-solver
+// backs it up as an exact result. That is pure Rust inside the engine, so it
+// happens transparently here — the advance/best loop is identical to go's; a
+// root the solver proves a win just ends the search early with best ready.
 
 import { CPU_MAX_SIMS, isCpuFallback, TRIVIAL_SIMS } from '../shell/azero';
 import type { EngineHost } from '../engine/host';
@@ -23,10 +24,12 @@ import type { ClientBot } from './index';
 const SIZE = 19;
 const DEFAULT_SIMS = 400;
 const LEAVES = 8;
-// The native bot's move-time forcing budget (depth 8, ~4000 nodes): enough to
-// prove the short forcing wins at the root while returning well within a move.
-const VCF_DEPTH = 8;
-const VCF_NODES = 4000;
+// The native bot's *per-leaf* forcing budget (depth 7, ~1500 nodes): the solver
+// runs at every expanded MCTS leaf as the search's prover, so the budget must be
+// cheap — small enough to stay fast per leaf while still proving the short
+// forcing wins (open fours, double-fours, fifth-pair captures) that matter.
+const VCF_DEPTH = 7;
+const VCF_NODES = 1500;
 const getWeights = weightsLoader(`${import.meta.env.BASE_URL}azero/azero-pente.azweb`);
 const getGpu = gpuLoader(PenteGpu.init, getWeights);
 
