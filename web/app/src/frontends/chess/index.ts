@@ -641,16 +641,15 @@ const CSS_TEXT = `
   flex-direction: column;
   gap: 10px;
   margin: auto;
-  width: 100%;
-  max-width: 560px;
-  max-width: min(560px, calc(100dvh - 250px));
-  min-width: 260px;
+  width: min(100%, 720px);
+  max-width: min(720px, calc(100dvh - 180px));
 }
 
 .chess-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   min-height: 38px;
   padding: 6px 12px;
   background: var(--bg-inset);

@@ -92,7 +92,7 @@ const STYLE_ID = 'othello-frontend-style';
 const CSS = `
 .ot-root {
   align-self: center;
-  width: min(100%, 520px);
+  width: min(100%, 680px);
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -102,7 +102,8 @@ const CSS = `
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
 }
 .ot-score {
   display: flex;
@@ -383,7 +384,7 @@ class OthelloFrontend implements GameFrontend {
       ? b === w
         ? `Draw, ${b}–${w}`
         : `${PLAYER_NAMES[b > w ? 0 : 1]} wins ${Math.max(b, w)}–${Math.min(b, w)}`
-      : `${PLAYER_NAMES[view.turn]} to move`;
+      : '';
   }
 
   async animate(event: MatchEventData, after: ViewState): Promise<void> {

@@ -82,12 +82,14 @@ const CSS = `
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
 }
 .c4-chip {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   padding: 6px 12px;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -317,7 +319,7 @@ class Connect4Frontend implements GameFrontend {
       ? view.winner !== null
         ? `${COLOR_NAMES[view.winner]} connects four!`
         : 'Draw — board full'
-      : `${COLOR_NAMES[view.turn]} to move`;
+      : '';
   }
 
   async animate(event: MatchEventData, after: ViewState): Promise<void> {
