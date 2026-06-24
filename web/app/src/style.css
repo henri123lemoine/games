@@ -830,6 +830,18 @@ button {
   margin-bottom: 16px;
 }
 
+/* The corner nav is fixed at the viewport's top-left; once a match widens the
+   page, the centred side margin no longer clears it, so it would sit over the
+   title. Indent the bar by the nav's overhang past the page margin — shrinking
+   to zero on screens wide enough that the margin already clears it, so the title
+   never over-indents. (Narrow screens clear it vertically via the padding-top
+   rule instead.) */
+@media (min-width: 721px) {
+  .match-bar {
+    padding-left: max(0px, calc(208px - max(0px, (100vw - 1340px) / 2)));
+  }
+}
+
 @media (max-width: 560px) {
   .match-bar {
     flex-wrap: wrap;
