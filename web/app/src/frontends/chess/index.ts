@@ -673,8 +673,7 @@ const CSS_TEXT = `
   flex-direction: column;
   gap: 10px;
   margin: auto;
-  width: min(100%, 720px);
-  max-width: min(720px, calc(100dvh - 180px));
+  width: min(100%, var(--board-fit));
 }
 
 .chess-bar {

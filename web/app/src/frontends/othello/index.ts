@@ -92,7 +92,7 @@ const STYLE_ID = 'othello-frontend-style';
 const CSS = `
 .ot-root {
   align-self: center;
-  width: min(100%, 680px);
+  width: min(100%, var(--board-fit));
   display: flex;
   flex-direction: column;
   gap: 14px;

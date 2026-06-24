@@ -113,7 +113,7 @@ const CSS = `
 .go-turn-chip:has(.go-turn-text:empty) { padding: 7px 11px; }
 .go-turn-dot { width: 13px; height: 13px; border-radius: 50%; flex: none;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .25), 0 1px 2px rgba(0, 0, 0, .4); }
-.go-board-wrap { position: relative; width: 100%; max-width: min(74vh, 640px); margin: 0 auto; }
+.go-board-wrap { position: relative; width: 100%; max-width: min(100%, var(--board-fit)); margin: 0 auto; }
 .go-svg { display: block; width: 100%; height: auto; border-radius: 12px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .22), 0 2px 6px rgba(0, 0, 0, .16); }
 .dark .go-svg { box-shadow: 0 14px 40px rgba(0, 0, 0, .5), 0 2px 8px rgba(0, 0, 0, .4); }

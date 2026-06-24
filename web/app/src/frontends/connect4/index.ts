@@ -72,7 +72,7 @@ const STYLE_ID = 'connect4-frontend-style';
 const CSS = `
 .c4-root {
   align-self: center;
-  width: min(100%, 580px);
+  width: min(100%, var(--board-fit));
   display: flex;
   flex-direction: column;
   gap: 14px;

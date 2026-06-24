@@ -66,6 +66,13 @@ body {
   padding: 26px 20px 60px;
 }
 
+/* A match wants more of the page than the reading-width home/lab screens — give
+   the board room to grow and shrink the empty side bands. (Home and the lab set
+   their own narrower max-widths, so they're unaffected.) */
+#app:has(.match) {
+  max-width: 1340px;
+}
+
 .dark-toggle {
   position: fixed;
   top: 1rem;
@@ -1024,7 +1031,7 @@ button {
 
 .match-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
+  grid-template-columns: minmax(0, 1fr) 280px;
   gap: 18px;
 }
 
@@ -1042,6 +1049,11 @@ button {
 }
 
 .board {
+  /* Single source of truth for how big a board may get: capped by a sane max
+     and by the viewport height left after the match chrome above it — so no
+     frontend hardcodes its own pixels. Boards read it as
+     `min(100%, var(--board-fit))` (the 100% keeps them inside their column). */
+  --board-fit: min(960px, calc(100dvh - 220px));
   min-height: 520px;
   display: flex;
   align-items: flex-start;
