@@ -67,6 +67,7 @@ impl<'a, G: Game, E: PolicyValueEncoder<G>> Puct<'a, G, E> {
                 rng,
                 std::mem::take(&mut results),
                 &|_| false,
+                None,
             ) {
                 Gather::Requests(reqs) => {
                     results = reqs

@@ -1073,6 +1073,7 @@ impl AzeroPenteBot {
             rng,
             std::mem::take(&mut results),
             &|_| false,
+            None,
         ) {
             results = reqs
                 .iter()

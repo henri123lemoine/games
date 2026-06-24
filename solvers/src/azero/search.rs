@@ -23,7 +23,7 @@
 //!   `node value − fpu` rather than 0, so search deepens promising lines
 //!   instead of spraying one visit everywhere.
 //!
-//! An optional [`TerminalProver`] (`advance_with`) adds a KataGo-style
+//! An optional [`TerminalProver`] (`advance`'s `prover`) adds a KataGo-style
 //! MCTS-solver (Winands et al.): terminal and proven leaves back up exact
 //! verdicts, a node is proven once its children force one, proven subtrees are
 //! never re-explored, and a proven root ends the search. Strictly opt-in — with
@@ -169,8 +169,8 @@ pub struct Search<G: Game> {
     tree: Tree<G>,
     pending: Vec<Pending<G>>,
     noised: bool,
-    /// Whether the MCTS-solver is live for this search: set once an
-    /// `advance_with` is called with a `Some` prover. When false, every proof
+    /// Whether the MCTS-solver is live for this search: set once `advance` is
+    /// called with a `Some` prover. When false, every proof
     /// code path is inert and the search is byte-for-byte the prover-free one,
     /// even on a subtree reused from a search that did run the solver.
     solver_active: bool,
@@ -195,30 +195,15 @@ impl<G: Game> Search<G> {
     /// "did this repetition key already occur in the game?" (only consulted
     /// when `cycle_draws` is on; pass `&|_| false` otherwise).
     ///
-    /// Drives the search with no terminal solver — identical to passing a
-    /// [`game_core::NoProver`] to [`Search::advance_with`].
+    /// With an optional MCTS-solver: when `prover` is `Some`, every freshly
+    /// expanded non-terminal leaf is offered to it, and a proven verdict is
+    /// treated exactly like a terminal one — backed up as an exact value and
+    /// propagated up the proof tree (a parent becomes proven once its children
+    /// force it). With `prover = None` this drives the search with no terminal
+    /// solver: byte-for-byte identical to passing a [`game_core::NoProver`] —
+    /// no proof status is ever set and nothing differs.
     #[allow(clippy::too_many_arguments)]
     pub fn advance<E: PolicyValueEncoder<G>>(
-        &mut self,
-        game: &G,
-        enc: &E,
-        root: &G::State,
-        cfg: &PuctConfig,
-        rng: &mut Rng,
-        results: Vec<EvalResult>,
-        seen: &dyn Fn(u64) -> bool,
-    ) -> Gather {
-        self.advance_with(game, enc, root, cfg, rng, results, seen, None)
-    }
-
-    /// [`Search::advance`] with an optional MCTS-solver: when `prover` is
-    /// `Some`, every freshly expanded non-terminal leaf is offered to it, and a
-    /// proven verdict is treated exactly like a terminal one — backed up as an
-    /// exact value and propagated up the proof tree (a parent becomes proven
-    /// once its children force it). With `prover = None` this is byte-for-byte
-    /// [`Search::advance`]: no proof status is ever set and nothing differs.
-    #[allow(clippy::too_many_arguments)]
-    pub fn advance_with<E: PolicyValueEncoder<G>>(
         &mut self,
         game: &G,
         enc: &E,

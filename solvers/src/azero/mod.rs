@@ -8,7 +8,7 @@
 //!   with virtual loss, FPU, optional root Dirichlet noise, cycle draws and
 //!   subtree reuse. The caller owns the evaluator (GPU batch, CPU net,
 //!   browser WebGPU); everything below drives this search. An optional
-//!   [`TerminalProver`] (`Search::advance_with`) turns it into a KataGo-style
+//!   [`TerminalProver`] (`Search::advance`'s `prover`) turns it into a KataGo-style
 //!   MCTS-solver: proven leaves back up exact verdicts, proven lines stop being
 //!   explored, and a proven root short-circuits — inert without a prover.
 //! * [`Mlp`] — input → two ReLU hidden layers → policy logits (softmax over

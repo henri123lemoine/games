@@ -267,6 +267,7 @@ impl Worker {
                 &mut self.rng,
                 std::mem::take(&mut results),
                 &|_| false,
+                None,
             ) {
                 Gather::Requests(reqs) => return WorkerStep::Requests(reqs),
                 Gather::Done => {

@@ -188,6 +188,7 @@ pub fn ladder(
                         &mut g.rng,
                         std::mem::take(&mut pending),
                         &|_| false,
+                        None,
                     ) {
                         Gather::Requests(reqs) => return reqs,
                         Gather::Done => {
@@ -310,6 +311,7 @@ pub fn net_vs_net(a: &Infer, b: &Infer, pairs: u32, sims: u32, seed: u64) -> (u3
                         &mut g.rng,
                         std::mem::take(&mut pending),
                         &|_| false,
+                        None,
                     ) {
                         Gather::Requests(reqs) => {
                             return (Some(on_move == g.a_seat), reqs);

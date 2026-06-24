@@ -128,6 +128,7 @@ impl AzPenteBot {
             &mut self.rng,
             std::mem::take(&mut results),
             &|_| false,
+            None,
         ) {
             results = eval_batch(model, &reqs);
         }
@@ -220,6 +221,7 @@ impl AzPenteBot {
             &mut self.rng,
             results,
             &|_| false,
+            None,
         ) {
             Gather::Requests(reqs) => {
                 self.has_tree = true;

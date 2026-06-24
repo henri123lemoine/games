@@ -37,6 +37,7 @@ fn run_to_done(
             rng,
             std::mem::take(&mut results),
             &|key| keys.get(&key).copied().unwrap_or(0) > 0,
+            None,
         );
         match gather {
             Gather::Requests(reqs) => results = eval(&reqs),

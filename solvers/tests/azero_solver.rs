@@ -13,8 +13,8 @@ mod common;
 use common::{Ttt, TttEnc, TttState, ttt_winner};
 
 /// Drives a full search to `cfg.sims` and hands back the finished [`Search`] so
-/// a test can read visits, the proof, or the proven move. `prover = None` takes
-/// the legacy `advance`; `Some` takes `advance_with`.
+/// a test can read visits, the proof, or the proven move. `prover = None` drives
+/// the search with no solver; `Some` runs the MCTS-solver.
 fn run_search(
     game: &Ttt,
     enc: &TttEnc,
@@ -29,7 +29,7 @@ fn run_search(
     let mut rng = Rng::new(seed);
     let mut results = Vec::new();
     loop {
-        let gather = search.advance_with(
+        let gather = search.advance(
             game,
             enc,
             root,

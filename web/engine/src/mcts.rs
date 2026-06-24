@@ -73,10 +73,16 @@ impl Search {
             cycle_draws: true,
             forced_playouts_k: 0.0,
         };
-        self.0
-            .advance(&Chess, &PlanesEncoder, board, &cfg, rng, results, &|key| {
-                history.get(&key).copied().unwrap_or(0) > 0
-            })
+        self.0.advance(
+            &Chess,
+            &PlanesEncoder,
+            board,
+            &cfg,
+            rng,
+            results,
+            &|key| history.get(&key).copied().unwrap_or(0) > 0,
+            None,
+        )
     }
 
     /// Visit counts over the root's moves, aligned with `root_moves`.

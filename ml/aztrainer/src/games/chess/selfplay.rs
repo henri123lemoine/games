@@ -186,6 +186,7 @@ impl Worker {
                 rng,
                 std::mem::take(&mut results),
                 &|key| key_counts.get(&key).copied().unwrap_or(0) > 0,
+                None,
             );
             match gather {
                 Gather::Requests(reqs) => return WorkerStep::Requests(reqs),

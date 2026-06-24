@@ -153,6 +153,7 @@ pub fn generate(args: &[String]) {
                         &mut g.rng,
                         std::mem::take(&mut pending),
                         &|_| false,
+                        None,
                     ) {
                         Gather::Requests(reqs) => return reqs,
                         Gather::Done => {
