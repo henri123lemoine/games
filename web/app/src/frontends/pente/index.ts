@@ -122,7 +122,7 @@ function winLine(cells: string, size: number, color: string): number[] | null {
 const CSS = `
 .pente { display: flex; flex-direction: column; gap: 14px; }
 .pente-hud { display: grid; grid-template-columns: 1fr auto 1fr; align-items: stretch; gap: 10px; }
-.pente-player { display: flex; align-items: center; gap: 10px; padding: 8px 12px; min-width: 0;
+.pente-player { display: flex; align-items: center; gap: 11px; padding: 9px 14px; min-width: 0;
   border-radius: var(--radius); background: var(--bg-raised); border: 1px solid var(--border);
   transition: border-color .2s, box-shadow .2s; }
 .pente-player.pente-active { border-color: var(--accent);
@@ -131,21 +131,22 @@ const CSS = `
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .25), 0 1px 3px rgba(0, 0, 0, .5); }
 .pente-stone-icon-b { background: radial-gradient(circle at 34% 28%, #5b6478, #24293a 44%, #070910); }
 .pente-stone-icon-w { background: radial-gradient(circle at 34% 28%, #ffffff, #e7eaf4 58%, #b9bfd2); }
-.pente-pinfo { display: flex; flex-direction: column; min-width: 0; }
+.pente-pinfo { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .pente-pname { font-weight: 600; line-height: 1.2; }
-.pente-psub { font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden;
-  text-overflow: ellipsis; }
-.pente-pcaps { margin-left: auto; text-align: right; font-size: 11px; color: var(--text-dim);
-  line-height: 1.15; white-space: nowrap; }
-.pente-pcaps b { display: block; font-size: 16px; color: var(--text); }
-.pente-pips { display: inline-flex; gap: 3px; margin-top: 3px; justify-content: flex-end; }
+.pente-pcaps { margin-left: auto; display: flex; align-items: baseline; gap: 5px;
+  color: var(--text-dim); line-height: 1; white-space: nowrap; }
+.pente-pcaps b { font-size: 17px; color: var(--text); font-variant-numeric: tabular-nums; }
+.pente-pcaps-of { font-size: 12px; }
+.pente-pips { display: inline-flex; gap: 3px; align-self: center; }
 .pente-pip { width: 7px; height: 7px; border-radius: 50%; background: var(--border);
   transition: background .25s, box-shadow .25s; }
 .pente-pip.pente-pip-on { background: var(--accent);
   box-shadow: 0 0 6px rgba(99, 102, 241, .7); }
 .pente-turn-chip { align-self: center; display: flex; align-items: center; gap: 8px; padding: 7px 14px;
   border-radius: 999px; background: var(--bg-inset); border: 1px solid var(--border);
-  font-size: 13px; color: var(--text-dim); white-space: nowrap; }
+  font-size: 13px; color: var(--text-dim); white-space: nowrap;
+  transition: opacity .2s; }
+.pente-turn-chip.pente-chip-hidden { opacity: 0; }
 .pente-turn-dot { width: 11px; height: 11px; border-radius: 50%; flex: none;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .25), 0 1px 2px rgba(0, 0, 0, .4); }
 .pente-board-wrap { position: relative; width: 100%; max-width: min(74vh, 640px); margin: 0 auto; }
@@ -184,6 +185,13 @@ const CSS = `
 @media (max-width: 560px) {
   .pente-hud { grid-template-columns: 1fr 1fr; }
   .pente-turn-chip { order: 3; grid-column: 1 / -1; justify-self: center; }
+  .pente-turn-chip.pente-chip-hidden { display: none; }
+  /* Narrow plaque: the dropdown takes the width, so dock the captured count to
+     the name row and drop the pips — "N/5" alone reads clearly. */
+  .pente-player { align-items: flex-start; }
+  .pente-stone-icon { margin-top: 1px; }
+  .pente-pcaps { align-self: flex-start; }
+  .pente-pips { display: none; }
 }
 `;
 
@@ -225,14 +233,14 @@ class PenteFrontend implements GameFrontend {
         <div class="pente-hud">
           <div class="pente-player" data-seat="0">
             <span class="pente-stone-icon pente-stone-icon-b"></span>
-            <span class="pente-pinfo"><span class="pente-pname">Black</span><span class="pente-psub"></span><span class="seat-slot" data-seat="0"></span></span>
-            <span class="pente-pcaps"><b>0</b>pairs<span class="pente-pips" data-seat="0"></span></span>
+            <span class="pente-pinfo"><span class="pente-pname">Black</span><span class="seat-slot" data-seat="0"></span></span>
+            <span class="pente-pcaps"><b>0</b><span class="pente-pcaps-of">/${PAIRS_TO_WIN}</span><span class="pente-pips" data-seat="0"></span></span>
           </div>
           <div class="pente-turn-chip"><span class="pente-turn-dot"></span><span class="pente-turn-text"></span></div>
           <div class="pente-player" data-seat="1">
             <span class="pente-stone-icon pente-stone-icon-w"></span>
-            <span class="pente-pinfo"><span class="pente-pname">White</span><span class="pente-psub"></span><span class="seat-slot" data-seat="1"></span></span>
-            <span class="pente-pcaps"><b>0</b>pairs<span class="pente-pips" data-seat="1"></span></span>
+            <span class="pente-pinfo"><span class="pente-pname">White</span><span class="seat-slot" data-seat="1"></span></span>
+            <span class="pente-pcaps"><b>0</b><span class="pente-pcaps-of">/${PAIRS_TO_WIN}</span><span class="pente-pips" data-seat="1"></span></span>
           </div>
         </div>
         <div class="pente-board-wrap">
@@ -252,10 +260,6 @@ class PenteFrontend implements GameFrontend {
         pip.className = 'pente-pip';
         row.append(pip);
       }
-    }
-    for (const [seat, plaque] of this.plaques.entries()) {
-      const sub = plaque.querySelector<HTMLElement>('.pente-psub')!;
-      sub.textContent = seat === ctx.humanSeat ? 'you' : 'bot';
     }
   }
 
@@ -452,17 +456,17 @@ class PenteFrontend implements GameFrontend {
       this.plaques.forEach((pl) => pl.classList.remove('pente-active'));
     } else {
       const center = v.cells.split('').every((ch) => ch === '.');
-      text.textContent = center
-        ? 'Black opens at the center'
-        : v.turn === 0
-          ? 'Black to move'
-          : 'White to move';
+      text.textContent = center ? 'Black opens at the center' : '';
       dot.style.background =
         v.turn === 0
           ? 'radial-gradient(circle at 35% 30%, #5b6478, #070910)'
           : 'radial-gradient(circle at 35% 30%, #ffffff, #b9bfd2)';
       this.plaques.forEach((pl, seat) => pl.classList.toggle('pente-active', seat === v.turn));
     }
+    // The chip carries text only at the opening and on a result; the per-seat
+    // plaque highlight shows whose turn it is, so the chip would be a lone dot
+    // mid-game. Hide it then.
+    this.turnChip.classList.toggle('pente-chip-hidden', text.textContent === '');
     if (state.toAct !== state.humanSeat) this.setInteractive(false);
   }
 

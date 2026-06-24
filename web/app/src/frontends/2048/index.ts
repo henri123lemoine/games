@@ -176,7 +176,7 @@ const STYLE = `
   background: var(--bg-inset);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  container-type: size;
+  container-type: inline-size;
 }
 .g2048-cells, .g2048-tiles {
   position: absolute;

@@ -134,7 +134,7 @@ const SEAT_PALETTES: [Palette, Palette] = [
   },
 ];
 
-const SEAT_NAMES = ['Snake A', 'Snake B'];
+const SEAT_COLORS = ['Green', 'Blue'];
 
 function asView(data: unknown): DuelView | null {
   if (!data || typeof data !== 'object') return null;
@@ -410,13 +410,13 @@ class SnakeFrontend implements GameFrontend {
       <div class="snk-root">
         <div class="snk-bar">
           <div class="snk-chip snk-chip-0">
-            <span class="snk-dot"></span><span class="snk-name">${SEAT_NAMES[0]}</span>
+            <span class="snk-dot"></span>
             <span class="seat-slot" data-seat="0"></span>
             <span class="snk-hp"><span class="snk-hp-fill"></span></span>
             <span class="snk-len">3</span>
           </div>
           <div class="snk-chip snk-chip-1">
-            <span class="snk-dot"></span><span class="snk-name">${SEAT_NAMES[1]}</span>
+            <span class="snk-dot"></span>
             <span class="seat-slot" data-seat="1"></span>
             <span class="snk-hp"><span class="snk-hp-fill"></span></span>
             <span class="snk-len">3</span>
@@ -704,14 +704,14 @@ class SnakeFrontend implements GameFrontend {
       return;
     }
     let title = 'Draw';
-    if (view.outcome === 'win0') title = `${SEAT_NAMES[0]} wins`;
-    else if (view.outcome === 'win1') title = `${SEAT_NAMES[1]} wins`;
+    if (view.outcome === 'win0') title = `${SEAT_COLORS[0]} wins`;
+    else if (view.outcome === 'win1') title = `${SEAT_COLORS[1]} wins`;
     if (this.mySeat >= 0 && view.outcome !== 'draw') {
       const won = view.outcome === `win${this.mySeat}`;
       title = won ? 'You win!' : 'You lose';
     }
     this.overlayTitleEl.textContent = title;
-    this.overlaySubEl.textContent = `${SEAT_NAMES[0]} ${view.snakes[0].score} · ${SEAT_NAMES[1]} ${view.snakes[1].score} · ${view.step} ticks`;
+    this.overlaySubEl.textContent = `${SEAT_COLORS[0]} ${view.snakes[0].score} · ${SEAT_COLORS[1]} ${view.snakes[1].score} · ${view.step} ticks`;
     this.overlayEl.classList.add('snk-show');
   }
 
