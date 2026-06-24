@@ -22,9 +22,16 @@
 //! * **First-play urgency** (`fpu`). Unvisited edges score
 //!   `node value − fpu` rather than 0, so search deepens promising lines
 //!   instead of spraying one visit everywhere.
+//!
+//! An optional [`TerminalProver`] (`advance_with`) adds a KataGo-style
+//! MCTS-solver (Winands et al.): terminal and proven leaves back up exact
+//! verdicts, a node is proven once its children force one, proven subtrees are
+//! never re-explored, and a proven root ends the search. Strictly opt-in — with
+//! no prover, every proof path is inert and the search is byte-for-byte the
+//! prover-free one.
 
 use game_core::rand::dirichlet;
-use game_core::{Game, PolicyValueEncoder, Rng, Turn};
+use game_core::{Game, PolicyValueEncoder, Proof, Rng, TerminalProver, Turn};
 
 #[derive(Clone, Copy)]
 pub struct PuctConfig {
@@ -90,14 +97,42 @@ pub struct Node<G: Game> {
     child: Vec<i32>,
     /// Net value at this node, for the player to move (non-terminal nodes).
     value: f32,
-    /// Exact return to player 0 (terminal nodes).
+    /// Exact return to player 0 for terminal nodes and for proven nodes (set
+    /// when `proven` becomes `Some`); 0 otherwise.
     value0: f64,
     terminal: bool,
+    /// A proven game-theoretic verdict for this node, from the perspective of
+    /// the player to move here (the MCTS-solver). Terminal nodes are proven
+    /// from their exact result; interior nodes become proven when their
+    /// children's proofs force it. `None` until/unless proven; always `None`
+    /// when no [`TerminalProver`] drives the search, so behavior is unchanged.
+    proven: Option<Proof>,
+    /// For a proven interior node, the edge index whose child witnesses the
+    /// proof: a child proving the win to play (proven Win), or — when lost or
+    /// drawn — a child realizing the best achievable outcome, for move
+    /// extraction. Unused for terminal nodes.
+    proof_edge: usize,
 }
 
 impl<G: Game> Node<G> {
     fn visits(&self) -> u32 {
         self.n.iter().sum()
+    }
+}
+
+/// Exact return to player 0 of a node proven `proof` for the given `to_move`
+/// player. `max` is [`Game::max_return`]; a win for the mover is `+max` from
+/// their seat, mapped to player 0's view.
+fn proven_value0(proof: Proof, to_move: usize, max: f64) -> f64 {
+    let from_mover = match proof {
+        Proof::Win => max,
+        Proof::Loss => -max,
+        Proof::Draw => 0.0,
+    };
+    if to_move == 0 {
+        from_mover
+    } else {
+        -from_mover
     }
 }
 
@@ -134,6 +169,11 @@ pub struct Search<G: Game> {
     tree: Tree<G>,
     pending: Vec<Pending<G>>,
     noised: bool,
+    /// Whether the MCTS-solver is live for this search: set once an
+    /// `advance_with` is called with a `Some` prover. When false, every proof
+    /// code path is inert and the search is byte-for-byte the prover-free one,
+    /// even on a subtree reused from a search that did run the solver.
+    solver_active: bool,
 }
 
 impl<G: Game> Search<G> {
@@ -146,6 +186,7 @@ impl<G: Game> Search<G> {
             }),
             pending: Vec::new(),
             noised: false,
+            solver_active: false,
         }
     }
 
@@ -153,6 +194,9 @@ impl<G: Game> Search<G> {
     /// then gathers the next batch of leaves or finishes. `seen` answers
     /// "did this repetition key already occur in the game?" (only consulted
     /// when `cycle_draws` is on; pass `&|_| false` otherwise).
+    ///
+    /// Drives the search with no terminal solver — identical to passing a
+    /// [`game_core::NoProver`] to [`Search::advance_with`].
     #[allow(clippy::too_many_arguments)]
     pub fn advance<E: PolicyValueEncoder<G>>(
         &mut self,
@@ -164,9 +208,31 @@ impl<G: Game> Search<G> {
         results: Vec<EvalResult>,
         seen: &dyn Fn(u64) -> bool,
     ) -> Gather {
+        self.advance_with(game, enc, root, cfg, rng, results, seen, None)
+    }
+
+    /// [`Search::advance`] with an optional MCTS-solver: when `prover` is
+    /// `Some`, every freshly expanded non-terminal leaf is offered to it, and a
+    /// proven verdict is treated exactly like a terminal one — backed up as an
+    /// exact value and propagated up the proof tree (a parent becomes proven
+    /// once its children force it). With `prover = None` this is byte-for-byte
+    /// [`Search::advance`]: no proof status is ever set and nothing differs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn advance_with<E: PolicyValueEncoder<G>>(
+        &mut self,
+        game: &G,
+        enc: &E,
+        root: &G::State,
+        cfg: &PuctConfig,
+        rng: &mut Rng,
+        results: Vec<EvalResult>,
+        seen: &dyn Fn(u64) -> bool,
+        prover: Option<&dyn TerminalProver<G>>,
+    ) -> Gather {
         debug_assert_eq!(results.len(), self.pending.len(), "results align");
+        self.solver_active |= prover.is_some();
         for (pending, res) in std::mem::take(&mut self.pending).into_iter().zip(results) {
-            self.resolve(pending, res);
+            self.resolve(pending, res, game, prover);
         }
 
         // Fresh tree: the root itself needs one evaluation first.
@@ -191,8 +257,11 @@ impl<G: Game> Search<G> {
         // A reused subtree can be rooted at a terminal node (the extracted
         // move ended the game). There is nothing to search — and descending
         // would back up empty paths forever without ever filling the visit
-        // budget.
-        if self.tree.nodes[self.tree.root].terminal {
+        // budget. A proven root is the same: the verdict is exact, so there is
+        // nothing left to search and the caller can stop (solver only).
+        if self.tree.nodes[self.tree.root].terminal
+            || (self.solver_active && self.tree.nodes[self.tree.root].proven.is_some())
+        {
             return Gather::Done;
         }
         if !self.noised && cfg.root_noise > 0.0 {
@@ -202,6 +271,7 @@ impl<G: Game> Search<G> {
 
         let mut requests = Vec::new();
         while self.tree.nodes[self.tree.root].visits() < cfg.sims
+            && !(self.solver_active && self.tree.nodes[self.tree.root].proven.is_some())
             && (requests.len() as u32) < cfg.max_leaves
         {
             if let Some(pending) = self.descend(game, cfg, rng, seen) {
@@ -232,7 +302,10 @@ impl<G: Game> Search<G> {
         let mut path_keys: Vec<u64> = Vec::new();
         loop {
             let node = &self.tree.nodes[cur];
-            if node.terminal {
+            // A terminal node — or, under the solver, any proven node — is an
+            // exact leaf: back up its value and stop. Never descend into a
+            // proven subtree (its verdict is already settled).
+            if node.terminal || (self.solver_active && node.proven.is_some()) {
                 let v = node.value0;
                 self.backup(&path, Leaf::Exact(v));
                 return None;
@@ -242,7 +315,7 @@ impl<G: Game> Search<G> {
             } else {
                 0.0
             };
-            let e = select_edge(node, (cfg.c_puct, cfg.fpu), forced_k);
+            let e = self.select_edge_for(cur, (cfg.c_puct, cfg.fpu), forced_k);
             path.push((cur, e));
 
             let child = self.tree.nodes[cur].child[e];
@@ -292,6 +365,11 @@ impl<G: Game> Search<G> {
                 self.tree.nodes.push(terminal_node(s, value0));
                 self.tree.nodes[cur].child[e] = idx as i32;
                 self.backup(&path, Leaf::Exact(value0));
+                // A newly discovered terminal is the solver's entry point:
+                // propagate its proof up the descent path.
+                if self.solver_active {
+                    self.solver_backup(&path, game.max_return());
+                }
                 return None;
             };
             let actions = game.legal_actions(&s);
@@ -310,7 +388,13 @@ impl<G: Game> Search<G> {
         }
     }
 
-    fn resolve(&mut self, mut pending: Pending<G>, res: EvalResult) {
+    fn resolve(
+        &mut self,
+        mut pending: Pending<G>,
+        res: EvalResult,
+        game: &G,
+        prover: Option<&dyn TerminalProver<G>>,
+    ) {
         let path = std::mem::take(&mut pending.path);
         // Undo virtual loss.
         for &(ni, ei) in &path {
@@ -322,21 +406,41 @@ impl<G: Game> Search<G> {
             player: pending.to_move,
             value: res.value,
         };
+        // Ask the prover about this freshly expanded non-terminal leaf, while
+        // its state is still in hand. `None`-prover searches skip this and
+        // never set any proof.
+        let proof = prover.and_then(|p| {
+            p.prove(game, &pending.state)
+                .map(|pr| (pr, pending.to_move))
+        });
         let &(parent, edge) = match path.last() {
             Some(last) => last,
             None => {
                 // Root evaluation of a fresh tree.
+                let to_move = pending.to_move;
                 self.tree.nodes.push(expanded_node(pending, res));
                 self.tree.root = self.tree.nodes.len() - 1;
+                if let Some((pr, _)) = proof {
+                    let root = self.tree.root;
+                    self.mark_proven(root, pr, to_move, game.max_return());
+                }
                 return;
             }
         };
-        if self.tree.nodes[parent].child[edge] < 0 {
+        let newly_created = self.tree.nodes[parent].child[edge] < 0;
+        if newly_created {
             let idx = self.tree.nodes.len();
             self.tree.nodes.push(expanded_node(pending, res));
             self.tree.nodes[parent].child[edge] = idx as i32;
         }
         self.backup(&path, leaf);
+        // Prove and propagate only on first creation: a sibling resolve in the
+        // same batch may have already created (and proven) this child.
+        if newly_created && let Some((pr, to_move)) = proof {
+            let child = self.tree.nodes[parent].child[edge] as usize;
+            self.mark_proven(child, pr, to_move, game.max_return());
+            self.solver_backup(&path, game.max_return());
+        }
     }
 
     /// Backs `leaf` up the path: each node accumulates the value from its
@@ -365,6 +469,112 @@ impl<G: Game> Search<G> {
         }
     }
 
+    /// Records a proven verdict on `node` (mover `to_move`) and pins its exact
+    /// player-0 value so the solver and ordinary backups agree on it.
+    fn mark_proven(&mut self, node: usize, proof: Proof, to_move: usize, max: f64) {
+        let n = &mut self.tree.nodes[node];
+        n.proven = Some(proof);
+        n.value0 = proven_value0(proof, to_move, max);
+    }
+
+    /// Propagates proofs up `path` (leaf-most parent first): a node becomes
+    /// proven once its children force the verdict (Winands et al.). Stops at the
+    /// first node whose status does not change — nothing above it can flip
+    /// either. The proven node's exact `value0` is pinned for ordinary backups.
+    fn solver_backup(&mut self, path: &[(usize, usize)], max: f64) {
+        for &(ni, _) in path.iter().rev() {
+            if self.tree.nodes[ni].proven.is_some() {
+                continue;
+            }
+            let Some((proof, edge)) = self.recompute_proof(ni) else {
+                return;
+            };
+            let to_move = self.tree.nodes[ni].to_move;
+            self.mark_proven(ni, proof, to_move, max);
+            self.tree.nodes[ni].proof_edge = edge;
+        }
+    }
+
+    /// The MCTS-solver verdict for an interior node from its children's proofs,
+    /// with a witnessing edge for move extraction, or `None` if not yet forced.
+    ///
+    /// Mover M (`node.to_move`): **Win** if any child is a forced win for M
+    /// (that child is a loss for *its* mover, the opponent). Otherwise, only if
+    /// every child edge is expanded and proven: **Loss** if all lose for M,
+    /// else **Draw** (no win, ≥1 drawing child, the rest losing or drawn).
+    fn recompute_proof(&self, node: usize) -> Option<(Proof, usize)> {
+        let n = &self.tree.nodes[node];
+        let to_move = n.to_move;
+        let mut all_proven = true;
+        let mut draw_edge: Option<usize> = None;
+        let mut loss_edge = 0;
+        for (e, &c) in n.child.iter().enumerate() {
+            if c < 0 {
+                all_proven = false;
+                continue;
+            }
+            let child = &self.tree.nodes[c as usize];
+            let Some(_) = child.proven else {
+                all_proven = false;
+                continue;
+            };
+            // Child value from M's seat: +max is a win for M.
+            let for_m = if to_move == 0 {
+                child.value0
+            } else {
+                -child.value0
+            };
+            if for_m > 0.0 {
+                return Some((Proof::Win, e));
+            } else if for_m == 0.0 {
+                draw_edge.get_or_insert(e);
+            } else {
+                loss_edge = e;
+            }
+        }
+        if !all_proven {
+            return None;
+        }
+        // No winning move and every child settled: drawn if a draw is on offer,
+        // otherwise all moves lose.
+        match draw_edge {
+            Some(e) => Some((Proof::Draw, e)),
+            None => Some((Proof::Loss, loss_edge)),
+        }
+    }
+
+    /// Selection at `node`. Without the solver this is plain [`select_edge`].
+    /// With it, a child proven a win for *us* (a loss for the child's mover) is
+    /// taken at once; a child proven a win for the opponent scores `Q = -1` so
+    /// it is shunned; unproven children keep their PUCT score.
+    fn select_edge_for(&self, node: usize, puct: (f32, f32), forced_k: f32) -> usize {
+        let n = &self.tree.nodes[node];
+        if !self.solver_active {
+            return select_edge(n, puct, forced_k);
+        }
+        let to_move = n.to_move;
+        let mut overrides: Vec<Option<f64>> = vec![None; n.child.len()];
+        for (e, &c) in n.child.iter().enumerate() {
+            if c < 0 {
+                continue;
+            }
+            let child = &self.tree.nodes[c as usize];
+            if child.proven.is_none() {
+                continue;
+            }
+            let for_m = if to_move == 0 {
+                child.value0
+            } else {
+                -child.value0
+            };
+            if for_m > 0.0 {
+                return e; // proven win for us — take it immediately
+            }
+            overrides[e] = Some(if for_m < 0.0 { -1.0 } else { 0.0 });
+        }
+        select_edge_solver(n, puct, forced_k, &overrides)
+    }
+
     /// Whether the root node exists yet — false on a fresh search before the
     /// first `advance` allocates it. Callers that may read the root mid-search
     /// (an anytime/best-so-far read) must check this first.
@@ -386,6 +596,28 @@ impl<G: Game> Search<G> {
     /// count for policy-target pruning.
     pub fn root_priors(&self) -> &[f32] {
         &self.tree.nodes[self.tree.root].prior
+    }
+
+    /// The solver's verdict at the root, if it has been proven, from the root
+    /// player's perspective. `None` whenever no solver ran or the root is still
+    /// unsettled — fall back to [`Search::root_visits`] + [`argmax`] then.
+    pub fn root_proof(&self) -> Option<Proof> {
+        if !self.solver_active {
+            return None;
+        }
+        self.tree.nodes[self.tree.root].proven
+    }
+
+    /// Index (into `root_actions`) of the root's proof-witnessing move once the
+    /// root is proven: the move that forces the win, or — when lost or drawn —
+    /// one realizing the proven outcome. `None` if the root is not proven.
+    /// Play this in preference to the visit argmax when it is `Some`.
+    pub fn best_proven_action(&self) -> Option<usize> {
+        if !self.solver_active {
+            return None;
+        }
+        let root = &self.tree.nodes[self.tree.root];
+        root.proven.map(|_| root.proof_edge)
     }
 
     /// Visit-weighted mean value of the root position (player to move):
@@ -453,6 +685,17 @@ impl<G: Game> Search<G> {
 }
 
 fn terminal_node<G: Game>(state: G::State, value0: f64) -> Node<G> {
+    // A terminal node is proven by definition. Its proof tag is recorded from
+    // player 0's seat (the win/loss/draw `value0` encodes); the only consumers
+    // of a *child's* proof — solver backup and selection — read its `value0`
+    // relative to the parent's mover, so the tag's seat does not matter here.
+    let proven = Some(if value0 > 0.0 {
+        Proof::Win
+    } else if value0 < 0.0 {
+        Proof::Loss
+    } else {
+        Proof::Draw
+    });
     Node {
         state,
         actions: Vec::new(),
@@ -464,6 +707,8 @@ fn terminal_node<G: Game>(state: G::State, value0: f64) -> Node<G> {
         value: 0.0,
         value0,
         terminal: true,
+        proven,
+        proof_edge: 0,
     }
 }
 
@@ -480,6 +725,8 @@ fn expanded_node<G: Game>(pending: Pending<G>, res: EvalResult) -> Node<G> {
         value: res.value,
         value0: 0.0,
         terminal: false,
+        proven: None,
+        proof_edge: 0,
     }
 }
 
@@ -526,6 +773,45 @@ fn select_edge<G: Game>(node: &Node<G>, (c_puct, fpu): (f32, f32), forced_k: f32
         // Forced playouts (root only, forced_k > 0): a visited child below its
         // forced floor jumps the queue; the PUCT score breaks ties among forced
         // children so the search still prioritizes the better ones.
+        if forced_k > 0.0 && node.n[i] >= 1 {
+            let n_forced =
+                (f64::from(forced_k) * f64::from(node.prior[i]) * f64::from(total)).sqrt();
+            if f64::from(node.n[i]) < n_forced {
+                score += FORCED_PLAYOUT_BONUS;
+            }
+        }
+        if score > best_score {
+            best_score = score;
+            best = i;
+        }
+    }
+    best
+}
+
+/// [`select_edge`] with proof overrides: `q_override[i] = Some(q)` forces edge
+/// `i`'s action value (a proven-loss child to `-1`, a proven-draw child to `0`),
+/// otherwise PUCT's usual Q applies. Identical to [`select_edge`] when every
+/// override is `None`, so this is only ever reached under an active solver.
+fn select_edge_solver<G: Game>(
+    node: &Node<G>,
+    (c_puct, fpu): (f32, f32),
+    forced_k: f32,
+    q_override: &[Option<f64>],
+) -> usize {
+    let total = node.visits();
+    let sqrt_total = f64::from(total + 1).sqrt();
+    let fpu_q = f64::from(node.value) - f64::from(fpu);
+    let mut best = 0;
+    let mut best_score = f64::NEG_INFINITY;
+    for (i, &override_q) in q_override.iter().enumerate() {
+        let q = match override_q {
+            Some(forced) => forced,
+            None if node.n[i] > 0 => node.w[i] / f64::from(node.n[i]),
+            None => fpu_q,
+        };
+        let u = f64::from(c_puct) * f64::from(node.prior[i]) * sqrt_total
+            / (1.0 + f64::from(node.n[i]));
+        let mut score = q + u;
         if forced_k > 0.0 && node.n[i] >= 1 {
             let n_forced =
                 (f64::from(forced_k) * f64::from(node.prior[i]) * f64::from(total)).sqrt();

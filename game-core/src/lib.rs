@@ -166,6 +166,56 @@ pub trait SearchSpec<G: Game>: Sync {
 pub struct NoSpec;
 impl<G: Game> SearchSpec<G> for NoSpec {}
 
+/// A proven game-theoretic outcome at a node, from the perspective of the
+/// player to move there: the side to move provably forces this result under
+/// best play by both sides. Consumed by the MCTS-solver in PUCT search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Proof {
+    /// The side to move provably forces a win.
+    Win,
+    /// The side to move is provably lost (every move loses).
+    Loss,
+    /// The side to move provably forces a draw (and can do no better).
+    Draw,
+}
+
+impl Proof {
+    /// The proof seen from the opponent's seat — the relation between a node
+    /// and its children, whose mover is the opponent. A forced win for me is a
+    /// forced loss for whoever is to move next, and vice versa.
+    pub fn flip(self) -> Proof {
+        match self {
+            Proof::Win => Proof::Loss,
+            Proof::Loss => Proof::Win,
+            Proof::Draw => Proof::Draw,
+        }
+    }
+}
+
+/// Game-supplied terminal solver: an exact game-theoretic verdict for a
+/// (typically non-terminal) state, when one is cheaply provable — an endgame
+/// tablebase, a tactical mate-search, a solved subgame. Returns `Some(Proof)`
+/// from the side-to-move's perspective when the outcome is forced, else `None`.
+///
+/// Like every capability trait this is game knowledge: a game declares it and
+/// the MCTS-solver in PUCT search consumes it, treating a proven leaf exactly
+/// as it treats a terminal one. Optional — search runs unchanged without it
+/// (see [`NoProver`]). Must be *sound*: a wrong `Some` corrupts the search's
+/// exact backups.
+pub trait TerminalProver<G: Game>: Sync {
+    fn prove(&self, game: &G, state: &G::State) -> Option<Proof>;
+}
+
+/// The trivial prover that proves nothing — search behaves exactly as if no
+/// prover were supplied. Use as the default where a `TerminalProver` is wanted
+/// by type but no game knowledge is available.
+pub struct NoProver;
+impl<G: Game> TerminalProver<G> for NoProver {
+    fn prove(&self, _game: &G, _state: &G::State) -> Option<Proof> {
+        None
+    }
+}
+
 /// Game knowledge required by policy-value learning (AlphaZero-style
 /// self-play, policy gradient): a flat `f32` encoding of states and a dense
 /// index for actions in a fixed policy space. Like every capability trait, a

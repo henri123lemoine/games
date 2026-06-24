@@ -7,7 +7,10 @@
 //! * [`Search`] — the one PUCT implementation: batched park/resume descent
 //!   with virtual loss, FPU, optional root Dirichlet noise, cycle draws and
 //!   subtree reuse. The caller owns the evaluator (GPU batch, CPU net,
-//!   browser WebGPU); everything below drives this search.
+//!   browser WebGPU); everything below drives this search. An optional
+//!   [`TerminalProver`] (`Search::advance_with`) turns it into a KataGo-style
+//!   MCTS-solver: proven leaves back up exact verdicts, proven lines stop being
+//!   explored, and a proven root short-circuits — inert without a prover.
 //! * [`Mlp`] — input → two ReLU hidden layers → policy logits (softmax over
 //!   the *legal* subset only) + scalar tanh value. He init, [`SgdMomentum`],
 //!   versioned binary save/load with atomic rename.
@@ -26,6 +29,7 @@ mod search;
 #[cfg(feature = "parallel")]
 mod train;
 
+pub use game_core::{NoProver, Proof, TerminalProver};
 pub use mlp::{InferCache, Mlp, Sample, SgdMomentum};
 pub use puct::{PolicyValueEncoder, Puct, PuctAgent};
 pub use search::{EvalRequest, EvalResult, Gather, Node, PuctConfig, Search, Tree, argmax};
