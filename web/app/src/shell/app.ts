@@ -556,7 +556,7 @@ export class App {
     this.root.innerHTML = `
       <div class="match doom-screen">
         <header class="match-bar">
-          <button type="button" class="link back">&larr; games</button>
+          <button type="button" class="back">games</button>
           <span class="match-title">DOOD</span>
           <span class="spacer"></span>
           <span class="muted doom-note">self-play bot · click the frame, then fight</span>
@@ -578,7 +578,7 @@ export class App {
     this.root.innerHTML = `
       <div class="match slither-screen">
         <header class="match-bar">
-          <button type="button" class="link back">&larr; games</button>
+          <button type="button" class="back">games</button>
           <span class="match-title">Coil</span>
           <span class="spacer"></span>
           <span class="muted">vs. the trained encircle bot · runs in your browser</span>
@@ -775,7 +775,7 @@ export class App {
     this.root.innerHTML = `
       <div class="match">
         <header class="match-bar">
-          <button type="button" class="link back">&larr; games</button>
+          <button type="button" class="back">games</button>
           <span class="match-title">${esc(game.name || game.id)}</span>
           <span class="spacer"></span>
           ${speedControl}
