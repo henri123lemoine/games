@@ -1126,6 +1126,7 @@ fn pente_bot(spec: &BotSpec, o: &Opts) -> Result<BotBuilder<pente::Pente>, Strin
                     vcf: pente::VcfConfig {
                         max_depth: vcf_depth,
                         max_nodes: vcf_nodes,
+                        ..pente::VcfConfig::default()
                     },
                 }) as BoxedAgent<pente::Pente>
             })

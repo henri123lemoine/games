@@ -76,6 +76,7 @@ impl AzPenteBot {
             vcf: VcfConfig {
                 max_depth: vcf_depth,
                 max_nodes: u64::from(vcf_nodes),
+                ..VcfConfig::default()
             },
             rng: Rng::new(u64::from(seed)),
             model: None,
