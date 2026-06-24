@@ -93,19 +93,51 @@ body {
   top: 1rem;
   left: 1rem;
   z-index: 50;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 6px 8px 6px 4px;
   font-size: 0.85rem;
+  letter-spacing: 0.01em;
   color: var(--text-dim);
   text-decoration: none;
-  background: var(--bg-inset);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 6px 12px;
-  transition: all 0.2s ease;
+  transition: color 0.2s ease;
+}
+
+.home-link-arrow {
+  transition: transform 0.2s ease;
+}
+
+.home-link-name {
+  position: relative;
+}
+
+/* A hairline that grows from the left on hover — the only flourish, so the
+   link reads as a quiet back-link rather than a chunky pill. */
+.home-link-name::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.2s ease;
 }
 
 .home-link:hover {
-  color: var(--accent);
-  border-color: var(--accent);
+  color: var(--text);
+}
+
+.home-link:hover .home-link-arrow {
+  transform: translateX(-2px);
+}
+
+.home-link:hover .home-link-name::after {
+  transform: scaleX(1);
 }
 
 @media (max-width: 720px) {
@@ -282,14 +314,15 @@ button {
 .mini-chess {
   background:
     repeating-conic-gradient(#cdbb94 0% 25%, #6f8a5d 0% 50%);
-  background-size: 36px 36px;
+  background-size: 72px 72px;
 }
 
 .mini-pc {
   position: absolute;
-  font-size: 34px;
+  font-size: 50px;
   color: #20241c;
   line-height: 1;
+  transform: translate(-50%, -50%);
 }
 
 .mini-pc-w {
@@ -411,51 +444,49 @@ button {
 .mini-chip-2 { right: 30%; bottom: 30%; background: #2b6cb0; }
 .mini-chip-3 { right: 16%; bottom: 34%; background: #1e1e1e; }
 
+/* A centred 2×2 board so the four starting discs cluster in the middle of the
+   wide card rather than the top-left corner. */
 .mini-othello {
-  background:
-    linear-gradient(rgba(0, 0, 0, 0.18) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 0, 0, 0.18) 1px, transparent 1px),
-    #2f6b46;
-  background-size: 24px 24px;
+  background: #2f6b46;
 }
 
-.mini-disc {
+.mini-ot-svg {
   position: absolute;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.45);
-}
-
-.mini-disc-b {
-  background: radial-gradient(circle at 35% 30%, #4a4a4a, #111);
-}
-
-.mini-disc-w {
-  background: radial-gradient(circle at 35% 30%, #fff, #cfc9b8);
+  inset: 0;
+  width: 100%;
+  height: 100%;
 }
 
 .mini-c4 {
-  background:
-    radial-gradient(circle 9px at 18px 18px, #f5f2e8 98%, transparent) 0 0 / 36px 36px,
-    radial-gradient(circle 9px at 18px 18px, #d9613f 98%, transparent) 0 36px / 72px 72px,
-    radial-gradient(circle 9px at 54px 54px, #e8c25a 98%, transparent) 0 0 / 72px 72px,
-    #2c4f86;
+  background: #16335f;
 }
 
+.mini-c4-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Fixed 22px square cells; grid lines fall at multiples of 22, so the stones
+   placed at k·22 (44/66/88) sit on intersections, not in the cells. */
 .mini-go {
   background:
     linear-gradient(rgba(60, 40, 12, 0.5) 1px, transparent 1px),
     linear-gradient(90deg, rgba(60, 40, 12, 0.5) 1px, transparent 1px),
     linear-gradient(#d8b06d, #c89c55);
-  background-size: 22px 22px;
+  background-size:
+    22px 22px,
+    22px 22px,
+    100% 100%;
 }
 
 .mini-stone {
   position: absolute;
-  width: 17px;
-  height: 17px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
+  transform: translate(-50%, -50%);
   box-shadow: 0 2px 3px rgba(0, 0, 0, 0.4);
 }
 
@@ -467,18 +498,23 @@ button {
   background: radial-gradient(circle at 35% 30%, #fff, #d9d4c3);
 }
 
+/* Fixed 22px square cells; the row of stones at k·22 (44/66/88/110) on y=66
+   sits on one grid line, reading as a line of four. */
 .mini-pente {
   background:
     linear-gradient(rgba(150, 162, 210, 0.32) 1px, transparent 1px),
     linear-gradient(90deg, rgba(150, 162, 210, 0.32) 1px, transparent 1px),
     linear-gradient(135deg, #2b3350, #171c30);
-  background-size: 22px 22px;
+  background-size:
+    22px 22px,
+    22px 22px,
+    100% 100%;
 }
 
 .mini-pstone {
   position: absolute;
-  width: 17px;
-  height: 17px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   transform: translate(-50%, -50%);
   box-shadow: 0 2px 3px rgba(0, 0, 0, 0.5);
@@ -494,16 +530,17 @@ button {
 
 .mini-2048 {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(2, 44px);
+  grid-auto-rows: 44px;
   gap: 6px;
-  padding: 10px 28px;
+  place-content: center;
   background: #243024;
-  align-items: stretch;
 }
 
 .mini-2048 span {
   display: grid;
   place-items: center;
+  aspect-ratio: 1;
   background: #ece2cc;
   color: #5a503e;
   border-radius: 5px;
@@ -532,45 +569,41 @@ button {
     linear-gradient(90deg, rgba(120, 220, 150, 0.08) 1px, transparent 1px),
     radial-gradient(circle at 50% 45%, #0c1f15, #05100b 90%);
   background-size:
-    14px 14px,
-    14px 14px,
+    22px 22px,
+    22px 22px,
     100% 100%;
 }
 
-.mini-seg {
+.mini-snake-svg {
   position: absolute;
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-  transform: translate(-50%, -50%);
+  inset: 0;
+  width: 100%;
+  height: 100%;
 }
 
-.mini-seg-a {
-  background: #3fb950;
-  box-shadow: 0 0 6px rgba(63, 185, 80, 0.7);
+/* The glossy in-game tube: a dark rim under a gradient body, with a soft top
+   gloss highlight. */
+.snk-rim {
+  fill: none;
+  stroke: #0c3a1c;
+  stroke-width: 26;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-.mini-seg-b {
-  background: #58a6ff;
-  box-shadow: 0 0 6px rgba(88, 166, 255, 0.7);
+.snk-tube {
+  fill: none;
+  stroke: url(#snk-body);
+  stroke-width: 22;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-.mini-head-a {
-  box-shadow: 0 0 10px rgba(138, 255, 159, 0.9);
-}
-
-.mini-head-b {
-  box-shadow: 0 0 10px rgba(150, 200, 255, 0.9);
-}
-
-.mini-food {
-  position: absolute;
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #ff8d7e, #f85149);
-  box-shadow: 0 0 8px rgba(248, 81, 73, 0.8);
-  transform: translate(-50%, -50%);
+.snk-gloss {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.3);
+  stroke-width: 5;
+  stroke-linecap: round;
 }
 
 .mini-doom {
@@ -625,35 +658,45 @@ button {
   position: relative;
   background: radial-gradient(circle at 50% 45%, #0b1220, #060912 82%);
 }
-.mini-worm {
+
+.mini-slither-svg {
   position: absolute;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  transform: translate(-50%, -50%);
+  inset: 0;
+  width: 100%;
+  height: 100%;
 }
-.mini-worm-a {
-  background: #f0883e;
-  box-shadow: 0 0 8px rgba(240, 136, 62, 0.6);
+
+/* A fat slither.io worm: dark rim, gradient body, dashed segment bands, and a
+   top gloss. */
+.cl-rim {
+  fill: none;
+  stroke: #0d3a7a;
+  stroke-width: 34;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
-.mini-worm-b {
-  background: #58a6ff;
-  box-shadow: 0 0 8px rgba(88, 166, 255, 0.6);
+
+.cl-tube {
+  fill: none;
+  stroke: url(#cl-body);
+  stroke-width: 30;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
-.mini-worm-head-a {
-  background: #ffc08a;
+
+.cl-bands {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.13);
+  stroke-width: 30;
+  stroke-dasharray: 5 14;
+  stroke-linecap: butt;
 }
-.mini-worm-head-b {
-  background: #bcd9ff;
-}
-.mini-pellet {
-  position: absolute;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #7ee787;
-  box-shadow: 0 0 6px rgba(126, 231, 135, 0.8);
-  transform: translate(-50%, -50%);
+
+.cl-gloss {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.28);
+  stroke-width: 7;
+  stroke-linecap: round;
 }
 
 .slither-screen {
@@ -732,29 +775,9 @@ button {
   padding-top: 2rem;
   border-top: 1px solid var(--border);
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 1rem;
-  flex-wrap: wrap;
-  font-size: 0.95em;
-}
-
-.home-footer nav {
-  display: flex;
-  gap: 1.5em;
-}
-
-.home-footer a {
-  color: var(--text-dim);
-  text-decoration: none;
-}
-
-.home-footer a:hover {
-  color: var(--text);
-}
-
-.home-footer .muted {
-  font-size: 0.9em;
+  justify-content: center;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 /* ---------- match ---------- */
@@ -804,9 +827,19 @@ button {
   color: var(--text-dim);
 }
 
+/* A board's seat slot holds the opponent picker and, when that seat is a bot
+   with a ladder, its difficulty select right beside it. */
+.seat-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 /* The per-seat selector the shell injects into a board's slot (or the
    fallback bar). Compact and quiet so it reads as a control on the panel. */
-.seat-select {
+.seat-select,
+.seat-level {
   background: var(--bg-inset);
   color: var(--text);
   border: 1px solid var(--border);
@@ -817,7 +850,14 @@ button {
   cursor: pointer;
 }
 
-.seat-select:focus {
+/* The difficulty rides as a lighter satellite of the identity picker. */
+.seat-level {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+.seat-select:focus,
+.seat-level:focus {
   outline: none;
   border-color: var(--accent);
 }
@@ -842,18 +882,33 @@ button {
   font-size: 0.85rem;
 }
 
-.gear {
+/* Icon-only controls: settings, footer source/lab links. One quiet square
+   target that lights up on hover, sized for a comfortable tap on mobile. */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
   background: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
   color: var(--text-dim);
-  padding: 3px 9px;
-  transition: all 0.2s ease;
+  text-decoration: none;
+  transition:
+    color 0.2s ease,
+    border-color 0.2s ease,
+    background 0.2s ease;
 }
 
-.gear:hover {
+.icon-btn:hover {
   color: var(--accent);
-  border-color: var(--accent);
+  border-color: var(--border);
+  background: var(--bg-inset);
+}
+
+.icon-btn svg {
+  display: block;
 }
 
 /* ---------- quick controls + cpu note ---------- */
@@ -898,6 +953,25 @@ button {
   opacity: 0.6;
 }
 
+/* Touch devices: give every dropdown and the inline controls a comfortable
+   tap target without changing the desktop look. */
+@media (pointer: coarse) {
+  .qc-select,
+  .seat-select,
+  .seat-level,
+  .speed,
+  .opt-row input,
+  .opt-row select {
+    min-height: 40px;
+    padding: 8px 10px;
+    font-size: 0.95rem;
+  }
+
+  .link {
+    padding: 8px 8px;
+  }
+}
+
 .cpu-note {
   margin-bottom: 16px;
   padding: 10px 12px;
@@ -927,23 +1001,39 @@ button {
 }
 
 @media (max-width: 800px) {
+  /* `minmax(0, 1fr)` keeps the single column from being forced wider than the
+     container by a board that hasn't shrunk yet, so the side panel and the
+     page chrome stay inside the viewport. */
   .match-body {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
 .board {
-  min-height: 460px;
+  min-height: 520px;
   display: flex;
   align-items: flex-start;
   justify-content: center;
+  min-width: 0;
 }
 
 .side {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-height: 460px;
+  min-height: 520px;
+}
+
+@media (max-width: 800px) {
+  /* Stacked under the board, the side panel no longer needs to match the
+     board's height; let the log size to its content. */
+  .board,
+  .side {
+    min-height: 0;
+  }
+  .log {
+    max-height: 240px;
+  }
 }
 
 .status {
@@ -960,6 +1050,108 @@ button {
 
 .status-result {
   color: var(--good);
+}
+
+/* The log's header: a quiet "Log" label and a compact debug switch. The
+   switch is a pill that slides, not a button, so it reads as a mode toggle. */
+.log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 2px 0;
+}
+
+.log-title {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.debug-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.debug-toggle .debug-check {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.debug-pill {
+  position: relative;
+  width: 30px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease;
+}
+
+.debug-pill::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition:
+    transform 0.18s ease,
+    background 0.18s ease;
+}
+
+.debug-check:checked + .debug-pill {
+  background: color-mix(in srgb, var(--accent) 28%, var(--bg-inset));
+  border-color: var(--accent);
+}
+
+.debug-check:checked + .debug-pill::after {
+  transform: translateX(14px);
+  background: var(--accent);
+}
+
+.debug-check:focus-visible + .debug-pill {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.debug-word {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+}
+
+/* The persistent debug readout: a replaced (not appended) block of short
+   "Label: value" rows, revealed only while the panel is in debug mode. */
+.debug-readout {
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+
+.side.debug-on .debug-readout:not(:empty) {
+  display: flex;
+}
+
+.readout-row {
+  color: var(--text);
+  white-space: pre-wrap;
 }
 
 .log {
@@ -981,6 +1173,21 @@ button {
 
 .log-detail {
   color: var(--text-dim);
+}
+
+/* Debug-only lines (move detail + shell meta) are appended always but stay
+   hidden until the panel is toggled into debug mode. */
+.log-debug {
+  display: none;
+}
+
+.side.debug-on .log-debug {
+  display: block;
+}
+
+.log-meta {
+  color: var(--text-dim);
+  font-size: 0.72rem;
 }
 
 .free-input {

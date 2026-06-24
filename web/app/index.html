@@ -16,7 +16,12 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <a class="home-link" href="https://henrilemoine.com/">← Henri Lemoine</a>
+    <a class="home-link" href="https://henrilemoine.com/" aria-label="Henri Lemoine — home">
+      <svg class="home-link-arrow" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+        <path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+      <span class="home-link-name">Henri Lemoine</span>
+    </a>
     <button class="dark-toggle" aria-label="Toggle dark mode">🌙</button>
     <div id="app"></div>
     <script>

@@ -214,12 +214,22 @@ function optionList(pairs: [string, string][], cur: string): string {
   return opts.join("");
 }
 
+/** Inline single-color glyphs (currentColor) for the icon-only controls —
+ * settings, the tournament lab, and the source link. Kept as crisp SVG rather
+ * than emoji/font glyphs so they sharpen at any size and follow the theme. */
+const ICON_GEAR =
+  '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 13.5a7.7 7.7 0 0 0 0-3l1.7-1.3-1.8-3.1-2 .8a7.6 7.6 0 0 0-2.6-1.5L14.3 2h-3.6l-.4 2.1a7.6 7.6 0 0 0-2.6 1.5l-2-.8L3.9 8l1.7 1.3a7.7 7.7 0 0 0 0 3L3.9 13.5l1.8 3.1 2-.8a7.6 7.6 0 0 0 2.6 1.5l.4 2.1h3.6l.4-2.1a7.6 7.6 0 0 0 2.6-1.5l2 .8 1.8-3.1z"/></svg>';
+const ICON_BEAKER =
+  '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6M10 3v6.2L5.3 17a2 2 0 0 0 1.8 3h9.8a2 2 0 0 0 1.8-3L14 9.2V3"/><path d="M7.2 14h9.6"/></svg>';
+const ICON_GITHUB =
+  '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.42c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.36-3.88-1.36-.53-1.34-1.3-1.7-1.3-1.7-1.05-.72.08-.71.08-.71 1.17.08 1.78 1.2 1.78 1.2 1.04 1.78 2.73 1.26 3.4.96.1-.75.4-1.27.73-1.56-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.42-2.69 5.39-5.25 5.68.41.35.78 1.05.78 2.12v3.14c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5z"/></svg>';
+
 /** Static mini-board previews on the home cards — each game introduces
  * itself with its own board, not an icon. */
 function miniFor(id: string): string {
   switch (id) {
     case "chess":
-      return `<div class="mini mini-chess"><span class="mini-pc" style="left:12%;top:8%">♞</span><span class="mini-pc mini-pc-w" style="left:58%;top:52%">♙</span></div>`;
+      return `<div class="mini mini-chess"><span class="mini-pc" style="left:30%;top:30%">♞</span><span class="mini-pc mini-pc-w" style="left:70%;top:70%">♙</span></div>`;
     case "liars-dice":
       return `<div class="mini mini-dice">
         <span class="mini-die"><i style="left:25%;top:25%"></i><i style="left:65%;top:65%"></i></span>
@@ -230,19 +240,131 @@ function miniFor(id: string): string {
     case "poker":
       return `<div class="mini mini-poker"><span class="mini-pcard mini-pcard-r">A♥</span><span class="mini-pcard">K♠</span><span class="mini-chip mini-chip-1"></span><span class="mini-chip mini-chip-2"></span><span class="mini-chip mini-chip-3"></span></div>`;
     case "othello":
-      return `<div class="mini mini-othello"><span class="mini-disc mini-disc-b" style="left:28%;top:28%"></span><span class="mini-disc mini-disc-w" style="left:52%;top:28%"></span><span class="mini-disc mini-disc-w" style="left:28%;top:52%"></span><span class="mini-disc mini-disc-b" style="left:52%;top:52%"></span></div>`;
+      // A full 8×8 reversi board zoomed in so the grid bleeds past the frame
+      // (slice crop), with a believable mid-game cluster of discs around the
+      // centre. Cell C=40, disc centres at 20+40·k.
+      return `<div class="mini mini-othello">
+        <svg class="mini-ot-svg" viewBox="0 0 320 320" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+          <defs>
+            <radialGradient id="ot-w" cx="0.35" cy="0.3" r="0.8"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#cfc9b8"/></radialGradient>
+            <radialGradient id="ot-b" cx="0.35" cy="0.3" r="0.8"><stop offset="0" stop-color="#5a5a5a"/><stop offset="1" stop-color="#0a0a0a"/></radialGradient>
+          </defs>
+          <rect width="320" height="320" fill="#2f6b46"/>
+          ${[40, 80, 120, 160, 200, 240, 280]
+            .map((p) => `<line x1="${p}" y1="0" x2="${p}" y2="320" stroke="rgba(0,0,0,0.32)" stroke-width="2"/><line x1="0" y1="${p}" x2="320" y2="${p}" stroke="rgba(0,0,0,0.32)" stroke-width="2"/>`)
+            .join("")}
+          ${[[80, 80], [80, 240], [240, 80], [240, 240]]
+            .map(([x, y]) => `<circle cx="${x}" cy="${y}" r="3.5" fill="rgba(0,0,0,0.42)"/>`)
+            .join("")}
+          ${[
+            ["w", 3, 1], ["b", 4, 1],
+            ["b", 2, 2], ["w", 3, 2], ["b", 4, 2], ["w", 5, 2],
+            ["w", 2, 3], ["b", 3, 3], ["b", 4, 3], ["b", 5, 3], ["w", 6, 3],
+            ["b", 1, 4], ["w", 2, 4], ["w", 3, 4], ["b", 4, 4], ["w", 5, 4],
+            ["b", 3, 5], ["w", 4, 5], ["b", 5, 5],
+            ["b", 4, 6],
+          ]
+            .map(([c, col, row]) => `<circle cx="${20 + 40 * Number(col)}" cy="${20 + 40 * Number(row)}" r="16" fill="url(#ot-${c})" stroke="rgba(0,0,0,0.35)" stroke-width="0.8"/>`)
+            .join("")}
+        </svg>
+      </div>`;
     case "connect4":
-      return `<div class="mini mini-c4"></div>`;
+      // A full 7-wide Connect-4 board zoomed in so the rows continue below the
+      // frame (slice crop): the top sits at the top, the bottom row is cut off,
+      // implying a taller board. Varying column heights read as a real mid-game
+      // (any visible disc is gravity-consistent — the hidden rows below it are
+      // full).
+      return `<div class="mini mini-c4">
+        <svg class="mini-c4-svg" viewBox="0 0 274 110" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+          <defs>
+            <radialGradient id="c4-r" cx="0.36" cy="0.3" r="0.85"><stop offset="0" stop-color="#ff8a7a"/><stop offset="0.55" stop-color="#e23b2e"/><stop offset="1" stop-color="#a01a12"/></radialGradient>
+            <radialGradient id="c4-y" cx="0.36" cy="0.3" r="0.85"><stop offset="0" stop-color="#ffe89a"/><stop offset="0.55" stop-color="#f2c037"/><stop offset="1" stop-color="#b8860b"/></radialGradient>
+          </defs>
+          <rect x="2" y="2" width="270" height="250" rx="10" fill="#2256b6"/>
+          <rect x="2" y="2" width="270" height="26" rx="10" fill="#2c63c9"/>
+          ${[23, 61, 99, 137, 175, 213, 251]
+            .flatMap((x, c) =>
+              [20, 58, 96].map((y, r) => {
+                const fills: Record<string, string> = { "0-2": "c4-r", "1-1": "c4-y", "1-2": "c4-r", "2-0": "c4-r", "2-1": "c4-y", "2-2": "c4-r", "3-0": "c4-y", "3-1": "c4-r", "3-2": "c4-y", "4-1": "c4-r", "4-2": "c4-y", "5-2": "c4-r", "6-1": "c4-y", "6-2": "c4-r" };
+                const fill = fills[`${c}-${r}`];
+                return `<circle cx="${x}" cy="${y}" r="15.5" fill="${fill ? `url(#${fill})` : "#16335f"}"/>`;
+              }),
+            )
+            .join("")}
+        </svg>
+      </div>`;
     case "go":
-      return `<div class="mini mini-go"><span class="mini-stone mini-stone-b" style="left:30%;top:30%"></span><span class="mini-stone mini-stone-w" style="left:55%;top:47%"></span><span class="mini-stone mini-stone-b" style="left:38%;top:63%"></span></div>`;
+      // Cell size C=22 (.mini-go), stones ON intersections (k·C).
+      return `<div class="mini mini-go"><span class="mini-stone mini-stone-b" style="left:44px;top:44px"></span><span class="mini-stone mini-stone-w" style="left:66px;top:66px"></span><span class="mini-stone mini-stone-b" style="left:44px;top:88px"></span><span class="mini-stone mini-stone-w" style="left:88px;top:44px"></span></div>`;
     case "pente":
-      return `<div class="mini mini-pente"><span class="mini-pstone mini-pstone-b" style="left:18%;top:50%"></span><span class="mini-pstone mini-pstone-w" style="left:40%;top:50%"></span><span class="mini-pstone mini-pstone-w" style="left:60%;top:50%"></span><span class="mini-pstone mini-pstone-b" style="left:82%;top:50%"></span></div>`;
+      // A contested endgame: black completes five-in-a-row along y=66, white
+      // bracketing both ends, the rest interlocked above and below like a real
+      // game.
+      return `<div class="mini mini-pente">${[
+        ["b", 66, 66], ["b", 88, 66], ["b", 110, 66], ["b", 132, 66], ["b", 154, 66],
+        ["b", 88, 88], ["b", 154, 44],
+        ["w", 44, 66], ["w", 176, 66], ["w", 66, 44], ["w", 110, 44], ["w", 132, 88], ["w", 66, 88],
+      ]
+        .map(([c, x, y]) => `<span class="mini-pstone mini-pstone-${c}" style="left:${x}px;top:${y}px"></span>`)
+        .join("")}</div>`;
     case "2048":
       return `<div class="mini mini-2048"><span>2</span><span class="v4">4</span><span class="v8">8</span><span class="v16">16</span></div>`;
     case "snake":
-      return `<div class="mini mini-snake"><span class="mini-seg mini-seg-a" style="left:18%;top:50%"></span><span class="mini-seg mini-seg-a" style="left:34%;top:50%"></span><span class="mini-seg mini-seg-a mini-head-a" style="left:50%;top:50%"></span><span class="mini-seg mini-seg-b mini-head-b" style="left:74%;top:28%"></span><span class="mini-seg mini-seg-b" style="left:74%;top:44%"></span><span class="mini-food" style="left:62%;top:70%"></span></div>`;
+      // The Snake-game snake: a glossy tube that follows the grid with
+      // right-angle (rounded) turns, ending in a detailed head — two eyes,
+      // nostrils, and a forked tongue — beside an apple.
+      return `<div class="mini mini-snake">
+        <svg class="mini-snake-svg" viewBox="0 0 220 110" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+          <defs>
+            <linearGradient id="snk-body" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#3fb950"/><stop offset="1" stop-color="#1f7a34"/>
+            </linearGradient>
+            <radialGradient id="snk-head" cx="0.36" cy="0.3" r="0.85">
+              <stop offset="0" stop-color="#86efa0"/><stop offset="0.6" stop-color="#46c45c"/><stop offset="1" stop-color="#1f7a34"/>
+            </radialGradient>
+            <radialGradient id="snk-food" cx="0.36" cy="0.3" r="0.85">
+              <stop offset="0" stop-color="#ffc7be"/><stop offset="0.5" stop-color="#f85149"/><stop offset="1" stop-color="#b21f17"/>
+            </radialGradient>
+          </defs>
+          <circle cx="40" cy="28" r="9" fill="url(#snk-food)"/>
+          <path class="snk-rim" d="M22 77 H88 V33 H132 V77 H176"/>
+          <path class="snk-tube" d="M22 77 H88 V33 H132 V77 H176"/>
+          <path class="snk-gloss" d="M22 77 H88 V33 H132 V77 H176"/>
+          <circle cx="176" cy="77" r="14.5" fill="url(#snk-head)" stroke="#0c3a1c" stroke-width="1.5"/>
+          <circle cx="171" cy="70" r="4.2" fill="#fff"/><circle cx="172.2" cy="70" r="2.1" fill="#0a1f12"/>
+          <circle cx="182" cy="71" r="4.2" fill="#fff"/><circle cx="183.2" cy="71" r="2.1" fill="#0a1f12"/>
+          <circle cx="186" cy="74.5" r="0.9" fill="#0a1f12"/><circle cx="186" cy="80" r="0.9" fill="#0a1f12"/>
+          <path d="M189 77 H201 M201 77 L207 73 M201 77 L207 81" fill="none" stroke="#e5484d" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>`;
     case "coil":
-      return `<div class="mini mini-slither"><span class="mini-worm mini-worm-b" style="left:20%;top:34%"></span><span class="mini-worm mini-worm-b" style="left:34%;top:30%"></span><span class="mini-worm mini-worm-b mini-worm-head-b" style="left:48%;top:30%"></span><span class="mini-worm mini-worm-a" style="left:58%;top:66%"></span><span class="mini-worm mini-worm-a" style="left:70%;top:60%"></span><span class="mini-worm mini-worm-a mini-worm-head-a" style="left:80%;top:50%"></span><span class="mini-pellet" style="left:40%;top:62%"></span><span class="mini-pellet" style="left:66%;top:32%"></span></div>`;
+      // A fat slither.io serpent: a thick gradient body with banded segment
+      // rings and a top gloss, a domed head with two eyes, and glowing pellets
+      // scattered on the dark arena.
+      return `<div class="mini mini-slither">
+        <svg class="mini-slither-svg" viewBox="0 0 220 110" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+          <defs>
+            <linearGradient id="cl-body" x1="0" y1="0" x2="1" y2="0.3">
+              <stop offset="0" stop-color="#33d6ff"/><stop offset="0.5" stop-color="#1f8bff"/><stop offset="1" stop-color="#7b5bff"/>
+            </linearGradient>
+            <radialGradient id="cl-head" cx="0.36" cy="0.3" r="0.85">
+              <stop offset="0" stop-color="#bdf0ff"/><stop offset="0.55" stop-color="#33b6ff"/><stop offset="1" stop-color="#1463d8"/>
+            </radialGradient>
+            <radialGradient id="cl-p1" cx="0.4" cy="0.35" r="0.8"><stop offset="0" stop-color="#fff2a8"/><stop offset="1" stop-color="#f5b400"/></radialGradient>
+            <radialGradient id="cl-p2" cx="0.4" cy="0.35" r="0.8"><stop offset="0" stop-color="#c8ffd0"/><stop offset="1" stop-color="#34d058"/></radialGradient>
+          </defs>
+          <circle cx="40" cy="30" r="5" fill="url(#cl-p1)"/>
+          <circle cx="150" cy="86" r="5" fill="url(#cl-p2)"/>
+          <circle cx="92" cy="20" r="4" fill="url(#cl-p1)"/>
+          <path class="cl-rim" d="M18 78 C 64 92, 70 40, 116 46 S 176 84, 202 50"/>
+          <path class="cl-tube" d="M18 78 C 64 92, 70 40, 116 46 S 176 84, 202 50"/>
+          <path class="cl-bands" d="M18 78 C 64 92, 70 40, 116 46 S 176 84, 202 50"/>
+          <path class="cl-gloss" d="M18 71 C 64 85, 70 33, 116 39 S 176 77, 202 44"/>
+          <circle cx="202" cy="50" r="17" fill="url(#cl-head)" stroke="#0d3a7a" stroke-width="1.5"/>
+          <circle cx="206" cy="43" r="5" fill="#fff" stroke="#0a1230" stroke-width="0.8"/><circle cx="208.4" cy="43" r="2.6" fill="#0a1230"/><circle cx="206.6" cy="41.4" r="1" fill="#fff"/>
+          <circle cx="206" cy="56" r="5" fill="#fff" stroke="#0a1230" stroke-width="0.8"/><circle cx="208.4" cy="56" r="2.6" fill="#0a1230"/><circle cx="206.6" cy="54.4" r="1" fill="#fff"/>
+        </svg>
+      </div>`;
     case "dood":
       return `<div class="mini mini-doom"><span class="mini-doom-word">DOOD</span></div>`;
     default:
@@ -264,6 +386,10 @@ export class App {
   private submitResolve: ((input: string) => void) | null = null;
   private logEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
+  private sideEl: HTMLElement | null = null;
+  private readoutEl: HTMLElement | null = null;
+  private debugOn = localStorage.getItem("arcadeDebug") === "1";
+  private debugSubs = new Set<(on: boolean) => void>();
   /** Snake play runs on a dedicated real-time driver (fixed clock, bot's policy
    * floor + search off the critical path) instead of the serial match loop. */
   private snakeRealtime: SnakeRealtime | null = null;
@@ -370,12 +496,8 @@ export class App {
         </header>
         <div class="card-grid">${cards}${slitherCard}${doomCard}</div>
         <footer class="home-footer">
-          <nav>
-            <a href="https://github.com/henri123lemoine/games">GitHub</a>
-            <a href="https://henrilemoine.com/">henrilemoine.com</a>
-            <button type="button" class="link tourney-link">tournament lab</button>
-          </nav>
-          <span class="muted">Runs entirely in your browser.</span>
+          <button type="button" class="icon-btn tourney-link" title="Tournament lab" aria-label="Tournament lab">${ICON_BEAKER}</button>
+          <a class="icon-btn" href="https://github.com/henri123lemoine/games" title="GitHub" aria-label="GitHub">${ICON_GITHUB}</a>
         </footer>
       </div>`;
     for (const el of this.root.querySelectorAll<HTMLElement>(".card")) {
@@ -571,6 +693,10 @@ export class App {
         numSeats: st.numSeats,
         submit: (input) => this.submit(input),
         animationScale: () => this.animationScale(),
+        debug: () => this.debugOn,
+        onDebugChange: (cb) => this.onDebugChange(cb),
+        setDebugReadout: (lines) => this.setDebugReadout(lines),
+        debugLog: (text) => this.debugLog(text),
       };
       this.frontend.mount(boardEl, ctx);
       this.frontend.render(st);
@@ -648,7 +774,7 @@ export class App {
           <span class="spacer"></span>
           ${speedControl}
           <button type="button" class="link again">rematch</button>
-          <button type="button" class="link gear" title="Match settings">⚙ settings</button>
+          <button type="button" class="icon-btn gear" title="Match settings" aria-label="Match settings">${ICON_GEAR}</button>
         </header>
         ${this.quickControlsHtml(game, opts)}
         <div class="cpu-note" hidden></div>
@@ -669,6 +795,11 @@ export class App {
       </div>`;
     this.logEl = this.root.querySelector(".log");
     this.statusEl = this.root.querySelector(".status");
+    this.sideEl = this.root.querySelector(".side");
+    this.readoutEl = this.root.querySelector(".debug-readout");
+    const debugCheck = this.root.querySelector<HTMLInputElement>(".debug-check");
+    if (debugCheck)
+      debugCheck.onchange = () => this.setDebug(debugCheck.checked);
     this.root.querySelector<HTMLButtonElement>(".back")!.onclick = () =>
       this.navTo("/");
     this.root.querySelector<HTMLButtonElement>(".again")!.onclick = () =>
@@ -693,16 +824,15 @@ export class App {
   }
 
   /** The always-visible controls strip: the game-level dropdowns a visitor is
-   * most likely to change (board size, player count) and, for a single-bot
-   * match, a difficulty selector — so the common settings are one click away
-   * on the board, not hidden in the drawer. Empty for solo / heterogeneous
-   * matches (their settings stay in the drawer). */
+   * most likely to change (board size, player count) — the genuine game
+   * characteristics. Difficulty is NOT here; it belongs to the opponent and
+   * rides next to that seat's selector (see `fillSeatSlots`). Empty for solo /
+   * heterogeneous matches (their settings stay in the drawer). */
   private quickControlsHtml(
     game: GameInfo,
     opts: Record<string, string>,
   ): string {
     if (game.solo || opts.bots) return "";
-    const bot = effectiveBot(game, opts);
     const cells: string[] = [];
     const cell = (key: string, label: string, pairs: [string, string][], cur: string, locked: boolean) =>
       `<label class="qc"><span class="qc-name">${esc(label)}</span><select class="qc-select" data-key="${esc(key)}"${locked ? " disabled" : ""}>${optionList(pairs, cur)}</select></label>`;
@@ -713,15 +843,6 @@ export class App {
       if (!choices) continue;
       const cur = opts[o.key] ?? o.value.split("|")[0];
       cells.push(cell(o.key, o.key, choices.map((c) => [c, c]), cur, false));
-    }
-    const diff = DIFFICULTY[`${game.id}/${bot}`];
-    if (diff) {
-      // Without a GPU only the two responsive CPU levels are offered; otherwise
-      // the full ladder.
-      const cpu = bot === "azero-gpu" && isCpuFallback();
-      const levels = cpu ? CPU_LEVELS : diff.levels;
-      const cur = opts[diff.key] ?? (cpu ? String(TRIVIAL_SIMS) : mediumLevel(game.id, bot));
-      cells.push(cell(diff.key, "level", levels, cur, false));
     }
     return cells.length ? `<div class="match-controls">${cells.join("")}</div>` : "";
   }
@@ -771,8 +892,17 @@ export class App {
           <input placeholder="or type a move…" autocomplete="off" />
           <button type="submit">send</button>
         </form>`;
-    return `<aside class="side">
+    return `<aside class="side${this.debugOn ? " debug-on" : ""}">
         <div class="status">Starting…</div>
+        <div class="log-head">
+          <span class="log-title">Log</span>
+          <label class="debug-toggle">
+            <input type="checkbox" class="debug-check"${this.debugOn ? " checked" : ""} />
+            <span class="debug-pill"></span>
+            <span class="debug-word">debug</span>
+          </label>
+        </div>
+        <div class="debug-readout" aria-live="polite"></div>
         <div class="log" aria-live="polite"></div>
         ${freeInput}
       </aside>`;
@@ -819,8 +949,101 @@ export class App {
         sel.append(o);
       }
       sel.onchange = () => this.applySeatChange(game, opts, i, sel.value);
-      slot.replaceChildren(sel);
+      const level = this.seatLevelSelect(game, opts, i, states[i]);
+      slot.replaceChildren(level ? this.fragment([sel, level]) : sel);
     }
+  }
+
+  /** A `[sel, level]` pair wrapped so `replaceChildren` takes one node. */
+  private fragment(nodes: Node[]): DocumentFragment {
+    const f = document.createDocumentFragment();
+    for (const n of nodes) f.append(n);
+    return f;
+  }
+
+  /** Difficulty is a property of the opponent, independent per seat: when seat
+   * `i` holds a bot with a difficulty ladder, render a level `<select>` beside
+   * that seat's picker showing that seat's OWN level (from its `bots=` spec
+   * when heterogeneous, else the shared/default value). Changing it restarts
+   * with only that seat's knob changed. Returns null for "You" and ladder-less
+   * bots. */
+  private seatLevelSelect(
+    game: GameInfo,
+    opts: Record<string, string>,
+    i: number,
+    seatValue: string,
+  ): HTMLSelectElement | null {
+    if (seatValue === "__you__") return null;
+    const diff = DIFFICULTY[`${game.id}/${seatValue}`];
+    if (!diff) return null;
+    const cpu = seatValue === "azero-gpu" && isCpuFallback();
+    const levels = cpu ? CPU_LEVELS : diff.levels;
+    const cur = this.seatLevel(game, opts, i, seatValue);
+    const sel = document.createElement("select");
+    sel.className = "seat-level";
+    sel.setAttribute("aria-label", "Difficulty");
+    for (const [label, value] of levels) {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = label;
+      o.selected = value === cur;
+      sel.append(o);
+    }
+    if (!levels.some(([, v]) => v === cur)) {
+      const o = document.createElement("option");
+      o.value = cur;
+      o.textContent = `Custom (${cur})`;
+      o.selected = true;
+      sel.prepend(o);
+    }
+    sel.onchange = () => this.applyLevelChange(game, opts, i, sel.value);
+    return sel;
+  }
+
+  /** Seat `i`'s current difficulty value: its own spec knob in a `bots=` match,
+   * else the shared `opts[diff.key]`, else the CPU/medium default. */
+  private seatLevel(
+    game: GameInfo,
+    opts: Record<string, string>,
+    i: number,
+    seatValue: string,
+  ): string {
+    const diff = DIFFICULTY[`${game.id}/${seatValue}`];
+    if (!diff) return "";
+    if (opts.bots) {
+      const spec = splitSpecs(opts.bots)[i];
+      const knob = spec
+        ?.split(",")
+        .map((seg) => seg.split(":")[1] ?? seg)
+        .find((seg) => seg.startsWith(`${diff.key}=`));
+      if (knob) return knob.slice(diff.key.length + 1);
+    }
+    const cpu = seatValue === "azero-gpu" && isCpuFallback();
+    return opts[diff.key] ?? (cpu ? String(TRIVIAL_SIMS) : mediumLevel(game.id, seatValue));
+  }
+
+  /** Change ONLY seat `i`'s difficulty and restart. Composes a per-seat
+   * `bots=` spec from every seat's current (bot, difficulty), overriding the
+   * edited seat's knob — so two bots hold genuinely independent levels. */
+  private applyLevelChange(
+    game: GameInfo,
+    opts: Record<string, string>,
+    i: number,
+    value: string,
+  ): void {
+    const states = this.seatStates(game, opts);
+    const human = states.indexOf("__you__");
+    const botFiller = states.find((s) => s !== "__you__") ?? rosterBots(game)[0]?.value ?? "";
+    const specs = states.map((seat, j) => {
+      const bot = seat === "__you__" ? botFiller : seat;
+      const level = j === i ? value : this.seatLevel(game, opts, j, bot);
+      return botSpec(game.id, bot, level);
+    });
+    const carry = this.gameLevelCarry(game, opts);
+    const config = { ...carry, bots: specs.join(",") };
+    if (human >= 0)
+      void this.startMatch(game, "play", { ...config, seat: String(human) });
+    else void this.startMatch(game, "watch", config);
   }
 
   private seatName(game: GameInfo, i: number): string {
@@ -894,16 +1117,32 @@ export class App {
     }
     const human = next.indexOf("__you__");
     const vals = next.filter((x) => x !== "__you__");
-    const uniform = vals.length > 0 && vals.every((x) => x === vals[0]);
+    // Per-seat difficulty: the seat whose bot just changed takes that bot's
+    // medium default; every other seat keeps its own current level.
+    const levels = next.map((v, j) =>
+      j === i ? mediumLevel(game.id, v) : this.seatLevel(game, opts, j, v),
+    );
+    // The simple `bot=` form only applies when every bot seat shares the same
+    // bot AND the same difficulty; once either diverges, seats must each carry
+    // their own knob via `bots=`.
+    const botSeats = next
+      .map((v, j) => ({ v, level: levels[j] }))
+      .filter((s) => s.v !== "__you__");
+    const uniform =
+      botSeats.length > 0 &&
+      botSeats.every((s) => s.v === botSeats[0].v && s.level === botSeats[0].level);
     if (uniform) {
       const carry = { ...opts };
       delete carry.seat;
       delete carry.bot;
       delete carry.bots;
       delete carry.seed;
-      const changes: Record<string, string> = sendsBot(vals[0])
-        ? { bot: vals[0] }
+      const diff = DIFFICULTY[`${game.id}/${botSeats[0].v}`];
+      if (diff) delete carry[diff.key];
+      const changes: Record<string, string> = sendsBot(botSeats[0].v)
+        ? { bot: botSeats[0].v }
         : {};
+      if (diff && botSeats[0].level) changes[diff.key] = botSeats[0].level;
       if (human >= 0)
         void this.startMatch(game, "play", {
           ...carry,
@@ -912,9 +1151,11 @@ export class App {
         });
       else void this.startMatch(game, "watch", { ...carry, ...changes });
     } else {
-      const specs = next.map((v) => {
-        const bot = v === "__you__" ? vals[0] : v;
-        return botSpec(game.id, bot, mediumLevel(game.id, bot));
+      const botFiller = vals[0] ?? bots[0]?.value ?? "";
+      const specs = next.map((v, j) => {
+        const bot = v === "__you__" ? botFiller : v;
+        const level = v === "__you__" ? mediumLevel(game.id, bot) : levels[j];
+        return botSpec(game.id, bot, level);
       });
       const carry = this.gameLevelCarry(game, opts);
       if (human >= 0)
@@ -1050,11 +1291,13 @@ export class App {
       if (this.clientBot && st.toAct >= 0 && st.toAct !== st.humanSeat) {
         this.setStatus("Thinking…");
         try {
+          const t0 = performance.now();
           const input = await this.clientBot.chooseMove(st);
+          const thinkMs = performance.now() - t0;
           if (gen !== this.gen) return;
           const mev = await this.host.apply(input);
           if (gen !== this.gen) return;
-          this.log(mev);
+          this.log(mev, thinkMs);
           await this.clientBot.onMove(mev);
           const after = await this.host.state();
           if (gen !== this.gen) return;
@@ -1111,18 +1354,61 @@ export class App {
     return this.speedScale;
   }
 
-  private log(ev: MatchEventData): void {
+  /** One move's line in the log: `ev.text` always, with `ev.detail` and the
+   * shell-added meta (seat, raw label, optional think time) folded in as
+   * debug-only lines that CSS reveals when the panel is in debug mode. */
+  private log(ev: MatchEventData, thinkMs?: number): void {
     this.logText(ev.text);
-    if (ev.detail) this.logText(ev.detail, true);
+    if (ev.detail) this.logText(ev.detail, "detail");
+    const meta = [`seat ${ev.seat}`, `label ${ev.label}`];
+    if (thinkMs !== undefined) meta.push(`think ${Math.round(thinkMs)}ms`);
+    this.logText(meta.join(" · "), "meta");
   }
 
-  private logText(text: string, detail = false): void {
+  /** A debug-only line in the log; shown only when the panel is in debug mode. */
+  private debugLog(text: string): void {
+    this.logText(text, "meta");
+  }
+
+  private logText(text: string, kind?: "detail" | "meta"): void {
     if (!this.logEl) return;
     const line = document.createElement("div");
-    line.className = detail ? "log-line log-detail" : "log-line";
+    line.className = kind
+      ? `log-line log-${kind} log-debug`
+      : "log-line";
     line.textContent = text;
     this.logEl.append(line);
     this.logEl.scrollTop = this.logEl.scrollHeight;
+  }
+
+  /** Read the debug flag, flip the side panel's class so debug-only lines and
+   * the readout reveal/hide, persist, and fan out to subscribers. */
+  private setDebug(on: boolean): void {
+    if (on === this.debugOn) return;
+    this.debugOn = on;
+    localStorage.setItem("arcadeDebug", on ? "1" : "0");
+    this.sideEl?.classList.toggle("debug-on", on);
+    for (const cb of this.debugSubs) cb(on);
+  }
+
+  private onDebugChange(cb: (on: boolean) => void): () => void {
+    this.debugSubs.add(cb);
+    cb(this.debugOn);
+    return () => this.debugSubs.delete(cb);
+  }
+
+  /** Replace the side panel's persistent debug readout. No-op without a side
+   * panel (solo/snake) so frontends can call it unconditionally. */
+  private setDebugReadout(lines: string[]): void {
+    if (!this.readoutEl) return;
+    this.readoutEl.replaceChildren(
+      ...lines.map((text) => {
+        const row = document.createElement("div");
+        row.className = "readout-row";
+        row.textContent = text;
+        return row;
+      }),
+    );
   }
 
   private setStatus(
@@ -1148,6 +1434,9 @@ export class App {
     this.frontend?.unmount();
     this.frontend = null;
     this.submitResolve = null;
+    // The next match registers fresh subscribers after mounting; drop the old
+    // ones so a toggle never drives a torn-down panel's readout.
+    this.debugSubs.clear();
   }
 
   private teardown(): void {
@@ -1159,6 +1448,8 @@ export class App {
     this.teardownMatch();
     this.logEl = null;
     this.statusEl = null;
+    this.sideEl = null;
+    this.readoutEl = null;
   }
 }
 

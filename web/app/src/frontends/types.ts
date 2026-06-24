@@ -15,6 +15,17 @@ export interface FrontendCtx {
   submit(input: string): void;
   /** Honor `prefers-reduced-motion` and the spectate speed setting. */
   animationScale(): number;
+  /** True while the side-panel debug toggle is on. */
+  debug(): boolean;
+  /** Subscribe to debug-mode toggles. Called immediately with the current
+   *  value, then on every change. Returns an unsubscribe fn. */
+  onDebugChange(cb: (on: boolean) => void): () => void;
+  /** Replace this frontend's persistent debug readout: a list of short
+   *  "Label: value" strings. Rendered in the side panel ONLY while debug is on.
+   *  No-op for boards without a side panel. Pass [] to clear. */
+  setDebugReadout(lines: string[]): void;
+  /** Append one verbose line to the side-panel log, shown ONLY in debug mode. */
+  debugLog(text: string): void;
 }
 
 export interface GameFrontend {
