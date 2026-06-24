@@ -17,8 +17,10 @@ use game_core::hash::{combine, splitmix64};
 use game_core::{Game, Turn};
 
 mod agents;
+mod subgame;
 mod ui;
 pub use agents::{BidConditioned, ProbConfig, ProbabilisticAgent};
+pub use subgame::{ContinuationValue, DiceShareValue, RoundSubgame};
 
 pub const MAX_FACES: usize = 6;
 pub const MAX_PLAYERS: usize = 8;
