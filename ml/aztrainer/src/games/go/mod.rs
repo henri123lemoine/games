@@ -6,6 +6,7 @@
 
 mod calibrate_pass;
 mod eval;
+mod evalset;
 mod gauge;
 mod gtp;
 mod run;
@@ -71,11 +72,12 @@ pub fn main(args: &[String]) {
         Some("verify-export") => verify_export(&args[1..]),
         Some("elo") => gauge::elo_gauge(&args[1..]),
         Some("rate") => gauge::rate(&args[1..]),
+        Some("evalset") => evalset::main(&args[1..]),
         Some("calibrate") => gauge::calibrate(&args[1..]),
         Some("calibrate-pass") => calibrate_pass::run(&args[1..]),
         other => {
             eprintln!(
-                "usage: go <run|bench|export|verify-export|elo|rate|calibrate|calibrate-pass> [flags]\n\
+                "usage: go <run|bench|export|verify-export|elo|rate|evalset|calibrate|calibrate-pass> [flags]\n\
                  got: {other:?}"
             );
             std::process::exit(2);
