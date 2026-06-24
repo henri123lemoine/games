@@ -296,7 +296,10 @@ class PokerFrontend implements GameFrontend {
       [{ transform: 'scale(1)' }, { transform: 'scale(1.05)' }, { transform: 'scale(1)' }],
       { duration: 240 * scale, easing: 'ease-out' },
     );
-    await sleep((t.kind === 'fold' || t.kind === 'check' ? 240 : 380) * scale);
+    // Let a bot's move linger so the table doesn't blitz; the human's own
+    // action stays snappy (no need to slow your own confirmation).
+    const botPace = t.seat !== this.ctx.humanSeat ? 2 : 1;
+    await sleep((t.kind === 'fold' || t.kind === 'check' ? 240 : 380) * botPace * scale);
     this.hideBanner();
   }
 
