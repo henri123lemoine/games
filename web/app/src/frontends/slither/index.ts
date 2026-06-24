@@ -15,8 +15,8 @@
 // Pellet orbs and the hex floor are pre-rendered to offscreen sprites once, so
 // the per-frame draw is `drawImage`/pattern blits rather than gradient rebuilds.
 
-import init, { SlitherGame } from 'slither-engine';
-import wasmUrl from 'slither-engine/slither_engine_bg.wasm?url';
+import init, { SlitherGame } from "slither-engine";
+import wasmUrl from "slither-engine/slither_engine_bg.wasm?url";
 
 const WEIGHTS_URL = `${import.meta.env.BASE_URL}slither/slither.weights`;
 
@@ -26,29 +26,24 @@ const TICK_MS = 1000 / TICK_HZ;
 /** Cap catch-up so a backgrounded tab doesn't fast-forward a burst on return. */
 const MAX_TICKS_PER_FRAME = 4;
 
-// Match the world the net trained on: 6 worms and the conservative
-// pellet_target=250 (+ slow trickle). At 700 pellets the field was ~3x denser
-// than training — essentially the old pre-conservation food faucet — so the bot
-// ran its sparse-food "hunt, don't farm" policy in a food-soaked world it never
-// saw, and the human could just vacuum food and out-grow it.
 const WORMS = 6;
-const PELLETS = 250;
+const PELLETS = 5000;
 const LEADERBOARD_ROWS = 10;
 
 // --- slither.io palette (saturated wheel hues) -----------------------------
 // The human is always the cyan-blue snake so it reads as "you"; bots get the
 // rest of the wheel, assigned by seat so a worm keeps its colors across frames.
 const PALETTE: [string, string][] = [
-  ['#ff8c1a', '#ffd23f'], // orange / gold
-  ['#22c32a', '#7cff4d'], // green / lime
-  ['#9b3bff', '#d49bff'], // purple / lilac
-  ['#ff36c0', '#ff9ae6'], // magenta / pink
-  ['#ffe000', '#fff79e'], // yellow
-  ['#ff2b2b', '#ff8a8a'], // red
-  ['#1ee5d6', '#9bfff6'], // teal
-  ['#7a5cff', '#bcb0ff'], // indigo
+  ["#ff8c1a", "#ffd23f"], // orange / gold
+  ["#22c32a", "#7cff4d"], // green / lime
+  ["#9b3bff", "#d49bff"], // purple / lilac
+  ["#ff36c0", "#ff9ae6"], // magenta / pink
+  ["#ffe000", "#fff79e"], // yellow
+  ["#ff2b2b", "#ff8a8a"], // red
+  ["#1ee5d6", "#9bfff6"], // teal
+  ["#7a5cff", "#bcb0ff"], // indigo
 ];
-const HUMAN_SKIN: [string, string] = ['#2b8bff', '#9fd0ff'];
+const HUMAN_SKIN: [string, string] = ["#2b8bff", "#9fd0ff"];
 
 interface Skin {
   a: string; // primary band
@@ -58,7 +53,7 @@ interface Skin {
 }
 
 function buildSkin([a, b]: [string, string]): Skin {
-  return { a, b, rim: mix(a, '#05070c', 0.55), glow: a };
+  return { a, b, rim: mix(a, "#05070c", 0.55), glow: a };
 }
 
 const HUMAN_SKIN_BUILT = buildSkin(HUMAN_SKIN);
@@ -71,7 +66,7 @@ function skinForSeat(seat: number, isHuman: boolean): Skin {
 
 // --- color helpers ----------------------------------------------------------
 function hexToRgb(hex: string): [number, number, number] {
-  const h = hex.replace('#', '');
+  const h = hex.replace("#", "");
   return [
     parseInt(h.slice(0, 2), 16),
     parseInt(h.slice(2, 4), 16),
@@ -100,7 +95,8 @@ let weightsOnce: Promise<Uint8Array> | null = null;
 function getWeights(): Promise<Uint8Array> {
   weightsOnce ??= (async () => {
     const resp = await fetch(WEIGHTS_URL);
-    if (!resp.ok) throw new Error(`weights ${WEIGHTS_URL} missing (HTTP ${resp.status})`);
+    if (!resp.ok)
+      throw new Error(`weights ${WEIGHTS_URL} missing (HTTP ${resp.status})`);
     return new Uint8Array(await resp.arrayBuffer());
   })();
   weightsOnce.catch(() => {
@@ -132,7 +128,10 @@ interface Snapshot {
 // Worm header stride in the blob: seat, isHuman, dead, boosting, r, len, angle, n.
 const WORM_HEADER = 8;
 
-function readSnapshot(wormBlob: Float32Array, pelletBlob: Float32Array): Snapshot {
+function readSnapshot(
+  wormBlob: Float32Array,
+  pelletBlob: Float32Array,
+): Snapshot {
   const worms: WormSnap[] = [];
   let i = 0;
   while (i + WORM_HEADER <= wormBlob.length) {
@@ -147,9 +146,23 @@ function readSnapshot(wormBlob: Float32Array, pelletBlob: Float32Array): Snapsho
     const n = Math.min(segCount, Math.floor((wormBlob.length - i) / 2));
     const segs = wormBlob.subarray(i, i + n * 2);
     i += n * 2;
-    worms.push({ seat, isHuman, dead, boosting, radius, length, angle, segs, segCount: n });
+    worms.push({
+      seat,
+      isHuman,
+      dead,
+      boosting,
+      radius,
+      length,
+      angle,
+      segs,
+      segCount: n,
+    });
   }
-  return { worms, pellets: pelletBlob, pelletCount: Math.floor(pelletBlob.length / 3) };
+  return {
+    worms,
+    pellets: pelletBlob,
+    pelletCount: Math.floor(pelletBlob.length / 3),
+  };
 }
 
 /** Lerp angle the short way around the circle. */
@@ -217,7 +230,7 @@ export class SlitherScreen {
   private hexPattern: CanvasPattern | null = null;
   private hexTile = 60; // world px per hex pitch at scale 1; rebuilt per zoom
   private pelletSprites: HTMLCanvasElement[] = [];
-  private deathSprite = document.createElement('canvas');
+  private deathSprite = document.createElement("canvas");
   private vignette: CanvasGradient | null = null;
 
   async mount(host: HTMLElement): Promise<void> {
@@ -233,26 +246,26 @@ export class SlitherScreen {
           <div class="slr-boot">Loading the trained bot…</div>
         </div>
       </div>`;
-    this.canvas = host.querySelector('.slr-canvas')!;
-    this.c2d = this.canvas.getContext('2d', { alpha: false })!;
-    this.overlayEl = host.querySelector('.slr-overlay')!;
-    this.overlayTitleEl = host.querySelector('.slr-over-title')!;
-    this.overlaySubEl = host.querySelector('.slr-over-sub')!;
-    this.restartBtn = host.querySelector('.slr-restart')!;
-    const bootEl = host.querySelector<HTMLElement>('.slr-boot')!;
+    this.canvas = host.querySelector(".slr-canvas")!;
+    this.c2d = this.canvas.getContext("2d", { alpha: false })!;
+    this.overlayEl = host.querySelector(".slr-overlay")!;
+    this.overlayTitleEl = host.querySelector(".slr-over-title")!;
+    this.overlaySubEl = host.querySelector(".slr-over-sub")!;
+    this.restartBtn = host.querySelector(".slr-restart")!;
+    const bootEl = host.querySelector<HTMLElement>(".slr-boot")!;
 
-    const stage = host.querySelector<HTMLElement>('.slr-stage')!;
+    const stage = host.querySelector<HTMLElement>(".slr-stage")!;
     this.resizeObs = new ResizeObserver(() => this.resize(stage));
     this.resizeObs.observe(stage);
     this.resize(stage);
     this.buildSprites();
 
-    this.canvas.addEventListener('pointermove', this.onPointerMove);
-    this.canvas.addEventListener('pointerdown', this.onPointerDown);
-    window.addEventListener('pointerup', this.onPointerUp);
-    window.addEventListener('keydown', this.onKeyDown);
-    window.addEventListener('keyup', this.onKeyUp);
-    this.restartBtn.addEventListener('click', this.onRestart);
+    this.canvas.addEventListener("pointermove", this.onPointerMove);
+    this.canvas.addEventListener("pointerdown", this.onPointerDown);
+    window.addEventListener("pointerup", this.onPointerUp);
+    window.addEventListener("keydown", this.onKeyDown);
+    window.addEventListener("keyup", this.onKeyUp);
+    this.restartBtn.addEventListener("click", this.onRestart);
 
     try {
       const [, weights] = await Promise.all([ensureWasm(), getWeights()]);
@@ -278,7 +291,7 @@ export class SlitherScreen {
     this.game.reset(randomSeed());
     this.resetRunState();
     this.captureSnapshot();
-    this.overlayEl.classList.remove('slr-show');
+    this.overlayEl.classList.remove("slr-show");
   };
 
   private resetRunState(): void {
@@ -297,18 +310,22 @@ export class SlitherScreen {
     this.rafId = 0;
     this.resizeObs?.disconnect();
     this.resizeObs = null;
-    this.canvas.removeEventListener('pointermove', this.onPointerMove);
-    this.canvas.removeEventListener('pointerdown', this.onPointerDown);
-    window.removeEventListener('pointerup', this.onPointerUp);
-    window.removeEventListener('keydown', this.onKeyDown);
-    window.removeEventListener('keyup', this.onKeyUp);
+    this.canvas.removeEventListener("pointermove", this.onPointerMove);
+    this.canvas.removeEventListener("pointerdown", this.onPointerDown);
+    window.removeEventListener("pointerup", this.onPointerUp);
+    window.removeEventListener("keydown", this.onKeyDown);
+    window.removeEventListener("keyup", this.onKeyUp);
     this.game?.free();
     this.game = null;
   }
 
   private onPointerMove = (e: PointerEvent): void => {
     const rect = this.canvas.getBoundingClientRect();
-    this.pointer = { x: e.clientX - rect.left, y: e.clientY - rect.top, has: true };
+    this.pointer = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+      has: true,
+    };
   };
   private onPointerDown = (e: PointerEvent): void => {
     this.onPointerMove(e);
@@ -318,13 +335,13 @@ export class SlitherScreen {
     this.boost = false;
   };
   private onKeyDown = (e: KeyboardEvent): void => {
-    if (e.code === 'Space') {
+    if (e.code === "Space") {
       e.preventDefault();
       this.boost = true;
     }
   };
   private onKeyUp = (e: KeyboardEvent): void => {
-    if (e.code === 'Space') this.boost = false;
+    if (e.code === "Space") this.boost = false;
   };
 
   private resize(stage: HTMLElement): void {
@@ -398,12 +415,12 @@ export class SlitherScreen {
     if (this.deathLogged) return;
     this.deathLogged = true;
     this.spawnDeathBurst();
-    this.overlayTitleEl.textContent = 'You died';
+    this.overlayTitleEl.textContent = "You died";
     const rank = this.humanRank();
     this.overlaySubEl.textContent =
       `length ${Math.round(game.human_length())} · finished #${rank} of ${WORMS}` +
       ` · ${game.alive_count()} snakes outlived you`;
-    this.overlayEl.classList.add('slr-show');
+    this.overlayEl.classList.add("slr-show");
   }
 
   private humanRank(): number {
@@ -459,10 +476,14 @@ export class SlitherScreen {
     const worms = this.interpWorms(alpha);
     // Shadows first (under everything), then bodies bots→human, then heads.
     for (const wm of worms) this.drawWormShadow(wm, s, ox, oy);
-    for (const wm of worms) if (!wm.isHuman) this.drawWormBody(wm, s, ox, oy, now);
-    for (const wm of worms) if (wm.isHuman) this.drawWormBody(wm, s, ox, oy, now);
-    for (const wm of worms) if (!wm.isHuman) this.drawWormHead(wm, s, ox, oy, w, h);
-    for (const wm of worms) if (wm.isHuman) this.drawWormHead(wm, s, ox, oy, w, h);
+    for (const wm of worms)
+      if (!wm.isHuman) this.drawWormBody(wm, s, ox, oy, now);
+    for (const wm of worms)
+      if (wm.isHuman) this.drawWormBody(wm, s, ox, oy, now);
+    for (const wm of worms)
+      if (!wm.isHuman) this.drawWormHead(wm, s, ox, oy, w, h);
+    for (const wm of worms)
+      if (wm.isHuman) this.drawWormHead(wm, s, ox, oy, w, h);
 
     this.drawBursts(s, ox, oy, now);
     this.drawHud(game);
@@ -479,7 +500,10 @@ export class SlitherScreen {
     const cy = curr.segs[1];
     const prev = this.prevSnap?.worms.find((wm) => wm.isHuman);
     if (!prev || prev.segCount === 0) return [cx, cy];
-    return [prev.segs[0] + (cx - prev.segs[0]) * alpha, prev.segs[1] + (cy - prev.segs[1]) * alpha];
+    return [
+      prev.segs[0] + (cx - prev.segs[0]) * alpha,
+      prev.segs[1] + (cy - prev.segs[1]) * alpha,
+    ];
   }
 
   /** Build per-frame interpolated worm geometry, matching prev↔curr by seat. */
@@ -489,7 +513,9 @@ export class SlitherScreen {
     const out: InterpWorm[] = [];
     for (const c of curr.worms) {
       if (c.dead || c.segCount === 0) continue;
-      const p = prev?.worms.find((w) => w.seat === c.seat && !w.dead && w.segCount > 0);
+      const p = prev?.worms.find(
+        (w) => w.seat === c.seat && !w.dead && w.segCount > 0,
+      );
       const n = c.segCount;
       const xs = new Float32Array(n);
       const ys = new Float32Array(n);
@@ -529,12 +555,17 @@ export class SlitherScreen {
 
   // --- background -----------------------------------------------------------
 
-  private drawBackground(game: SlitherGame, s: number, ox: number, oy: number): void {
+  private drawBackground(
+    game: SlitherGame,
+    s: number,
+    ox: number,
+    oy: number,
+  ): void {
     const ctx = this.c2d;
     const w = this.cssW;
     const h = this.cssH;
 
-    ctx.fillStyle = '#181b22';
+    ctx.fillStyle = "#181b22";
     ctx.fillRect(0, 0, w, h);
 
     // Hex grid, world-anchored: rebuild the tile sprite when the zoom drifts so
@@ -562,8 +593,8 @@ export class SlitherScreen {
     ctx.beginPath();
     ctx.rect(0, 0, w, h);
     ctx.arc(cx, cy, cr, 0, Math.PI * 2, true); // reverse-wound circle -> even-odd hole
-    ctx.fillStyle = 'rgba(2,4,9,0.62)';
-    ctx.fill('evenodd');
+    ctx.fillStyle = "rgba(2,4,9,0.62)";
+    ctx.fill("evenodd");
     ctx.restore();
 
     if (this.vignette) {
@@ -580,8 +611,8 @@ export class SlitherScreen {
     const cy = h / 2;
     const r = Math.hypot(w, h) / 2;
     const g = ctx.createRadialGradient(cx, cy, r * 0.55, cx, cy, r);
-    g.addColorStop(0, 'rgba(0,0,0,0)');
-    g.addColorStop(1, 'rgba(0,0,0,0.5)');
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(1, "rgba(0,0,0,0.5)");
     return g;
   }
 
@@ -598,11 +629,11 @@ export class SlitherScreen {
     }
 
     const r = (pitchPx / 2) * 0.94; // hex radius (center→vertex)
-    const tile = document.createElement('canvas');
+    const tile = document.createElement("canvas");
     const dpr = this.dpr;
     tile.width = pitchPx * 2 * dpr;
     tile.height = pitchPx * 2 * dpr;
-    const tc = tile.getContext('2d')!;
+    const tc = tile.getContext("2d")!;
     tc.scale(dpr, dpr);
     tc.clearRect(0, 0, pitchPx * 2, pitchPx * 2);
 
@@ -617,12 +648,12 @@ export class SlitherScreen {
       }
       tc.closePath();
       const grad = tc.createLinearGradient(cx - r, cy, cx + r, cy);
-      grad.addColorStop(0, '#272e37');
-      grad.addColorStop(1, '#1b2127');
+      grad.addColorStop(0, "#272e37");
+      grad.addColorStop(1, "#1b2127");
       tc.fillStyle = grad;
       tc.fill();
       tc.lineWidth = Math.max(1, r * 0.16);
-      tc.strokeStyle = '#0a0f15';
+      tc.strokeStyle = "#0a0f15";
       tc.stroke();
     };
 
@@ -640,7 +671,7 @@ export class SlitherScreen {
     }
     tc.restore();
 
-    const pat = this.c2d.createPattern(tile, 'repeat');
+    const pat = this.c2d.createPattern(tile, "repeat");
     if (pat) {
       // The tile was drawn at DPR scale; counter-scale so the pattern maps 1:1
       // to CSS pixels in the main context.
@@ -670,7 +701,7 @@ export class SlitherScreen {
     // Outer soft glow.
     ctx.strokeStyle = `rgba(255, 90, 20, ${0.28 + 0.12 * pulse})`;
     ctx.lineWidth = Math.max(6, 16 * s);
-    ctx.shadowColor = 'rgba(255, 70, 20, 0.8)';
+    ctx.shadowColor = "rgba(255, 70, 20, 0.8)";
     ctx.shadowBlur = 24 * Math.min(1.5, s + 0.3);
     ctx.beginPath();
     ctx.arc(cx, cy, cr, 0, Math.PI * 2);
@@ -691,13 +722,21 @@ export class SlitherScreen {
     // A spectrum of saturated pellet hues (slither.io's full-wheel prey), each a
     // white-hot-core → hue → transparent orb. Picked per pellet by a stable hash
     // so the field shimmers in many colors without per-pellet gradient rebuilds.
-    const hues = ['#7ee0ff', '#7cff8a', '#ffe066', '#ff8ad1', '#b69bff', '#ff9d5c', '#5cffd0'];
+    const hues = [
+      "#7ee0ff",
+      "#7cff8a",
+      "#ffe066",
+      "#ff8ad1",
+      "#b69bff",
+      "#ff9d5c",
+      "#5cffd0",
+    ];
     this.pelletSprites = hues.map((h) => {
-      const cv = document.createElement('canvas');
-      paintOrb(cv, '#ffffff', h, 48);
+      const cv = document.createElement("canvas");
+      paintOrb(cv, "#ffffff", h, 48);
       return cv;
     });
-    paintOrb(this.deathSprite, '#ffffff', '#ffd070', 64);
+    paintOrb(this.deathSprite, "#ffffff", "#ffd070", 64);
   }
 
   private drawPellets(
@@ -715,7 +754,7 @@ export class SlitherScreen {
     const count = snap.pelletCount;
 
     ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalCompositeOperation = "lighter";
     const margin = 24;
     const nSprites = this.pelletSprites.length;
     for (let i = 0; i < count; i++) {
@@ -723,7 +762,8 @@ export class SlitherScreen {
       const wy = p[i * 3 + 1];
       const px = wx * s + ox;
       const py = wy * s + oy;
-      if (px < -margin || px > w + margin || py < -margin || py > h + margin) continue;
+      if (px < -margin || px > w + margin || py < -margin || py > h + margin)
+        continue;
       const value = p[i * 3 + 2];
       const death = value > 1.5;
       // Stable per-pellet hash from world position: fixes both the hue and the
@@ -737,7 +777,8 @@ export class SlitherScreen {
         ctx.drawImage(this.deathSprite, px - d, py - d, d * 2, d * 2);
       } else {
         ctx.globalAlpha = 0.78;
-        const sprite = this.pelletSprites[((hash % nSprites) + nSprites) % nSprites];
+        const sprite =
+          this.pelletSprites[((hash % nSprites) + nSprites) % nSprites];
         ctx.drawImage(sprite, px - d, py - d, d * 2, d * 2);
       }
     }
@@ -746,13 +787,18 @@ export class SlitherScreen {
 
   // --- worms ----------------------------------------------------------------
 
-  private drawWormShadow(wm: InterpWorm, s: number, ox: number, oy: number): void {
+  private drawWormShadow(
+    wm: InterpWorm,
+    s: number,
+    ox: number,
+    oy: number,
+  ): void {
     const ctx = this.c2d;
     const r = Math.max(2, wm.radius * s);
     ctx.save();
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    ctx.strokeStyle = 'rgba(0,0,0,0.28)';
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "rgba(0,0,0,0.28)";
     ctx.lineWidth = r * 2;
     this.tracePath(ctx, wm, s, ox, oy, r * 0.35, r * 0.5);
     ctx.stroke();
@@ -773,9 +819,9 @@ export class SlitherScreen {
     if (wm.boosting) {
       const pulse = 0.5 + 0.5 * Math.sin(now / 90);
       ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.lineJoin = 'round';
-      ctx.lineCap = 'round';
+      ctx.globalCompositeOperation = "lighter";
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
       ctx.strokeStyle = wm.skin.glow;
       ctx.globalAlpha = 0.22 + 0.18 * pulse;
       ctx.lineWidth = r * 2 + 10 + 6 * pulse;
@@ -787,8 +833,8 @@ export class SlitherScreen {
 
     // Dark rim: a slightly wider stroke underneath, in the skin's shadow tone.
     ctx.save();
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
     ctx.strokeStyle = wm.skin.rim;
     ctx.lineWidth = r * 2 + Math.max(1.5, r * 0.5);
     ctx.beginPath();
@@ -806,7 +852,8 @@ export class SlitherScreen {
       for (let j = i + 1; j <= end; j++) {
         ctx.lineTo(wm.xs[j] * s + ox, wm.ys[j] * s + oy);
       }
-      ctx.strokeStyle = (Math.floor(i / band) & 1) === 0 ? wm.skin.a : wm.skin.b;
+      ctx.strokeStyle =
+        (Math.floor(i / band) & 1) === 0 ? wm.skin.a : wm.skin.b;
       ctx.lineWidth = r * 2;
       ctx.stroke();
       i = end;
@@ -815,9 +862,9 @@ export class SlitherScreen {
 
     // Glossy top highlight: a thin bright line riding the upper side of the tube.
     ctx.save();
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "rgba(255,255,255,0.16)";
     ctx.lineWidth = Math.max(1, r * 0.5);
     ctx.beginPath();
     this.tracePath(ctx, wm, s, ox, oy, -r * 0.35, -r * 0.45);
@@ -838,7 +885,8 @@ export class SlitherScreen {
   ): void {
     if (offX === 0 && offY === 0) {
       ctx.moveTo(wm.xs[0] * s + ox, wm.ys[0] * s + oy);
-      for (let j = 1; j < wm.n; j++) ctx.lineTo(wm.xs[j] * s + ox, wm.ys[j] * s + oy);
+      for (let j = 1; j < wm.n; j++)
+        ctx.lineTo(wm.xs[j] * s + ox, wm.ys[j] * s + oy);
       return;
     }
     // Offset along a fixed screen vector derived from the head heading — cheap
@@ -850,7 +898,8 @@ export class SlitherScreen {
     const sx = dx * offX + nx * offY;
     const sy = dy * offX + ny * offY;
     ctx.moveTo(wm.xs[0] * s + ox + sx, wm.ys[0] * s + oy + sy);
-    for (let j = 1; j < wm.n; j++) ctx.lineTo(wm.xs[j] * s + ox + sx, wm.ys[j] * s + oy + sy);
+    for (let j = 1; j < wm.n; j++)
+      ctx.lineTo(wm.xs[j] * s + ox + sx, wm.ys[j] * s + oy + sy);
   }
 
   private drawWormHead(
@@ -875,7 +924,7 @@ export class SlitherScreen {
       hy,
       r * 1.05,
     );
-    grad.addColorStop(0, mix(wm.skin.a, '#ffffff', 0.5));
+    grad.addColorStop(0, mix(wm.skin.a, "#ffffff", 0.5));
     grad.addColorStop(1, wm.skin.a);
     ctx.fillStyle = wm.skin.rim;
     ctx.beginPath();
@@ -898,32 +947,38 @@ export class SlitherScreen {
     for (const side of [-1, 1]) {
       const cx = hx + ex * eyeFwd + px * eyeOff * side;
       const cy = hy + ey * eyeFwd + py * eyeOff * side;
-      ctx.fillStyle = '#0a0f17';
+      ctx.fillStyle = "#0a0f17";
       ctx.beginPath();
       ctx.arc(cx, cy, scleraR + 1, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = '#f5f5f5';
+      ctx.fillStyle = "#f5f5f5";
       ctx.beginPath();
       ctx.arc(cx, cy, scleraR, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = '#0a0f17';
+      ctx.fillStyle = "#0a0f17";
       ctx.beginPath();
-      ctx.arc(cx + ex * scleraR * 0.34, cy + ey * scleraR * 0.34, pupilR, 0, Math.PI * 2);
+      ctx.arc(
+        cx + ex * scleraR * 0.34,
+        cy + ey * scleraR * 0.34,
+        pupilR,
+        0,
+        Math.PI * 2,
+      );
       ctx.fill();
     }
 
     // Name tag floats above the head (kept legible, scaled gently with zoom).
     if (r > 4) {
-      const label = wm.isHuman ? 'you' : `bot ${wm.seat}`;
+      const label = wm.isHuman ? "you" : `bot ${wm.seat}`;
       ctx.save();
       ctx.font = `${Math.round(Math.min(16, Math.max(10, r * 0.9)))}px ui-sans-serif, system-ui, sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'bottom';
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
       const ty = hy - r * 1.7;
       if (hx > -40 && hx < w + 40 && ty > 0 && ty < h) {
-        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillStyle = "rgba(0,0,0,0.55)";
         ctx.fillText(label, hx, ty + 1);
-        ctx.fillStyle = wm.isHuman ? '#dbeeff' : 'rgba(255,255,255,0.82)';
+        ctx.fillStyle = wm.isHuman ? "#dbeeff" : "rgba(255,255,255,0.82)";
         ctx.fillText(label, hx, ty);
       }
       ctx.restore();
@@ -948,7 +1003,7 @@ export class SlitherScreen {
         vx: Math.cos(ang) * spd,
         vy: Math.sin(ang) * spd,
         r: 5 + Math.random() * 4,
-        color: (i & 8) === 0 ? skin.a : '#ffffff',
+        color: (i & 8) === 0 ? skin.a : "#ffffff",
         born: now,
         delay: order * 6,
       });
@@ -960,7 +1015,7 @@ export class SlitherScreen {
     if (this.bursts.length === 0) return;
     const ctx = this.c2d;
     ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalCompositeOperation = "lighter";
     let alive = false;
     for (const o of this.bursts) {
       const age = now - o.born - o.delay;
@@ -978,9 +1033,9 @@ export class SlitherScreen {
       const r = o.r * s * (1 + life * 0.6) * pop;
       ctx.globalAlpha = (1 - life) * 0.9;
       const g = ctx.createRadialGradient(x, y, 0, x, y, r * 2.4);
-      g.addColorStop(0, '#ffffff');
+      g.addColorStop(0, "#ffffff");
       g.addColorStop(0.4, o.color);
-      g.addColorStop(1, 'rgba(0,0,0,0)');
+      g.addColorStop(1, "rgba(0,0,0,0)");
       ctx.fillStyle = g;
       ctx.beginPath();
       ctx.arc(x, y, r * 2.4, 0, Math.PI * 2);
@@ -1009,13 +1064,13 @@ export class SlitherScreen {
     const panelX = w - panelW - pad;
     const panelY = pad;
     roundRect(ctx, panelX, panelY, panelW, panelH, 8);
-    ctx.fillStyle = 'rgba(8,11,18,0.5)';
+    ctx.fillStyle = "rgba(8,11,18,0.5)";
     ctx.fill();
-    ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'left';
-    ctx.fillStyle = 'rgba(220,230,245,0.9)';
-    ctx.fillText('Leaderboard', panelX + 12, panelY + 15);
+    ctx.font = "600 12px ui-sans-serif, system-ui, sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    ctx.fillStyle = "rgba(220,230,245,0.9)";
+    ctx.fillText("Leaderboard", panelX + 12, panelY + 15);
     for (let r = 0; r < shown; r++) {
       const seat = lb[r * 4];
       const isHuman = lb[r * 4 + 1] === 1;
@@ -1027,28 +1082,32 @@ export class SlitherScreen {
       ctx.beginPath();
       ctx.arc(panelX + 16, ry, 4, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = isHuman ? '#bfe0ff' : dead ? 'rgba(180,190,205,0.5)' : 'rgba(225,232,245,0.9)';
+      ctx.fillStyle = isHuman
+        ? "#bfe0ff"
+        : dead
+          ? "rgba(180,190,205,0.5)"
+          : "rgba(225,232,245,0.9)";
       ctx.font = isHuman
-        ? '700 12px ui-sans-serif, system-ui, sans-serif'
-        : '500 12px ui-sans-serif, system-ui, sans-serif';
-      const name = isHuman ? 'you' : `bot ${seat}`;
+        ? "700 12px ui-sans-serif, system-ui, sans-serif"
+        : "500 12px ui-sans-serif, system-ui, sans-serif";
+      const name = isHuman ? "you" : `bot ${seat}`;
       ctx.fillText(`${r + 1}. ${name}`, panelX + 28, ry);
-      ctx.textAlign = 'right';
+      ctx.textAlign = "right";
       ctx.fillText(String(len), panelX + panelW - 12, ry);
-      ctx.textAlign = 'left';
+      ctx.textAlign = "left";
     }
 
     // Length / rank readout (bottom-center).
     const len = Math.round(game.human_length());
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'bottom';
-    ctx.font = '800 26px ui-sans-serif, system-ui, sans-serif';
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.font = "800 26px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
     ctx.fillText(`length ${len}`, w / 2 + 1, h - 13);
-    ctx.fillStyle = '#eaf2ff';
+    ctx.fillStyle = "#eaf2ff";
     ctx.fillText(`length ${len}`, w / 2, h - 14);
-    ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
-    ctx.fillStyle = 'rgba(190,205,225,0.8)';
+    ctx.font = "600 12px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillStyle = "rgba(190,205,225,0.8)";
     ctx.fillText(`rank #${humanRank} of ${WORMS}`, w / 2, h - 40);
 
     // Minimap (bottom-right): round arena, your dot bright, others faint.
@@ -1056,14 +1115,14 @@ export class SlitherScreen {
     const mmX = w - mm - pad;
     const mmY = h - mm - pad;
     roundRect(ctx, mmX, mmY, mm, mm, 8);
-    ctx.fillStyle = 'rgba(8,11,18,0.5)';
+    ctx.fillStyle = "rgba(8,11,18,0.5)";
     ctx.fill();
     const cx = mmX + mm / 2;
     const cy = mmY + mm / 2;
     const rad = mm / 2 - 12;
     ctx.beginPath();
     ctx.arc(cx, cy, rad, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(255,90,40,0.5)';
+    ctx.strokeStyle = "rgba(255,90,40,0.5)";
     ctx.lineWidth = 1.5;
     ctx.stroke();
     const size = game.world_size();
@@ -1075,18 +1134,18 @@ export class SlitherScreen {
       const dx = (hx - 0.5) * 2 * rad;
       const dy = (hy - 0.5) * 2 * rad;
       if (dx * dx + dy * dy > rad * rad) continue;
-      ctx.fillStyle = wm.isHuman ? '#7cc4ff' : skinForSeat(wm.seat, false).a;
+      ctx.fillStyle = wm.isHuman ? "#7cc4ff" : skinForSeat(wm.seat, false).a;
       ctx.beginPath();
       ctx.arc(cx + dx, cy + dy, wm.isHuman ? 3.4 : 2.2, 0, Math.PI * 2);
       ctx.fill();
     }
 
     // Steering hint (top-left), fades implicitly by being small + dim.
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
-    ctx.font = '500 12px ui-sans-serif, system-ui, sans-serif';
-    ctx.fillStyle = 'rgba(170,185,205,0.6)';
-    ctx.fillText('move to steer · hold mouse or space to boost', pad, pad);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.font = "500 12px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillStyle = "rgba(170,185,205,0.6)";
+    ctx.fillText("move to steer · hold mouse or space to boost", pad, pad);
   }
 }
 
@@ -1104,15 +1163,20 @@ interface InterpWorm {
 
 /** Paint a soft additive orb sprite (white-hot core → hue → transparent rim)
  * into `cv`, sized `px` square. Used for pellets and the death burst. */
-function paintOrb(cv: HTMLCanvasElement, core: string, hue: string, px: number): void {
+function paintOrb(
+  cv: HTMLCanvasElement,
+  core: string,
+  hue: string,
+  px: number,
+): void {
   cv.width = px;
   cv.height = px;
-  const ctx = cv.getContext('2d')!;
+  const ctx = cv.getContext("2d")!;
   const c = px / 2;
   const g = ctx.createRadialGradient(c, c, 0, c, c, c);
   g.addColorStop(0, core);
   g.addColorStop(0.32, hue);
-  g.addColorStop(1, 'rgba(0,0,0,0)');
+  g.addColorStop(1, "rgba(0,0,0,0)");
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, px, px);
 }
