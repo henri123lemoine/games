@@ -4,6 +4,12 @@ A games lab: game-playing algorithms written once against a shared `Game` trait,
 
 Orient first: [README.md](README.md) has the crate map and quickstart; [ARCHITECTURE.md](ARCHITECTURE.md) is the authoritative design — the layering and capability-trait contract. Read ARCHITECTURE before restructuring anything; those rules are deliberate.
 
+## Discipline
+
+**No legacy code.** When a change supersedes existing code, delete the old code — no backward-compat shims, dual APIs, deprecated paths, or dead branches kept "just in case" or to avoid editing call sites. A new function that replaces an old one updates every call site and removes the old one. One way to do each thing.
+
+**Ship the whole agreed scope.** When we agree to build A, B, C, D, E, build all of A–E in one pass. Never deliver A–D and then surface E as a "next step," an "optional" extra, or a question ("want me to do E?"). A working subset is not "done," and a comment noting the gap does not make the gap agreed. If scope genuinely needs to shrink, say so explicitly *before* cutting — never ship a subset and reframe the remainder as optional.
+
 ## Workflow
 
 ```bash
