@@ -12,8 +12,8 @@
 // round-robin so a tick is cheap); rendering runs every animation frame and
 // interpolates worm positions between the two most recent sim snapshots, so the
 // picture is smooth at the display's refresh rate even though the sim is 30 Hz.
-// Pellet orbs and the hex floor are pre-rendered to offscreen sprites once, so
-// the per-frame draw is `drawImage`/pattern blits rather than gradient rebuilds.
+// Pellet orbs are pre-rendered to offscreen sprites, so the per-frame draw is
+// mostly `drawImage` blits.
 
 import init, { SlitherGame } from "slither-engine";
 import wasmUrl from "slither-engine/slither_engine_bg.wasm?url";
@@ -198,7 +198,6 @@ export class SlitherScreen {
 
   private cssW = 0;
   private cssH = 0;
-  private dpr = 1;
   private rafId = 0;
   private acc = 0;
   private last = 0;
@@ -210,7 +209,7 @@ export class SlitherScreen {
   private boost = false;
   private aim = 0;
 
-  // Camera, eased toward the human head so the view glides on fast turns.
+  // Camera: position tracks the interpolated human head; zoom eases with growth.
   private cam = { x: 0, y: 0, scale: 1, ready: false };
 
   // Double-buffered sim snapshots for render interpolation.
@@ -227,8 +226,7 @@ export class SlitherScreen {
 
   // Offscreen sprites, built once up front (they're DPR-independent — scaled at
   // blit time). Pellets use a small spectrum of hues; death orbs are warm-gold.
-  private hexPattern: CanvasPattern | null = null;
-  private hexTile = 60; // world px per hex pitch at scale 1; rebuilt per zoom
+  private hexTile = 60;
   private pelletSprites: HTMLCanvasElement[] = [];
   private deathSprite = document.createElement("canvas");
   private vignette: CanvasGradient | null = null;
@@ -355,7 +353,6 @@ export class SlitherScreen {
     const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     this.cssW = w;
     this.cssH = h;
-    this.dpr = dpr;
     this.canvas.width = w * dpr;
     this.canvas.height = h * dpr;
     this.c2d.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -452,18 +449,17 @@ export class SlitherScreen {
     const h = this.cssH;
     if (w <= 0 || h <= 0 || !this.currSnap) return;
 
-    // Camera follows the human head (interpolated). Zoom keys off the same
-    // viewport radius the bots judge from, so growth zooms out as in slither.io.
+    // Camera follows the human head, which is already interpolated between sim
+    // snapshots. Easing only the zoom avoids smearing the world-anchored floor.
     const head = this.interpHumanHead(alpha);
     const view = Math.max(120, game.human_view_radius());
     const targetScale = Math.min(w, h) / (2 * view);
     if (!this.cam.ready) {
       this.cam = { x: head[0], y: head[1], scale: targetScale, ready: true };
     } else {
-      const k = 0.16;
-      this.cam.x += (head[0] - this.cam.x) * k;
-      this.cam.y += (head[1] - this.cam.y) * k;
-      this.cam.scale += (targetScale - this.cam.scale) * k;
+      this.cam.x = head[0];
+      this.cam.y = head[1];
+      this.cam.scale += (targetScale - this.cam.scale) * 0.06;
     }
     const s = this.cam.scale;
     const ox = w / 2 - this.cam.x * s;
@@ -568,19 +564,7 @@ export class SlitherScreen {
     ctx.fillStyle = "#181b22";
     ctx.fillRect(0, 0, w, h);
 
-    // Hex grid, world-anchored: rebuild the tile sprite when the zoom drifts so
-    // hexes stay a fixed world size, then blit it as a translated pattern.
-    this.ensureHexPattern(s);
-    if (this.hexPattern) {
-      const pitch = this.hexTile * s;
-      const offX = ((ox % pitch) + pitch) % pitch;
-      const offY = ((oy % pitch) + pitch) % pitch;
-      ctx.save();
-      ctx.translate(offX - pitch, offY - pitch);
-      ctx.fillStyle = this.hexPattern;
-      ctx.fillRect(0, 0, w + pitch * 2, h + pitch * 2);
-      ctx.restore();
-    }
+    this.drawHexFloor(s, ox, oy);
 
     // Beyond the arena, darken the floor so the bounded play area reads as a
     // pocket of light. Punch the circular arena out of a full-screen scrim.
@@ -616,70 +600,39 @@ export class SlitherScreen {
     return g;
   }
 
-  /** Rebuild the hex-tile pattern when the on-screen pitch has drifted enough
-   * that a stale tile would look stretched. The tile is a 2×2 hex block so it
-   * repeats seamlessly. */
-  private ensureHexPattern(scale: number): void {
-    const pitchPx = Math.round(this.hexTile * scale);
-    if (this.hexPattern && Math.abs(pitchPx - this.lastHexPitch) < 1) return;
-    this.lastHexPitch = pitchPx;
-    if (pitchPx < 4) {
-      this.hexPattern = null;
-      return;
-    }
+  private drawHexFloor(s: number, ox: number, oy: number): void {
+    const ctx = this.c2d;
+    const pitch = this.hexTile;
+    const minCol = Math.floor((-ox / s) / pitch) - 2;
+    const maxCol = Math.ceil(((this.cssW - ox) / s) / pitch) + 2;
+    const minRow = Math.floor((-oy / s) / pitch) - 2;
+    const maxRow = Math.ceil(((this.cssH - oy) / s) / pitch) + 2;
+    const r = (pitch * 0.47) * s;
 
-    const r = (pitchPx / 2) * 0.94; // hex radius (center→vertex)
-    const tile = document.createElement("canvas");
-    const dpr = this.dpr;
-    tile.width = pitchPx * 2 * dpr;
-    tile.height = pitchPx * 2 * dpr;
-    const tc = tile.getContext("2d")!;
-    tc.scale(dpr, dpr);
-    tc.clearRect(0, 0, pitchPx * 2, pitchPx * 2);
-
-    const drawHex = (cx: number, cy: number): void => {
-      tc.beginPath();
-      for (let k = 0; k < 6; k++) {
-        const a = (Math.PI / 3) * k - Math.PI / 6; // flat-top
-        const px = cx + Math.cos(a) * r;
-        const py = cy + Math.sin(a) * r;
-        if (k === 0) tc.moveTo(px, py);
-        else tc.lineTo(px, py);
-      }
-      tc.closePath();
-      const grad = tc.createLinearGradient(cx - r, cy, cx + r, cy);
-      grad.addColorStop(0, "#272e37");
-      grad.addColorStop(1, "#1b2127");
-      tc.fillStyle = grad;
-      tc.fill();
-      tc.lineWidth = Math.max(1, r * 0.16);
-      tc.strokeStyle = "#0a0f15";
-      tc.stroke();
-    };
-
-    // A pointy-row hex lattice tiled to fill the 2×2 block (the +0.5 row offset
-    // gives the brick interlock).
-    const hStep = pitchPx;
-    const vStep = pitchPx;
-    tc.save();
-    for (let row = -1; row <= 2; row++) {
-      for (let col = -1; col <= 2; col++) {
-        const cx = col * hStep + (row & 1 ? hStep / 2 : 0);
-        const cy = row * vStep;
-        drawHex(cx, cy);
+    ctx.save();
+    ctx.lineWidth = Math.max(1, r * 0.16);
+    ctx.strokeStyle = "#0a0f15";
+    for (let row = minRow; row <= maxRow; row++) {
+      const y = row * pitch * s + oy;
+      const rowOffset = row & 1 ? pitch / 2 : 0;
+      for (let col = minCol; col <= maxCol; col++) {
+        const x = (col * pitch + rowOffset) * s + ox;
+        ctx.beginPath();
+        for (let k = 0; k < 6; k++) {
+          const a = (Math.PI / 3) * k - Math.PI / 6; // flat-top
+          const px = x + Math.cos(a) * r;
+          const py = y + Math.sin(a) * r;
+          if (k === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.fillStyle = ((row + col) & 1) ? "#1b2127" : "#20262d";
+        ctx.fill();
+        ctx.stroke();
       }
     }
-    tc.restore();
-
-    const pat = this.c2d.createPattern(tile, "repeat");
-    if (pat) {
-      // The tile was drawn at DPR scale; counter-scale so the pattern maps 1:1
-      // to CSS pixels in the main context.
-      pat.setTransform(new DOMMatrix([1 / dpr, 0, 0, 1 / dpr, 0, 0]));
-    }
-    this.hexPattern = pat;
+    ctx.restore();
   }
-  private lastHexPitch = -1;
 
   private drawArenaBorder(
     game: SlitherGame,
