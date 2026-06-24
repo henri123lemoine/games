@@ -283,11 +283,7 @@ export class App {
       this.renderTournament();
       return;
     }
-    if (segs[0] === "doom-ai") {
-      this.renderDoomAi();
-      return;
-    }
-    if (segs[0] === "doom") {
+    if (segs[0] === "doom" || segs[0] === "doom-ai") {
       this.renderDoom();
       return;
     }
@@ -339,8 +335,7 @@ export class App {
       )
       .join("");
     // DOOM and Slither are not engine games (real-time, not Game-trait matches);
-    // their cards open standalone screens instead of starting a match. Slither
-    // is the lab's own game — its trained encircle bot plays in the browser.
+    // their cards open standalone screens instead of starting a match.
     const slitherCard = `
         <div class="card card-slither" data-special="slither" role="button" tabindex="0">
           ${miniFor("slither")}
@@ -355,19 +350,12 @@ export class App {
             <span class="card-name">DOOM</span>
           </div>
         </div>`;
-    const doomAiCard = `
-        <div class="card card-doom" data-special="doom-ai" role="button" tabindex="0">
-          ${miniFor("doom")}
-          <div class="card-text">
-            <span class="card-name">DOOM · 1v1 vs AI</span>
-          </div>
-        </div>`;
     this.root.innerHTML = `
       <div class="home">
         <header class="home-head">
           <h1>Games Room</h1>
         </header>
-        <div class="card-grid">${cards}${slitherCard}${doomCard}${doomAiCard}</div>
+        <div class="card-grid">${cards}${slitherCard}${doomCard}</div>
         <footer class="home-footer">
           <nav>
             <a href="https://github.com/henri123lemoine/games">GitHub</a>
@@ -404,17 +392,6 @@ export class App {
         }
       };
     }
-    const doomAiEl = this.root.querySelector<HTMLElement>('.card[data-special="doom-ai"]');
-    if (doomAiEl) {
-      const openDoomAi = () => this.navTo("/doom-ai");
-      doomAiEl.onclick = openDoomAi;
-      doomAiEl.onkeydown = (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          openDoomAi();
-        }
-      };
-    }
     const slitherEl = this.root.querySelector<HTMLElement>(
       '.card[data-special="slither"]',
     );
@@ -432,45 +409,23 @@ export class App {
       this.navTo("/lab");
   }
 
-  /** DOOM: the vendored WebAssembly port runs in its own page (it is not a
-   * Game-trait match), mounted in an iframe with a back bar. */
+  /** DOOM: the doomgeneric RL-deathmatch build. The human plays one seat; the
+   * other is driven by a PPO net trained by self-play, run tch-free in the
+   * browser from the same LOS-gated state it trained on. Standalone page in an
+   * iframe. */
   private renderDoom(): void {
-    this.teardown();
-    const src = `${import.meta.env.BASE_URL}doom/doom.html`;
-    this.root.innerHTML = `
-      <div class="match doom-screen">
-        <header class="match-bar">
-          <button type="button" class="link back">&larr; games</button>
-          <span class="match-title">DOOM</span>
-          <span class="spacer"></span>
-          <span class="muted doom-note">shareware · click the frame, then play</span>
-        </header>
-        <div class="doom-frame-wrap">
-          <iframe class="doom-frame" src="${src}" title="DOOM"
-            allow="autoplay; fullscreen"></iframe>
-        </div>
-      </div>`;
-    this.root.querySelector<HTMLButtonElement>(".back")!.onclick = () =>
-      this.navTo("/");
-  }
-
-  /** DOOM 1v1 vs AI: our doomgeneric RL-deathmatch build (distinct from the
-   * stock chocolate-doom port above). The human plays one seat; the other is
-   * driven by a PPO net trained by self-play, run tch-free in the browser from
-   * the SAME LOS-gated state it trained on. Standalone page in an iframe. */
-  private renderDoomAi(): void {
     this.teardown();
     const src = `${import.meta.env.BASE_URL}doom-ai/index.html`;
     this.root.innerHTML = `
       <div class="match doom-screen">
         <header class="match-bar">
           <button type="button" class="link back">&larr; games</button>
-          <span class="match-title">DOOM · 1v1 vs AI</span>
+          <span class="match-title">DOOM</span>
           <span class="spacer"></span>
-          <span class="muted doom-note">vs. the self-play RL bot · click the frame, then fight</span>
+          <span class="muted doom-note">self-play bot · click the frame, then fight</span>
         </header>
         <div class="doom-frame-wrap">
-          <iframe class="doom-frame" src="${src}" title="DOOM 1v1 vs AI"
+          <iframe class="doom-frame" src="${src}" title="DOOM"
             allow="autoplay; fullscreen"></iframe>
         </div>
       </div>`;
