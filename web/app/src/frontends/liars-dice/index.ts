@@ -119,6 +119,9 @@ class LiarsDiceFrontend implements GameFrontend {
   private ladder: LdHistoryEntry[] = [];
   private ladderRound = -1;
   private dead = false;
+  /** Per-seat opponent/difficulty pickers live in their own layer (built once,
+   * positioned per seat) so re-rendering the pods never wipes them. */
+  private seatCtrlBuilt = false;
   private openQty = 1;
   private openFace = 1;
 
@@ -163,6 +166,7 @@ class LiarsDiceFrontend implements GameFrontend {
     this.view = view;
     this.syncLadder(view);
     this.renderSeats(view);
+    this.buildSeatControls(view);
     this.renderCenter(view);
     if (state.toAct !== state.humanSeat || state.isOver) this.controlsEl.replaceChildren();
   }
@@ -255,6 +259,38 @@ class LiarsDiceFrontend implements GameFrontend {
         </div>`);
     }
     this.seatsEl.innerHTML = parts.join('');
+  }
+
+  /** Build the per-seat opponent/difficulty pickers once, in their own layer
+   * outside `.ld-seats` so the pod re-render leaves them alone. The picker tucks
+   * onto each player: toward table-centre for the top/bottom pods, beside the
+   * side pods so they never stack on each other. */
+  private buildSeatControls(view: LdView): void {
+    if (this.seatCtrlBuilt) return;
+    this.seatCtrlBuilt = true;
+    const n = view.players;
+    const anchor = this.ctx.humanSeat >= 0 ? this.ctx.humanSeat : 0;
+    const layer = document.createElement('div');
+    layer.className = 'ld-seat-controls';
+    for (const hand of view.hands) {
+      const pos = seatPos((hand.seat - anchor + n) % n, n);
+      const cx = pos.x - 50;
+      const cy = pos.y - 50;
+      const cell = document.createElement('div');
+      cell.className = 'ld-seat-ctrl';
+      cell.style.left = `${pos.x.toFixed(2)}%`;
+      cell.style.top = `${pos.y.toFixed(2)}%`;
+      if (Math.abs(cx) <= 18) {
+        cell.style.transform = `translate(-50%, ${cy > 0 ? 'calc(-100% - 44px)' : '44px'})`;
+      } else {
+        const ang = Math.atan2(cy, cx);
+        cell.style.transform =
+          `translate(calc(-50% + ${(Math.cos(ang) * 84).toFixed(0)}px), calc(-50% + ${(Math.sin(ang) * 52).toFixed(0)}px))`;
+      }
+      cell.innerHTML = `<span class="seat-slot" data-seat="${hand.seat}"></span>`;
+      layer.append(cell);
+    }
+    this.tableEl.append(layer);
   }
 
   private renderCenter(view: LdView): void {

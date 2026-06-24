@@ -296,4 +296,35 @@ export const STYLE = `
   color: var(--fg, #222);
   padding: 12px;
 }
+
+/* Per-seat opponent + difficulty pickers, sitting on each player at the table
+   edge. Their own layer so pod re-renders don't disturb them. */
+.pk-seat-controls {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 7;
+}
+.pk-seat-ctrl {
+  position: absolute;
+  pointer-events: auto;
+  width: 108px;
+  padding: 3px;
+  border-radius: 7px;
+  background: rgba(8, 12, 9, 0.62);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+.pk-seat-ctrl .seat-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  width: 100%;
+}
+.pk-seat-ctrl .seat-select,
+.pk-seat-ctrl .seat-level {
+  width: 100%;
+  font-size: 0.72rem;
+  padding: 3px 6px;
+}
 `;

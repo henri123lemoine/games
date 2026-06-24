@@ -90,6 +90,7 @@ function bankKey(ctx: FrontendCtx): string {
 
 class PokerFrontend implements GameFrontend {
   private ctx!: FrontendCtx;
+  private tableEl!: HTMLElement;
   private seatsEl!: HTMLElement;
   private centerEl!: HTMLElement;
   private bannerEl!: HTMLElement;
@@ -99,6 +100,9 @@ class PokerFrontend implements GameFrontend {
   private boardShown = 0;
   private dead = false;
   private bank = 0;
+  /** The per-seat opponent/difficulty pickers live in their own layer (built
+   * once, positioned per seat) so re-rendering the pods never wipes them. */
+  private seatCtrlBuilt = false;
 
   mount(host: HTMLElement, ctx: FrontendCtx): void {
     this.ctx = ctx;
@@ -124,6 +128,7 @@ class PokerFrontend implements GameFrontend {
         <div class="pk-bank"></div>
         <div class="pk-controls"></div>
       </div>`;
+    this.tableEl = host.querySelector('.pk-table')!;
     this.seatsEl = host.querySelector('.pk-seats')!;
     this.centerEl = host.querySelector('.pk-center')!;
     this.bannerEl = host.querySelector('.pk-banner')!;
@@ -143,6 +148,7 @@ class PokerFrontend implements GameFrontend {
     this.view = state.viewData;
     this.boardShown = this.view.board.length;
     this.renderSeats(this.view);
+    this.buildSeatControls(this.view);
     this.renderCenter(this.view);
     if (state.toAct !== state.humanSeat || state.isOver) this.controlsEl.replaceChildren();
   }
@@ -252,6 +258,42 @@ class PokerFrontend implements GameFrontend {
         </div>`);
     }
     this.seatsEl.innerHTML = parts.join('');
+  }
+
+  /** Build the per-seat opponent/difficulty pickers once, in their own layer
+   * outside `.pk-seats` so the pod re-render leaves them alone. Each seat gets a
+   * `seat-slot` the shell fills (You / a bot, plus difficulty); it's nudged
+   * radially outward from the pod so it sits at the table edge, off the cards. */
+  private buildSeatControls(view: PkView): void {
+    if (this.seatCtrlBuilt) return;
+    this.seatCtrlBuilt = true;
+    const n = view.seats;
+    const anchor = this.ctx.humanSeat >= 0 ? this.ctx.humanSeat : 0;
+    const layer = document.createElement('div');
+    layer.className = 'pk-seat-controls';
+    for (const p of view.players) {
+      const pos = seatPos((p.seat - anchor + n) % n, n);
+      const cx = pos.x - 50;
+      const cy = pos.y - 50;
+      const cell = document.createElement('div');
+      cell.className = 'pk-seat-ctrl';
+      cell.style.left = `${pos.x.toFixed(2)}%`;
+      cell.style.top = `${pos.y.toFixed(2)}%`;
+      // The top/bottom-centre pods have horizontal room, so tuck the picker
+      // toward the table centre (below the top one, above the bottom one). The
+      // side pods would collide if both pushed inward, so nudge those outward
+      // beside the pod. Either way it lands on the player, off the cards.
+      if (Math.abs(cx) <= 18) {
+        cell.style.transform = `translate(-50%, ${cy > 0 ? 'calc(-100% - 46px)' : '46px'})`;
+      } else {
+        const ang = Math.atan2(cy, cx);
+        cell.style.transform =
+          `translate(calc(-50% + ${(Math.cos(ang) * 80).toFixed(0)}px), calc(-50% + ${(Math.sin(ang) * 52).toFixed(0)}px))`;
+      }
+      cell.innerHTML = `<span class="seat-slot" data-seat="${p.seat}"></span>`;
+      layer.append(cell);
+    }
+    this.tableEl.append(layer);
   }
 
   private holesHtml(view: PkView, p: PkPlayer): string {
