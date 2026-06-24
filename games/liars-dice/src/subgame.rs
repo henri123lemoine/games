@@ -12,20 +12,26 @@
 //! Stage-B fitted-value-iteration target); [`DiceShareValue`] is the Stage-A
 //! heuristic placeholder.
 
+use game_core::hash::combine;
 use game_core::{Game, Turn};
 
 use crate::{Action, HIST_K, LdState, LiarsDice, MAX_FACES, MAX_PLAYERS};
 
-/// Expected game return for `player` given the post-round dice vector — the
-/// continuation value that closes a [`RoundSubgame`]'s leaves.
+/// Expected game return for `player` given the post-round dice vector and who
+/// opens the *next* round — the continuation value that closes a
+/// [`RoundSubgame`]'s leaves.
 ///
 /// `dice_left` is the per-seat remaining dice (index = seat, `0` = eliminated);
-/// `n = dice_left.len()` is the player count. The returned value is on the
+/// `n = dice_left.len()` is the player count. `next_opener` is the seat that
+/// will open the next round: continuation equity is not a pure function of the
+/// dice vector, because the opener enjoys a positional effect (acting first /
+/// the loser of the last round opens), so the converged value differs between
+/// the same dice vector opened by different seats. The returned value is on the
 /// game's outcome scale (+1 for an eventual win, `-1/(n-1)` for a loss), and the
 /// values across the `n` seats must sum to ~0 for any vector — the rest of the
 /// game is zero-sum.
 pub trait ContinuationValue: Sync {
-    fn value(&self, faces: u8, dice_left: &[u8], player: usize) -> f64;
+    fn value(&self, faces: u8, dice_left: &[u8], next_opener: usize, player: usize) -> f64;
 }
 
 /// Stage-A heuristic: a seat's continuation value is proportional to its share
@@ -36,10 +42,14 @@ pub trait ContinuationValue: Sync {
 /// Otherwise a seat's win probability is its dice share `dice_left[p]/total`,
 /// and its return is `win_prob - (1 - win_prob)/(n - 1)`, which sums to 0
 /// across seats because the win probabilities sum to 1.
+///
+/// The opener has no effect on a pure dice-share heuristic, so `next_opener` is
+/// ignored — only the converged [`LatticeValue`](crate::LatticeValue) captures
+/// the positional effect.
 pub struct DiceShareValue;
 
 impl ContinuationValue for DiceShareValue {
-    fn value(&self, _faces: u8, dice_left: &[u8], player: usize) -> f64 {
+    fn value(&self, _faces: u8, dice_left: &[u8], _next_opener: usize, player: usize) -> f64 {
         let n = dice_left.len();
         let total: u32 = dice_left.iter().map(|&d| u32::from(d)).sum();
         let alive = dice_left.iter().filter(|&&d| d > 0).count();
@@ -199,10 +209,13 @@ impl<V: ContinuationValue> Game for RoundSubgame<V> {
         }
         // The round ended but the game continues — including a correct
         // `CallExact`, where no die is lost and the dice vector is unchanged.
-        // The continuation value closes the leaf over the post-round dice.
+        // `resolve_after_call` has already advanced `s.turn` to the seat that
+        // opens the next round, so it is the continuation's `next_opener`. The
+        // continuation value closes the leaf over the post-round dice.
         self.value.value(
             self.inner.faces,
             &s.dice_left[..self.inner.players as usize],
+            s.turn as usize,
             player,
         )
     }
@@ -228,7 +241,17 @@ impl<V: ContinuationValue> Game for RoundSubgame<V> {
     }
 
     fn state_key(&self, s: &LdState) -> Option<u64> {
-        self.inner.state_key(s)
+        // The inner `state_key` excludes the round counter (deliberate, for the
+        // full game's cross-round strategy sharing). In a *single*-round subgame
+        // that aliases a round-end leaf with an in-round node: a correct
+        // `CallExact` by the opener resets to `qty=0`, `rolled=0`, empty hands —
+        // byte-identical to this round's *opening* node except that
+        // `resolve_after_call` ticked `rounds` past `start_round`. The two are a
+        // terminal leaf and a live node, so the best-response state memo must not
+        // confuse them; fold the round-ended flag into the key.
+        let key = self.inner.state_key(s)?;
+        let round_ended = s.rounds > self.start_round || s.done;
+        Some(combine(key, u64::from(round_ended)))
     }
 }
 
@@ -276,8 +299,14 @@ mod tests {
             (4, &[0, 0, 0, 7]),
         ];
         for &(n, dl) in cases {
-            let sum: f64 = (0..n).map(|p| v.value(6, dl, p)).sum();
-            assert!(sum.abs() < 1e-9, "n={n} dl={dl:?} sum={sum}");
+            // The opener never changes a zero-sum heuristic; check a couple.
+            for opener in 0..n {
+                let sum: f64 = (0..n).map(|p| v.value(6, dl, opener, p)).sum();
+                assert!(
+                    sum.abs() < 1e-9,
+                    "n={n} dl={dl:?} opener={opener} sum={sum}"
+                );
+            }
         }
     }
 
@@ -285,9 +314,9 @@ mod tests {
     fn dice_share_value_one_alive_wins() {
         let v = DiceShareValue;
         let dl = &[0u8, 3, 0];
-        assert_eq!(v.value(6, dl, 1), 1.0);
-        assert_eq!(v.value(6, dl, 0), -0.5);
-        assert_eq!(v.value(6, dl, 2), -0.5);
+        assert_eq!(v.value(6, dl, 1, 1), 1.0);
+        assert_eq!(v.value(6, dl, 1, 0), -0.5);
+        assert_eq!(v.value(6, dl, 1, 2), -0.5);
     }
 
     #[test]
@@ -355,10 +384,11 @@ mod tests {
         let expect = vec_with(3, &[1, 2, 2]);
         assert_eq!(&s.dice_left()[..3], &expect[..3]);
         let cv = DiceShareValue;
+        let next_opener = s.turn();
         for p in 0..3 {
             assert_eq!(
                 g.returns(&s, p),
-                cv.value(6, &expect[..3], p),
+                cv.value(6, &expect[..3], next_opener, p),
                 "returns delegate to continuation value for seat {p}"
             );
         }
@@ -402,15 +432,22 @@ mod tests {
         let unchanged = vec_with(3, &[2, 2, 2]);
         assert_eq!(&s.dice_left()[..3], &unchanged[..3]);
         let cv = DiceShareValue;
+        let next_opener = s.turn();
         for p in 0..3 {
-            assert_eq!(g.returns(&s, p), cv.value(6, &unchanged[..3], p));
+            assert_eq!(
+                g.returns(&s, p),
+                cv.value(6, &unchanged[..3], next_opener, p)
+            );
         }
     }
 
     /// Playing the same fixed hands and the same action sequence through one
     /// round must be byte-for-byte identical between `RoundSubgame` and a real
-    /// `LiarsDice` (the subgame wraps it). We compare the full state key and the
-    /// per-seat infoset keys at every decision node.
+    /// `LiarsDice` (the subgame wraps it). We compare the per-seat infoset keys
+    /// at every decision node and the underlying state key. The subgame's state
+    /// key folds in a round-ended flag (so a round-end leaf never aliases an
+    /// in-round node in the best-response memo), so we compare the *inner* key,
+    /// recovering the flag the subgame would add.
     #[test]
     fn one_round_is_rule_identical_to_real_liars_dice() {
         let players = 3u8;
@@ -422,8 +459,13 @@ mod tests {
         let g = RoundSubgame::new(players, 2, faces, dl, 0, true, 1, DiceShareValue);
         let mut ss = g.initial_state();
 
-        // Start states agree on every delegated key.
-        assert_eq!(real.state_key(&rs), g.state_key(&ss));
+        // The subgame state key is the inner key with the round-ended flag
+        // folded in; in-round states carry `false`.
+        let expect_key =
+            |s: &LdState, ended: bool| real.state_key(s).map(|k| combine(k, u64::from(ended)));
+
+        // Start states agree on every delegated key (in-round: flag false).
+        assert_eq!(expect_key(&rs, false), g.state_key(&ss));
 
         let hands = [[1, 1, 0, 0, 0, 0], [0, 2, 0, 0, 0, 0], [0, 1, 1, 0, 0, 0]];
         // Identical chance rolls.
@@ -438,7 +480,7 @@ mod tests {
             g.apply(&mut ss, a);
             idx += 1;
         }
-        assert_eq!(real.state_key(&rs), g.state_key(&ss));
+        assert_eq!(expect_key(&rs, false), g.state_key(&ss));
 
         // A fixed bidding line ending in a call within this one round.
         let line = [
@@ -459,7 +501,9 @@ mod tests {
             real.apply(&mut rs, a);
             g.apply(&mut ss, a);
         }
-        // After the call the inner state is identical (state key proves it).
-        assert_eq!(real.state_key(&rs), g.state_key(&ss));
+        // The call (a die-loss) ended the round: the subgame marks the leaf as
+        // round-ended, while the underlying inner state matches the real game.
+        assert!(g.is_terminal(&ss));
+        assert_eq!(expect_key(&rs, true), g.state_key(&ss));
     }
 }

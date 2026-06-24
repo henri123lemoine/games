@@ -10,6 +10,9 @@ path = "src/lib.rs"
 
 [dependencies]
 game-core = { workspace = true }
-
-[dev-dependencies]
-solvers = { path = "../../solvers" }
+# The fitted value iteration (`solve.rs`) solves each per-round subgame with
+# `solvers::Cfr`, so the solver is a library dependency, not just dev. There is
+# no cycle: `solvers` depends only on `game-core`. Default features off (no
+# `parallel`) to match `lab` and avoid forcing rayon on dependents; the small
+# verification configs solve fast single-threaded.
+solvers = { path = "../../solvers", default-features = false }
