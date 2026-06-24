@@ -30,9 +30,9 @@ export interface RealtimeBoard {
   render(state: ViewState): void;
 }
 
-/** Fixed cell period — Google-Snake pace. The player's snake advances one cell
- * per this, ALWAYS, regardless of the bot. */
-const TICK_MS = 120;
+/** Fixed cell period — a relaxed pace (~30% slower than the old 120ms). The
+ * player's snake advances one cell per this, ALWAYS, regardless of the bot. */
+const TICK_MS = 170;
 
 const DIR_LABEL: Record<string, string> = { n: 'up', e: 'right', s: 'down', w: 'left' };
 
