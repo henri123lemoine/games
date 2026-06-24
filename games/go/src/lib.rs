@@ -100,6 +100,12 @@ impl GoState {
         self.to_move
     }
 
+    /// Consecutive passes ending at this position (a placement resets it): one
+    /// means the opponent just passed, two ends the game.
+    pub fn consecutive_passes(&self) -> u8 {
+        self.passes
+    }
+
     /// Plies played so far, passes included.
     pub fn plies(&self) -> u32 {
         self.plies

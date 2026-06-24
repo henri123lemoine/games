@@ -274,7 +274,10 @@ impl AzGoBot {
     /// filling settled territory, ending the game rather than playing it to the
     /// last eye.
     pub fn best(&self) -> Result<String, JsError> {
-        if self.decided() {
+        // Concede a won board only once the opponent has also passed; while
+        // they keep playing, fall through to the search so the bot defends
+        // invasions instead of passing its territory away.
+        if self.state.consecutive_passes() >= 1 && self.decided() {
             return Ok(self.game.action_label(&self.state, GoAction::Pass));
         }
         if !self.done {
@@ -311,9 +314,10 @@ mod tests {
     use super::*;
     use go::encode::PLANES;
 
-    /// A synthetic `AZNET1` go net of the right shape (heads are uniform fill,
-    /// ownership head `0.1` when present).
-    fn synth_net(blocks: usize, c: usize, size: usize, ownership: bool) -> Vec<u8> {
+    /// A synthetic `AZNET1` go net of the right shape (uniform-fill heads).
+    /// `ownership` fills the ownership conv (`None` omits the head); a large
+    /// fill saturates it so every point reads as Black-owned ("decided").
+    fn synth_net(blocks: usize, c: usize, size: usize, ownership: Option<f32>) -> Vec<u8> {
         let floats = c * PLANES * 9
             + c
             + blocks * 2 * (c * c * 9 + c)
@@ -332,7 +336,7 @@ mod tests {
             scalars: 0,
             head: nn_infer::HeadKind::GlobalPoolSpatial,
             policy_len: 0,
-            flags: nn_infer::HeadFlags(if ownership {
+            flags: nn_infer::HeadFlags(if ownership.is_some() {
                 nn_infer::HeadFlags::OWNERSHIP
             } else {
                 0
@@ -342,9 +346,9 @@ mod tests {
         for _ in 0..floats {
             b.extend_from_slice(&0.02f32.to_le_bytes());
         }
-        if ownership {
+        if let Some(w) = ownership {
             for _ in 0..c {
-                b.extend_from_slice(&0.1f32.to_le_bytes());
+                b.extend_from_slice(&w.to_le_bytes());
             }
         }
         b
@@ -353,7 +357,7 @@ mod tests {
     #[test]
     fn ownership_abs_flips_with_the_side_to_move() {
         let mut bot = AzGoBot::new(4, 8, 7, 3);
-        bot.load_weights(&synth_net(2, 6, 3, true)).unwrap();
+        bot.load_weights(&synth_net(2, 6, 3, Some(0.1))).unwrap();
         let mover = |bot: &AzGoBot| {
             let planes = bot.enc.encode_state(&bot.game, &bot.state);
             bot.model
@@ -379,7 +383,7 @@ mod tests {
     #[test]
     fn azwebgo2_net_offers_no_ownership() {
         let mut bot = AzGoBot::new(4, 8, 7, 3);
-        bot.load_weights(&synth_net(2, 6, 3, false)).unwrap();
+        bot.load_weights(&synth_net(2, 6, 3, None)).unwrap();
         assert!(bot.ownership_abs().is_none());
         assert_eq!(bot.final_result(), "");
     }
@@ -387,10 +391,33 @@ mod tests {
     #[test]
     fn does_not_pass_an_undecided_board() {
         let mut bot = AzGoBot::new(8, 8, 7, 9);
-        bot.load_weights(&synth_net(2, 6, 9, true)).unwrap();
+        bot.load_weights(&synth_net(2, 6, 9, Some(0.1))).unwrap();
         // The opening is not decided (no lead exceeds the open board), so the
         // bot plays rather than passing, and shows no adjudicated result.
         assert!(!bot.decided());
         assert_eq!(bot.final_result(), "");
+    }
+
+    #[test]
+    fn waits_for_the_opponents_pass_before_conceding_a_decided_board() {
+        let mut bot = AzGoBot::new(16, 8, 7, 3);
+        // Saturated ownership: every point reads Black-owned, so always decided.
+        bot.load_weights(&synth_net(2, 6, 3, Some(20.0))).unwrap();
+        assert!(bot.decided());
+
+        // Opponent still playing: the bot plays on rather than conceding.
+        assert_eq!(bot.state.consecutive_passes(), 0);
+        assert_ne!(bot.play_cpu().unwrap(), "pass");
+
+        // Opponent passes: now the bot passes back to score the won board.
+        bot.push("b2").unwrap();
+        bot.push("pass").unwrap();
+        assert_eq!(bot.state.consecutive_passes(), 1);
+        assert!(bot.decided());
+        assert_eq!(
+            bot.best().unwrap(),
+            "pass",
+            "end the game once the opponent has also stopped playing"
+        );
     }
 }
