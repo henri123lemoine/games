@@ -27,7 +27,7 @@ const TICK_MS = 1000 / TICK_HZ;
 const MAX_TICKS_PER_FRAME = 4;
 
 const WORMS = 6;
-const PELLETS = 5000;
+const PELLETS = 700;
 const LEADERBOARD_ROWS = 10;
 
 // --- slither.io palette (saturated wheel hues) -----------------------------
@@ -794,12 +794,13 @@ export class SlitherScreen {
     this.tracePath(ctx, wm, s, ox, oy, 0, 0);
     ctx.stroke();
 
-    // Striped skin: alternate bands of the two hues along the spine. Drawn as a
-    // run of round-capped sub-strokes so the bands read as on the tube.
+    // Striped skin: alternate bands of the two hues along the spine. Each band
+    // overlaps the next by one segment so the round caps fuse into a continuous
+    // tube with no seam between bands — a smooth slither.io serpent.
     const band = 5;
     let i = 0;
     while (i < wm.n - 1) {
-      const end = Math.min(wm.n - 1, i + band);
+      const end = Math.min(wm.n - 1, i + band + 1);
       ctx.beginPath();
       ctx.moveTo(wm.xs[i] * s + ox, wm.ys[i] * s + oy);
       for (let j = i + 1; j <= end; j++) {
@@ -809,7 +810,7 @@ export class SlitherScreen {
         (Math.floor(i / band) & 1) === 0 ? wm.skin.a : wm.skin.b;
       ctx.lineWidth = r * 2;
       ctx.stroke();
-      i = end;
+      i += band;
     }
     ctx.restore();
 
@@ -918,11 +919,24 @@ export class SlitherScreen {
         Math.PI * 2,
       );
       ctx.fill();
+      // Specular catch-light on the pupil for the glossy slither.io eye.
+      if (scleraR > 3) {
+        ctx.fillStyle = "rgba(255,255,255,0.9)";
+        ctx.beginPath();
+        ctx.arc(
+          cx + ex * scleraR * 0.34 - px * pupilR * 0.4,
+          cy + ey * scleraR * 0.34 - py * pupilR * 0.4,
+          Math.max(0.6, pupilR * 0.4),
+          0,
+          Math.PI * 2,
+        );
+        ctx.fill();
+      }
     }
 
     // Name tag floats above the head (kept legible, scaled gently with zoom).
     if (r > 4) {
-      const label = wm.isHuman ? "you" : `bot ${wm.seat}`;
+      const label = wm.isHuman ? "You" : `Bot ${wm.seat}`;
       ctx.save();
       ctx.font = `${Math.round(Math.min(16, Math.max(10, r * 0.9)))}px ui-sans-serif, system-ui, sans-serif`;
       ctx.textAlign = "center";
@@ -1043,7 +1057,7 @@ export class SlitherScreen {
       ctx.font = isHuman
         ? "700 12px ui-sans-serif, system-ui, sans-serif"
         : "500 12px ui-sans-serif, system-ui, sans-serif";
-      const name = isHuman ? "you" : `bot ${seat}`;
+      const name = isHuman ? "You" : `Bot ${seat}`;
       ctx.fillText(`${r + 1}. ${name}`, panelX + 28, ry);
       ctx.textAlign = "right";
       ctx.fillText(String(len), panelX + panelW - 12, ry);

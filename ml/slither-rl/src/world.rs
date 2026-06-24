@@ -14,7 +14,7 @@ use crate::rng::Rng;
 
 /// Bounding box for the circular arena. Coordinates still live in `[0, WORLD]`,
 /// but the playable area is the centered circle with radius [`WORLD_RADIUS`].
-pub const WORLD: f32 = 2000.0;
+pub const WORLD: f32 = 3000.0;
 pub const WORLD_RADIUS: f32 = WORLD * 0.5 - 40.0;
 pub const DT: f32 = 1.0 / 30.0;
 
