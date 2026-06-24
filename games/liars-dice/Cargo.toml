@@ -8,6 +8,14 @@ description = "Liar's Dice (imperfect-information variant) as a game-core Game"
 name = "liars_dice"
 path = "src/lib.rs"
 
+[features]
+# Turns on `solvers`' rayon-parallel net-gradient kernels for the Deep CFR
+# trainer (`deepcfr.rs` / the `deepcfr_train` example). Off by default so `lab`
+# keeps controlling solver parallelism through its own `parallel` feature; the
+# distillation trainer parallelizes data generation through liars-dice's own
+# direct rayon dependency regardless.
+parallel = ["solvers/parallel"]
+
 [dependencies]
 game-core = { workspace = true }
 # The fitted value iteration (`solve.rs`) solves each per-round subgame with

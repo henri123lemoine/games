@@ -177,6 +177,14 @@ pub struct RoundSubgame<V: ContinuationValue> {
 }
 
 impl<V: ContinuationValue> RoundSubgame<V> {
+    /// The inner [`LiarsDice`] carrying this round's `players`/`faces` config —
+    /// the game `features::encode` / `features::support` featurize against. The
+    /// per-seat dice count it was built with is irrelevant (table state lives in
+    /// the round), so only `players` and `faces` are meaningful here.
+    pub fn config(&self) -> &LiarsDice {
+        &self.inner
+    }
+
     /// Build the subgame for the round that opens with `dice_left` on the table,
     /// `opener` to act, and the inner `LiarsDice` configured for `players` /
     /// `faces` (the inner game's per-seat dice count is irrelevant — the table

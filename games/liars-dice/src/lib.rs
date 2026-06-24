@@ -21,6 +21,7 @@ use game_core::hash::{combine, splitmix64};
 use game_core::{Game, Turn};
 
 mod agents;
+pub mod deepcfr;
 pub mod features;
 mod solve;
 mod subgame;

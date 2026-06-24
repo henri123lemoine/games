@@ -30,7 +30,7 @@ mod search;
 mod train;
 
 pub use game_core::{NoProver, Proof, TerminalProver};
-pub use mlp::{InferCache, Mlp, Sample, SgdMomentum};
+pub use mlp::{InferCache, Mlp, RegretSample, Sample, SgdMomentum};
 pub use puct::{PolicyValueEncoder, Puct, PuctAgent};
 pub use search::{EvalRequest, EvalResult, Gather, Node, PuctConfig, Search, Tree, argmax};
 #[cfg(feature = "parallel")]

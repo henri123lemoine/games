@@ -14,12 +14,26 @@ use super::rand::normal;
 
 /// One training example: state encoding `x`, the search's visit distribution
 /// over the legal actions as sparse `(policy index, probability)` pairs, and
-/// the game outcome `z` from the perspective of the player to move at `x`.
+/// the game outcome `z` from the perspective of the player to move at `x`. A
+/// NaN `z` is a sentinel for "no value target": the value head is left untrained
+/// by this sample (used for Deep CFR's strategy samples, which carry a policy
+/// label but no per-node equity).
 #[derive(Clone)]
 pub struct Sample {
     pub x: Vec<f32>,
     pub policy: Vec<(usize, f32)>,
     pub z: f32,
+}
+
+/// One Deep CFR advantage-net training example: the encoded infoset `x`, the
+/// legal-action policy indices `support`, and the per-action regret `target`
+/// (parallel to `support`). The linear policy head is fit to `target` by MSE
+/// (see [`Mlp::regret_grad`]).
+#[derive(Clone)]
+pub struct RegretSample {
+    pub x: Vec<f32>,
+    pub support: Vec<usize>,
+    pub target: Vec<f32>,
 }
 
 struct Layout {
@@ -66,9 +80,22 @@ fn matvec(w: &[f32], x: &[f32], out: &mut [f32]) {
     }
 }
 
+/// The `(index, value)` pairs of the nonzero entries of `x` — the only inputs
+/// that receive a first-layer weight gradient (a sparse input encoding).
+fn active_inputs(x: &[f32]) -> Vec<(usize, f32)> {
+    x.iter()
+        .enumerate()
+        .filter(|&(_, &v)| v != 0.0)
+        .map(|(i, &v)| (i, v))
+        .collect()
+}
+
 struct Forward {
     a1: Vec<f32>,
     a2: Vec<f32>,
+    /// Raw policy-head logits over the support (pre-softmax), kept for the
+    /// linear advantage head; `probs` is their softmax.
+    head: Vec<f32>,
     probs: Vec<f32>,
     v: f32,
 }
@@ -239,13 +266,14 @@ impl Mlp {
         for (a, &b) in a2.iter_mut().zip(&p[l.b2..l.wp]) {
             *a = (*a + b).max(0.0);
         }
-        let mut probs: Vec<f32> = support
+        let head: Vec<f32> = support
             .iter()
             .map(|&i| {
                 debug_assert!(i < self.policy);
                 dot(&p[l.wp + i * self.hidden..][..self.hidden], &a2) + p[l.bp + i]
             })
             .collect();
+        let mut probs = head.clone();
         let max = probs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         let mut sum = 0.0;
         for q in &mut probs {
@@ -256,7 +284,161 @@ impl Mlp {
             *q /= sum;
         }
         let v = (dot(&p[l.wv..l.bv], &a2) + p[l.bv]).tanh();
-        Forward { a1, a2, probs, v }
+        Forward {
+            a1,
+            a2,
+            head,
+            probs,
+            v,
+        }
+    }
+
+    /// Raw policy-head values over `support` (the pre-softmax logits), and the
+    /// tanh value, for `x`. Where [`Mlp::policy_value`] reads the head as a
+    /// softmax over the legal subset, this reads it as a plain *linear* head —
+    /// the form Deep CFR's advantage net needs (per-action regret estimates,
+    /// fit by MSE, not a distribution).
+    pub fn head_values(&self, x: &[f32], support: &[usize]) -> (Vec<f32>, f32) {
+        let f = self.forward(x, support);
+        (f.head, f.v)
+    }
+
+    /// [`Mlp::head_values`] using the input-major first-layer `cache` to skip
+    /// the zero entries of `x`. Matches the dense path exactly.
+    pub fn head_values_cached(
+        &self,
+        cache: &InferCache,
+        x: &[f32],
+        support: &[usize],
+    ) -> (Vec<f32>, f32) {
+        let f = self.forward_cached(cache, x, support);
+        (f.head, f.v)
+    }
+
+    /// Mean MSE of the *linear* policy head against per-action targets over the
+    /// batch, written into `grad`. Trains the policy head as a regression head
+    /// (Deep CFR advantage fitting) instead of a softmax classifier; the value
+    /// head and its `z` target are ignored. Targets are the dense per-support
+    /// regret values in [`RegretSample::target`] (parallel to `support`).
+    pub fn regret_grad(&self, batch: &[&RegretSample], grad: &mut Vec<f32>) -> f32 {
+        grad.clear();
+        grad.resize(self.params.len(), 0.0);
+        let mut mse = 0.0;
+        for s in batch {
+            mse += self.regret_accumulate(s, grad);
+        }
+        let scale = 1.0 / batch.len().max(1) as f32;
+        for g in grad.iter_mut() {
+            *g *= scale;
+        }
+        mse * scale
+    }
+
+    /// [`Mlp::regret_grad`] with the per-sample backward passes computed in
+    /// parallel; accumulation stays sequential, so the result matches exactly.
+    #[cfg(feature = "parallel")]
+    pub fn regret_grad_par(&self, batch: &[&RegretSample], grad: &mut Vec<f32>) -> f32 {
+        use rayon::prelude::*;
+        let cache = self.infer_cache();
+        let per: Vec<(Deltas, f32)> = batch
+            .par_iter()
+            .map(|s| self.regret_deltas(s, Some(&cache)))
+            .collect();
+        if grad.len() != self.params.len() {
+            grad.clear();
+            grad.resize(self.params.len(), 0.0);
+        } else {
+            grad.par_chunks_mut(1 << 16).for_each(|c| c.fill(0.0));
+        }
+        let mut mse = 0.0;
+        for (d, m) in &per {
+            self.accumulate(d, grad);
+            mse += *m;
+        }
+        let scale = 1.0 / batch.len().max(1) as f32;
+        for g in grad.iter_mut() {
+            *g *= scale;
+        }
+        mse * scale
+    }
+
+    fn regret_accumulate(&self, s: &RegretSample, grad: &mut [f32]) -> f32 {
+        let (d, mse) = self.regret_deltas(s, None);
+        self.accumulate(&d, grad);
+        mse
+    }
+
+    /// Backward pass for one advantage sample: MSE of the linear policy head
+    /// against `s.target` over `s.support`, no value-head signal. Reuses the
+    /// hidden-layer plumbing of [`Mlp::hidden_deltas`]; only the head error
+    /// differs (`2(ŷ - y)` per support logit, vs. softmax `q - p`).
+    fn regret_deltas(&self, s: &RegretSample, cache: Option<&InferCache>) -> (Deltas, f32) {
+        let l = self.l();
+        let h = self.hidden;
+        let p = &self.params;
+        let f = match cache {
+            Some(c) => self.forward_cached(c, &s.x, &s.support),
+            None => self.forward(&s.x, &s.support),
+        };
+        let n = s.support.len() as f32;
+        let mut mse = 0.0;
+        let mut da2 = vec![0.0f32; h];
+        let mut dpolicy = Vec::with_capacity(s.support.len());
+        for ((&idx, &y), &yhat) in s.support.iter().zip(&s.target).zip(&f.head) {
+            let e = yhat - y;
+            mse += e * e;
+            // Mean over the support's logits: d(mse)/d(yhat) = 2e/n.
+            let dl = 2.0 * e / n;
+            dpolicy.push((idx, dl));
+            let wrow = &p[l.wp + idx * h..][..h];
+            for (da, &w) in da2.iter_mut().zip(wrow) {
+                *da += dl * w;
+            }
+        }
+        mse /= n;
+
+        let (d1, d2) = self.hidden_deltas(&f, &da2);
+        let d = Deltas {
+            active: active_inputs(&s.x),
+            a1: f.a1,
+            a2: f.a2,
+            d1,
+            d2,
+            dpolicy,
+            dv: 0.0,
+            ce: 0.0,
+            mse,
+        };
+        (d, mse)
+    }
+
+    /// Backpropagate a seeded second-hidden-layer error `da2` through both ReLU
+    /// hidden layers, returning their gradients `(d1, d2)`. Shared by the
+    /// softmax+value path ([`Mlp::deltas`]) and the linear-head MSE path
+    /// ([`Mlp::regret_deltas`]), which differ only in how `da2` is seeded.
+    fn hidden_deltas(&self, f: &Forward, da2: &[f32]) -> (Vec<f32>, Vec<f32>) {
+        let l = self.l();
+        let h = self.hidden;
+        let p = &self.params;
+        let mut d2 = vec![0.0f32; h];
+        let mut da1 = vec![0.0f32; h];
+        for (j, (&a2j, &dd)) in f.a2.iter().zip(da2).enumerate() {
+            if a2j <= 0.0 {
+                continue;
+            }
+            d2[j] = dd;
+            let wrow = &p[l.w2 + j * h..][..h];
+            for (da, &w) in da1.iter_mut().zip(wrow) {
+                *da += dd * w;
+            }
+        }
+        let mut d1 = vec![0.0f32; h];
+        for (j, (&a1j, &dd)) in f.a1.iter().zip(&da1).enumerate() {
+            if a1j > 0.0 {
+                d1[j] = dd;
+            }
+        }
+        (d1, d2)
     }
 
     /// Mean (policy cross-entropy, value MSE) over the batch.
@@ -267,7 +449,9 @@ impl Mlp {
             let support: Vec<usize> = s.policy.iter().map(|&(i, _)| i).collect();
             let f = self.forward(&s.x, &support);
             ce += cross_entropy(&s.policy, &f.probs);
-            mse += (f.v - s.z) * (f.v - s.z);
+            if !s.z.is_nan() {
+                mse += (f.v - s.z) * (f.v - s.z);
+            }
         }
         let k = batch.len().max(1) as f32;
         (ce / k, mse / k)
@@ -335,7 +519,15 @@ impl Mlp {
             None => self.forward(&s.x, &support),
         };
         let ce = cross_entropy(&s.policy, &f.probs);
-        let mse = (f.v - s.z) * (f.v - s.z);
+        // A NaN `z` means "no value target": train the policy head only and
+        // leave the value head untouched (Deep CFR's strategy samples, whose
+        // decision nodes carry no equity label, vs. its root value samples).
+        let train_value = !s.z.is_nan();
+        let mse = if train_value {
+            (f.v - s.z) * (f.v - s.z)
+        } else {
+            0.0
+        };
 
         let mut da2 = vec![0.0f32; h];
         let mut dpolicy = Vec::with_capacity(s.policy.len());
@@ -347,38 +539,18 @@ impl Mlp {
                 *da += dl * w;
             }
         }
-        let dv = 2.0 * (f.v - s.z) * (1.0 - f.v * f.v);
+        let dv = if train_value {
+            2.0 * (f.v - s.z) * (1.0 - f.v * f.v)
+        } else {
+            0.0
+        };
         for (da, &w) in da2.iter_mut().zip(&p[l.wv..l.bv]) {
             *da += dv * w;
         }
 
-        let mut d2 = vec![0.0f32; h];
-        let mut da1 = vec![0.0f32; h];
-        for (j, (&a2j, &d)) in f.a2.iter().zip(&da2).enumerate() {
-            if a2j <= 0.0 {
-                continue;
-            }
-            d2[j] = d;
-            let wrow = &p[l.w2 + j * h..][..h];
-            for (da, &w) in da1.iter_mut().zip(wrow) {
-                *da += d * w;
-            }
-        }
-        let mut d1 = vec![0.0f32; h];
-        for (j, (&a1j, &d)) in f.a1.iter().zip(&da1).enumerate() {
-            if a1j > 0.0 {
-                d1[j] = d;
-            }
-        }
-        let active =
-            s.x.iter()
-                .enumerate()
-                .filter(|&(_, &v)| v != 0.0)
-                .map(|(i, &v)| (i, v))
-                .collect();
-
+        let (d1, d2) = self.hidden_deltas(&f, &da2);
         Deltas {
-            active,
+            active: active_inputs(&s.x),
             a1: f.a1,
             a2: f.a2,
             d1,

@@ -19,6 +19,7 @@
 
 pub mod azero;
 mod cfr;
+pub mod deepcfr;
 pub mod exploit;
 mod mccfr;
 pub mod mcts;
@@ -30,6 +31,7 @@ pub mod search;
 mod tabular;
 
 pub use cfr::Cfr;
+pub use deepcfr::{DeepCfr, DeepCfrConfig, Encoder};
 pub use exploit::{CfrPolicy, Policy, nash_conv};
 pub use mccfr::Mccfr;
 pub use rollout::Rollout;
