@@ -28,7 +28,7 @@ use std::time::Instant;
 use game_core::Rng;
 use solvers::azero::{InferCache, Mlp};
 use solvers::deepcfr::{DeepCfr, DeepCfrConfig, Encoder};
-use solvers::nash_conv;
+use solvers::{nash_conv, profile_exploitability};
 
 use crate::features::{encode, feature_len, net_policy, policy_len, support};
 use crate::{
@@ -142,21 +142,47 @@ struct RoundCfg {
     first_round: bool,
 }
 
-/// Sample one config + dice vector + opener across the supported family, biased
-/// toward small totals (mirroring [`crate::train`]'s sampler so the two methods
-/// see the same distribution).
+/// Sample one config + dice vector + opener across the supported family. The
+/// distribution deliberately covers the deployed multiplayer target (not just
+/// small endgames): ~12% are full game openings (the deployed starting state),
+/// and of the mid-game rounds half draw dice uniformly (reaching the larger,
+/// multiplayer/target regime) while half bias small via min-of-two (the endgame
+/// where exact play matters most). All are capped at [`MAX_TRAIN_TOTAL`] dice and
+/// have >=2 live seats.
 fn sample_round_config(rng: &mut Rng) -> RoundCfg {
     let p = 2 + rng.below(5); // 2..=6
     let d = 2 + rng.below(MAX_TRAIN_DICE - 1); // 2..=8
     let f = 2 + rng.below(5); // 2..=6
     let mut dice = [0u8; crate::MAX_PLAYERS];
+    // Full game opening: every seat at d dice, forced first round (skip if the
+    // full config would exceed the total cap, e.g. 6x8).
+    if rng.unit() < 0.12 && (p * d) as u32 <= MAX_TRAIN_TOTAL {
+        for die in dice.iter_mut().take(p) {
+            *die = d as u8;
+        }
+        return RoundCfg {
+            players: p as u8,
+            dice_per: d as u8,
+            faces: f as u8,
+            dice,
+            opener: 0,
+            first_round: true,
+        };
+    }
+    // Mid-game vector. `big` => uniform dice (larger totals, the target regime);
+    // otherwise min-of-two (small/endgame). ~15% of seats are eliminated.
+    let big = rng.unit() < 0.5;
     let mut ok = false;
     for _ in 0..32 {
         for die in dice.iter_mut().take(p) {
             *die = if rng.unit() < 0.85 {
-                let a = 1 + rng.below(d);
-                let b = 1 + rng.below(d);
-                a.min(b) as u8
+                if big {
+                    (1 + rng.below(d)) as u8
+                } else {
+                    let a = 1 + rng.below(d);
+                    let b = 1 + rng.below(d);
+                    a.min(b) as u8
+                }
             } else {
                 0
             };
@@ -210,24 +236,44 @@ fn build_round<'a>(c: &RoundCfg, warm: bool, net: &'a Mlp, cache: &'a InferCache
     )
 }
 
-/// Per-round exploitability of `net`'s policy on the small 2-player rounds the
-/// distillation keep-best metric uses (same two configs, same `DiceShareValue`
-/// continuation), so the two methods' numbers are directly comparable.
+/// Mean per-round exploitability of `net`'s policy used for keep-best. Combines
+/// exact 2-player exploitability (`nash_conv`) on two small configs with single-
+/// seat best-response exploitability (`profile_exploitability`) on two small
+/// 3-player configs, so keep-best is GUARDED against a multiplayer (n>=3)
+/// divergence the 2p-only metric could not catch. All use the `DiceShareValue`
+/// continuation and the deployed first-round opening. The small/low-face configs
+/// are chosen so exact enumeration stays cheap (~2s total per call); the heavy
+/// 6-face target is validated separately by sampled best response.
 fn validate_exploitability(net: &Mlp) -> f64 {
     let cache = net.infer_cache();
-    let configs = [(1u8, 6u8), (2, 4)];
-    let mut sum = 0.0;
-    for &(d, f) in &configs {
-        let feat = LiarsDice::new(2, d, f);
+    let full_round = |p: u8, d: u8, f: u8| {
         let mut dice = [0u8; crate::MAX_PLAYERS];
-        dice[0] = d;
-        dice[1] = d;
-        let round = RoundSubgame::new(2, d, f, dice, 0, true, 1, LdCont::Heuristic(DiceShareValue));
+        for die in dice.iter_mut().take(p as usize) {
+            *die = d;
+        }
+        RoundSubgame::new(p, d, f, dice, 0, true, 1, LdCont::Heuristic(DiceShareValue))
+    };
+    let mut sum = 0.0;
+    let mut n = 0.0;
+    // Exact 2-player exploitability.
+    for &(d, f) in &[(1u8, 6u8), (2u8, 4u8)] {
+        let feat = LiarsDice::new(2, d, f);
+        let round = full_round(2, d, f);
         let policy = |_g: &Round, s: &LdState, pl: usize| net_policy(net, &cache, &feat, s, pl);
         let (_, _, nc) = nash_conv(&round, &policy);
         sum += nc / 2.0;
+        n += 1.0;
     }
-    sum / configs.len() as f64
+    // Multiplayer (n>=3) single-seat best-response exploitability (cheap configs).
+    for &(p, d, f) in &[(3u8, 2u8, 3u8), (3u8, 2u8, 4u8)] {
+        let feat = LiarsDice::new(p, d, f);
+        let round = full_round(p, d, f);
+        let policy = |_g: &Round, s: &LdState, pl: usize| net_policy(net, &cache, &feat, s, pl);
+        let (_, mean) = profile_exploitability(&round, &policy);
+        sum += mean;
+        n += 1.0;
+    }
+    sum / n
 }
 
 fn clone_net(net: &Mlp) -> Mlp {
