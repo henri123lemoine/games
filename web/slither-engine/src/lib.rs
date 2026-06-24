@@ -30,15 +30,26 @@ pub fn start() {
 const HUMAN: usize = 0;
 /// Bots spawn at least this far from the human's center spawn, so a fresh human
 /// isn't rammed in the first second — the one concession to spawn fairness. The
-/// human itself spawns *small* (`START_LENGTH`), exactly like the bots and like
-/// real slither.io: no length head-start, so the trained net is a real opponent.
+/// human itself spawns *small* (`START_LENGTH`), so the trained net remains a
+/// real opponent even when a few bots start larger.
 const SPAWN_CLEARANCE: f32 = 700.0;
+const BOT_SPAWN_JITTER: f32 = 50.0;
+const BIG_BOT_SPAWN_CHANCE: f32 = 0.25;
+const BIG_BOT_SPAWN_MIN_EXTRA: f32 = 70.0;
+const BIG_BOT_SPAWN_MAX_EXTRA: f32 = 170.0;
+
+fn bot_spawn_length(rng: &mut Rng) -> f32 {
+    let mut length = START_LENGTH + rng.range(0.0, BOT_SPAWN_JITTER);
+    if rng.unit() < BIG_BOT_SPAWN_CHANCE {
+        length += rng.range(BIG_BOT_SPAWN_MIN_EXTRA, BIG_BOT_SPAWN_MAX_EXTRA);
+    }
+    length
+}
 
 /// Build the arena: the human at the center facing a random way (clear of the
 /// walls and of an instant bot ram), and `bot_count` bots scattered with a
-/// margin from the walls and from the human. Everyone spawns at the same small
-/// `START_LENGTH` (real slither.io has no head-start); the only fairness aid is
-/// the no-instant-ram spawn clearance.
+/// margin from the walls and from the human. The human starts small; bots get a
+/// little size variety, with occasional larger starts to seed threats.
 fn build_world(seed: u64, bot_count: usize, pellet_target: usize) -> World {
     let mut rng = Rng::new(seed);
     let center = world_center();
@@ -59,7 +70,7 @@ fn build_world(seed: u64, bot_count: usize, pellet_target: usize) -> World {
             }
         }
         let angle = rng.range(0.0, std::f32::consts::TAU);
-        let length = START_LENGTH + rng.range(0.0, 40.0);
+        let length = bot_spawn_length(&mut rng);
         worms.push(Worm::spawn(pos, angle, length));
     }
     World::from_worms(seed, worms, pellet_target)
