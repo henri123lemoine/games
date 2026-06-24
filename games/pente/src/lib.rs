@@ -30,7 +30,7 @@ mod ui;
 
 pub use encode::PenteEncoder;
 pub use knowledge::{PenteEval, PenteSpec};
-pub use solver::{VcfConfig, winning_move};
+pub use solver::{VcfConfig, hybrid_move, winning_move};
 
 use game_core::hash::splitmix64;
 use game_core::{Game, Turn};

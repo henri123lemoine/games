@@ -51,6 +51,21 @@ impl Budget {
     }
 }
 
+/// The hybrid move choice a net-MCTS Pente bot makes at the root: try the
+/// sound forcing solver first and play a proven forced win immediately,
+/// otherwise defer to `chooser` (the net-guided search). Keeping the
+/// composition here — beside the VCF it leans on — lets a caller drive any
+/// search (`solvers::azero::Search`, MCTS, …) without forking the solver, and
+/// makes the "VCF-or-fallback" decision testable with a stub chooser.
+pub fn hybrid_move<F: FnOnce() -> PenteAction>(
+    game: &Pente,
+    state: &PenteState,
+    cfg: VcfConfig,
+    chooser: F,
+) -> PenteAction {
+    winning_move(game, state, cfg).unwrap_or_else(chooser)
+}
+
 /// The forced win for the side to move, if the bounded forcing search proves
 /// one. Returns the winning first move.
 pub fn winning_move(game: &Pente, state: &PenteState, cfg: VcfConfig) -> Option<PenteAction> {
@@ -283,5 +298,56 @@ mod tests {
             [0, 0],
         );
         assert_eq!(vcf(&g, &s), None);
+    }
+
+    #[test]
+    fn hybrid_plays_the_forced_win_over_the_chooser() {
+        // The open-four position has a proven VCF win at e5; the hybrid must take
+        // it and never consult the (here-poisoned) fallback chooser.
+        let g = Pente::new(9);
+        let s = g.parse_state(
+            &[
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". X X X . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+            ],
+            0,
+            [0, 0],
+        );
+        let chosen = hybrid_move(&g, &s, VcfConfig::default(), || {
+            panic!("the chooser must not run when the VCF proves a win")
+        });
+        assert_eq!(chosen, PenteAction(g.point("e5").unwrap()));
+    }
+
+    #[test]
+    fn hybrid_defers_to_the_chooser_in_a_quiet_position() {
+        // No forcing win here, so the hybrid falls through to whatever the
+        // net-guided search would play — modeled by a sentinel-returning stub.
+        let g = Pente::new(9);
+        let s = g.parse_state(
+            &[
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . X . O . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+            ],
+            0,
+            [0, 0],
+        );
+        let sentinel = PenteAction(g.point("e6").unwrap());
+        let chosen = hybrid_move(&g, &s, VcfConfig::default(), || sentinel);
+        assert_eq!(chosen, sentinel);
     }
 }

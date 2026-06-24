@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex};
 
 use game_core::{Agent, Game, NoSpec, hash};
 use liars_dice::{BidConditioned, LiarsDice, ProbabilisticAgent};
+use nn_infer::Net;
 use poker::{HoleSampler, Poker, PokerBot};
+use solvers::azero::{Gather, PuctConfig, Search};
 use solvers::azero::{Mlp, Puct, PuctAgent};
 use solvers::mcts::Mcts;
 use solvers::{AlphaBeta, Rollout};
@@ -387,9 +389,17 @@ const PENTE_OPTS: &[OptSpec] = &[
         "0|1|watch",
         "(0=Black, plays the forced center first)",
     ),
-    opt("bot", "alphabeta|mcts", ""),
+    opt("bot", "alphabeta|mcts|azero", ""),
     bot_opt("depth", "4", "", &["alphabeta"]),
-    bot_opt("sims", "4000", "", &["mcts"]),
+    bot_opt("sims", "4000", "(azero default 400)", &["mcts", "azero"]),
+    bot_opt("net", "data/azpente/azero-pente.azweb", "", &["azero"]),
+    bot_opt(
+        "vcf-nodes",
+        "4000",
+        "(move-time VCF node budget)",
+        &["azero"],
+    ),
+    bot_opt("vcf-depth", "8", "(VCF max attacker plies)", &["azero"]),
     opt("seed", "...", ""),
 ];
 
@@ -978,7 +988,86 @@ fn go_bot(spec: &BotSpec, o: &Opts) -> Result<BotBuilder<go::Go>, String> {
     })
 }
 
-fn pente_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<pente::Pente>, String> {
+/// The native hybrid Pente bot: a capture-aware VCF root solver in front of an
+/// AlphaZero net-guided PUCT search. Per move it plays a proven forced win when
+/// the (move-time-budgeted) VCF finds one, else runs `sims` of `Search<Pente>`
+/// against the reference `nn-infer` forward and plays the most-visited root
+/// move. The search is composed at the caller (never forked) via
+/// [`pente::hybrid_move`]; the net is shared across compare workers via `Arc`.
+struct AzeroPenteBot {
+    net: std::sync::Arc<Net>,
+    enc: pente::PenteEncoder,
+    sims: u32,
+    vcf: pente::VcfConfig,
+}
+
+impl Agent<pente::Pente> for AzeroPenteBot {
+    fn act(
+        &self,
+        game: &pente::Pente,
+        state: &pente::PenteState,
+        _player: usize,
+        rng: &mut game_core::Rng,
+    ) -> usize {
+        let action =
+            pente::hybrid_move(game, state, self.vcf, || self.search_move(game, state, rng));
+        // `Agent::act` returns an index into `legal_actions`; both the VCF win
+        // and the searched move are legal here, so the position is exact.
+        game.legal_actions(state)
+            .iter()
+            .position(|&a| a == action)
+            .expect("hybrid move is a legal action")
+    }
+}
+
+impl AzeroPenteBot {
+    /// Runs the whole PUCT search to its visit budget on the CPU, evaluating
+    /// every parked leaf with the reference forward (mirrors the wasm CPU
+    /// driver), and returns the most-visited root move. No root noise: this is
+    /// deterministic full-strength play, not self-play.
+    fn search_move(
+        &self,
+        game: &pente::Pente,
+        state: &pente::PenteState,
+        rng: &mut game_core::Rng,
+    ) -> pente::PenteAction {
+        let cfg = PuctConfig {
+            sims: self.sims,
+            root_noise: 0.0,
+            ..PuctConfig::default()
+        };
+        let mut search = Search::new(None);
+        let mut results = Vec::new();
+        while let Gather::Requests(reqs) = search.advance(
+            game,
+            &self.enc,
+            state,
+            &cfg,
+            rng,
+            std::mem::take(&mut results),
+            &|_| false,
+        ) {
+            results = reqs
+                .iter()
+                .map(|r| {
+                    let (priors, value) = self.net.forward_support(&r.features, &[], &r.support);
+                    solvers::azero::EvalResult { priors, value }
+                })
+                .collect();
+        }
+        let idx = solvers::azero::argmax(search.root_visits());
+        search.root_actions()[idx]
+    }
+}
+
+fn load_pente_net(path: &str) -> Result<std::sync::Arc<Net>, String> {
+    let bytes = crate::artifacts::read(path)?;
+    Net::parse(&bytes)
+        .map(std::sync::Arc::new)
+        .map_err(|e| format!("failed to load pente net '{path}': {e}"))
+}
+
+fn pente_bot(spec: &BotSpec, o: &Opts) -> Result<BotBuilder<pente::Pente>, String> {
     Ok(match spec.name.as_str() {
         "alphabeta" => {
             let depth: u32 = spec.opts.get("depth", 4)?;
@@ -991,10 +1080,33 @@ fn pente_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<pente::Pente>, Stri
             let sims: u32 = spec.opts.get("sims", 4000)?;
             Box::new(move |_| Box::new(Mcts::new(sims)) as BoxedAgent<pente::Pente>)
         }
+        "azero" => {
+            let net = load_pente_net(&spec.opts.str("net", "data/azpente/azero-pente.azweb"))?;
+            let sims: u32 = spec.opts.get("sims", 400)?;
+            // A move-time VCF budget: the default 200k-node depth-12 search is
+            // tuned for offline analysis and is too slow to run before every
+            // PUCT search on a 19×19 board. A few thousand nodes still proves the
+            // short forcing wins (open fours, double-fours, fifth-pair captures)
+            // that matter at the root while returning in well under a move's time.
+            let vcf_nodes: u64 = spec.opts.get("vcf-nodes", 4000)?;
+            let vcf_depth: u32 = spec.opts.get("vcf-depth", 8)?;
+            let size: usize = o.get("size", 13)?;
+            Box::new(move |_| {
+                Box::new(AzeroPenteBot {
+                    net: net.clone(),
+                    enc: pente::PenteEncoder::new(size),
+                    sims,
+                    vcf: pente::VcfConfig {
+                        max_depth: vcf_depth,
+                        max_nodes: vcf_nodes,
+                    },
+                }) as BoxedAgent<pente::Pente>
+            })
+        }
         "random" => Box::new(|_| Box::new(game_core::RandomAgent) as BoxedAgent<pente::Pente>),
         other => {
             return Err(format!(
-                "unknown pente bot '{other}' (alphabeta|mcts|random)"
+                "unknown pente bot '{other}' (alphabeta|mcts|azero|random)"
             ));
         }
     })

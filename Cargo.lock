@@ -142,6 +142,7 @@ dependencies = [
  "game-core",
  "go",
  "liars-dice",
+ "nn-infer",
  "othello",
  "pente",
  "poker",
