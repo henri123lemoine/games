@@ -5,4 +5,5 @@
 
 pub mod chess;
 pub mod go;
+pub mod pente;
 pub mod snake;

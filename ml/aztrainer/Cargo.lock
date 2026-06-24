@@ -39,6 +39,7 @@ dependencies = [
  "game-core",
  "go",
  "nn-infer",
+ "pente",
  "rayon",
  "serde_json",
  "snake",
@@ -614,6 +615,13 @@ dependencies = [
  "hmac",
  "password-hash",
  "sha2",
+]
+
+[[package]]
+name = "pente"
+version = "0.1.0"
+dependencies = [
+ "game-core",
 ]
 
 [[package]]

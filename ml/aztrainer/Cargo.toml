@@ -12,6 +12,7 @@ description = "Generic AlphaZero trainer: one tch-rs resnet + self-play/replay/o
 [dependencies]
 chess = { path = "../../games/chess" }
 go = { path = "../../games/go" }
+pente = { path = "../../games/pente" }
 snake = { path = "../../games/snake" }
 nn-infer = { path = "../nn-infer" }
 game-core = { path = "../../game-core" }
@@ -27,6 +28,10 @@ path = "src/bin/chess.rs"
 [[bin]]
 name = "go"
 path = "src/bin/go.rs"
+
+[[bin]]
+name = "pente"
+path = "src/bin/pente.rs"
 
 [[bin]]
 name = "snake"
