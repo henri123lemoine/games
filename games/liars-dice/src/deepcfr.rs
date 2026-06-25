@@ -25,14 +25,16 @@ use std::io::Write as _;
 use std::path::Path;
 use std::time::Instant;
 
-use game_core::Rng;
+use game_core::{Agent, Game, Rng, hash, play_n, win_share};
+use rayon::prelude::*;
+use solvers::Rollout;
 use solvers::azero::{InferCache, Mlp};
 use solvers::deepcfr::{DeepCfr, DeepCfrConfig, Encoder};
-use solvers::{nash_conv, profile_exploitability};
 
-use crate::features::{encode, feature_len, net_policy, policy_len, support};
+use crate::features::{encode, feature_len, policy_len, support};
 use crate::{
-    ContinuationValue, DiceShareValue, LdState, LiarsDice, NetAgent, NetValue, RoundSubgame,
+    BidConditioned, ContinuationValue, DiceShareValue, LdState, LiarsDice, NetAgent, NetValue,
+    ProbabilisticAgent, RoundSubgame,
 };
 
 /// The continuation closing a round's leaves: the fixed dice-share heuristic
@@ -109,6 +111,11 @@ pub struct DeepCfrTrainConfig {
     pub threads: usize,
     pub outdir: String,
     pub seed: u64,
+    /// Keep-best win-share eval budget: Rollout count for the opponent field and
+    /// games played per high-dice config each block. Kept modest so the eval is a
+    /// small slice of the block (the Rollout bot, not the net, is the cost).
+    pub eval_rollouts: u32,
+    pub eval_games: u32,
 }
 
 impl Default for DeepCfrTrainConfig {
@@ -132,6 +139,8 @@ impl Default for DeepCfrTrainConfig {
             threads: 18,
             outdir: "runs/ld_deepcfr".into(),
             seed: 0xD1CE_DEEC,
+            eval_rollouts: 100,
+            eval_games: 40,
         }
     }
 }
@@ -149,42 +158,82 @@ struct RoundCfg {
     first_round: bool,
 }
 
-/// Sample one config + dice vector + opener across the supported family, biased
-/// toward small totals (where deception is decisive and regret estimates are
-/// cleanest). The min-of-two draw still reaches moderate multiplayer totals via
-/// its tail; the large 6-face target is validated separately (sampled best
-/// response) rather than forced into training, where its deep-ladder rounds
-/// flood the reservoir with high-variance regrets and degrade the small-config
-/// policy (observed: a 50% big-round mix made exploitability rise, not fall).
+/// Sample one config + dice vector + opener across the supported family,
+/// RE-BIASED toward the HIGH-DICE-COUNT regime the deploy actually cares about
+/// (flagship 5p5d6f = 25 dice, up to 6p8d6f = 48), away from the tiny endgame.
+/// Three levers do the re-biasing:
+///   * dice-per `d` lands in 5..=8 ~75% of the time (and 2..=4 the rest, so the
+///     net still sees some lower-dice rounds for generality);
+///   * the dice VECTOR uses a max-of-two draw (seats hold MANY dice) instead of
+///     the old min-of-two, with a large fraction of FULL game openings (every
+///     live seat at `d`, `first_round=true`) — the actual 5p5d6f-style start;
+///   * players `p` spans 2..=6 with a mild lean toward more players, which also
+///     raises the total dice in play.
+///
+/// A minority of mid-game vectors (some dice already lost) keeps the net handling
+/// dice loss, but the tiny deep-ladder endgame is de-emphasized rather than the
+/// old regime where its mass dominated. The `>=2`-live-seats and `total <=
+/// MAX_TRAIN_TOTAL` guards are kept.
 fn sample_round_config(rng: &mut Rng) -> RoundCfg {
-    let p = 2 + rng.below(5); // 2..=6
-    let d = 2 + rng.below(MAX_TRAIN_DICE - 1); // 2..=8
+    // Mild lean toward more players (more seats => more total dice). Bucket the
+    // unit draw so larger `p` is somewhat more likely without dropping the small
+    // tables: roughly p=2:13% 3:17% 4:20% 5:23% 6:27%.
+    let p = match rng.unit() {
+        u if u < 0.13 => 2,
+        u if u < 0.30 => 3,
+        u if u < 0.50 => 4,
+        u if u < 0.73 => 5,
+        _ => 6,
+    };
+    // ~75% of rounds use a high dice-per (5..=8), ~25% a low one (2..=4).
+    let d = if rng.unit() < 0.75 {
+        5 + rng.below(MAX_TRAIN_DICE - 4) // 5..=8
+    } else {
+        2 + rng.below(3) // 2..=4
+    };
     let f = 2 + rng.below(5); // 2..=6
+
+    // A FULL opening (every live seat at `d`, first_round) is the real game start
+    // and the dominant training target whenever it fits the total-dice budget.
+    let full_total = (p as u32) * (d as u32);
+    let want_full = full_total <= MAX_TRAIN_TOTAL && rng.unit() < 0.45;
+
     let mut dice = [0u8; crate::MAX_PLAYERS];
     let mut ok = false;
-    for _ in 0..32 {
+    if want_full {
         for die in dice.iter_mut().take(p) {
-            *die = if rng.unit() < 0.85 {
-                let a = 1 + rng.below(d);
-                let b = 1 + rng.below(d);
-                a.min(b) as u8
-            } else {
-                0
-            };
+            *die = d as u8;
         }
-        let total: u32 = dice[..p].iter().map(|&x| u32::from(x)).sum();
-        if (0..p).filter(|&i| dice[i] > 0).count() >= 2 && total <= MAX_TRAIN_TOTAL {
-            ok = true;
-            break;
+        ok = true;
+    } else {
+        for _ in 0..32 {
+            for die in dice.iter_mut().take(p) {
+                // max-of-two keeps seats HIGH (the opposite of the old min-of-two
+                // small bias); ~10% of seats are eliminated so mid-game vectors
+                // with lost dice still appear.
+                *die = if rng.unit() < 0.90 {
+                    let a = 1 + rng.below(d);
+                    let b = 1 + rng.below(d);
+                    a.max(b) as u8
+                } else {
+                    0
+                };
+            }
+            let total: u32 = dice[..p].iter().map(|&x| u32::from(x)).sum();
+            if (0..p).filter(|&i| dice[i] > 0).count() >= 2 && total <= MAX_TRAIN_TOTAL {
+                ok = true;
+                break;
+            }
         }
     }
     if !ok {
         dice = [0u8; crate::MAX_PLAYERS];
-        dice[0] = 1;
-        dice[1] = 1;
+        for die in dice.iter_mut().take(p) {
+            *die = d as u8;
+        }
     }
     let all_full = (0..p).all(|i| dice[i] == d as u8);
-    let first_round = all_full && rng.unit() < 0.5;
+    let first_round = all_full && rng.unit() < 0.7;
     let opener = if first_round {
         0
     } else {
@@ -221,44 +270,79 @@ fn build_round<'a>(c: &RoundCfg, warm: bool, net: &'a Mlp, cache: &'a InferCache
     )
 }
 
-/// Mean per-round exploitability of `net`'s policy used for keep-best. Combines
-/// exact 2-player exploitability (`nash_conv`) on two small configs with single-
-/// seat best-response exploitability (`profile_exploitability`) on two small
-/// 3-player configs, so keep-best is GUARDED against a multiplayer (n>=3)
-/// divergence the 2p-only metric could not catch. All use the `DiceShareValue`
-/// continuation and the deployed first-round opening. The small/low-face configs
-/// are chosen so exact enumeration stays cheap (~2s total per call); the heavy
-/// 6-face target is validated separately by sampled best response.
-fn validate_exploitability(net: &Mlp) -> f64 {
-    let cache = net.infer_cache();
-    let full_round = |p: u8, d: u8, f: u8| {
-        let mut dice = [0u8; crate::MAX_PLAYERS];
-        for die in dice.iter_mut().take(p as usize) {
-            *die = d;
-        }
-        RoundSubgame::new(p, d, f, dice, 0, true, 1, LdCont::Heuristic(DiceShareValue))
-    };
+/// The high-dice configs the keep-best metric scores against — the regime the
+/// deploy actually cares about (the flagship 5p5d6f start and a 4p4d6f table).
+const KEEPBEST_CONFIGS: &[(u8, u8, u8)] = &[(5, 5, 6), (4, 4, 6)];
+
+/// The deployed bot, exactly as `lab`'s registry / `ld_eval` build it for
+/// `bot=rollout`, but at a reduced rollout count so the keep-best eval stays a
+/// small fraction of the block (the Rollout bot is the slow part; the net is a
+/// fast forward pass).
+fn deployed_bot(rollouts: u32) -> Rollout<LiarsDice, ProbabilisticAgent, BidConditioned> {
+    Rollout::new(
+        rollouts,
+        ProbabilisticAgent::default_agent(),
+        BidConditioned::default(),
+    )
+}
+
+/// `hero`'s win-share in a field of `field` at `(p, d, f)`: the hero is rotated
+/// through every seat (the repo's win-share convention — see `ld_eval` /
+/// `compare::play_one_field_game`), credit = win 1 / k-way tie `1/k` / loss 0.
+/// Games run in parallel; the Rollout opponent's own per-decision rayon fan-out
+/// nests under that (work-stealing keeps it correct). Fair share = `1/p`.
+fn field_win_share<A, B>(p: u8, d: u8, f: u8, hero: &A, field: &B, games: u32, seed: u64) -> f64
+where
+    A: Agent<LiarsDice> + Sync,
+    B: Agent<LiarsDice> + Sync,
+{
+    let game = LiarsDice::new(p, d, f);
+    let n = game.num_players();
+    let hero: &(dyn Agent<LiarsDice> + Sync) = hero;
+    let field: &(dyn Agent<LiarsDice> + Sync) = field;
+    let total: f64 = (0..games)
+        .into_par_iter()
+        .map(|g| {
+            let mut rng = Rng::new(hash::combine(seed, u64::from(g)));
+            let hero_seat = (g as usize) % n;
+            let seats: Vec<&dyn Agent<LiarsDice>> = (0..n)
+                .map(|seat| if seat == hero_seat { hero } else { field } as _)
+                .collect();
+            let terminal = play_n(&game, &seats, &mut rng);
+            win_share(&game, &terminal, hero_seat)
+        })
+        .sum();
+    total / games as f64
+}
+
+/// Keep-best metric: the MEAN win-share of `net`'s average-strategy policy
+/// (played as a [`NetAgent`]) against a field of the deployed Rollout bot across
+/// the high-dice [`KEEPBEST_CONFIGS`] — the user's ACTUAL goal (beat the deployed
+/// bot at 5p5d6f and up), not small-config exploitability. HIGHER is better (the
+/// sense flips vs the old exploitability metric, where lower won). Per-config
+/// shares are returned alongside the mean for logging. A modest budget keeps this
+/// a small slice of the block: the net is a fast forward pass, the Rollout bot is
+/// the cost, so it runs at a reduced rollout count.
+fn validate_win_share(
+    net: &Mlp,
+    rollouts: u32,
+    games: u32,
+    seed: u64,
+) -> (f64, Vec<(String, f64)>) {
+    let hero = NetAgent::new(clone_net(net));
+    let mut per_config = Vec::with_capacity(KEEPBEST_CONFIGS.len());
     let mut sum = 0.0;
-    let mut n = 0.0;
-    // Exact 2-player exploitability.
-    for &(d, f) in &[(1u8, 6u8), (2u8, 4u8)] {
-        let feat = LiarsDice::new(2, d, f);
-        let round = full_round(2, d, f);
-        let policy = |_g: &Round, s: &LdState, pl: usize| net_policy(net, &cache, &feat, s, pl);
-        let (_, _, nc) = nash_conv(&round, &policy);
-        sum += nc / 2.0;
-        n += 1.0;
+    for &(p, d, f) in KEEPBEST_CONFIGS {
+        let field = deployed_bot(rollouts);
+        let cfg_seed = hash::combine(
+            seed,
+            (u64::from(p) << 16) | (u64::from(d) << 8) | u64::from(f),
+        );
+        let share = field_win_share(p, d, f, &hero, &field, games, cfg_seed);
+        sum += share;
+        per_config.push((format!("{p}p{d}d{f}f"), share));
     }
-    // Multiplayer (n>=3) single-seat best-response exploitability (cheap configs).
-    for &(p, d, f) in &[(3u8, 2u8, 3u8), (3u8, 2u8, 4u8)] {
-        let feat = LiarsDice::new(p, d, f);
-        let round = full_round(p, d, f);
-        let policy = |_g: &Round, s: &LdState, pl: usize| net_policy(net, &cache, &feat, s, pl);
-        let (_, mean) = profile_exploitability(&round, &policy);
-        sum += mean;
-        n += 1.0;
-    }
-    sum / n
+    (sum / KEEPBEST_CONFIGS.len() as f64, per_config)
 }
 
 fn clone_net(net: &Mlp) -> Mlp {
@@ -293,8 +377,9 @@ fn engine_config(cfg: &DeepCfrTrainConfig, collect_root_value: bool) -> DeepCfrC
 }
 
 /// Train the Liar's Dice net by Deep CFR over the config family, checkpointing
-/// the average-strategy net every block and keeping the lowest-exploitability
-/// net at `{outdir}/best.bin`. Returns the final average-strategy net.
+/// the average-strategy net every block and keeping the HIGHEST-win-share net
+/// (vs the deployed Rollout bot at the high-dice configs) at `{outdir}/best.bin`.
+/// Returns the final average-strategy net.
 pub fn train(cfg: &DeepCfrTrainConfig) -> std::io::Result<Mlp> {
     rayon::ThreadPoolBuilder::new()
         .num_threads(cfg.threads.max(1))
@@ -315,7 +400,9 @@ pub fn train(cfg: &DeepCfrTrainConfig) -> std::io::Result<Mlp> {
     // The current average-strategy net, refreshed each block; its value head is
     // the continuation after warm-up.
     let mut net = Mlp::new(feature_len(), cfg.hidden, policy_len(), cfg.seed ^ 0xA5A5);
-    let mut best = f64::INFINITY;
+    // Keep-best by win-share: HIGHER is better, so the bar starts at -inf (the
+    // opposite sense of the old exploitability metric, where lower won).
+    let mut best = f64::NEG_INFINITY;
     let mut done = 0usize;
     let mut sampler_rng = Rng::new(cfg.seed ^ 0x9E37_79B9);
 
@@ -337,16 +424,26 @@ pub fn train(cfg: &DeepCfrTrainConfig) -> std::io::Result<Mlp> {
         done += n;
 
         net.save(Path::new(&format!("{}/ckpt.bin", cfg.outdir)))?;
-        let expl = validate_exploitability(&net);
+        // Keep-best on the user's actual goal: mean win-share vs the deployed
+        // Rollout bot at the high-dice configs (fair = 1/players; >fair beats it).
+        let eval_seed = cfg.seed ^ (done as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let (mean_share, per_config) =
+            validate_win_share(&net, cfg.eval_rollouts, cfg.eval_games, eval_seed);
+        let shares: Vec<String> = per_config
+            .iter()
+            .map(|(name, s)| format!("{name} {s:.3}"))
+            .collect();
         let secs = t.elapsed().as_secs_f64();
         let phase = if warm { "warm" } else { "fvi " };
         let mut line = format!(
-            "iters {done:5} [{phase}]  strat-buf {:8}  adv-buf {:8}  {secs:6.1}s  expl {expl:.4}",
+            "iters {done:5} [{phase}]  strat-buf {:8}  adv-buf {:8}  {secs:6.1}s  \
+             winshare {mean_share:.4}  [{}]",
             engine.strat_reservoir_len(),
             engine.advantage_reservoir_len(0),
+            shares.join("  "),
         );
-        if expl < best {
-            best = expl;
+        if mean_share > best {
+            best = mean_share;
             net.save(Path::new(&format!("{}/best.bin", cfg.outdir)))?;
             line.push_str(" *best");
         }
@@ -384,8 +481,40 @@ pub fn train_single_round_2p(dice: u8, faces: u8, cfg: &DeepCfrTrainConfig) -> M
 #[cfg(test)]
 mod tests {
     use super::*;
-    use game_core::Game;
-    use solvers::Cfr;
+    use crate::features::net_policy;
+
+    /// The sampler now targets the high-dice regime: most draws should have a
+    /// large total dice count and a high dice-per, with full openings present.
+    #[test]
+    fn sampler_targets_high_dice_count() {
+        let mut rng = Rng::new(12345);
+        let n = 20000;
+        let mut sum_total = 0u64;
+        let mut high_total = 0; // total >= 20 (the 5p5d6f regime and up)
+        let mut high_d = 0; // dice-per in 5..=8
+        let mut full_open = 0;
+        for _ in 0..n {
+            let c = sample_round_config(&mut rng);
+            let live = (0..c.players as usize).filter(|&i| c.dice[i] > 0).count();
+            let total: u32 = c.dice[..c.players as usize]
+                .iter()
+                .map(|&x| u32::from(x))
+                .sum();
+            assert!(live >= 2, "at least two live seats");
+            assert!(total <= MAX_TRAIN_TOTAL, "within the total-dice budget");
+            sum_total += u64::from(total);
+            high_total += u32::from(total >= 20);
+            high_d += u32::from((5..=8).contains(&c.dice_per));
+            full_open += u32::from(c.first_round);
+        }
+        let mean = sum_total as f64 / n as f64;
+        // The old min-of-two sampler sat far lower; the regime is now high.
+        assert!(mean > 16.0, "mean total dice should be high, got {mean:.2}");
+        assert!(high_total as f64 / n as f64 > 0.4, "plenty of 20+ totals");
+        assert!(high_d as f64 / n as f64 > 0.65, "dice-per mostly 5..=8");
+        assert!(full_open > 0, "some full game openings");
+    }
+    use solvers::{Cfr, nash_conv};
 
     #[test]
     fn ld_deepcfr_smoke_produces_loadable_netagent() {
