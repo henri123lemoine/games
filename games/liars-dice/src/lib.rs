@@ -25,6 +25,7 @@ pub mod deepcfr;
 pub mod features;
 pub mod net_search;
 pub mod online_solve;
+pub mod rebel;
 mod solve;
 mod subgame;
 pub mod train;
