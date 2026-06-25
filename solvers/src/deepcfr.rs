@@ -104,6 +104,17 @@ pub struct DeepCfrConfig {
     /// round-opening equity — the signal a Liar's Dice `NetValue` continuation
     /// reads. Off for games with no continuation to learn (e.g. Kuhn).
     pub collect_root_value: bool,
+    /// ε-greedy exploration weight for the sampled *opponent* branches of an
+    /// external-sampling traversal. At an opponent node the action is drawn from
+    /// `q(a) = ε/n + (1-ε)·σ(a)` instead of pure σ, so a current strategy that
+    /// rarely plays an action still reaches — and trains — the infosets beyond
+    /// it. The returned subtree value is importance-weighted by `σ(a)/q(a)`
+    /// (compounded along the path) so the traverser's regret estimates stay
+    /// unbiased in expectation. The traverser's own nodes still expand every
+    /// action (external sampling) and chance is still sampled from its true
+    /// distribution (already unbiased) — both unaffected. `0.0` recovers pure
+    /// on-policy sampling.
+    pub explore_eps: f64,
 }
 
 impl Default for DeepCfrConfig {
@@ -124,6 +135,7 @@ impl Default for DeepCfrConfig {
             seed: 0xDEEC_F00D,
             adv_nets: 0,
             collect_root_value: false,
+            explore_eps: 0.6,
         }
     }
 }
@@ -356,11 +368,28 @@ impl DeepCfr {
         }
     }
 
-    /// External-sampling traversal returning the counterfactual value to
-    /// `traverser`. At the traverser's nodes every action is expanded and the
-    /// instantaneous regrets are reservoired; chance and opponents are sampled.
-    /// The current strategy at *every* decision node is reservoired into the
-    /// shared strategy buffer with the Linear CFR weight `iter`.
+    /// External-sampling traversal returning the (importance-weighted)
+    /// counterfactual value to `traverser`. At the traverser's nodes every action
+    /// is expanded and the instantaneous regrets are reservoired; chance and
+    /// opponents are sampled. The current strategy at *every* decision node is
+    /// reservoired into the shared strategy buffer with the Linear CFR weight
+    /// `iter`.
+    ///
+    /// ## ε-greedy exploration with importance weighting
+    ///
+    /// At a sampled (opponent) node the on-policy value is the expectation
+    /// `Σ_a σ(a)·V(a)`. To reach rarely-played actions we instead draw the
+    /// continuation from `q(a) = ε/n + (1-ε)·σ(a)` and return the single sample
+    /// `V(a)·σ(a)/q(a)`. That is unbiased — `E_{a~q}[V(a)·σ(a)/q(a)] =
+    /// Σ_a q(a)·V(a)·σ(a)/q(a) = Σ_a σ(a)·V(a)` — so the traverser's value `v`
+    /// (and hence every regret `v(a)−v` it stores) is unbiased in expectation.
+    /// The `σ(a)/q(a)` factors compound multiplicatively along a path, exactly as
+    /// outcome sampling threads its sample probability; here each sampled node
+    /// folds its factor into the value it returns upward, so a parent simply
+    /// multiplies child values by `σ` as usual. Only the *value* (and hence the
+    /// regret) is importance-weighted; the strategy-reservoir push is left as-is
+    /// (the average strategy at every visited infoset is still recorded with the
+    /// plain Linear-CFR weight).
     fn traverse<G: Game, E: Encoder<G>>(
         &mut self,
         game: &G,
@@ -424,11 +453,21 @@ impl DeepCfr {
                     self.adv_buf[net].push(RegretSample { x, support, target }, iter, rng);
                     v
                 } else {
-                    // Opponent / chance reach is sampled on-policy.
-                    let i = rng.pick(&sigma);
+                    // Opponent node: ε-greedy sampling so rarely-played lines are
+                    // still reached, with the subtree value importance-weighted by
+                    // σ(a)/q(a) to keep the traverser's regret estimates unbiased.
+                    let eps = self.cfg.explore_eps;
+                    let q: Vec<f64> = sigma
+                        .iter()
+                        .map(|&pr| eps / n as f64 + (1.0 - eps) * pr)
+                        .collect();
+                    let i = rng.pick(&q);
+                    let iw = sigma[i] / q[i];
                     let mut child = state.clone();
                     game.apply(&mut child, actions[i]);
-                    self.traverse(game, enc, &child, traverser, iter, rng)
+                    let v = self.traverse(game, enc, &child, traverser, iter, rng);
+                    // Fold this node's σ(a)/q(a) into the value returned up.
+                    v * iw
                 }
             }
         }
@@ -704,6 +743,16 @@ mod tests {
             seed: 0xC0FFEE,
             adv_nets: 0,
             collect_root_value: false,
+            // Exploration ON. The importance weighting keeps the estimator
+            // unbiased, so the gate still reaches near-Nash with ε-greedy
+            // sampling — the proof the IW math is right. `0.1` here (vs the
+            // production `0.6`/`0.5`) is a budget choice, not a correctness one:
+            // ε-greedy raises the per-iteration regret-target variance, and on
+            // this tiny gate (250 iters) a large ε would need many more
+            // iterations to average that variance back down. At ε=0.1 the gate
+            // reaches the same ~0.04 floor as ε=0 (no exploration), confirming
+            // exploration adds variance but no bias.
+            explore_eps: 0.1,
         };
         let mut solver = DeepCfr::new(game.num_players(), &enc, cfg);
         let net = solver.run(&game, &enc);

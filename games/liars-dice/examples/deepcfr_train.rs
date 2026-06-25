@@ -32,6 +32,7 @@ fn main() -> std::io::Result<()> {
             "block" => cfg.block = v.parse().unwrap(),
             "warmup_iters" => cfg.warmup_iters = v.parse().unwrap(),
             "traversals" => cfg.traversals = v.parse().unwrap(),
+            "train_every" => cfg.train_every = v.parse().unwrap(),
             "hidden" => cfg.hidden = v.parse().unwrap(),
             "adv_reservoir" => cfg.adv_reservoir = v.parse().unwrap(),
             "strat_reservoir" => cfg.strat_reservoir = v.parse().unwrap(),
@@ -41,6 +42,7 @@ fn main() -> std::io::Result<()> {
             "lr" => cfg.lr = v.parse().unwrap(),
             "momentum" => cfg.momentum = v.parse().unwrap(),
             "l2" => cfg.l2 = v.parse().unwrap(),
+            "explore_eps" => cfg.explore_eps = v.parse().unwrap(),
             "threads" => cfg.threads = v.parse().unwrap(),
             "outdir" => cfg.outdir = v.to_string(),
             "seed" => cfg.seed = v.parse().unwrap(),
@@ -48,8 +50,16 @@ fn main() -> std::io::Result<()> {
         }
     }
     println!(
-        "deep cfr: iters={} block={} warmup={} traversals={} hidden={} threads={} -> {}",
-        cfg.iters, cfg.block, cfg.warmup_iters, cfg.traversals, cfg.hidden, cfg.threads, cfg.outdir
+        "deep cfr: iters={} block={} warmup={} traversals={} hidden={} \
+         explore_eps={} threads={} -> {}",
+        cfg.iters,
+        cfg.block,
+        cfg.warmup_iters,
+        cfg.traversals,
+        cfg.hidden,
+        cfg.explore_eps,
+        cfg.threads,
+        cfg.outdir
     );
     #[cfg(not(feature = "parallel"))]
     eprintln!(

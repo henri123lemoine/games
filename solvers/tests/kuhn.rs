@@ -87,6 +87,9 @@ fn kuhn_deep_cfr_exploitability_curve() {
         seed: 0xC0FFEE,
         adv_nets: 0,
         collect_root_value: false,
+        // Exploration on; small ε so the limited-budget curve still converges
+        // (the IW keeps it unbiased — see the unit-test note).
+        explore_eps: 0.1,
     };
     let mut solver = DeepCfr::new(game.num_players(), &enc, cfg);
     println!("{:>6} {:>14}", "iters", "exploitability");

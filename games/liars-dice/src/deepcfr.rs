@@ -100,6 +100,12 @@ pub struct DeepCfrTrainConfig {
     pub lr: f32,
     pub momentum: f32,
     pub l2: f32,
+    /// ε-greedy exploration weight at the sampled (opponent) traversal branches,
+    /// importance-weighted to stay unbiased (see [`DeepCfrConfig::explore_eps`]).
+    /// Pushes the traverser through rarely-played opponent bids so the advantage
+    /// net actually practices responding to them instead of staying at the naive
+    /// prior at those infosets.
+    pub explore_eps: f64,
     pub threads: usize,
     pub outdir: String,
     pub seed: u64,
@@ -122,6 +128,7 @@ impl Default for DeepCfrTrainConfig {
             lr: 0.01,
             momentum: 0.9,
             l2: 1e-4,
+            explore_eps: 0.5,
             threads: 18,
             outdir: "runs/ld_deepcfr".into(),
             seed: 0xD1CE_DEEC,
@@ -281,6 +288,7 @@ fn engine_config(cfg: &DeepCfrTrainConfig, collect_root_value: bool) -> DeepCfrC
         seed: cfg.seed,
         adv_nets: 1,
         collect_root_value,
+        explore_eps: cfg.explore_eps,
     }
 }
 
