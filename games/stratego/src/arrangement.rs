@@ -203,6 +203,7 @@ pub fn board_from_arrangements(red: &Arrangement, blue: &Arrangement) -> Board {
             continue;
         }
         board.pieces[j] = Piece::new(kind, Color::Red, j as u8);
+        board.zero_types[0][j] = kind as u8;
         num_hidden[0][kind as usize] += 1;
         unmoved[0] += 1;
     }
@@ -212,6 +213,7 @@ pub fn board_from_arrangements(red: &Arrangement, blue: &Arrangement) -> Board {
         }
         let cell = 99 - j;
         board.pieces[cell] = Piece::new(kind, Color::Blue, j as u8);
+        board.zero_types[1][j] = kind as u8;
         num_hidden[1][kind as usize] += 1;
         unmoved[1] += 1;
     }

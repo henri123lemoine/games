@@ -134,8 +134,8 @@ pub struct DeathStatus {
 }
 
 /// One board square's occupant. The seven 16-bit per-type bitset groups back
-/// the threat/protection feature channels; their geometry update is deferred to
-/// milestone 2 (the fields exist and clone, but stay zero for now).
+/// the threat/protection feature channels; each bit `t` records piece type `t`
+/// (`HIDDEN_PIECE = 15` for an unknown opponent), maintained by `rules::apply`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Piece {
     pub kind: PieceType,
@@ -144,9 +144,6 @@ pub struct Piece {
     pub has_moved: bool,
     /// Starting-square identity in `[0, 39]`, or `0xff` for empty/lake.
     pub piece_id: u8,
-    // TODO(m2): the bitsets below are indexed by piece type (`field[t/8] bit
-    // t%8`). Their update geometry (the `UPDATE_*` macros in action_kernels.cu)
-    // backs the NN's threat/protection planes and is not needed by the rules.
     pub threatened: u16,
     pub evaded: u16,
     pub actively_adjacent: u16,
@@ -193,6 +190,32 @@ impl Piece {
     pub fn is_empty(&self) -> bool {
         self.kind == PieceType::Empty
     }
+
+    /// The type bit the threat/protection trackers key on: the true type when
+    /// visible, else [`HIDDEN_PIECE`]. Mirrors `piece.visible ? piece.type :
+    /// HIDDEN_PIECE` throughout `action_kernels.cu`.
+    #[inline]
+    pub fn tracked_type(&self) -> u8 {
+        if self.visible {
+            self.kind as u8
+        } else {
+            HIDDEN_PIECE
+        }
+    }
+}
+
+/// Reads one type bit from a 16-bit per-type bitset (`field[t/8] & (1<<(t%8))`).
+#[inline]
+pub fn bitset_get(field: u16, t: u8) -> bool {
+    field & (1 << t) != 0
+}
+
+/// Sets one type bit in a 16-bit per-type bitset. The reference stores these as
+/// two bytes indexed `field[t/8] |= 1<<(t%8)`; packed into a `u16` that is the
+/// same as `field |= 1<<t` for `t in [0,16)`.
+#[inline]
+pub fn bitset_set(field: &mut u16, t: u8) {
+    *field |= 1 << t;
 }
 
 /// Whether two absolute cells are orthogonally adjacent. Mirrors the
@@ -240,6 +263,16 @@ pub struct Board {
     /// History of each piece's recent positions for the chase rule's
     /// position-reproduction check (per player, abstract oracle form).
     pub chase_oracle: [crate::chase::ChaseOracle; 2],
+    /// The starting type at each `piece_id` slot, per player, or `0xff` for an
+    /// empty home cell. This is `d_zero_boards` in the reference: the cemetery
+    /// channels read the dead piece's type from the initial arrangement, not the
+    /// (now-vacated) board square.
+    pub zero_types: [[u8; HOME_CELLS]; 2],
+    /// The 1800-slot action index of every move played so far, in the *acting
+    /// player's* POV encoding (exactly the integer the reference stores in
+    /// `d_action_history`). The encoder reconstructs the src/dst history planes
+    /// from the tail of this buffer.
+    pub action_history: Vec<u16>,
 }
 
 /// The 6-byte per-move record (`action_kernels.cu:159-164`), enough for the
@@ -288,6 +321,8 @@ impl Board {
             chase: [crate::chase::ChaseState::default(); 2],
             twosquare: [crate::twosquare::TwosquareState::default(); 2],
             chase_oracle: Default::default(),
+            zero_types: [[0xff; HOME_CELLS]; 2],
+            action_history: Vec::new(),
         }
     }
 

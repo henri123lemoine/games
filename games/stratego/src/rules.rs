@@ -8,7 +8,7 @@
 use crate::action::{Action, NUM_ACTIONS};
 use crate::board::{
     Board, Color, DeathReason, DeathStatus, HIDDEN_PIECE, MoveSummary, NO_ATTACK_DST_CODE, Piece,
-    PieceType,
+    PieceType, bitset_set, is_adjacent,
 };
 
 /// Final-run termination limits (`rl_main.py:50-52`).
@@ -189,12 +189,13 @@ pub struct Applied {
 }
 
 /// Applies `action` for `player` to `board`, resolving any battle and updating
-/// all counters, visibility, death bookkeeping, and the restriction machines.
-/// Mirrors `ApplyActionsKernel` (rules-relevant parts; the threat/protection
-/// bitset geometry is deferred — see `TODO(m2)`).
+/// all counters, visibility, death bookkeeping, the restriction machines, and
+/// the threat/evade/active-adjacency/protection bitsets that feed the encoder.
+/// A faithful port of `ApplyActionsKernel` (`action_kernels.cu`).
 pub fn apply(board: &mut Board, action: Action, player: usize) -> Applied {
     board.num_moves += 1;
     board.num_moves_since_last_attack += 1;
+    board.action_history.push(action.0);
 
     let (from_abs, to_abs) = action.to_abs(player);
     let from_pov = if player == 1 { 99 - from_abs } else { from_abs };
@@ -221,6 +222,26 @@ pub fn apply(board: &mut Board, action: Action, player: usize) -> Applied {
         dst_id: to_piece.piece_id,
     };
     let was_attack = summary.dst_code != NO_ATTACK_DST_CODE;
+
+    // The trackers below read the *previous* move's trail, captured before this
+    // move overwrites them.
+    let last_moved = board.last_moved_piece_type;
+    let prev_dst = board.prev_dst;
+    let prev_prev_dst = board.prev_prev_dst;
+
+    update_actively_adjacent(board, player, last_moved, prev_dst, prev_prev_dst);
+
+    // The act-adj pass may have flipped bits on the from/to cells; re-read.
+    from_piece = board.pieces[from_abs];
+    to_piece = board.pieces[to_abs];
+
+    if last_moved != 0xff
+        && to_abs as u8 != prev_dst
+        && prev_dst != 0xff
+        && is_adjacent(from_abs, prev_dst as usize)
+    {
+        bitset_set(&mut from_piece.evaded, last_moved);
+    }
 
     if !from_piece.has_moved && !from_piece.visible {
         board.num_hidden_unmoved[player] -= 1;
@@ -258,9 +279,9 @@ pub fn apply(board: &mut Board, action: Action, player: usize) -> Applied {
     } else {
         Battle::AttackerWins
     };
+    let to_wins = outcome == Battle::DefenderWins;
+    let tie = outcome == Battle::Tie;
 
-    let to_row = (to_abs / 10) as u8;
-    let to_col = (to_abs % 10) as u8;
     let mut flag_captured = false;
 
     let dest_after: Piece = match outcome {
@@ -330,12 +351,20 @@ pub fn apply(board: &mut Board, action: Action, player: usize) -> Applied {
                         to_abs,
                     );
                 }
+            } else {
+                // Non-attack slide onto an empty square: the moving piece now
+                // threatens every adjacent opponent. The reference writes this
+                // into `from_piece` (the about-to-land piece) before it is
+                // committed to the destination cell.
+                update_threatened(board, player, &mut from_piece, to_abs);
             }
             from_piece
         }
     };
 
     board.pieces[to_abs] = dest_after;
+
+    update_protections(board, player, from_abs, to_abs, to_wins, tie);
 
     let red_death = death_cell(Color::Red, player, &to_piece, &dest_after, to_abs);
     let blue_death = death_cell(Color::Blue, player, &to_piece, &dest_after, to_abs);
@@ -362,7 +391,6 @@ pub fn apply(board: &mut Board, action: Action, player: usize) -> Applied {
     };
     board.prev_prev_dst = board.prev_dst;
     board.prev_dst = to_abs as u8;
-    let _ = (to_row, to_col);
 
     Applied {
         summary,
@@ -370,6 +398,272 @@ pub fn apply(board: &mut Board, action: Action, player: usize) -> Applied {
         flag_captured,
         red_death,
         blue_death,
+    }
+}
+
+/// Orthogonal neighbours of an absolute cell, as `(cell, exists)` would be — we
+/// just yield the in-bounds ones.
+#[inline]
+fn neighbours(cell: usize) -> impl Iterator<Item = usize> {
+    let (r, c) = (cell / 10, cell % 10);
+    let mut out = [usize::MAX; 4];
+    let mut n = 0;
+    if r > 0 {
+        out[n] = cell - 10;
+        n += 1;
+    }
+    if r < 9 {
+        out[n] = cell + 10;
+        n += 1;
+    }
+    if c > 0 {
+        out[n] = cell - 1;
+        n += 1;
+    }
+    if c < 9 {
+        out[n] = cell + 1;
+        n += 1;
+    }
+    out.into_iter().take(n)
+}
+
+/// `actively_adjacent` update (`action_kernels.cu:169-254`), run before the move
+/// is applied. Marks pieces adjacent to the previous and previous-previous
+/// destinations as having been close to the relevant piece type during the
+/// turn.
+fn update_actively_adjacent(
+    board: &mut Board,
+    player: usize,
+    last_moved: u8,
+    prev_dst: u8,
+    prev_prev_dst: u8,
+) {
+    let own = Color::of_player(player);
+    let opp = Color::of_player(1 - player);
+
+    if last_moved != 0xff && prev_dst != 0xff {
+        for nb in neighbours(prev_dst as usize) {
+            if board.pieces[nb].color == own {
+                bitset_set(&mut board.pieces[nb].actively_adjacent, last_moved);
+            }
+        }
+    }
+
+    if prev_prev_dst != 0xff {
+        let here = prev_prev_dst as usize;
+        let center = board.pieces[here];
+        if center.color == own {
+            // Our piece survived at the previous-previous destination; record the
+            // opponent types now adjacent to it.
+            for nb in neighbours(here) {
+                let p = board.pieces[nb];
+                if p.color == opp {
+                    let pt = p.tracked_type();
+                    bitset_set(&mut board.pieces[here].actively_adjacent, pt);
+                }
+            }
+        } else if center.color == opp && center.visible {
+            // A now-revealed opponent sits there; our neighbours were actively
+            // adjacent to it.
+            let pt = center.kind as u8;
+            for nb in neighbours(here) {
+                if board.pieces[nb].color == own {
+                    bitset_set(&mut board.pieces[nb].actively_adjacent, pt);
+                }
+            }
+        }
+    }
+}
+
+/// `threatened` update for a non-attacking slide (`action_kernels.cu:420-442`):
+/// the moving piece threatens every opponent adjacent to its destination.
+fn update_threatened(board: &Board, player: usize, from_piece: &mut Piece, to_abs: usize) {
+    let opp = Color::of_player(1 - player);
+    for nb in neighbours(to_abs) {
+        let p = board.pieces[nb];
+        if p.color == opp {
+            bitset_set(&mut from_piece.threatened, p.tracked_type());
+        }
+    }
+}
+
+/// One application of the `UPDATE_PROTECT` macro (`action_kernels.cu:448-468`):
+/// if `aggressor` is an enemy, `protectee` is ours-or-empty, and `protector` is
+/// ours, record the four-way protection relationship by piece type.
+fn update_protect(
+    board: &mut Board,
+    player: usize,
+    protector: usize,
+    protectee: usize,
+    aggressor: usize,
+) {
+    let own = Color::of_player(player);
+    let opp = Color::of_player(1 - player);
+    let ag = board.pieces[aggressor];
+    let pe = board.pieces[protectee];
+    let pr = board.pieces[protector];
+    if ag.color == opp && (pe.color == own || pe.color == Color::Empty) && pr.color == own {
+        let protector_pt = pr.tracked_type();
+        let protectee_pt = pe.tracked_type();
+        let aggressor_pt = ag.tracked_type();
+        bitset_set(&mut board.pieces[protector].protected_, protectee_pt);
+        bitset_set(&mut board.pieces[protector].protected_against, aggressor_pt);
+        bitset_set(&mut board.pieces[protectee].was_protected_by, protector_pt);
+        bitset_set(
+            &mut board.pieces[protectee].was_protected_against,
+            aggressor_pt,
+        );
+    }
+}
+
+/// The five-case protection geometry (`action_kernels.cu:469-696`), run after
+/// the destination cell has been committed.
+fn update_protections(
+    board: &mut Board,
+    player: usize,
+    from_abs: usize,
+    to_abs: usize,
+    to_wins: bool,
+    tie: bool,
+) {
+    let last_moved = board.last_moved_piece_type;
+    let prev_dst = board.prev_dst;
+
+    // Case 1: the previously-moved piece is the aggressor.
+    if last_moved != 0xff && prev_dst != 0xff {
+        protect_aggressor_pattern(board, player, prev_dst as usize);
+    }
+
+    // Case 2: the moving piece is the protector (survived its move).
+    if !(to_wins || tie) {
+        protect_protector_pattern(board, player, to_abs);
+    }
+
+    // Case 3: the moving piece (or the empty square left by a tie) is protectee.
+    if !to_wins {
+        protect_protectee_pattern(board, player, to_abs);
+    }
+
+    // Case 4: protection against a newly-revealed defender that just won.
+    if to_wins {
+        protect_aggressor_pattern(board, player, to_abs);
+    }
+
+    // Case 5: the abandoned source square becomes a protectee.
+    protect_protectee_pattern(board, player, from_abs);
+}
+
+/// `UPDATE_PROTECT(center-2step, center-1step, center)` over the eight
+/// two-step / knight-shaped geometries used by cases 1 and 4 (`:474-517`).
+fn protect_aggressor_pattern(board: &mut Board, player: usize, center: usize) {
+    let row = center / 10;
+    let col = center % 10;
+    let c = center as i32;
+    let go =
+        |b: &mut Board, a: i32, m: i32| update_protect(b, player, a as usize, m as usize, center);
+
+    if row >= 2 {
+        go(board, c - 20, c - 10);
+    }
+    if row < 8 {
+        go(board, c + 20, c + 10);
+    }
+    if col >= 2 {
+        go(board, c - 2, c - 1);
+    }
+    if col < 8 {
+        go(board, c + 2, c + 1);
+    }
+    if row < 9 && col >= 1 {
+        go(board, c + 9, c - 1);
+        go(board, c + 9, c + 10);
+    }
+    if row < 9 && col < 9 {
+        go(board, c + 11, c + 1);
+        go(board, c + 11, c + 10);
+    }
+    if row > 0 && col >= 1 {
+        go(board, c - 11, c - 1);
+        go(board, c - 11, c - 10);
+    }
+    if row > 0 && col < 9 {
+        go(board, c - 9, c + 1);
+        go(board, c - 9, c - 10);
+    }
+}
+
+/// Case 2 geometry (`:520-567`): the moving piece at `dst` is the protector,
+/// shielding the cell one step away from an aggressor two steps away.
+fn protect_protector_pattern(board: &mut Board, player: usize, dst: usize) {
+    let row = dst / 10;
+    let col = dst % 10;
+    let d = dst as i32;
+    let go = |b: &mut Board, m: i32, a: i32| update_protect(b, player, dst, m as usize, a as usize);
+
+    if row >= 2 {
+        go(board, d - 10, d - 20);
+    }
+    if row < 8 {
+        go(board, d + 10, d + 20);
+    }
+    if col >= 2 {
+        go(board, d - 1, d - 2);
+    }
+    if col < 8 {
+        go(board, d + 1, d + 2);
+    }
+    if row < 9 && col >= 1 {
+        go(board, d - 1, d + 9);
+        go(board, d + 10, d + 9);
+    }
+    if row < 9 && col < 9 {
+        go(board, d + 1, d + 11);
+        go(board, d + 10, d + 11);
+    }
+    if row > 0 && col >= 1 {
+        go(board, d - 1, d - 11);
+        go(board, d - 10, d - 11);
+    }
+    if row > 0 && col < 9 {
+        go(board, d + 1, d - 9);
+        go(board, d - 10, d - 9);
+    }
+}
+
+/// Cases 3 and 5 geometry (`:568-608`, `:658-695`): the cell `center` is the
+/// protectee, flanked by a protector and an aggressor on opposite adjacent
+/// sides.
+fn protect_protectee_pattern(board: &mut Board, player: usize, center: usize) {
+    let row = center / 10;
+    let col = center % 10;
+    let c = center as i32;
+    let go = |b: &mut Board, pr: i32, ag: i32| {
+        update_protect(b, player, pr as usize, center, ag as usize)
+    };
+
+    if row < 9 && row > 0 {
+        go(board, c + 10, c - 10);
+        go(board, c - 10, c + 10);
+    }
+    if row < 9 && col > 0 {
+        go(board, c + 10, c - 1);
+        go(board, c - 1, c + 10);
+    }
+    if row < 9 && col < 9 {
+        go(board, c + 10, c + 1);
+        go(board, c + 1, c + 10);
+    }
+    if row > 0 && col > 0 {
+        go(board, c - 10, c - 1);
+        go(board, c - 1, c - 10);
+    }
+    if row > 0 && col < 9 {
+        go(board, c - 10, c + 1);
+        go(board, c + 1, c - 10);
+    }
+    if col < 9 && col > 0 {
+        go(board, c - 1, c + 1);
+        go(board, c + 1, c - 1);
     }
 }
 

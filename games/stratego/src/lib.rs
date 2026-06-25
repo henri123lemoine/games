@@ -9,12 +9,12 @@
 //! restriction/termination state machines (continuous-chasing, two-square,
 //! k-move) plus the flag-capture / wipe-out / stuck / timeout reward.
 //!
-//! Milestone 1 implements correct, tested, playable rules. Deferred to
-//! milestone 2 (fields/hooks present, marked `TODO(m2)`): the 643-channel
-//! encoder tensor and the threat/evade/protection bitset update geometry +
-//! death-reason classification that feed the neural nets.
+//! Milestone 1 implements correct, tested, playable rules; milestone 2 adds the
+//! in-step threat/evade/protection bitset geometry, the death-reason
+//! classification, and the byte-exact [`encode`] tensor that feeds the neural
+//! nets.
 //!
-//! ## Public surface for the encoder (milestone 2)
+//! ## Public surface
 //! * [`board`] — `Board`, `Piece`, `PieceType`, `Color`, `DeathStatus`,
 //!   `DeathReason`, the lake/count constants, `MoveSummary`, `is_adjacent`.
 //! * [`action`] — `Action` and the 1800-slot encode/decode (`to_abs`/`from_abs`).
@@ -22,6 +22,8 @@
 //!   `board_from_arrangements`, `is_terminal`.
 //! * [`rules`] — `defender_wins`/`resolve`/`apply`, `legal_mask`,
 //!   `has_legal_movement`, `is_terminal`, `reward_pl0`, the move limits.
+//! * [`encode`] — the 355 board + 32 history + 256 piece-id `(92, 643)` move-net
+//!   input (`EncoderConfig`, `encode_infostate`, `encode_tokens`).
 //! * [`chase`], [`twosquare`] — the restriction state machines.
 //! * [`game`] — the `Stratego` `Game`/`GameUi` impl, `State`, `Move`.
 
@@ -29,6 +31,7 @@ pub mod action;
 pub mod arrangement;
 pub mod board;
 pub mod chase;
+pub mod encode;
 pub mod game;
 pub mod rules;
 pub mod twosquare;
@@ -36,7 +39,13 @@ pub mod twosquare;
 pub use action::{Action, NUM_ACTIONS};
 pub use arrangement::{Arrangement, DeploymentState};
 pub use board::{Board, Color, DeathReason, DeathStatus, Piece, PieceType};
+pub use encode::{
+    EncoderConfig, NUM_BOARD_STATE_CHANNELS, NUM_OCCUPIABLE_CELLS, NUM_PIECE_ID, encode_infostate,
+    encode_tokens, encode_tokens_batch,
+};
 pub use game::{Move, State, Stratego};
 
+#[cfg(test)]
+mod encode_tests;
 #[cfg(test)]
 mod tests;
