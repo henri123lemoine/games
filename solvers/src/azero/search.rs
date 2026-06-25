@@ -129,10 +129,17 @@ fn proven_value0(proof: Proof, to_move: usize, max: f64) -> f64 {
         Proof::Loss => -max,
         Proof::Draw => 0.0,
     };
+    for_mover(from_mover, to_move)
+}
+
+/// Re-seats a player-0-relative value to `to_move`'s view: unchanged for player
+/// 0, negated otherwise. Its own inverse, so it also maps a mover-relative value
+/// back to player 0's.
+fn for_mover(value0: f64, to_move: usize) -> f64 {
     if to_move == 0 {
-        from_mover
+        value0
     } else {
-        -from_mover
+        -value0
     }
 }
 
@@ -305,14 +312,13 @@ impl<G: Game> Search<G> {
 
             let child = self.tree.nodes[cur].child[e];
             if child >= 0 {
-                if cfg.cycle_draws
-                    && let Some(key) = game.repetition_key(&self.tree.nodes[child as usize].state)
-                {
-                    if seen(key) || path_keys.contains(&key) {
-                        self.backup(&path, Leaf::Exact(0.0));
+                if cfg.cycle_draws {
+                    let key = game.repetition_key(&self.tree.nodes[child as usize].state);
+                    if let Some(key) = key
+                        && self.note_cycle(key, &path, &mut path_keys, seen)
+                    {
                         return None;
                     }
-                    path_keys.push(key);
                 }
                 cur = child as usize;
                 continue;
@@ -335,14 +341,13 @@ impl<G: Game> Search<G> {
                     Turn::Player(p) => break Some(p),
                 }
             };
-            if cfg.cycle_draws
-                && let Some(key) = game.repetition_key(&s)
-            {
-                if seen(key) || path_keys.contains(&key) {
-                    self.backup(&path, Leaf::Exact(0.0));
+            if cfg.cycle_draws {
+                let key = game.repetition_key(&s);
+                if let Some(key) = key
+                    && self.note_cycle(key, &path, &mut path_keys, seen)
+                {
                     return None;
                 }
-                path_keys.push(key);
             }
             let Some(to_move) = to_move else {
                 let value0 = game.returns(&s, 0);
@@ -451,17 +456,31 @@ impl<G: Game> Search<G> {
                         -f64::from(value)
                     }
                 }
-                Leaf::Exact(value0) => {
-                    if node.to_move == 0 {
-                        value0
-                    } else {
-                        -value0
-                    }
-                }
+                Leaf::Exact(value0) => for_mover(value0, node.to_move),
             };
             node.n[ei] += 1;
             node.w[ei] += v;
         }
+    }
+
+    /// Cycle-draw check for one descent step: a repetition `key` already seen
+    /// earlier in the game (`seen`) or on the current path (`path_keys`) backs a
+    /// draw up `path` and returns `true` (the descent should stop). Otherwise the
+    /// key joins the path and it returns `false`. Cycle keys are transient
+    /// (path-local), never stored on nodes.
+    fn note_cycle(
+        &mut self,
+        key: u64,
+        path: &[(usize, usize)],
+        path_keys: &mut Vec<u64>,
+        seen: &dyn Fn(u64) -> bool,
+    ) -> bool {
+        if seen(key) || path_keys.contains(&key) {
+            self.backup(path, Leaf::Exact(0.0));
+            return true;
+        }
+        path_keys.push(key);
+        false
     }
 
     /// Records a proven verdict on `node` (mover `to_move`) and pins its exact
@@ -514,11 +533,7 @@ impl<G: Game> Search<G> {
                 continue;
             };
             // Child value from M's seat: +max is a win for M.
-            let for_m = if to_move == 0 {
-                child.value0
-            } else {
-                -child.value0
-            };
+            let for_m = for_mover(child.value0, to_move);
             if for_m > 0.0 {
                 return Some((Proof::Win, e));
             } else if for_m == 0.0 {
@@ -561,11 +576,7 @@ impl<G: Game> Search<G> {
             if child.proven.is_none() {
                 continue;
             }
-            let for_m = if to_move == 0 {
-                child.value0
-            } else {
-                -child.value0
-            };
+            let for_m = for_mover(child.value0, to_move);
             if for_m > 0.0 {
                 return e; // proven win for us — take it immediately
             }
@@ -584,11 +595,7 @@ impl<G: Game> Search<G> {
             if child.proven.is_none() {
                 continue;
             }
-            let for_m = if to_move == 0 {
-                child.value0
-            } else {
-                -child.value0
-            };
+            let for_m = for_mover(child.value0, to_move);
             overrides[e] = Some(if for_m < 0.0 { -1.0 } else { 0.0 });
         }
         select_edge_solver(n, puct, forced_k, &overrides)
@@ -774,18 +781,21 @@ fn eval_request<G: Game, E: PolicyValueEncoder<G>>(
 /// their PUCT scores only break ties among themselves.
 const FORCED_PLAYOUT_BONUS: f64 = 1e9;
 
-fn select_edge<G: Game>(node: &Node<G>, (c_puct, fpu): (f32, f32), forced_k: f32) -> usize {
+/// Core PUCT selection over `node`'s edges. `q_of(i)` supplies edge `i`'s action
+/// value — the only thing that differs between plain and solver-aware selection;
+/// the U term, forced-playout floor and argmax are shared.
+fn select_scored<G: Game>(
+    node: &Node<G>,
+    c_puct: f32,
+    forced_k: f32,
+    q_of: impl Fn(usize) -> f64,
+) -> usize {
     let total = node.visits();
     let sqrt_total = f64::from(total + 1).sqrt();
-    let fpu_q = f64::from(node.value) - f64::from(fpu);
     let mut best = 0;
     let mut best_score = f64::NEG_INFINITY;
     for i in 0..node.actions.len() {
-        let q = if node.n[i] > 0 {
-            node.w[i] / f64::from(node.n[i])
-        } else {
-            fpu_q
-        };
+        let q = q_of(i);
         let u = f64::from(c_puct) * f64::from(node.prior[i]) * sqrt_total
             / (1.0 + f64::from(node.n[i]));
         let mut score = q + u;
@@ -807,6 +817,17 @@ fn select_edge<G: Game>(node: &Node<G>, (c_puct, fpu): (f32, f32), forced_k: f32
     best
 }
 
+fn select_edge<G: Game>(node: &Node<G>, (c_puct, fpu): (f32, f32), forced_k: f32) -> usize {
+    let fpu_q = f64::from(node.value) - f64::from(fpu);
+    select_scored(node, c_puct, forced_k, |i| {
+        if node.n[i] > 0 {
+            node.w[i] / f64::from(node.n[i])
+        } else {
+            fpu_q
+        }
+    })
+}
+
 /// [`select_edge`] with proof overrides: `q_override[i] = Some(q)` forces edge
 /// `i`'s action value (a proven-loss child to `-1`, a proven-draw child to `0`),
 /// otherwise PUCT's usual Q applies. Identical to [`select_edge`] when every
@@ -817,33 +838,12 @@ fn select_edge_solver<G: Game>(
     forced_k: f32,
     q_override: &[Option<f64>],
 ) -> usize {
-    let total = node.visits();
-    let sqrt_total = f64::from(total + 1).sqrt();
     let fpu_q = f64::from(node.value) - f64::from(fpu);
-    let mut best = 0;
-    let mut best_score = f64::NEG_INFINITY;
-    for (i, &override_q) in q_override.iter().enumerate() {
-        let q = match override_q {
-            Some(forced) => forced,
-            None if node.n[i] > 0 => node.w[i] / f64::from(node.n[i]),
-            None => fpu_q,
-        };
-        let u = f64::from(c_puct) * f64::from(node.prior[i]) * sqrt_total
-            / (1.0 + f64::from(node.n[i]));
-        let mut score = q + u;
-        if forced_k > 0.0 && node.n[i] >= 1 {
-            let n_forced =
-                (f64::from(forced_k) * f64::from(node.prior[i]) * f64::from(total)).sqrt();
-            if f64::from(node.n[i]) < n_forced {
-                score += FORCED_PLAYOUT_BONUS;
-            }
-        }
-        if score > best_score {
-            best_score = score;
-            best = i;
-        }
-    }
-    best
+    select_scored(node, c_puct, forced_k, |i| match q_override[i] {
+        Some(forced) => forced,
+        None if node.n[i] > 0 => node.w[i] / f64::from(node.n[i]),
+        None => fpu_q,
+    })
 }
 
 fn add_dirichlet<G: Game>(node: &mut Node<G>, cfg: &PuctConfig, rng: &mut Rng) {
