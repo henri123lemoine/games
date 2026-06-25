@@ -74,12 +74,25 @@ impl<G: GameUi + 'static> TypedMatch<G> {
         human: Option<usize>,
         seed: u64,
     ) -> Self {
+        let state = game.initial_state();
+        Self::from_state(game, state, bots, human, seed)
+    }
+
+    /// Like [`TypedMatch::new`] but starting from an explicit state instead of
+    /// the game's initial one — for games that offer a skip-the-setup start
+    /// (e.g. Stratego's `setup=random`, which begins past deployment).
+    pub fn from_state(
+        game: G,
+        state: G::State,
+        bots: Vec<Option<Box<dyn Agent<G>>>>,
+        human: Option<usize>,
+        seed: u64,
+    ) -> Self {
         assert_eq!(bots.len(), game.num_players());
         assert!(
             human.is_none_or(|h| bots[h].is_none()),
             "human seat must have no bot"
         );
-        let state = game.initial_state();
         Self {
             game,
             state,

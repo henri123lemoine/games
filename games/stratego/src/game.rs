@@ -6,7 +6,7 @@
 //! blue's 40. After both arrangements complete, the board is materialised and
 //! play alternates red (player 0) then blue.
 
-use game_core::{Game, GameUi, Turn};
+use game_core::{Game, GameUi, Rng, Turn};
 
 use crate::action::{Action, NUM_ACTIONS};
 use crate::arrangement::{Arrangement, DeploymentState, board_from_arrangements, type_to_char};
@@ -53,6 +53,39 @@ impl Stratego {
             to_play: 0,
             flag_captured: None,
         })
+    }
+
+    /// A move-phase state whose two sides are independent random *legal*
+    /// arrangements (classic supply, forced flag handedness, never a
+    /// trivially-stuck setup) — the `setup=random` start that skips the 80-square
+    /// deployment grind. The same per-square `DeploymentState` the deploy phase
+    /// drives generates each side, so a random start is reachable by the normal
+    /// deployment moves.
+    pub fn random_play_state(rng: &mut Rng) -> State {
+        let red = random_arrangement(rng);
+        let blue = random_arrangement(rng);
+        State::Play {
+            board: Box::new(board_from_arrangements(&red, &blue)),
+            to_play: 0,
+            flag_captured: None,
+        }
+    }
+}
+
+/// Draws a uniformly-random legal classic arrangement by stepping the
+/// per-square [`DeploymentState`] machine, rejecting the rare trivially-stuck
+/// layout so the resulting game is not over before it starts.
+pub fn random_arrangement(rng: &mut Rng) -> Arrangement {
+    loop {
+        let mut deploy = DeploymentState::classic(0, true);
+        while !deploy.is_complete() {
+            let types = deploy.legal_types();
+            deploy.place(types[rng.below(types.len())]);
+        }
+        let arrangement = deploy.arrangement();
+        if !arrangement.is_terminal() {
+            return arrangement;
+        }
     }
 }
 
@@ -269,6 +302,19 @@ impl GameUi for Stratego {
         }
     }
 
+    fn describe_transition(
+        &self,
+        before: &State,
+        action: Move,
+        _after: &State,
+        viewer: usize,
+    ) -> Option<String> {
+        let (State::Play { board, to_play, .. }, Move::Step(act)) = (before, action) else {
+            return None;
+        };
+        combat_narration(board, act, *to_play, viewer)
+    }
+
     fn action_label(&self, state: &State, action: Move) -> String {
         match (state, action) {
             (_, Move::Place(t)) => format!("{} ({})", type_to_char(t), type_label(t)),
@@ -300,6 +346,10 @@ impl GameUi for Stratego {
 }
 
 fn render_board(board: &Board, player: usize, to_play: usize) -> String {
+    // A spectator (no own seat, e.g. `seat=watch`) has no hidden information to
+    // protect, so it sees every rank. A seated viewer sees its own pieces and
+    // only the opponent pieces the rules have revealed; everything else is `?`.
+    let spectator = player >= 2;
     let own = Color::of_player(player);
     let mut out = String::from("    0  1  2  3  4  5  6  7  8  9\n");
     for row in (0..10).rev() {
@@ -310,9 +360,14 @@ fn render_board(board: &Board, player: usize, to_play: usize) -> String {
             let tok = match p.color {
                 Color::Empty => " . ".to_string(),
                 Color::Lake => " ~ ".to_string(),
-                c if c == own => format!("{:>2} ", piece_glyph(p.kind)),
-                _ => {
-                    if p.visible {
+                Color::Red | Color::Blue => {
+                    let mine = !spectator && p.color == own;
+                    let side = if p.color == Color::Red { 'r' } else { 'b' };
+                    if spectator {
+                        format!("{:>2}{}", piece_glyph(p.kind), side)
+                    } else if mine {
+                        format!("{:>2} ", piece_glyph(p.kind))
+                    } else if p.visible {
                         format!("{:>2}*", piece_glyph(p.kind))
                     } else {
                         " ? ".to_string()
@@ -323,13 +378,59 @@ fn render_board(board: &Board, player: usize, to_play: usize) -> String {
         }
         out.push('\n');
     }
-    out.push_str(&format!(
-        "You are player {} ({}). Player {} to move.",
-        player,
-        if player == 0 { "red" } else { "blue" },
-        to_play,
-    ));
+    if spectator {
+        out.push_str(&format!(
+            "Spectating (red lowercase r, blue b). Player {to_play} ({}) to move.",
+            if to_play == 0 { "red" } else { "blue" },
+        ));
+    } else {
+        out.push_str(&format!(
+            "You are player {} ({}); `?` = hidden enemy, `*` = revealed. Player {} to move.",
+            player,
+            if player == 0 { "red" } else { "blue" },
+            to_play,
+        ));
+    }
     out
+}
+
+/// Narrates a battle to `viewer` after the fact: a Stratego attack reveals the
+/// loser's (and any tie's) rank, which the post-state's vacated square no longer
+/// shows. Returns `None` for non-attacking slides. A spectator sees every
+/// reveal; a seated viewer is told what it now knows.
+fn combat_narration(board: &Board, act: Action, attacker: usize, viewer: usize) -> Option<String> {
+    let (from_abs, to_abs) = act.to_abs(attacker);
+    let atk = board.pieces[from_abs];
+    let def = board.pieces[to_abs];
+    if def.color == Color::Empty || def.color == Color::Lake {
+        return None;
+    }
+    let defender = 1 - attacker;
+    let outcome = crate::rules::resolve(atk.kind, def.kind);
+    let who = |seat: usize| {
+        if seat == viewer {
+            "your".to_string()
+        } else {
+            format!("the {}", if seat == 0 { "red" } else { "blue" })
+        }
+    };
+    let atk_name = format!("{} {}", who(attacker), type_label(atk.kind));
+    let def_name = format!("{} {}", who(defender), type_label(def.kind));
+    Some(match outcome {
+        crate::rules::Battle::AttackerWins => {
+            if def.kind == PieceType::Flag {
+                format!("Combat: {atk_name} captured {def_name} — the flag falls!")
+            } else {
+                format!("Combat: {atk_name} struck and removed {def_name}.")
+            }
+        }
+        crate::rules::Battle::DefenderWins => {
+            format!("Combat: {atk_name} attacked {def_name} and was lost.")
+        }
+        crate::rules::Battle::Tie => {
+            format!("Combat: {atk_name} and {def_name} traded — both removed.")
+        }
+    })
 }
 
 fn piece_glyph(t: PieceType) -> String {

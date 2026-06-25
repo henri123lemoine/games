@@ -378,6 +378,7 @@ dependencies = [
  "rayon",
  "snake",
  "solvers",
+ "stratego",
  "twentyone",
 ]
 
@@ -746,6 +747,7 @@ name = "stratego"
 version = "0.1.0"
 dependencies = [
  "game-core",
+ "rayon",
  "solvers",
 ]
 

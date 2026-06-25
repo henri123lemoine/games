@@ -21,6 +21,8 @@ use solvers::azero::{Gather, PuctConfig, Search};
 use solvers::azero::{Mlp, Puct, PuctAgent};
 use solvers::mcts::Mcts;
 use solvers::{AlphaBeta, Rollout};
+use stratego::game::Stratego;
+use stratego::{HeuristicBot, State as StrategoState};
 use twentyone::game::{Action as T21Action, T21State, TwentyOne};
 
 use crate::compare::{
@@ -574,6 +576,17 @@ const SNAKE_OPTS: &[OptSpec] = &[
     opt("seed", "...", ""),
 ];
 
+const STRATEGO_OPTS: &[OptSpec] = &[
+    opt(
+        "setup",
+        "random|manual",
+        "(random: pre-deployed; manual: place your 40 pieces)",
+    ),
+    opt("seat", "0|1|watch", "(0=red, moves first)"),
+    opt("bot", "heuristic|random", ""),
+    opt("seed", "...", ""),
+];
+
 pub fn entries() -> Vec<Entry> {
     vec![
         Entry {
@@ -753,7 +766,52 @@ pub fn entries() -> Vec<Entry> {
                 snake_bot,
             )),
         },
+        Entry {
+            id: "stratego",
+            name: "Stratego",
+            solo: false,
+            watch_bot: "",
+            summary: "Classic Stratego (hidden ranks) vs a material+belief heuristic",
+            opts: STRATEGO_OPTS,
+            make: Box::new(make_stratego),
+            eval: Some(eval_entry(
+                "heuristic | random",
+                0,
+                false,
+                |_| Ok(Stratego),
+                stratego_bot,
+            )),
+        },
     ]
+}
+
+/// Stratego play builder. `setup=random` (default) skips the 80-square
+/// deployment by starting from a random *legal* pre-deployed board; `setup=manual`
+/// begins in the deployment phase so the human places their own side square by
+/// square (the bot deploys itself through its `Agent`).
+fn make_stratego(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
+    let seat = parse_seat(o, 2)?;
+    let seed = o.get("seed", default_seed())?;
+    let setup = o.str("setup", "random");
+    let spec = BotSpec {
+        name: o.str("bot", "heuristic"),
+        opts: o.clone(),
+    };
+    let builder = stratego_bot(&spec, o)?;
+    let bots: Vec<Option<BoxedAgent<Stratego>>> = (0..2)
+        .map(|p| (Some(p) != seat).then(|| builder(hash::combine(seed, p as u64))))
+        .collect();
+    match setup.as_str() {
+        "manual" => Ok(TypedMatch::new(Stratego, bots, seat, seed).boxed()),
+        "random" => {
+            let mut rng = game_core::Rng::new(seed);
+            let state: StrategoState = Stratego::random_play_state(&mut rng);
+            Ok(TypedMatch::from_state(Stratego, state, bots, seat, seed).boxed())
+        }
+        other => Err(format!(
+            "stratego setup must be 'random' or 'manual', got '{other}'"
+        )),
+    }
 }
 
 fn liars_dice_game(o: &Opts) -> Result<LiarsDice, String> {
@@ -1420,6 +1478,16 @@ fn poker_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<Poker>, String> {
             return Err(format!(
                 "unknown poker bot '{other}' (equity|rollout|call|random)"
             ));
+        }
+    })
+}
+
+fn stratego_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<Stratego>, String> {
+    Ok(match spec.name.as_str() {
+        "heuristic" => Box::new(|_| Box::new(HeuristicBot) as BoxedAgent<Stratego>),
+        "random" => Box::new(|_| Box::new(game_core::RandomAgent) as BoxedAgent<Stratego>),
+        other => {
+            return Err(format!("unknown stratego bot '{other}' (heuristic|random)"));
         }
     })
 }

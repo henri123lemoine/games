@@ -590,6 +590,106 @@ fn infoset_key_hides_hidden_opponent_ranks() {
     );
 }
 
+// --- Hidden-information UI ---------------------------------------------------
+
+/// Two play states identical except for the *hidden* rank of a blue piece, used
+/// to probe what each viewer's render reveals.
+fn hidden_rank_pair() -> (State, State) {
+    let build = |blue_kind: PieceType| {
+        let mut board = Board::blank();
+        lone_piece(&mut board, 50, PieceType::Marshal, Color::Red, 0);
+        lone_piece(&mut board, 55, blue_kind, Color::Blue, 0);
+        State::Play {
+            board: Box::new(board),
+            to_play: 0,
+            flag_captured: None,
+        }
+    };
+    (build(PieceType::Spy), build(PieceType::General))
+}
+
+#[test]
+fn render_never_leaks_a_hidden_opponent_rank() {
+    let game = Stratego;
+    let (sa, sb) = hidden_rank_pair();
+
+    // Player 0 (red) sees blue's piece only as a face-down `?`, so the two
+    // states — which differ solely in blue's hidden rank — render identically.
+    // The two states differ *only* in blue's hidden rank, so a byte-identical
+    // render for red is proof the rank cannot leak — there is nothing else for
+    // it to differ on. The hidden blue piece shows as a face-down `?`.
+    let red_a = game.render(&sa, 0);
+    let red_b = game.render(&sb, 0);
+    assert_eq!(
+        red_a, red_b,
+        "red must not be able to read blue's hidden rank"
+    );
+    assert!(red_a.contains(" ? "), "the hidden blue piece shows as `?`");
+
+    // Blue owns the piece, so blue's own view distinguishes the two states.
+    assert_ne!(
+        game.render(&sa, 1),
+        game.render(&sb, 1),
+        "blue sees its own piece's true rank"
+    );
+
+    // A spectator (out-of-range viewer, e.g. `seat=watch`) has nothing to hide
+    // from, so it sees every rank and the two states render differently.
+    assert_ne!(
+        game.render(&sa, usize::MAX),
+        game.render(&sb, usize::MAX),
+        "a spectator sees both sides' true ranks"
+    );
+}
+
+#[test]
+fn combat_narration_reveals_the_loser_to_the_right_seat() {
+    // Red Marshal attacks a hidden Blue General and wins; the reveal (the
+    // General the post-state's vacated square no longer shows) must be narrated
+    // to red, who just learned what it destroyed.
+    let game = Stratego;
+    let mut board = Board::blank();
+    lone_piece(&mut board, 50, PieceType::Marshal, Color::Red, 0);
+    lone_piece(&mut board, 51, PieceType::General, Color::Blue, 0);
+    let before = State::Play {
+        board: Box::new(board),
+        to_play: 0,
+        flag_captured: None,
+    };
+    let action = Move::Step(Action::from_abs(50, 51, 0).unwrap());
+    let mut after = before.clone();
+    game.apply(&mut after, action);
+
+    let to_red = game
+        .describe_transition(&before, action, &after, 0)
+        .expect("an attack is narrated");
+    assert!(
+        to_red.contains("Gen"),
+        "red learns the defender was a General: {to_red}"
+    );
+    assert!(
+        to_red.contains("your"),
+        "the narration is framed from red's seat: {to_red}"
+    );
+    // A quiet (non-attacking) slide reveals nothing and is not narrated.
+    let mut quiet_board = Board::blank();
+    lone_piece(&mut quiet_board, 50, PieceType::Scout, Color::Red, 0);
+    lone_piece(&mut quiet_board, 99, PieceType::Flag, Color::Blue, 0);
+    let quiet_before = State::Play {
+        board: Box::new(quiet_board),
+        to_play: 0,
+        flag_captured: None,
+    };
+    let quiet = Move::Step(Action::from_abs(50, 51, 0).unwrap());
+    let mut quiet_after = quiet_before.clone();
+    game.apply(&mut quiet_after, quiet);
+    assert!(
+        game.describe_transition(&quiet_before, quiet, &quiet_after, 0)
+            .is_none(),
+        "a non-attacking slide has no combat to narrate"
+    );
+}
+
 // --- Random-playout invariant (through the arena) ---------------------------
 
 #[test]

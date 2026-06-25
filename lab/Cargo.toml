@@ -29,4 +29,5 @@ connect4 = { path = "../games/connect4" }
 snake = { path = "../games/snake" }
 pente = { path = "../games/pente" }
 poker = { path = "../games/poker" }
+stratego = { path = "../games/stratego" }
 nn-infer = { path = "../ml/nn-infer" }
