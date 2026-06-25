@@ -76,6 +76,12 @@ fn cell(x: usize, y: usize) -> usize {
     y * SIDE + x
 }
 
+fn offset(x: usize, y: usize, dx: i32, dy: i32) -> Option<(usize, usize)> {
+    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+    ((0..SIDE as i32).contains(&nx) && (0..SIDE as i32).contains(&ny))
+        .then_some((nx as usize, ny as usize))
+}
+
 fn step(x: usize, y: usize, dir: Dir) -> Option<(usize, usize)> {
     let (dx, dy) = match dir {
         Dir::Up => (0, -1),
@@ -83,18 +89,14 @@ fn step(x: usize, y: usize, dir: Dir) -> Option<(usize, usize)> {
         Dir::Down => (0, 1),
         Dir::Left => (-1, 0),
     };
-    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
-    ((0..SIDE as i32).contains(&nx) && (0..SIDE as i32).contains(&ny))
-        .then_some((nx as usize, ny as usize))
+    offset(x, y, dx, dy)
 }
 
 fn neighbours(x: usize, y: usize) -> impl Iterator<Item = (usize, usize)> {
     const DELTAS: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
-    DELTAS.into_iter().filter_map(move |(dx, dy)| {
-        let (nx, ny) = (x as i32 + dx, y as i32 + dy);
-        ((0..SIDE as i32).contains(&nx) && (0..SIDE as i32).contains(&ny))
-            .then_some((nx as usize, ny as usize))
-    })
+    DELTAS
+        .into_iter()
+        .filter_map(move |(dx, dy)| offset(x, y, dx, dy))
 }
 
 /// Per-cell space control for a position: which head reaches each free cell
