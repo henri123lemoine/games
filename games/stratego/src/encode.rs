@@ -160,6 +160,18 @@ pub fn piece_id_grid(board: &Board, to_play: usize) -> [usize; NUM_CELLS] {
     ids
 }
 
+pub const DEPLOY_TYPE_WIDTH: usize = 14;
+
+/// The setup-net feature vector: a `HOME_CELLS * DEPLOY_TYPE_WIDTH` one-hot of
+/// the placed-so-far piece types, unfilled slots all-zero.
+pub fn deploy_obs(current: &crate::arrangement::DeploymentState) -> Vec<f32> {
+    let mut obs = vec![0.0f32; crate::board::HOME_CELLS * DEPLOY_TYPE_WIDTH];
+    for (slot, &kind) in current.placed.iter().enumerate() {
+        obs[slot * DEPLOY_TYPE_WIDTH + kind as usize] = 1.0;
+    }
+    obs
+}
+
 fn write_board_state(board: &Board, to_play: usize, cfg: &EncoderConfig, out: &mut [f32]) {
     let for_player = color_val(to_play);
     own_piece_types(board, for_player, out);

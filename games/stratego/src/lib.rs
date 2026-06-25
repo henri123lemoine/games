@@ -30,22 +30,30 @@
 pub mod action;
 pub mod arrangement;
 pub mod board;
+pub mod buffer;
 pub mod chase;
 pub mod encode;
+pub mod evaluator;
 pub mod game;
 pub mod rules;
+pub mod sim;
 pub mod twosquare;
 
 pub use action::{Action, NUM_ACTIONS};
 pub use arrangement::{Arrangement, DeploymentState};
 pub use board::{Board, Color, DeathReason, DeathStatus, Piece, PieceType};
+pub use buffer::{EncodedView, ReplayBuffer, Snapshot, Targets, Transition};
 pub use encode::{
     EncoderConfig, NUM_BOARD_STATE_CHANNELS, NUM_OCCUPIABLE_CELLS, NUM_PIECE_ID, encode_infostate,
     encode_tokens, encode_tokens_batch,
 };
+pub use evaluator::{Decision, Evaluation, Evaluator, Phase, UniformEvaluator};
 pub use game::{Move, State, Stratego};
+pub use sim::{Arena, RunStats, Simulator};
 
 #[cfg(test)]
 mod encode_tests;
+#[cfg(test)]
+mod sim_tests;
 #[cfg(test)]
 mod tests;
