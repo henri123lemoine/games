@@ -18,7 +18,7 @@ use nn_infer::Net;
 use snake::duel::{Dir, DuelAction, MAX_HEALTH, Worm};
 use snake::encode::SnakeEncoder;
 use snake::{Duel, DuelState};
-use solvers::azero::{EvalRequest, EvalResult, Gather, PuctConfig, Search, argmax};
+use solvers::azero::{EvalRequest, Gather, PuctConfig, Search, argmax};
 use wasm_bindgen::prelude::*;
 
 use crate::eval_batch;
@@ -127,37 +127,8 @@ impl AzSnakeBot {
     /// ready. `priors` is the flat concatenation over the batch, aligned with
     /// `batch_offsets`; `values` holds one entry per request. The GPU path.
     pub fn advance(&mut self, priors: &[f32], values: &[f32]) -> Result<u32, JsError> {
-        let results = if self.batch.is_empty() {
-            if !priors.is_empty() || !values.is_empty() {
-                return Err(JsError::new("no batch outstanding, expected empty results"));
-            }
-            Vec::new()
-        } else {
-            if values.len() != self.batch.len() {
-                return Err(JsError::new(&format!(
-                    "expected {} values, got {}",
-                    self.batch.len(),
-                    values.len()
-                )));
-            }
-            let mut out = Vec::with_capacity(self.batch.len());
-            let mut off = 0usize;
-            for (req, &value) in self.batch.iter().zip(values) {
-                let k = req.support.len();
-                if off + k > priors.len() {
-                    return Err(JsError::new("priors shorter than the batch support"));
-                }
-                out.push(EvalResult {
-                    priors: priors[off..off + k].to_vec(),
-                    value,
-                });
-                off += k;
-            }
-            if off != priors.len() {
-                return Err(JsError::new("priors longer than the batch support"));
-            }
-            out
-        };
+        let results = crate::unpack_eval_results(&self.batch, priors, values)
+            .map_err(|e| JsError::new(&e))?;
         self.batch.clear();
         match self.search.advance(
             &self.game,
@@ -179,33 +150,18 @@ impl AzSnakeBot {
 
     /// Features of the pending batch, flat `[n × 18·area]` (board planes).
     pub fn batch_features(&self) -> Vec<f32> {
-        let mut out = Vec::with_capacity(self.batch.iter().map(|r| r.features.len()).sum());
-        for r in &self.batch {
-            out.extend_from_slice(&r.features);
-        }
-        out
+        crate::batch_features(&self.batch)
     }
 
     /// Legal policy indices of the pending batch, flat; `batch_offsets`
     /// delimits the per-request runs.
     pub fn batch_support(&self) -> Vec<u16> {
-        let mut out = Vec::with_capacity(self.batch.iter().map(|r| r.support.len()).sum());
-        for r in &self.batch {
-            out.extend_from_slice(&r.support);
-        }
-        out
+        crate::batch_support(&self.batch)
     }
 
     /// `n + 1` prefix offsets into `batch_support` / the flat priors.
     pub fn batch_offsets(&self) -> Vec<u32> {
-        let mut out = Vec::with_capacity(self.batch.len() + 1);
-        let mut off = 0u32;
-        out.push(0);
-        for r in &self.batch {
-            off += r.support.len() as u32;
-            out.push(off);
-        }
-        out
+        crate::batch_offsets(&self.batch)
     }
 
     /// The searched move as a heading label (`"up"`/`"right"`/`"down"`/`"left"`),
@@ -323,7 +279,7 @@ impl AzSnakeBot {
     /// total visits, for a thinking readout.
     pub fn stats(&self) -> String {
         if !self.search.has_root() {
-            return "{\"value\":0,\"sims\":0}".to_string();
+            return crate::stats_json(0.0, 0);
         }
         let sims: u32 = self.search.root_visits().iter().sum();
         let value = if sims > 0 {
@@ -331,7 +287,7 @@ impl AzSnakeBot {
         } else {
             0.0
         };
-        format!("{{\"value\":{value},\"sims\":{sims}}}")
+        crate::stats_json(value, sims)
     }
 }
 

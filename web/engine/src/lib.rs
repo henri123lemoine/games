@@ -12,6 +12,7 @@ mod mcts;
 use lab::registry::{Opts, entries};
 use lab::runner::{AnyMatch, MatchEvent};
 use serde_json::{Value, json};
+use solvers::azero::{EvalRequest, EvalResult};
 use wasm_bindgen::prelude::*;
 
 pub use az::AzChessBot;
@@ -152,16 +153,92 @@ fn ref_forward(
 /// The in-wasm CPU leaf evaluator: answers a batch of `EvalRequest`s with the
 /// generic forward, restricting and softmaxing the policy to each request's
 /// legal support. The AZ games carry no scalar side-input.
-pub(crate) fn eval_batch(
-    net: &nn_infer::Net,
-    reqs: &[solvers::azero::EvalRequest],
-) -> Vec<solvers::azero::EvalResult> {
+pub(crate) fn eval_batch(net: &nn_infer::Net, reqs: &[EvalRequest]) -> Vec<EvalResult> {
     reqs.iter()
         .map(|r| {
             let (priors, value) = net.forward_support(&r.features, &[], &r.support);
-            solvers::azero::EvalResult { priors, value }
+            EvalResult { priors, value }
         })
         .collect()
+}
+
+/// Unpacks a page-side evaluation reply for the batch parked by the previous
+/// `advance` — flat `priors` (aligned with each request's support) and one
+/// `value` per request — back into the `EvalResult`s the search resumes on.
+/// Errors mirror the wire contract: an empty batch must come with empty arrays,
+/// `values` must match the batch length, and `priors` must cover exactly the
+/// concatenated support.
+pub(crate) fn unpack_eval_results(
+    batch: &[EvalRequest],
+    priors: &[f32],
+    values: &[f32],
+) -> Result<Vec<EvalResult>, String> {
+    if batch.is_empty() {
+        if !priors.is_empty() || !values.is_empty() {
+            return Err("no batch outstanding, expected empty results".into());
+        }
+        return Ok(Vec::new());
+    }
+    if values.len() != batch.len() {
+        return Err(format!(
+            "expected {} values, got {}",
+            batch.len(),
+            values.len()
+        ));
+    }
+    let mut out = Vec::with_capacity(batch.len());
+    let mut off = 0usize;
+    for (req, &value) in batch.iter().zip(values) {
+        let k = req.support.len();
+        if off + k > priors.len() {
+            return Err("priors shorter than the batch support".into());
+        }
+        out.push(EvalResult {
+            priors: priors[off..off + k].to_vec(),
+            value,
+        });
+        off += k;
+    }
+    if off != priors.len() {
+        return Err("priors longer than the batch support".into());
+    }
+    Ok(out)
+}
+
+/// Flat concatenation of the pending batch's per-request features.
+pub(crate) fn batch_features(batch: &[EvalRequest]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(batch.iter().map(|r| r.features.len()).sum());
+    for r in batch {
+        out.extend_from_slice(&r.features);
+    }
+    out
+}
+
+/// Flat concatenation of the pending batch's legal policy indices;
+/// `batch_offsets` delimits the per-request runs.
+pub(crate) fn batch_support(batch: &[EvalRequest]) -> Vec<u16> {
+    let mut out = Vec::with_capacity(batch.iter().map(|r| r.support.len()).sum());
+    for r in batch {
+        out.extend_from_slice(&r.support);
+    }
+    out
+}
+
+/// `n + 1` prefix offsets into `batch_support` / the flat priors.
+pub(crate) fn batch_offsets(batch: &[EvalRequest]) -> Vec<u32> {
+    let mut out = Vec::with_capacity(batch.len() + 1);
+    let mut off = 0u32;
+    out.push(0);
+    for r in batch {
+        off += r.support.len() as u32;
+        out.push(off);
+    }
+    out
+}
+
+/// The `{"value":…,"sims":…}` thinking readout shared by every AZ bot.
+pub(crate) fn stats_json(value: f64, sims: u32) -> String {
+    format!("{{\"value\":{value},\"sims\":{sims}}}")
 }
 
 /// The go reference forward over `n` positions (`features` flat, each

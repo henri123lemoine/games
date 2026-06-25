@@ -14,6 +14,7 @@ use std::io::{self, Write};
 
 use lab::compare::{CompareArgs, TourneyArgs, split_specs};
 use lab::registry::{Entry, EvalEntry, Opts, entries};
+use lab::runner::MatchEvent;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -29,6 +30,13 @@ fn main() {
             );
             std::process::exit(2);
         }
+    }
+}
+
+fn print_event(e: &MatchEvent) {
+    println!("{}", e.text);
+    if let Some(d) = &e.detail {
+        println!("{d}");
     }
 }
 
@@ -162,10 +170,7 @@ fn play(game_id: &str, kvs: &[String]) {
 
     loop {
         for e in m.advance() {
-            println!("{}", e.text);
-            if let Some(d) = e.detail {
-                println!("{d}");
-            }
+            print_event(&e);
         }
         if m.is_over() {
             println!("\n=== {} ===", m.result_text());
@@ -196,10 +201,7 @@ fn play(game_id: &str, kvs: &[String]) {
             }
             match m.apply_human(&line) {
                 Ok(e) => {
-                    println!("{}", e.text);
-                    if let Some(d) = e.detail {
-                        println!("{d}");
-                    }
+                    print_event(&e);
                     break;
                 }
                 Err(e) => println!("{e}"),

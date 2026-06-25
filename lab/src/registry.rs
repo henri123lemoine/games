@@ -332,6 +332,25 @@ fn make_external_versus<G: game_core::GameUi + Sync + 'static>(
     Ok(TypedMatch::new(game, bots, seat, seed).boxed())
 }
 
+/// Builds a versus match, except that the `azero-gpu` bot is driven
+/// client-side (the page runs the in-wasm search + leaf forward and feeds the
+/// moves back through `apply_human`): that seat is left externally driven so
+/// `step()` yields to the page, like go/chess/pente/snake `azero-gpu`.
+/// `client_opts` names the options the client reads itself, so the
+/// unused-option guard accepts them.
+fn make_versus_or_gpu<G: game_core::GameUi + Sync + 'static>(
+    o: &Opts,
+    game: G,
+    default_bot: &str,
+    client_opts: &[&str],
+    parse: BotParser<G>,
+) -> Result<Box<dyn AnyMatch>, String> {
+    if o.str("bot", default_bot) == "azero-gpu" {
+        return make_external_versus(o, game, client_opts);
+    }
+    make_versus(o, game, default_bot, parse)
+}
+
 const CHESS_OPTS: &[OptSpec] = &[
     opt("seat", "0|1|watch", "(0=White)"),
     opt(
@@ -479,10 +498,7 @@ pub fn entries() -> Vec<Entry> {
             summary: "chess vs alpha-beta (perft-validated rules)",
             opts: CHESS_OPTS,
             make: Box::new(|o| {
-                if o.str("bot", "alphabeta") == "azero-gpu" {
-                    return make_external_versus(o, chess::Chess, &["sims"]);
-                }
-                make_versus(o, chess::Chess, "alphabeta", chess_bot)
+                make_versus_or_gpu(o, chess::Chess, "alphabeta", &["sims"], chess_bot)
             }),
             eval: Some(eval_entry(
                 "alphabeta[:depth=5] | alphabeta-rich[:depth=5] (rich eval) | \
@@ -609,18 +625,13 @@ pub fn entries() -> Vec<Entry> {
             summary: "Pente (custodial capture + five-in-a-row) vs alpha-beta",
             opts: PENTE_OPTS,
             make: Box::new(|o| {
-                // The GPU AlphaZero seat is driven client-side (in-wasm search +
-                // WebGPU leaf forward + the move-time VCF hybrid); leave it
-                // externally driven so step() yields to the page, like
-                // go/chess azero-gpu. The client reads size/sims/vcf-* itself.
-                if o.str("bot", "alphabeta") == "azero-gpu" {
-                    return make_external_versus(
-                        o,
-                        pente_game(o)?,
-                        &["sims", "size", "vcf-nodes", "vcf-depth"],
-                    );
-                }
-                make_versus(o, pente_game(o)?, "alphabeta", pente_bot)
+                make_versus_or_gpu(
+                    o,
+                    pente_game(o)?,
+                    "alphabeta",
+                    &["sims", "size", "vcf-nodes", "vcf-depth"],
+                    pente_bot,
+                )
             }),
             eval: Some(eval_entry(
                 "alphabeta[:depth=4] | mcts[:sims=4000] | random",
@@ -648,13 +659,7 @@ pub fn entries() -> Vec<Entry> {
             summary: "Competitive 1v1 Snake (20x20) vs AlphaZero",
             opts: SNAKE_OPTS,
             make: Box::new(|o| {
-                // The AlphaZero seat is driven client-side (in-wasm search +
-                // nn-infer forward, no GPU); leave it externally driven so
-                // step() yields to the page, like go/chess azero-gpu.
-                if o.str("bot", "mcts-eval") == "azero-gpu" {
-                    return make_external_versus(o, snake::Duel::new(), &["sims"]);
-                }
-                make_versus(o, snake::Duel::new(), "mcts-eval", snake_bot)
+                make_versus_or_gpu(o, snake::Duel::new(), "mcts-eval", &["sims"], snake_bot)
             }),
             eval: Some(eval_entry(
                 "mcts-eval[:sims=200,depth=16] | mcts[:sims=200]",
