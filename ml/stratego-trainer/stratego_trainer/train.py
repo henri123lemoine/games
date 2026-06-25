@@ -31,7 +31,6 @@ import stratego_nets as S
 import stratego_sim as sim
 
 from .config import TrainConfig
-from .eval import win_share
 from .move_loss import advantage_filter_mask, move_loss_and_stats
 from .rundir import RunDir
 from .setup_loss import PIECE_COUNTS as PIECE_COUNTS_T
@@ -403,13 +402,6 @@ def build(cfg):
     return move, setup, move_opt, setup_opt, move_ema, setup_ema
 
 
-def ema_net(template_net, ema):
-    """A net instance loaded with the EMA shadow params (for eval)."""
-    template_net.update(ema.shadow_params())
-    mx.eval(template_net.parameters())
-    return template_net
-
-
 def train(cfg: TrainConfig):
     mx.random.seed(cfg.seed)
     np.random.seed(cfg.seed)
@@ -423,13 +415,6 @@ def train(cfg: TrainConfig):
         mx.set_cache_limit(int(cfg.mlx_cache_limit_gb * 1024**3))
     run = RunDir(cfg.runs_root, cfg.run_name, cfg.work_seconds)
     move, setup, move_opt, setup_opt, move_ema, setup_ema = build(cfg)
-    # eval template nets (separate instances so loading EMA doesn't disturb the learners)
-    eval_move = S.MoveTransformer.from_config(cfg.move_net_config())
-    eval_setup = S.ArrangementTransformer.from_config(cfg.setup_net_config())
-    # frozen earlier-EMA snapshot for self-play-improvement eval (set on first eval)
-    frozen_move = S.MoveTransformer.from_config(cfg.move_net_config())
-    frozen_setup = S.ArrangementTransformer.from_config(cfg.setup_net_config())
-    have_frozen = False
 
     s = sim.BatchSim(num_envs=cfg.num_envs, move_cap=cfg.move_cap, seed=cfg.seed,
                      buffer_capacity=cfg.buffer_capacity)
@@ -529,33 +514,37 @@ def train(cfg: TrainConfig):
         # still-exploratory policy's learned preferences show through.
         do_eval = (t > 0 and t % cfg.eval_every == 0) or t == cfg.iters - 1
         if do_eval:
-            eval_envs = min(128, cfg.num_envs)
-            ws_rand = win_share(move, setup, None, None, num_envs=eval_envs,
-                                games=cfg.eval_games, move_cap=cfg.move_cap,
-                                seed=cfg.seed + 999, hero_temperature=cfg.eval_temperature)
-            rec["eval/winrate_vs_random"] = round(ws_rand, 4)
-
-            em = ema_net(eval_move, move_ema)
-            es = ema_net(eval_setup, setup_ema)
-            ema_ws_rand = win_share(em, es, None, None, num_envs=eval_envs,
-                                    games=cfg.eval_games, move_cap=cfg.move_cap,
-                                    seed=cfg.seed + 999, hero_temperature=cfg.eval_temperature)
-            rec["eval/ema_winrate_vs_random"] = round(ema_ws_rand, 4)
-
-            if have_frozen:
-                ws_self = win_share(move, setup, frozen_move, frozen_setup,
-                                    num_envs=eval_envs, games=cfg.eval_games,
-                                    move_cap=cfg.move_cap, seed=cfg.seed + 7,
-                                    hero_temperature=cfg.eval_temperature)
-                rec["eval/winrate_vs_frozen"] = round(ws_self, 4)
-            # snapshot the current WORKING policy as the next frozen reference
-            frozen_move.update(move.parameters())
-            frozen_setup.update(setup.parameters())
-            mx.eval(frozen_move.parameters(), frozen_setup.parameters())
-            have_frozen = True
-            run.maybe_save_best(ws_rand, move, move_opt, move_ema, setup, setup_opt,
-                                setup_ema, step=t)
-            mx.clear_cache()
+            # Run the eval in a SEPARATE process (its own MLX runtime). The
+            # in-process eval (win_share's heavy self-play forwards) corrupts the
+            # trainer's MLX/Metal runtime and NaNs the learner ~1 iter later —
+            # proven by a controlled eval-off-vs-on pair with byte-identical
+            # trajectories that diverge only at the eval; no in-process isolation
+            # (input snapshots, learner snapshot+restore) stops it. Checkpoint,
+            # eval out of process, read the winrate back. See eval_ckpt.py.
+            import json as _json
+            import os as _os
+            import subprocess as _sp
+            import sys as _sys
+            ck = run.save_latest(move, move_opt, move_ema, setup, setup_opt,
+                                 setup_ema, step=t)
+            _pkg_parent = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+            _env = {**_os.environ,
+                    "PYTHONPATH": _pkg_parent + _os.pathsep + _os.environ.get("PYTHONPATH", "")}
+            _proc = _sp.run(
+                [_sys.executable, "-m", "stratego_trainer.eval_ckpt", "--ckpt", ck,
+                 "--num-envs", str(min(128, cfg.num_envs)), "--games", str(cfg.eval_games),
+                 "--move-cap", str(cfg.move_cap), "--seed", str(cfg.seed + 999),
+                 "--temperature", str(cfg.eval_temperature)],
+                capture_output=True, text=True, env=_env,
+            )
+            try:
+                _res = _json.loads(_proc.stdout.strip().splitlines()[-1])
+                rec["eval/winrate_vs_random"] = round(_res["ws_rand"], 4)
+                rec["eval/ema_winrate_vs_random"] = round(_res["ema_ws_rand"], 4)
+                run.maybe_save_best(_res["ws_rand"], move, move_opt, move_ema,
+                                    setup, setup_opt, setup_ema, step=t)
+            except Exception as _exc:
+                rec["eval/error"] = f"{_exc} :: {_proc.stderr.strip()[-200:]}"
 
         run.log(rec)
         if t % 10 == 0 or "eval/winrate_vs_random" in rec or iter_bad:
@@ -613,6 +602,7 @@ def parse_args(argv=None):
     # configurable" — at smoke scale the magnet otherwise overwhelms the weaker
     # advantage signal and pins the policy at uniform, so the smoke lowers it.
     p.add_argument("--magnet-coef", type=float, default=TrainConfig.temperature_coef)
+    p.add_argument("--mlx-memory-limit-gb", type=float, default=TrainConfig.mlx_memory_limit_gb)
     return p.parse_args(argv)
 
 
@@ -633,6 +623,7 @@ def main(argv=None):
         eval_temperature=a.eval_temperature,
         temperature_coef=a.magnet_coef,
         work_seconds=a.work_seconds,
+        mlx_memory_limit_gb=a.mlx_memory_limit_gb,
     )
     train(cfg)
 
