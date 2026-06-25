@@ -225,12 +225,17 @@ impl Agent<LiarsDice> for ProbabilisticAgent {
     fn act(&self, game: &LiarsDice, state: &LdState, player: usize, rng: &mut Rng) -> usize {
         let desired = self.choose(game, state, player, rng);
         let actions = game.legal_actions(state);
-        let i = actions.iter().position(|&a| a == desired);
+        if let Some(i) = actions.iter().position(|&a| a == desired) {
+            return i;
+        }
+        // `choose` should always return a legal action; if a future edit ever
+        // breaks that, fall back to the first legal action (index 0 is always a
+        // legal index when any action exists) rather than emitting a stale index.
         debug_assert!(
-            i.is_some(),
+            false,
             "ProbabilisticAgent chose {desired:?}, not legal among {actions:?}"
         );
-        i.unwrap_or(0)
+        0
     }
 }
 

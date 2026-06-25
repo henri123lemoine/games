@@ -32,7 +32,7 @@ pub use agents::{BidConditioned, ProbConfig, ProbabilisticAgent};
 pub use features::{
     NetAgent, action_index, feature_len, legal_actions_and_support, net_policy, policy_len, support,
 };
-pub use online_solve::{OnlineSolveAgent, OnlineSolveConfig};
+pub use online_solve::{NetOnlineSolveAgent, OnlineSolveAgent, OnlineSolveConfig};
 pub use solve::{
     FitConfig, FitResult, LatticeValue, decomposed_game_value, decomposed_value_capped,
     entry_round_value, fit_capped, fit_two_player, round_exploitabilities,

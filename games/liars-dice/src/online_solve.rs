@@ -66,8 +66,9 @@
 
 use game_core::{Agent, Game, Rng};
 use solvers::Mccfr;
+use solvers::azero::{InferCache, Mlp};
 
-use crate::{ContinuationValue, LdState, LiarsDice, MAX_PLAYERS, RoundSubgame};
+use crate::{ContinuationValue, LdState, LiarsDice, MAX_PLAYERS, NetValue, RoundSubgame};
 
 /// Test-time subgame-solving agent: re-solves the live round with `Mccfr`
 /// (external-sampling MCCFR+) against a fresh continuation value `V` and plays
@@ -296,6 +297,52 @@ where
         // Sampling from a distribution over the live legal actions always yields
         // a legal index (the table read is uniform when unvisited — still legal).
         rng.pick(&probs)
+    }
+}
+
+/// The deploy online-solver: an [`OnlineSolveAgent`] whose per-move continuation
+/// is the trained value head ([`NetValue`]).
+///
+/// [`OnlineSolveAgent`] is parameterized over a continuation *factory*
+/// `Fn() -> V`, and `NetValue<'a>` borrows the net and its [`InferCache`], so the
+/// factory must hand out fresh `NetValue`s that borrow some owner. This wrapper is
+/// that owner: it holds the `Mlp` and `InferCache`, and builds the
+/// `OnlineSolveAgent` locally inside [`Agent::act`] with a closure that borrows
+/// them for the duration of the move. Building it per-call (rather than storing
+/// the agent) sidesteps a self-referential struct cleanly and costs nothing — the
+/// move's work is the MCCFR solve, not the agent construction. The continuation is
+/// built for the live game's `(players, faces)`, so one wrapper plays any config.
+pub struct NetOnlineSolveAgent {
+    net: Mlp,
+    cache: InferCache,
+    cfg: OnlineSolveConfig,
+}
+
+impl NetOnlineSolveAgent {
+    /// Wrap `net` as the online-solver's value continuation with the default
+    /// deploy budget.
+    pub fn new(net: Mlp) -> Self {
+        Self::with_config(net, OnlineSolveConfig::default())
+    }
+
+    /// Wrap `net` with an explicit solve configuration.
+    pub fn with_config(net: Mlp, cfg: OnlineSolveConfig) -> Self {
+        let cache = net.infer_cache();
+        Self { net, cache, cfg }
+    }
+
+    /// Load the value net from a serialized [`Mlp`] checkpoint.
+    pub fn from_bytes(data: &[u8]) -> std::io::Result<Self> {
+        Ok(Self::new(Mlp::from_bytes(data)?))
+    }
+}
+
+impl Agent<LiarsDice> for NetOnlineSolveAgent {
+    fn act(&self, game: &LiarsDice, state: &LdState, player: usize, rng: &mut Rng) -> usize {
+        let players = game.players;
+        let faces = game.faces;
+        let make_value = || NetValue::new(&self.net, &self.cache, players, faces);
+        OnlineSolveAgent::with_config(make_value, self.cfg).act(game, state, player, rng)
     }
 }
 

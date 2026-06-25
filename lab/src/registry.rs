@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use game_core::{Agent, Game, NoSpec, hash};
-use liars_dice::{BidConditioned, LiarsDice, ProbabilisticAgent};
+use liars_dice::{BidConditioned, LiarsDice, NetOnlineSolveAgent, ProbabilisticAgent};
 use nn_infer::Net;
 use poker::{HoleSampler, Poker, PokerBot};
 use solvers::azero::{Gather, PuctConfig, Search};
@@ -368,8 +368,14 @@ const LIARS_DICE_OPTS: &[OptSpec] = &[
     opt("players", "5", ""),
     opt("dice", "5", ""),
     opt("faces", "6", ""),
-    opt("bot", "rollout|belief|random", ""),
+    opt("bot", "rollout|belief|solve|random", ""),
     bot_opt("rollouts", "1000", "", &["rollout"]),
+    bot_opt(
+        "net",
+        "runs/ld_value/best.bin",
+        "(value net for online solving)",
+        &["solve"],
+    ),
     opt("seat", "0|..|watch", ""),
     opt("seed", "...", ""),
 ];
@@ -511,7 +517,8 @@ pub fn entries() -> Vec<Entry> {
             opts: LIARS_DICE_OPTS,
             make: Box::new(|o| make_versus(o, liars_dice_game(o)?, "rollout", liars_dice_bot)),
             eval: Some(eval_entry(
-                "rollout[:rollouts=1000] | belief | random",
+                "rollout[:rollouts=1000] | belief | \
+                 solve[:net=runs/ld_value/best.bin] | random",
                 0,
                 true,
                 liars_dice_game,
@@ -1095,10 +1102,29 @@ fn liars_dice_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<LiarsDice>, St
         "belief" => {
             Box::new(|_| Box::new(ProbabilisticAgent::default_agent()) as BoxedAgent<LiarsDice>)
         }
+        "solve" => {
+            // DeepStack-style online subgame solving against the trained value
+            // head. Load the net bytes once; each bot seat gets its own agent
+            // (with its own inference cache) parsed from the shared bytes. The
+            // continuation is rebuilt for the live game's (players, faces) on
+            // every move, so one bot plays any config.
+            let path = spec.opts.str("net", "runs/ld_value/best.bin");
+            let bytes = crate::artifacts::read(&path)?;
+            // Fail loudly at build time if the checkpoint is unreadable, rather
+            // than per-seat at the first move.
+            NetOnlineSolveAgent::from_bytes(&bytes)
+                .map_err(|e| format!("failed to load liars-dice value net '{path}': {e}"))?;
+            Box::new(move |_| {
+                Box::new(
+                    NetOnlineSolveAgent::from_bytes(&bytes)
+                        .expect("value net bytes already validated at build time"),
+                ) as BoxedAgent<LiarsDice>
+            })
+        }
         "random" => Box::new(|_| Box::new(game_core::RandomAgent) as BoxedAgent<LiarsDice>),
         other => {
             return Err(format!(
-                "unknown liars-dice bot '{other}' (rollout|belief|random)"
+                "unknown liars-dice bot '{other}' (rollout|belief|solve|random)"
             ));
         }
     })
