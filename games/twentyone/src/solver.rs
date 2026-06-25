@@ -64,6 +64,19 @@ fn fast_map<K, V>() -> FastMap<K, V> {
     FastMap::default()
 }
 
+/// Regret-matching normalization: clamp both entries to non-negative and scale
+/// them to sum to 1, falling back to the uniform `[0.5, 0.5]` when both are zero.
+fn normalize_nonneg(v: [f64; 2]) -> [f64; 2] {
+    let s0 = v[DRAW].max(0.0);
+    let s1 = v[STAND].max(0.0);
+    let sum = s0 + s1;
+    if sum > 0.0 {
+        [s0 / sum, s1 / sum]
+    } else {
+        [0.5, 0.5]
+    }
+}
+
 const STARTING_HEARTS: u8 = 6;
 const DRAW: usize = 0;
 const STAND: usize = 1;
@@ -391,26 +404,14 @@ impl Solver {
             .or_else(|| self.regret.get(&key))
             .copied()
             .unwrap_or([0.0; 2]);
-        let s0 = r[DRAW].max(0.0);
-        let s1 = r[STAND].max(0.0);
-        let sum = s0 + s1;
-        if sum > 0.0 {
-            [s0 / sum, s1 / sum]
-        } else {
-            [0.5, 0.5]
-        }
+        normalize_nonneg(r)
     }
 
     fn normalize_strategy(s: [f64; 2], can_draw: bool) -> [f64; 2] {
         if !can_draw {
             return [0.0, 1.0];
         }
-        let sum = s[DRAW] + s[STAND];
-        if sum > 0.0 {
-            [s[DRAW] / sum, s[STAND] / sum]
-        } else {
-            [0.5, 0.5]
-        }
+        normalize_nonneg(s)
     }
 
     /// Average strategy from the merged global table (used for play and the
@@ -717,14 +718,7 @@ impl Solver {
         // pending delta, so repeated visits within one traversal stay consistent.
         let base = self.regret.get(&key).copied().unwrap_or([0.0; 2]);
         let d = dr.get(&key).copied().unwrap_or([0.0; 2]);
-        let s0 = (base[DRAW] + d[DRAW]).max(0.0);
-        let s1 = (base[STAND] + d[STAND]).max(0.0);
-        let sum = s0 + s1;
-        if sum > 0.0 {
-            [s0 / sum, s1 / sum]
-        } else {
-            [0.5, 0.5]
-        }
+        normalize_nonneg([base[DRAW] + d[DRAW], base[STAND] + d[STAND]])
     }
 
     fn traverse_full(
@@ -891,23 +885,9 @@ impl Solver {
         let mask = env.deck_mask();
         let can_draw = mask != 0;
         let value = if player == ctx.br {
-            let mut stood = env.clone();
-            stood.stand().unwrap();
-            let mut best = self.within_value(&stood, ctx, within);
+            let mut best = self.within_value(&stood(env), ctx, within);
             if can_draw {
-                let mut acc = 0.0;
-                let mut m = mask;
-                while m != 0 {
-                    let c = (m.trailing_zeros() + 1) as u8;
-                    m &= m - 1;
-                    let mut drawn = env.clone();
-                    drawn.draw_specific(c).unwrap();
-                    acc += self.within_value(&drawn, ctx, within);
-                }
-                let draw_value = acc / deck_count(mask) as f64;
-                if draw_value > best {
-                    best = draw_value;
-                }
+                best = best.max(self.within_draw_value(env, mask, ctx, within));
             }
             best
         } else {
@@ -915,27 +895,37 @@ impl Solver {
             let sigma = self.average_strategy(key, can_draw);
             let mut v = 0.0;
             if sigma[STAND] > 0.0 {
-                let mut stood = env.clone();
-                stood.stand().unwrap();
-                v += sigma[STAND] * self.within_value(&stood, ctx, within);
+                v += sigma[STAND] * self.within_value(&stood(env), ctx, within);
             }
             if sigma[DRAW] > 0.0 && can_draw {
-                let mut acc = 0.0;
-                let mut m = mask;
-                while m != 0 {
-                    let c = (m.trailing_zeros() + 1) as u8;
-                    m &= m - 1;
-                    let mut drawn = env.clone();
-                    drawn.draw_specific(c).unwrap();
-                    acc += self.within_value(&drawn, ctx, within);
-                }
-                v += sigma[DRAW] * (acc / deck_count(mask) as f64);
+                v += sigma[DRAW] * self.within_draw_value(env, mask, ctx, within);
             }
             v
         };
 
         within.insert(wkey, value);
         value
+    }
+
+    /// Best-response value of drawing now, averaged exactly over every card in
+    /// `mask`, recursing through [`Self::within_value`].
+    fn within_draw_value(
+        &self,
+        env: &Env,
+        mask: u16,
+        ctx: &mut BrCtx,
+        within: &mut FastMap<u64, f64>,
+    ) -> f64 {
+        let mut acc = 0.0;
+        let mut m = mask;
+        while m != 0 {
+            let c = (m.trailing_zeros() + 1) as u8;
+            m &= m - 1;
+            let mut drawn = env.clone();
+            drawn.draw_specific(c).unwrap();
+            acc += self.within_value(&drawn, ctx, within);
+        }
+        acc / deck_count(mask) as f64
     }
 
     // ----- persistence ------------------------------------------------------

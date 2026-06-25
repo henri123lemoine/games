@@ -74,6 +74,14 @@ impl PlayerRound {
             up_len: 0,
         }
     }
+
+    fn deal(&mut self, up: u8, down: u8) {
+        self.face_up = up;
+        self.face_down = down;
+        self.total = up.saturating_add(down);
+        self.up_cards[0] = up;
+        self.up_len = 1;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -256,21 +264,12 @@ impl Env {
         };
         self.preset_round_index = self.preset_round_index.saturating_add(1);
         let mut rs = RoundState::new_with_mask_and_order(mask, order_opt);
-        // Deal: P0 face-up, P1 face-up, P0 face-down, P1 face-down
         let p0_up = self.draw_card(&mut rs)?;
         let p1_up = self.draw_card(&mut rs)?;
         let p0_dn = self.draw_card(&mut rs)?;
         let p1_dn = self.draw_card(&mut rs)?;
-        rs.players[0].face_up = p0_up;
-        rs.players[1].face_up = p1_up;
-        rs.players[0].face_down = p0_dn;
-        rs.players[1].face_down = p1_dn;
-        rs.players[0].total = p0_up.saturating_add(p0_dn);
-        rs.players[1].total = p1_up.saturating_add(p1_dn);
-        rs.players[0].up_cards[0] = p0_up;
-        rs.players[0].up_len = 1;
-        rs.players[1].up_cards[0] = p1_up;
-        rs.players[1].up_len = 1;
+        rs.players[0].deal(p0_up, p0_dn);
+        rs.players[1].deal(p1_up, p1_dn);
         self.round_state = Some(rs);
         self.current_player = 0;
         Ok(())
@@ -489,16 +488,8 @@ impl Env {
             }
             rs.deck_mask &= !bit;
         }
-        rs.players[0].face_up = cards[0];
-        rs.players[1].face_up = cards[1];
-        rs.players[0].face_down = cards[2];
-        rs.players[1].face_down = cards[3];
-        rs.players[0].total = cards[0].saturating_add(cards[2]);
-        rs.players[1].total = cards[1].saturating_add(cards[3]);
-        rs.players[0].up_cards[0] = cards[0];
-        rs.players[0].up_len = 1;
-        rs.players[1].up_cards[0] = cards[1];
-        rs.players[1].up_len = 1;
+        rs.players[0].deal(cards[0], cards[2]);
+        rs.players[1].deal(cards[1], cards[3]);
         self.round_state = Some(rs);
         self.current_player = 0;
         Ok(())
@@ -558,15 +549,7 @@ impl Env {
         let opp = 1 - player;
         let me = &rs.players[player];
         let op = &rs.players[opp];
-        let mut seen: u16 = 0;
-        for i in 0..me.up_len as usize {
-            seen |= 1 << (me.up_cards[i] as u16 - 1);
-        }
-        seen |= 1 << (me.face_down as u16 - 1);
-        for i in 0..op.up_len as usize {
-            seen |= 1 << (op.up_cards[i] as u16 - 1);
-        }
-        let unseen = (!seen) & 0x7FF;
+        let unseen = Self::unseen_mask_for(me, op);
         let round = (self.round as u64).min(63);
         (round & 0x3F)
             | ((self.hearts[player] as u64 & 0x7) << 6)
@@ -575,6 +558,19 @@ impl Env {
             | ((unseen as u64) << 19)
             | ((me.last_action_stand as u64) << 30)
             | ((op.last_action_stand as u64) << 31)
+    }
+
+    /// The 11-bit mask of cards `me` has not seen: everything except `me`'s own
+    /// up cards and face-down and `op`'s visible up cards.
+    fn unseen_mask_for(me: &PlayerRound, op: &PlayerRound) -> u16 {
+        let mut seen: u16 = 1 << (me.face_down as u16 - 1);
+        for i in 0..me.up_len as usize {
+            seen |= 1 << (me.up_cards[i] as u16 - 1);
+        }
+        for i in 0..op.up_len as usize {
+            seen |= 1 << (op.up_cards[i] as u16 - 1);
+        }
+        (!seen) & 0x7FF
     }
 
     /// A lossy abstraction of [`Env::sufficient_key`] for large variants: it keeps
@@ -597,15 +593,7 @@ impl Env {
         let opp = 1 - player;
         let me = &rs.players[player];
         let op = &rs.players[opp];
-        let mut seen: u16 = 0;
-        for i in 0..me.up_len as usize {
-            seen |= 1 << (me.up_cards[i] as u16 - 1);
-        }
-        seen |= 1 << (me.face_down as u16 - 1);
-        for i in 0..op.up_len as usize {
-            seen |= 1 << (op.up_cards[i] as u16 - 1);
-        }
-        let unseen = (!seen) & 0x7FF;
+        let unseen = Self::unseen_mask_for(me, op);
         let band =
             |lo: u32, hi: u32| ((unseen >> (lo - 1)) & ((1 << (hi - lo + 1)) - 1)).count_ones();
         let b0 = band(1, 3) as u64;
