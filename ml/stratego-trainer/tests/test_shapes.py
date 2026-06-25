@@ -2,7 +2,6 @@
 
 import mlx.core as mx
 import numpy as np
-import pytest
 from mlx.utils import tree_flatten
 
 import stratego_nets as S

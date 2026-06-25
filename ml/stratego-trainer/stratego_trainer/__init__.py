@@ -10,8 +10,30 @@ schedules. Run it:
 
 from .config import TrainConfig, power_schedule
 from .rundir import RunDir, load_checkpoint
+from .search import (
+    MarginalizedBelief,
+    SearchResult,
+    UniformBelief,
+    compute_search_policy,
+    get_weighted_uniform_policy,
+    search,
+)
+from .search_eval import search_vs_policy
 
-__all__ = ["TrainConfig", "power_schedule", "RunDir", "load_checkpoint", "train"]
+__all__ = [
+    "TrainConfig",
+    "power_schedule",
+    "RunDir",
+    "load_checkpoint",
+    "train",
+    "search",
+    "SearchResult",
+    "UniformBelief",
+    "MarginalizedBelief",
+    "compute_search_policy",
+    "get_weighted_uniform_policy",
+    "search_vs_policy",
+]
 
 
 def train(cfg):

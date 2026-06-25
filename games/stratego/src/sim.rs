@@ -171,6 +171,18 @@ impl Simulator {
         &self.cfg
     }
 
+    /// A clone of `env`'s current move-phase board and the player to act, or
+    /// `None` if the env is mid-deployment (test-time search runs in the move
+    /// phase only — the deploy phase is the setup net's domain). The clone is the
+    /// search root: the caller determinizes it per belief sample and rolls it out
+    /// via [`RolloutBatch`](crate::search::RolloutBatch).
+    pub fn move_root(&self, env: usize) -> Option<(crate::board::Board, usize)> {
+        match &self.arenas[env].state {
+            State::Play { board, to_play, .. } => Some(((**board).clone(), *to_play)),
+            State::Deploy { .. } => None,
+        }
+    }
+
     /// A fresh per-env seed, mixing the top-level RNG stream with the advancing
     /// counter so reseeds stay deterministic given the constructor `seed` and
     /// never collide with an in-flight env's stream.

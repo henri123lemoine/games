@@ -39,6 +39,7 @@ pub mod encode;
 pub mod evaluator;
 pub mod game;
 pub mod rules;
+pub mod search;
 pub mod sim;
 pub mod twosquare;
 
@@ -53,6 +54,7 @@ pub use encode::{
 };
 pub use evaluator::{Decision, Evaluation, Evaluator, Phase, UniformEvaluator};
 pub use game::{Move, State, Stratego};
+pub use search::{RolloutBatch, RolloutDecision, RootInfo, assign_hidden, marginal_posterior};
 pub use sim::{Arena, Collected, CommitResult, EnvDecision, RunStats, Simulator};
 
 #[cfg(test)]

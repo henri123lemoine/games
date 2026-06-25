@@ -30,7 +30,12 @@ use pyo3::types::PyDict;
 
 use stratego::encode::{DEPLOY_TYPE_WIDTH, NUM_OCCUPIABLE_CELLS};
 use stratego::evaluator::{Evaluation, Phase};
+use stratego::search::{
+    RolloutBatch, RolloutDecision, RootInfo, assign_hidden, marginal_posterior,
+};
 use stratego::{Collected, EncoderConfig, NUM_ACTIONS, ReplayBuffer, SetupGame, Simulator};
+
+const N_PIECE_TYPE: usize = DEPLOY_TYPE_WIDTH; // 14
 
 const N_ACTION: usize = NUM_ACTIONS; // 1800
 const DEPLOY_SLOTS: usize = stratego::board::HOME_CELLS; // 40
@@ -567,6 +572,313 @@ impl BatchSim {
         out.set_item("player", player.into_pyarray(py))?;
         Ok(out)
     }
+
+    /// Open a test-time **search root** at `env`'s current move-phase position
+    /// (§5). Returns a [`Searcher`] session pre-loaded with the cloned root board
+    /// plus the hidden-opponent inventory and the analytic posterior the belief
+    /// sampler needs. Errors if `env` is mid-deployment (search is move-phase
+    /// only). The session is independent of the live sim — driving it does not
+    /// perturb self-play.
+    fn search_root(&self, env: usize) -> PyResult<Searcher> {
+        let (board, to_play) = self.sim.move_root(env).ok_or_else(|| {
+            PyValueError::new_err("env is mid-deployment; search is move-phase only")
+        })?;
+        let info = RootInfo::from_board(&board, to_play);
+        Ok(Searcher {
+            board,
+            info,
+            cfg: *self.sim.config(),
+            rollouts: None,
+            pending: None,
+        })
+    }
+}
+
+/// A resident test-time search session over one root position. Owns the cloned
+/// root board and its hidden-opponent inventory; exposes the belief-sampling
+/// inputs (the analytic posterior + count/movability constraints) and drives the
+/// belief-determinized depth-`D` rollout batch under a Python move-net policy.
+///
+/// Search flow (`stratego_trainer/search.py`):
+/// 1. read [`root`](Searcher::root) for the legal action set + belief inputs;
+/// 2. sample `n_sample` belief assignments + a per-world root action in Python;
+/// 3. [`begin`](Searcher::begin) the rollout batch with those worlds;
+/// 4. loop [`collect`](Searcher::collect) → move-net forward →
+///    [`commit`](Searcher::commit) until [`is_done`](Searcher::is_done);
+/// 5. [`finish`](Searcher::finish) → per-world (root action, leaf value) → the
+///    MMD closed form and the final sample, in Python.
+#[pyclass]
+struct Searcher {
+    board: stratego::board::Board,
+    info: RootInfo,
+    cfg: EncoderConfig,
+    rollouts: Option<RolloutBatch>,
+    /// The decisions from the last [`collect`](Searcher::collect), kept resident
+    /// for the matching [`commit`](Searcher::commit) to gather the dense net
+    /// logits back down to each world's ragged legal set.
+    pending: Option<Vec<RolloutDecision>>,
+}
+
+#[pymethods]
+impl Searcher {
+    /// The root's search inputs:
+    /// * `to_play` `int` — the search player.
+    /// * `legal` `(1800,)` bool — the root legal-action mask.
+    /// * `n_hidden` `int` — number of hidden opponent pieces.
+    /// * `hidden_counts` `(12,)` i64 — per-type hidden-opponent supply (the
+    ///   combinatorial-uniform / count-mask budget).
+    /// * `hidden_has_moved` `(n_hidden,)` bool — movability constraint per piece.
+    /// * `hidden_pos_onehot` `(n_hidden, 100)` bool — each hidden piece's
+    ///   absolute board cell (row-major POV rank order).
+    /// * `marginal` `(n_hidden, 14)` f32 — the analytic opponent-type posterior
+    ///   per hidden piece (the MARGINALIZED_UNIFORM sampling marginals).
+    fn root<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let n_hidden = self.info.n_hidden();
+        let mut legal = Array1::<bool>::default(N_ACTION);
+        let mask = stratego::rules::legal_mask(&self.board, self.info.to_play);
+        for (i, slot) in legal.iter_mut().enumerate() {
+            *slot = mask[i];
+        }
+
+        let mut hidden_counts = Array1::<i64>::zeros(12);
+        for (t, c) in self.info.hidden_counts.iter().enumerate() {
+            hidden_counts[t] = i64::from(*c);
+        }
+        let mut has_moved = Array1::<bool>::default(n_hidden);
+        let mut pos_onehot = Array2::<bool>::default((n_hidden, 100));
+        for (i, &cell) in self.info.hidden_cells.iter().enumerate() {
+            has_moved[i] = self.info.hidden_has_moved[i];
+            pos_onehot[(i, cell)] = true;
+        }
+        let marg = marginal_posterior(&self.board, &self.info);
+        let mut marginal = Array2::<f32>::zeros((n_hidden, N_PIECE_TYPE));
+        for (i, row) in marg.iter().enumerate() {
+            for (t, &v) in row.iter().enumerate() {
+                marginal[(i, t)] = v;
+            }
+        }
+
+        let out = PyDict::new(py);
+        out.set_item("to_play", self.info.to_play)?;
+        out.set_item("legal", legal.into_pyarray(py))?;
+        out.set_item("n_hidden", n_hidden)?;
+        out.set_item("hidden_counts", hidden_counts.into_pyarray(py))?;
+        out.set_item("hidden_has_moved", has_moved.into_pyarray(py))?;
+        out.set_item("hidden_pos_onehot", pos_onehot.into_pyarray(py))?;
+        out.set_item("marginal", marginal.into_pyarray(py))?;
+        Ok(out)
+    }
+
+    /// The move-net token observation of the **true** root (the actual infostate
+    /// the acting player sees — opponent pieces stay hidden). `(92, move_feat)`
+    /// f32. This is the input for the root behavior policy `log π_bp` of the MMD
+    /// closed form (which is over the real position, not a determinization).
+    fn root_obs<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray2<f32>> {
+        let obs = stratego::encode_tokens(&self.board, self.info.to_play, &self.cfg);
+        let feat = self.cfg.num_token_features();
+        Array2::from_shape_vec((MOVE_TOKENS, feat), obs)
+            .expect("token obs shape")
+            .into_pyarray(py)
+    }
+
+    /// The ground-truth hidden opponent ranks at the root (`PieceType as u8`), in
+    /// the same row-major POV rank order as [`root`](Searcher::root)'s belief
+    /// inputs. The `belief = None` "perfect search" ablation determinizes every
+    /// world with this exact assignment.
+    fn true_hidden<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray1<u8>> {
+        let mut out = Array1::<u8>::zeros(self.info.n_hidden());
+        for (i, &cell) in self.info.hidden_cells.iter().enumerate() {
+            out[i] = self.board.pieces[cell].kind as u8;
+        }
+        out.into_pyarray(py)
+    }
+
+    /// Begin the depth-`D` rollout batch. `assignments` `(num_worlds, n_hidden)`
+    /// `uint8` are the per-world sampled opponent type assignments (one
+    /// [`PieceType`] value per hidden piece, in [`root`](Searcher::root)'s POV
+    /// rank order); `root_actions` `(num_worlds,)` `i64` is the 1800-space root
+    /// action each world is seeded with; `seed` deterministically seeds each
+    /// world's rollout RNG. `depth` must be even and ≥ 2.
+    ///
+    /// Each world clones the root, determinizes it with its assignment
+    /// ([`assign_opponent_hidden_pieces`](assign_hidden) equivalent), and applies
+    /// the seeded root action; the batch is then ready for
+    /// [`collect`](Searcher::collect).
+    #[pyo3(signature = (assignments, root_actions, depth, seed))]
+    fn begin(
+        &mut self,
+        assignments: PyReadonlyArray2<'_, u8>,
+        root_actions: PyReadonlyArray1<'_, i64>,
+        depth: usize,
+        seed: u64,
+    ) -> PyResult<()> {
+        let a = assignments.as_array();
+        let acts = root_actions.as_array();
+        let n_hidden = self.info.n_hidden();
+        let num_worlds = a.shape()[0];
+        if a.shape()[1] != n_hidden {
+            return Err(PyValueError::new_err(format!(
+                "assignments: expected (num_worlds, {n_hidden}), got {:?}",
+                a.shape()
+            )));
+        }
+        check_len("root_actions", acts.len(), num_worlds)?;
+        if depth < 2 || !depth.is_multiple_of(2) {
+            return Err(PyValueError::new_err("depth must be even and ≥ 2"));
+        }
+
+        let roots: Vec<(stratego::board::Board, u16, u64)> = (0..num_worlds)
+            .map(|w| {
+                let assignment: Vec<u8> = (0..n_hidden).map(|i| a[(w, i)]).collect();
+                let board = assign_hidden(&self.board, &self.info, &assignment);
+                let root_action = acts[w] as u16;
+                let world_seed = seed
+                    .wrapping_mul(0x9e3779b97f4a7c15)
+                    .wrapping_add(w as u64)
+                    .wrapping_add(1);
+                (board, root_action, world_seed)
+            })
+            .collect();
+
+        self.rollouts = Some(RolloutBatch::new(
+            &roots,
+            self.info.to_play,
+            depth,
+            self.cfg,
+        ));
+        Ok(())
+    }
+
+    /// Whether every rollout forward (the `depth - 1` move forwards plus the leaf
+    /// forward) has been committed.
+    fn is_done(&self) -> PyResult<bool> {
+        Ok(self
+            .rollouts
+            .as_ref()
+            .ok_or_else(|| PyValueError::new_err("begin() not called"))?
+            .is_done())
+    }
+
+    /// Encode every live rollout world's move decision for one batched move-net
+    /// forward. Returns a dict:
+    /// * `obs` `(num_worlds, 92, move_feat)` f32 — the move-net token input.
+    /// * `legal` `(num_worlds, 1800)` bool — per-world legal mask.
+    /// * `player` `(num_worlds,)` i64 — acting player.
+    /// * `live` `(num_worlds,)` bool — whether this row is a real decision (a
+    ///   terminal world yields an inert all-false row the commit pass skips).
+    ///
+    /// On the leaf forward every live row is the search player's leaf position;
+    /// the net's value head supplies the bootstrap.
+    fn collect<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let batch = self
+            .rollouts
+            .as_ref()
+            .ok_or_else(|| PyValueError::new_err("begin() not called"))?;
+        let decisions = batch.collect();
+        let n = decisions.len();
+        let feat = self.cfg.num_token_features();
+
+        let mut obs = Array3::<f32>::zeros((n, MOVE_TOKENS, feat));
+        let mut legal = Array2::<bool>::default((n, N_ACTION));
+        let mut player = Array1::<i64>::zeros(n);
+        let mut live = Array1::<bool>::default(n);
+        for (row, d) in decisions.iter().enumerate() {
+            player[row] = d.player as i64;
+            live[row] = d.live;
+            if !d.live {
+                continue;
+            }
+            obs.slice_mut(numpy::ndarray::s![row, .., ..])
+                .as_slice_mut()
+                .expect("contiguous row")
+                .copy_from_slice(&d.obs);
+            for &a in &d.legal {
+                legal[(row, a as usize)] = true;
+            }
+        }
+
+        // Stash the decisions for the matching commit (the legal sets gather the
+        // dense net logits back down to each world's ragged option list).
+        self.pending = Some(decisions);
+
+        let out = PyDict::new(py);
+        out.set_item("obs", obs.into_pyarray(py))?;
+        out.set_item("legal", legal.into_pyarray(py))?;
+        out.set_item("player", player.into_pyarray(py))?;
+        out.set_item("live", live.into_pyarray(py))?;
+        Ok(out)
+    }
+
+    /// Apply one move-net forward to the live rollout worlds. `logits`
+    /// `(num_worlds, 1800)` f32 are the move-net action logits (illegal slots
+    /// ignored — the legal mask selects); `values` `(num_worlds,)` f32 are the
+    /// scalar value-head outputs (search-player POV `softmax(W/L/D) @ [-1,0,1]`).
+    /// Each live world softmax-samples a legal move and advances (or, on the leaf
+    /// forward, only latches the bootstrap value). Pair with the last
+    /// [`collect`](Searcher::collect).
+    fn commit(
+        &mut self,
+        logits: PyReadonlyArray2<'_, f32>,
+        values: PyReadonlyArray1<'_, f32>,
+    ) -> PyResult<()> {
+        let decisions = self
+            .pending
+            .take()
+            .ok_or_else(|| PyValueError::new_err("commit() called before collect()"))?;
+        let batch = self
+            .rollouts
+            .as_mut()
+            .ok_or_else(|| PyValueError::new_err("begin() not called"))?;
+
+        let lg = logits.as_array();
+        let vals = values.as_array();
+        check_shape("logits", lg.shape(), &[decisions.len(), N_ACTION])?;
+        check_len("values", vals.len(), decisions.len())?;
+
+        let evals: Vec<Evaluation> = decisions
+            .iter()
+            .enumerate()
+            .map(|(row, d)| {
+                let logits = if d.live {
+                    let r = lg.row(row);
+                    d.legal.iter().map(|&a| r[a as usize]).collect()
+                } else {
+                    Vec::new()
+                };
+                Evaluation {
+                    logits,
+                    value: vals[row],
+                }
+            })
+            .collect();
+
+        batch.commit(&decisions, &evals);
+        Ok(())
+    }
+
+    /// The completed rollout's per-world `(root_action, leaf_value)`. Returns a
+    /// dict: `root_action` `(num_worlds,)` i64 and `leaf` `(num_worlds,)` f32 —
+    /// each world's λ-return leaf value (terminal reward or value-head bootstrap)
+    /// in the search player's POV. Feed these to the per-action scatter +
+    /// scalar_q + MMD closed form (in Python).
+    fn finish<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let batch = self
+            .rollouts
+            .as_ref()
+            .ok_or_else(|| PyValueError::new_err("begin() not called"))?;
+        let leaves = batch.finish();
+        let n = leaves.len();
+        let mut root_action = Array1::<i64>::zeros(n);
+        let mut leaf = Array1::<f32>::zeros(n);
+        for (i, (a, v)) in leaves.iter().enumerate() {
+            root_action[i] = i64::from(*a);
+            leaf[i] = *v;
+        }
+        let out = PyDict::new(py);
+        out.set_item("root_action", root_action.into_pyarray(py))?;
+        out.set_item("leaf", leaf.into_pyarray(py))?;
+        Ok(out)
+    }
 }
 
 fn check_shape(name: &str, got: &[usize], want: &[usize]) -> PyResult<()> {
@@ -633,11 +945,13 @@ fn last_move_obs<'py>(
 #[pymodule]
 fn stratego_sim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BatchSim>()?;
+    m.add_class::<Searcher>()?;
     m.add_function(wrap_pyfunction!(encode_view_obs, m)?)?;
     m.add_function(wrap_pyfunction!(last_move_obs, m)?)?;
     m.add("N_ACTION", N_ACTION)?;
     m.add("DEPLOY_SLOTS", DEPLOY_SLOTS)?;
     m.add("DEPLOY_WIDTH", DEPLOY_WIDTH)?;
     m.add("MOVE_TOKENS", MOVE_TOKENS)?;
+    m.add("N_PIECE_TYPE", N_PIECE_TYPE)?;
     Ok(())
 }
