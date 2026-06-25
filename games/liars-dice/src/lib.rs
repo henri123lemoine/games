@@ -23,6 +23,7 @@ use game_core::{Game, Turn};
 mod agents;
 pub mod deepcfr;
 pub mod features;
+pub mod net_search;
 pub mod online_solve;
 mod solve;
 mod subgame;
@@ -32,6 +33,7 @@ pub use agents::{BidConditioned, ProbConfig, ProbabilisticAgent};
 pub use features::{
     NetAgent, action_index, feature_len, legal_actions_and_support, net_policy, policy_len, support,
 };
+pub use net_search::NetTruncRollout;
 pub use online_solve::{NetOnlineSolveAgent, OnlineSolveAgent, OnlineSolveConfig};
 pub use solve::{
     FitConfig, FitResult, LatticeValue, decomposed_game_value, decomposed_value_capped,
