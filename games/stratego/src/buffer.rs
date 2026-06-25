@@ -146,6 +146,12 @@ impl ReplayBuffer {
         &self.cfg
     }
 
+    /// The number of transitions ever recorded for `env` (the next write lands at
+    /// `head % capacity`; the most recent resident is at `(head - 1) % capacity`).
+    pub fn head(&self, env: usize) -> usize {
+        self.heads[env]
+    }
+
     /// Total transitions currently resident (capped at `num_envs * capacity`).
     pub fn len(&self) -> usize {
         self.counts.iter().map(|&c| c.min(self.capacity)).sum()

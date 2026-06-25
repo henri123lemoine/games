@@ -2,14 +2,23 @@
 //! Stratego games (serialized deployment then the move phase), terminating and
 //! auto-resetting independently so the batch stays desynced for phase coverage.
 //!
-//! One decision step is: (1) snapshot every live env's decision state and encode
-//! the batch via [`encode_tokens`](crate::encode::encode_tokens); (2) call the
-//! [`Evaluator`] **once** for the whole batch (the single point a real GPU
-//! forward runs — one-GPU-thread discipline); (3) sample an action per env from
-//! the returned logits; (4) apply, record into the [`ReplayBuffer`], and reset
-//! any env that just terminated. The collector owns the per-env arenas and runs
-//! the encode + apply work over a `rayon` par-iter; the evaluator call is the
-//! one serial batched boundary.
+//! ## collect / commit core
+//! One decision step is two halves with the neural-net forward in between:
+//! 1. [`Simulator::collect`] resets any already-terminal env (so the batch is all
+//!    live decisions), then snapshots and encodes every env's decision state into
+//!    a [`Collected`] batch — the per-env obs, legal set, phase, and player.
+//! 2. The caller runs the evaluator/net **once** over that batch (the single
+//!    point a real GPU forward runs — one-GPU-thread discipline).
+//! 3. [`Simulator::commit`] takes the per-env [`Evaluation`]s, softmax-samples a
+//!    legal action per env, applies it, records the transition into the
+//!    [`ReplayBuffer`], and auto-resets any env that just terminated.
+//!
+//! [`Simulator::step`] is the in-process wrapper: `collect` → one
+//! `Evaluator::evaluate_batch` → `commit`. The Python bridge (`ml/stratego-py`)
+//! calls `collect` and `commit` directly with an MLX net in between, reusing the
+//! same core — there is no second code path. The collector owns the per-env
+//! arenas; the encode and the sample/apply work each run over a `rayon`
+//! par-iter, with the evaluator call the one serial batched boundary.
 
 use game_core::rand::pick_weighted;
 use game_core::{Game, Rng};
@@ -18,7 +27,7 @@ use rayon::prelude::*;
 use crate::board::PieceType;
 use crate::buffer::{ReplayBuffer, Snapshot, Transition};
 use crate::encode::{EncoderConfig, encode_tokens};
-use crate::evaluator::{Decision, Evaluator, Phase};
+use crate::evaluator::{Decision, Evaluation, Evaluator, Phase};
 use crate::game::{Move, State, Stratego};
 
 /// Distinct per-env seeds are derived from a counter advanced by this odd
@@ -65,13 +74,52 @@ impl RunStats {
     }
 }
 
+/// The result of one [`Simulator::commit`]: aggregate stats plus the per-env
+/// completion signal the caller's loop keys on. `completed[env]` is
+/// `Some(player0_reward)` exactly when this step finished `env`'s game (and the
+/// env was auto-reset), `None` otherwise — the env's terminal flag and reward,
+/// in env order.
+#[derive(Debug, Clone, Default)]
+pub struct CommitResult {
+    pub stats: RunStats,
+    pub completed: Vec<Option<f64>>,
+}
+
 /// The decision inputs encoded from one env, owning the buffers the batched
 /// [`Decision`] slices borrow.
-struct EnvDecision {
-    obs: Vec<f32>,
-    legal: Vec<u16>,
-    phase: Phase,
-    player: usize,
+pub struct EnvDecision {
+    pub obs: Vec<f32>,
+    pub legal: Vec<u16>,
+    pub phase: Phase,
+    pub player: usize,
+}
+
+/// A whole batch of per-env decisions, produced by [`Simulator::collect`] and
+/// consumed by [`Simulator::commit`]. One [`EnvDecision`] per env, in env order;
+/// the evaluator runs once over [`Collected::requests`].
+pub struct Collected {
+    decisions: Vec<EnvDecision>,
+}
+
+impl Collected {
+    /// The per-env decisions, in env order.
+    pub fn decisions(&self) -> &[EnvDecision] {
+        &self.decisions
+    }
+
+    /// Borrowed [`Decision`] views over every env, parallel to the arenas — the
+    /// argument to one [`Evaluator::evaluate_batch`] call.
+    pub fn requests(&self) -> Vec<Decision<'_>> {
+        self.decisions
+            .iter()
+            .map(|d| Decision {
+                phase: d.phase,
+                obs: &d.obs,
+                legal: &d.legal,
+                player: d.player,
+            })
+            .collect()
+    }
 }
 
 /// Everything the serial commit pass needs for one env after sampling and
@@ -119,6 +167,10 @@ impl Simulator {
         self.arenas.len()
     }
 
+    pub fn config(&self) -> &EncoderConfig {
+        &self.cfg
+    }
+
     /// A fresh per-env seed, mixing the top-level RNG stream with the advancing
     /// counter so reseeds stay deterministic given the constructor `seed` and
     /// never collide with an in-flight env's stream.
@@ -128,20 +180,25 @@ impl Simulator {
         s
     }
 
-    /// Advances every live env by one decision: batch-encode, one batched
-    /// evaluator call, sample, apply, record into `buffer`, auto-reset
-    /// terminals. Returns the per-call stats delta.
-    pub fn step(&mut self, eval: &dyn Evaluator, buffer: &mut ReplayBuffer) -> RunStats {
+    /// Resets `env` to a fresh game with the next deterministic seed.
+    fn reset_env(&mut self, env: usize) {
         let game = Stratego;
+        let env_seed = self.next_seed();
+        self.arenas[env].state = game.initial_state();
+        self.arenas[env].rng = Rng::new(env_seed);
+        self.arenas[env].plies = 0;
+    }
 
-        // Any env already terminal at the top of the step is reset first so the
-        // batch is all live decisions. Resets are serial to keep seeds ordered.
+    /// First half of a decision step: reset any already-terminal env so the batch
+    /// is all live decisions, then batch-encode every env into a [`Collected`]
+    /// batch for one evaluator/net forward. Resets are serial to keep seeds
+    /// ordered. Pair with [`commit`](Simulator::commit), passing the evaluations
+    /// in env order.
+    pub fn collect(&mut self) -> Collected {
+        let game = Stratego;
         for env in 0..self.arenas.len() {
             if game.is_terminal(&self.arenas[env].state) {
-                let env_seed = self.next_seed();
-                self.arenas[env].state = game.initial_state();
-                self.arenas[env].rng = Rng::new(env_seed);
-                self.arenas[env].plies = 0;
+                self.reset_env(env);
             }
         }
 
@@ -151,48 +208,62 @@ impl Simulator {
             .par_iter()
             .map(|arena| encode_decision(arena, cfg))
             .collect();
+        Collected { decisions }
+    }
 
-        let requests: Vec<Decision> = decisions
-            .iter()
-            .map(|d| Decision {
-                phase: d.phase,
-                obs: &d.obs,
-                legal: &d.legal,
-                player: d.player,
-            })
-            .collect();
-        let evals = eval.evaluate_batch(&requests);
+    /// Second half of a decision step: take the per-env [`Evaluation`]s (in env
+    /// order, parallel to the [`Collected`] batch), softmax-sample a legal action
+    /// per env, apply it, record the transition into `buffer`, and auto-reset any
+    /// env that just terminated. Returns the per-call stats delta.
+    pub fn commit(
+        &mut self,
+        collected: &Collected,
+        evals: &[Evaluation],
+        buffer: &mut ReplayBuffer,
+    ) -> CommitResult {
+        let game = Stratego;
         assert_eq!(evals.len(), self.arenas.len(), "one evaluation per env");
 
         let move_cap = self.move_cap;
         let outcomes: Vec<EnvOutcome> = self
             .arenas
             .par_iter()
-            .zip(decisions.par_iter())
+            .zip(collected.decisions.par_iter())
             .zip(evals.par_iter())
             .map(|((arena, decision), evaluation)| {
                 sample_apply(&game, arena, decision, evaluation, move_cap)
             })
             .collect();
 
-        let mut stats = RunStats::default();
+        let mut result = CommitResult {
+            completed: vec![None; self.arenas.len()],
+            ..CommitResult::default()
+        };
         for (env, outcome) in outcomes.into_iter().enumerate() {
             buffer.record(env, outcome.transition);
-            stats.decision_steps += 1;
+            result.stats.decision_steps += 1;
             if let Some(reward_pl0) = outcome.completed {
-                stats.games_completed += 1;
-                stats.reward_pl0_sum += reward_pl0;
-                let env_seed = self.next_seed();
-                self.arenas[env].state = game.initial_state();
-                self.arenas[env].rng = Rng::new(env_seed);
-                self.arenas[env].plies = 0;
+                result.stats.games_completed += 1;
+                result.stats.reward_pl0_sum += reward_pl0;
+                result.completed[env] = Some(reward_pl0);
+                self.reset_env(env);
             } else {
                 self.arenas[env].state = outcome.next_state;
                 self.arenas[env].rng = outcome.rng;
                 self.arenas[env].plies = outcome.plies;
             }
         }
-        stats
+        result
+    }
+
+    /// Advances every live env by one decision: [`collect`](Simulator::collect),
+    /// one batched evaluator call, then [`commit`](Simulator::commit). The
+    /// in-process wrapper around the collect/commit core. Returns the per-call
+    /// stats delta.
+    pub fn step(&mut self, eval: &dyn Evaluator, buffer: &mut ReplayBuffer) -> RunStats {
+        let collected = self.collect();
+        let evals = eval.evaluate_batch(&collected.requests());
+        self.commit(&collected, &evals, buffer).stats
     }
 
     /// Runs `steps` decision steps, accumulating stats.
@@ -275,7 +346,7 @@ fn sample_apply(
     game: &Stratego,
     arena: &Arena,
     decision: &EnvDecision,
-    evaluation: &crate::evaluator::Evaluation,
+    evaluation: &Evaluation,
     move_cap: u32,
 ) -> EnvOutcome {
     let log_probs = log_softmax(&evaluation.logits);
@@ -585,5 +656,49 @@ mod tests {
             6,
             "each step contributes exactly one evaluate_batch call"
         );
+    }
+
+    /// The collect/commit core composed by hand reproduces `step` exactly: the
+    /// Python bridge drives the sim this way, so the split must be transparent.
+    #[test]
+    fn collect_commit_matches_step() {
+        let num_envs = 6;
+        let eval = UniformEvaluator;
+
+        let mut sim_a = Simulator::new(num_envs, EncoderConfig::default(), 4242, 4000);
+        let mut buf_a = buffer(num_envs);
+        let mut sim_b = Simulator::new(num_envs, EncoderConfig::default(), 4242, 4000);
+        let mut buf_b = buffer(num_envs);
+
+        for _ in 0..300 {
+            let stats_a = sim_a.step(&eval, &mut buf_a);
+
+            let collected = sim_b.collect();
+            let evals = eval.evaluate_batch(&collected.requests());
+            let result = sim_b.commit(&collected, &evals, &mut buf_b);
+
+            assert_eq!(
+                stats_a, result.stats,
+                "collect/commit stats diverged from step"
+            );
+            let completed = result.completed.iter().filter(|c| c.is_some()).count() as u64;
+            assert_eq!(
+                completed, result.stats.games_completed,
+                "per-env completed flags must match the aggregate count"
+            );
+        }
+
+        for env in 0..num_envs {
+            let actions_a: Vec<u16> = (0..buf_a.capacity())
+                .filter_map(|slot| buf_a.get(env, slot).map(|t| t.action))
+                .collect();
+            let actions_b: Vec<u16> = (0..buf_b.capacity())
+                .filter_map(|slot| buf_b.get(env, slot).map(|t| t.action))
+                .collect();
+            assert_eq!(
+                actions_a, actions_b,
+                "collect/commit env-{env} actions diverged from step"
+            );
+        }
     }
 }

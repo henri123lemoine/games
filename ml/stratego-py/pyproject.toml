@@ -1,0 +1,17 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "stratego-sim"
+version = "0.1.0"
+description = "Rust Stratego self-play simulator (pyo3 bridge) for the MLX trainer"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.24"]
+
+[tool.maturin]
+# Pure-Rust extension module `stratego_sim` (the [lib] name). The BatchSim class
+# and the schema constants are exported directly from Rust, so `import
+# stratego_sim` is the whole API — no Python wrapper package.
+module-name = "stratego_sim"
+features = ["pyo3/extension-module"]

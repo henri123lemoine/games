@@ -53,7 +53,7 @@ pub use encode::{
 };
 pub use evaluator::{Decision, Evaluation, Evaluator, Phase, UniformEvaluator};
 pub use game::{Move, State, Stratego};
-pub use sim::{Arena, RunStats, Simulator};
+pub use sim::{Arena, Collected, CommitResult, EnvDecision, RunStats, Simulator};
 
 #[cfg(test)]
 mod encode_tests;

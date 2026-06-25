@@ -1,0 +1,21 @@
+# Its own `[workspace]` (like the other `ml/*` training crates) so this pyo3
+# cdylib stays out of the root workspace and never perturbs `cargo test`.
+[workspace]
+
+[package]
+name = "stratego-py"
+version = "0.1.0"
+edition = "2024"
+description = "pyo3 bridge exposing the verified Rust Stratego self-play sim to the MLX trainer"
+publish = false
+
+[lib]
+name = "stratego_sim"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+stratego = { path = "../../games/stratego" }
+game-core = { path = "../../game-core" }
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"] }
+numpy = "0.23"
