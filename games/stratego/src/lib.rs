@@ -46,7 +46,7 @@ pub use action::{Action, NUM_ACTIONS};
 pub use arrangement::{Arrangement, DeploymentState};
 pub use board::{Board, Color, DeathReason, DeathStatus, Piece, PieceType};
 pub use bots::HeuristicBot;
-pub use buffer::{EncodedView, ReplayBuffer, Snapshot, Targets, Transition};
+pub use buffer::{EncodedView, ReplayBuffer, SetupGame, Snapshot, Targets, Transition};
 pub use encode::{
     EncoderConfig, NUM_BOARD_STATE_CHANNELS, NUM_OCCUPIABLE_CELLS, NUM_PIECE_ID, encode_infostate,
     encode_tokens, encode_tokens_batch,

@@ -90,6 +90,27 @@ pub struct Targets {
     pub advantage: f32,
 }
 
+/// One completed deployment trajectory for the co-trained setup loop (§4.2): the
+/// full 40-placement arrangement one player built, the per-slot data-policy
+/// log-probs (the PPO ratio denominator / rev-KL-to-data target), and the
+/// Monte-Carlo outcome of the game it seeded, in the *deploying player's* POV
+/// (`+1` that player won). Mirrors the reference `ArrangementBuffer.add_rewards`
+/// keying, but per-trajectory rather than deduped by combinatorial id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetupGame {
+    /// The deploying player (0 = red, 1 = blue).
+    pub player: usize,
+    /// The 40 placements in row-major home order (`PieceType as u8`), slot 0
+    /// first. The setup net consumes this as the `(40, 14)` one-hot sequence.
+    pub placements: [u8; 40],
+    /// Per-slot data-policy log-prob of the placed type (parallel to
+    /// `placements`): the log-prob the actor assigned the chosen type at that
+    /// slot when it deployed.
+    pub old_log_prob: [f32; 40],
+    /// Monte-Carlo game outcome in the deploying player's POV (`-1`, `0`, `+1`).
+    pub outcome: f32,
+}
+
 /// One re-encoded view of a stored transition: the observation the net consumes
 /// and the legal mask, recomputed from the snapshot. Used to verify the buffer
 /// round-trips and the history reconstruction matches the live encoder.

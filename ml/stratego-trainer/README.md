@@ -1,13 +1,16 @@
-# stratego-trainer (milestone 3)
+# stratego-trainer
 
-The three Ataraxos Stratego transformers in **MLX (Python)**, scaled for tabula-rasa
-training in ~1 day on the target **Apple M5 Max (64 GB, MLX 0.31.2)**. Faithful to
-`games/stratego/ATARAXOS_SPEC.md` §3-§4 and `ENCODING_SPEC.md` §0, cross-checked
-against the reference repo (`pyengine/networks/*`).
+The three Ataraxos Stratego transformers in **MLX (Python)** (`stratego_nets/`) plus
+the **self-play training loop** that drives them (`stratego_trainer/`), scaled for
+tabula-rasa training in ~1 day on the target **Apple M5 Max (64 GB, MLX 0.31.2)**.
+Faithful to `games/stratego/ATARAXOS_SPEC.md` §3-§4 and `ENCODING_SPEC.md` §0,
+cross-checked against the reference repo (`pyengine/{networks,core,arrangement}/*`).
 
-This milestone builds + unit-tests the nets against **synthetic** inputs; the live
-Rust sim wires in at a later milestone. No Rust dependencies. MLX framework choice
-is settled by `BENCHMARK.md` (MLX 1.6-2.4x faster than PyTorch-MPS for this net).
+`stratego_nets/` builds + unit-tests the nets against synthetic inputs. The training
+loop drives the verified Rust sim through the `stratego_sim` pyo3 bridge (built from
+`ml/stratego-py`), running the move-RL loop (§4.1) and the co-trained setup loop
+(§4.2) — see [Training loop](#training-loop) below. MLX framework choice is settled
+by `BENCHMARK.md` (MLX 1.6-2.4x faster than PyTorch-MPS for this net).
 
 ## Layout
 
@@ -155,3 +158,63 @@ on 64 GB, see BENCHMARK.md). Measured on the **M5 Max (64 GB)**, bf16, fwd+bwd+A
 
 Move-net b=1024 (254 ms) lands in the benchmark's predicted 190-450 ms band.
 `config.py` exposes depth/width as constants for M5 to tune.
+
+## Training loop
+
+`stratego_trainer/` is the self-play training loop (ATARAXOS_SPEC §4), driving the
+Rust sim via the `stratego_sim` bridge with the `stratego_nets` MLX nets.
+
+```bash
+# build the bridge into this venv (once):
+cd ../stratego-py && maturin develop --release
+# run the trainer:
+cd ../stratego-trainer
+python -m stratego_trainer.train --envs 1024 --iters 42000 --run-name run1
+# a short learning-proof smoke (finishes quickly):
+python -m stratego_trainer.train --envs 512 --iters 200 --collect-steps 120 \
+    --buffer-capacity 128 --move-cap 400 --eval-every 20 --eval-games 160 \
+    --run-name smoke
+```
+
+CLI flags: `--envs --iters --collect-steps --buffer-capacity --move-cap --seed
+--run-name --runs-root --save-every --eval-every --eval-games --work-seconds`.
+
+Each iteration: self-play (`BatchSim.collect` → move net on move-phase envs / setup
+net on deploy-phase envs, value head `softmax(W/L/D)@[-1,0,1]` reduced to a scalar →
+`commit`); drain the move-RL arrays (`drain_training_batch`, λ-returns/GAE sim-side)
+and completed setup trajectories (`drain_setup_batch`, 40 placements + the game's MC
+outcome); train **one** move pass (PPO-clip + `temperature(t)`·magnet-KL +
+categorical value-CE + 0.1·data-KL, top-25%-|adv| advantage filtering, dynamic-damping
+LR `clip(0.5/(t+1)^1.1,5e-6,1e-4)` and magnet coef `clip(0.05/(t+1)^0.3,0.001,0.1)`)
+and **5** setup epochs (pure-MC PPO-clip + value-CE + conditional-entropy MSE +
+0.1·data-KL); EMA-update (0.999) both nets. All hyperparameters are in `config.py`,
+keyed to the reference `RLConfig` defaults.
+
+### Run directory (`runs/<name>/`)
+
+| file | contents |
+|---|---|
+| `metrics.jsonl` | one JSON object per iter (see schema below) |
+| `latest.safetensors` | most recent working + EMA + optimizer state (move + setup) |
+| `ckpt_<step>.safetensors` | periodic snapshots (every `--save-every`) |
+| `best.safetensors` | best-by-eval EMA snapshot (keep-best) |
+| `STOP` | touch to request a clean stop at the next iter boundary |
+
+`mlx_*_limit_gb` config caps the MLX allocator (0 = off); a `--work-seconds` budget
+and the `STOP` sentinel both end the run cleanly with a final checkpoint —
+mirroring the `ml/aztrainer` rundir contract.
+
+### `metrics.jsonl` schema (per iter)
+
+`iter`, `env_steps`, `work_seconds`, `iter_seconds`, `lr`, `magnet_coef`,
+`setup_temp`, `n_terminals`, `reward_pl0_mean`; move: `move/policy_loss`,
+`move/value_loss`, `move/kl_loss`, `move/magnet_kl`, `move/entropy`, `move/loss`,
+`move/grad_norm`, `move/n_kept`, `move/n_total`; setup: `setup/policy_loss`,
+`setup/value_loss`, `setup/entropy_loss`, `setup/kl_loss`, `setup/loss`,
+`setup/grad_norm`, `setup/n_games`; eval (every `--eval-every`): `eval/winrate_vs_random`
+(live policy), `eval/ema_winrate_vs_random` (the 0.999-EMA "deployed" policy), and
+`eval/winrate_vs_frozen` (vs an earlier snapshot — self-play improvement).
+
+Eval samples the hero with a low temperature (`eval_temperature`, default 0.25) so a
+still-exploratory policy's learned preferences show through against uniform-random;
+the EMA lags the working net heavily over a short smoke but catches up on the full run.

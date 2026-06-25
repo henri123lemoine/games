@@ -30,7 +30,7 @@ use pyo3::types::PyDict;
 
 use stratego::encode::{DEPLOY_TYPE_WIDTH, NUM_OCCUPIABLE_CELLS};
 use stratego::evaluator::{Evaluation, Phase};
-use stratego::{Collected, EncoderConfig, NUM_ACTIONS, ReplayBuffer, Simulator};
+use stratego::{Collected, EncoderConfig, NUM_ACTIONS, ReplayBuffer, SetupGame, Simulator};
 
 const N_ACTION: usize = NUM_ACTIONS; // 1800
 const DEPLOY_SLOTS: usize = stratego::board::HOME_CELLS; // 40
@@ -56,6 +56,103 @@ struct Pending {
     n_deploy: usize,
 }
 
+/// One side's in-progress deployment for an env, filled placement-by-placement
+/// as deploy transitions are committed. Becomes a [`SetupGame`] once the game it
+/// seeds terminates (the MC outcome is known then) — see [`SetupAccumulator`].
+#[derive(Clone)]
+struct PartialSetup {
+    player: usize,
+    placements: Vec<u8>,
+    old_log_prob: Vec<f32>,
+}
+
+impl PartialSetup {
+    fn new(player: usize) -> Self {
+        PartialSetup {
+            player,
+            placements: Vec::with_capacity(DEPLOY_SLOTS),
+            old_log_prob: Vec::with_capacity(DEPLOY_SLOTS),
+        }
+    }
+}
+
+/// Per-env accumulator that turns the interleaved deploy/move stream into
+/// completed setup trajectories with their final-game returns (§4.2). Deploy
+/// transitions carry no outcome (a deployment is never rules-terminal), so we
+/// buffer each side's 40 placements as they happen and stamp the player-0 game
+/// outcome onto both sides the moment the seeded game terminates. This is
+/// independent of the replay ring, so it is robust to ring eviction across the
+/// long move phase. The completed games queue drains into `drain_setup_batch`.
+struct SetupAccumulator {
+    /// In-progress placements per env, in deploy order: red (player 0) fills
+    /// first, then blue (player 1). Two complete entries are pending per env at
+    /// the moment its game starts the move phase.
+    pending: Vec<Vec<PartialSetup>>,
+    completed: Vec<SetupGame>,
+}
+
+impl SetupAccumulator {
+    fn new(num_envs: usize) -> Self {
+        SetupAccumulator {
+            pending: (0..num_envs).map(|_| Vec::new()).collect(),
+            completed: Vec::new(),
+        }
+    }
+
+    /// Record one committed deploy placement for `env`.
+    fn record_deploy(&mut self, env: usize, player: usize, piece_type: u8, old_log_prob: f32) {
+        let slot = &mut self.pending[env];
+        // Start a fresh side whenever the deploying player changes (red->blue)
+        // or no side is in progress.
+        let need_new = match slot.last() {
+            None => true,
+            Some(last) => last.player != player || last.placements.len() >= DEPLOY_SLOTS,
+        };
+        if need_new {
+            slot.push(PartialSetup::new(player));
+        }
+        let side = slot.last_mut().expect("just ensured");
+        side.placements.push(piece_type);
+        side.old_log_prob.push(old_log_prob);
+    }
+
+    /// The seeded game for `env` terminated with player-0 reward `reward_pl0`.
+    /// Flush every complete (40-placement) side as a [`SetupGame`] with the
+    /// outcome in that side's POV, then clear the env's pending sides.
+    fn record_terminal(&mut self, env: usize, reward_pl0: f32) {
+        for side in self.pending[env].drain(..) {
+            if side.placements.len() != DEPLOY_SLOTS {
+                continue; // a partial side (ring-start truncation) — skip.
+            }
+            let outcome = if side.player == 0 {
+                reward_pl0
+            } else {
+                -reward_pl0
+            };
+            let mut placements = [0u8; DEPLOY_SLOTS];
+            let mut old_log_prob = [0f32; DEPLOY_SLOTS];
+            placements.copy_from_slice(&side.placements);
+            old_log_prob.copy_from_slice(&side.old_log_prob);
+            self.completed.push(SetupGame {
+                player: side.player,
+                placements,
+                old_log_prob,
+                outcome,
+            });
+        }
+    }
+
+    /// A force-reset that carried no genuine outcome (e.g. a ply cap) — discard
+    /// the env's in-progress sides so they do not attach to the next game.
+    fn discard(&mut self, env: usize) {
+        self.pending[env].clear();
+    }
+
+    fn take_completed(&mut self) -> Vec<SetupGame> {
+        std::mem::take(&mut self.completed)
+    }
+}
+
 /// The high-throughput Stratego self-play simulator, exposed to Python.
 ///
 /// `BatchSim(num_envs, move_cap, seed, history_len=32)`.
@@ -65,6 +162,7 @@ struct BatchSim {
     buffer: ReplayBuffer,
     move_feat: usize,
     pending: Option<Pending>,
+    setup: SetupAccumulator,
 }
 
 #[pymethods]
@@ -95,6 +193,7 @@ impl BatchSim {
             buffer,
             move_feat: cfg.num_token_features(),
             pending: None,
+            setup: SetupAccumulator::new(num_envs),
         })
     }
 
@@ -297,9 +396,35 @@ impl BatchSim {
         let mut terminal = Array1::<bool>::default(n_envs);
         let mut reward_pl0 = Array1::<f32>::zeros(n_envs);
         for (env, completed) in result.completed.iter().enumerate() {
+            // Feed the setup accumulator from the transition this commit just
+            // recorded for `env` (most recent ring slot). A deploy placement
+            // extends the env's in-progress side; a genuine rules-terminal move
+            // flushes both sides with the game outcome.
+            let head = self.buffer.head(env);
+            if head > 0
+                && let Some(t) = self.buffer.get(env, head - 1)
+                && t.phase == Phase::Deploy
+            {
+                let lp = t.old_log_probs.get(t.chosen).copied().unwrap_or(0.0);
+                self.setup.record_deploy(env, t.player, t.action as u8, lp);
+            }
+
             if let Some(r) = completed {
                 terminal[env] = true;
                 reward_pl0[env] = *r as f32;
+                // A genuine rules-terminal stamps the outcome onto the deploy
+                // sides; a pure ply-cap (no terminating action recorded)
+                // carries no real result and is discarded.
+                let genuine = head > 0
+                    && self
+                        .buffer
+                        .get(env, head - 1)
+                        .is_some_and(|t| t.is_terminating_action);
+                if genuine {
+                    self.setup.record_terminal(env, *r as f32);
+                } else {
+                    self.setup.discard(env);
+                }
             }
         }
 
@@ -392,6 +517,54 @@ impl BatchSim {
         out.set_item("player", player.into_pyarray(py))?;
         out.set_item("num_moves", num_moves.into_pyarray(py))?;
         out.set_item("is_terminating", is_terminating.into_pyarray(py))?;
+        Ok(out)
+    }
+
+    /// Drain completed setup (deployment) trajectories into the co-trained
+    /// setup-loop arrays (§4.2 of `ATARAXOS_SPEC.md`). Each row is one player's
+    /// full 40-placement deployment with the Monte-Carlo outcome of the game it
+    /// seeded, in that player's POV. Setup is pure MC (no λ-bootstrapping, no
+    /// filtering), so the game's terminal return is the whole value target — no
+    /// per-step processing is needed here, unlike `drain_training_batch`.
+    ///
+    /// `M` = number of completed setup trajectories since the last drain.
+    /// Returns a dict of numpy arrays, parallel along `M`:
+    /// * `seq` `(M, 40, 14) f32` — one-hot placement sequence (slot 0 first); the
+    ///   exact input the setup net consumes (a zero start token is prepended
+    ///   net-side, each slot predicting the next).
+    /// * `action` `(M, 40) i64` — the chosen `PieceType` per slot.
+    /// * `old_log_prob` `(M, 40) f32` — data-policy log-prob of each placement
+    ///   (the PPO ratio denominator / rev-KL-to-data baseline).
+    /// * `outcome` `(M,) f32` — MC game result in the deploying player's POV
+    ///   (`-1`, `0`, `+1`).
+    /// * `player` `(M,) i64` — deploying player (0 = red, 1 = blue).
+    fn drain_setup_batch<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let games = self.setup.take_completed();
+        let m = games.len();
+
+        let mut seq = Array3::<f32>::zeros((m, DEPLOY_SLOTS, DEPLOY_WIDTH));
+        let mut action = Array2::<i64>::zeros((m, DEPLOY_SLOTS));
+        let mut old_log_prob = Array2::<f32>::zeros((m, DEPLOY_SLOTS));
+        let mut outcome = Array1::<f32>::zeros(m);
+        let mut player = Array1::<i64>::zeros(m);
+
+        for (i, g) in games.iter().enumerate() {
+            outcome[i] = g.outcome;
+            player[i] = g.player as i64;
+            for slot in 0..DEPLOY_SLOTS {
+                let t = g.placements[slot];
+                action[(i, slot)] = i64::from(t);
+                old_log_prob[(i, slot)] = g.old_log_prob[slot];
+                seq[(i, slot, t as usize)] = 1.0;
+            }
+        }
+
+        let out = PyDict::new(py);
+        out.set_item("seq", seq.into_pyarray(py))?;
+        out.set_item("action", action.into_pyarray(py))?;
+        out.set_item("old_log_prob", old_log_prob.into_pyarray(py))?;
+        out.set_item("outcome", outcome.into_pyarray(py))?;
+        out.set_item("player", player.into_pyarray(py))?;
         Ok(out)
     }
 }

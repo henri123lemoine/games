@@ -1,0 +1,109 @@
+"""The move-RL loss (ATARAXOS_SPEC §4.1, reference `rl.py:547-579`).
+
+PPO-clip policy + temperature(t)*magnet-KL + categorical value-CE + 0.1*rev-KL-to-data.
+Advantage filtering keeps `|adv| >= max(quantile(|adv|, 0.75), 0.01)`. The scalar
+λ-return `ret` is two-hot encoded over the value categories [-1, 0, 1] to form the
+categorical value target (the reference carries the full 3-cat return; the bridge
+hands us the scalar, which two-hot reproduces exactly for a value in [-1, 1]).
+"""
+
+import mlx.core as mx
+import numpy as np
+
+import stratego_nets as S
+
+CATS = mx.array(S.spec.CATEGORICAL_AGGREGATION, dtype=mx.float32)  # [-1, 0, 1]
+NEG_INF = -1e30
+
+
+def advantage_filter_mask(advantage_np, rate=0.75, thresh=0.01):
+    """Boolean keep-mask: `|adv| >= max(quantile(|adv|, rate), thresh)` (`buffer.py:233-241`)."""
+    abs_adv = np.abs(advantage_np)
+    if abs_adv.size == 0:
+        return np.zeros(0, dtype=bool)
+    threshold = max(float(np.quantile(abs_adv, rate)), thresh)
+    return abs_adv >= threshold
+
+
+def two_hot(scalar, cats=CATS):
+    """Two-hot encode a scalar value over ordered category points (here [-1, 0, 1]).
+
+    For a value v in [cats[i], cats[i+1]] places (1-w) on i and w on i+1, so
+    `two_hot(v) @ cats == v`. For the integer outcomes {-1, 0, 1} this is the
+    one-hot the reference uses for terminal returns.
+    """
+    v = mx.clip(scalar, cats[0], cats[-1])
+    n = cats.shape[0]
+    # locate the upper bin edge
+    ge = (v[:, None] >= cats[None, :]).astype(mx.int32)  # (B, n)
+    lower = mx.clip(mx.sum(ge, axis=-1) - 1, 0, n - 2)  # (B,) index of lower edge
+    lo = cats[lower]
+    hi = cats[lower + 1]
+    w = (v - lo) / (hi - lo)
+    onehot_lo = (mx.arange(n)[None, :] == lower[:, None]).astype(mx.float32)
+    onehot_hi = (mx.arange(n)[None, :] == (lower + 1)[:, None]).astype(mx.float32)
+    return onehot_lo * (1.0 - w)[:, None] + onehot_hi * w[:, None]
+
+
+def move_loss_and_stats(net, batch, magnet_coef, cfg):
+    """Compute the scalar move loss (and a stats dict) over a filtered minibatch.
+
+    `batch` holds MLX arrays already restricted to the kept (filtered) rows:
+      obs (B,92,F), legal (B,1800) bool, action (B,) int, old_log_prob (B,),
+      data_log_prob (B,1800), advantage (B,), ret (B,), value_scalar (B,).
+    """
+    obs = batch["obs"]
+    legal = batch["legal"]
+    action = batch["action"]
+    advantages = batch["advantage"]
+    old_log_prob = batch["old_log_prob"]
+    data_log_prob = batch["data_log_prob"]
+    ret = batch["ret"]
+
+    out = net(obs, legal_mask=legal)
+    move_logits = out["move_logits"].astype(mx.float32)
+    log_probs = move_logits - mx.logsumexp(move_logits, axis=-1, keepdims=True)  # (B,1800)
+    value_logp = out["value_logp"]  # (B,3) log-softmax
+
+    # PPO-clip policy loss on the chosen action. Clamp the log-ratio before exp so
+    # a policy that drifts far from the data policy can't overflow exp() to inf
+    # (PPO clips the ratio to [1-eps, 1+eps] for the advantage anyway, so the wide
+    # clamp is inert in the trusted region and only keeps the backward finite).
+    chosen_logp = mx.take_along_axis(log_probs, action[:, None], axis=-1).squeeze(-1)
+    ratio = mx.exp(mx.clip(chosen_logp - old_log_prob, -10.0, 10.0))
+    clipped = mx.clip(ratio, 1 - cfg.clip_range, 1 + cfg.clip_range)
+    policy_loss = -mx.minimum(advantages * ratio, advantages * clipped).mean()
+
+    # Probabilities over the legal set (illegal log-probs are -inf -> prob 0).
+    legal_f = legal.astype(mx.float32)
+    probs = mx.exp(log_probs) * legal_f
+
+    # Reverse-KL to the data policy: (probs * (log_probs - data_log_prob)).sum(-1).
+    data_lp = mx.where(legal, data_log_prob.astype(mx.float32), 0.0)
+    kl_loss = (probs * mx.where(legal, log_probs - data_lp, 0.0)).sum(-1).mean()
+
+    # Categorical value-CE: two-hot(ret) over [-1,0,1] vs log_softmax(value).
+    returns = two_hot(ret)
+    value_loss = -(returns * value_logp).sum(-1).mean()
+
+    # Magnet reverse-KL to the flat-uniform legal magnet.
+    entropy = -(probs * mx.where(legal, log_probs, 0.0)).sum(-1)
+    magnet = legal_f / legal_f.sum(-1, keepdims=True)
+    xe = -(probs * mx.log(mx.clip(magnet, 1e-10, None))).sum(-1)
+    magnet_kl = (xe - entropy).mean()
+
+    loss = (
+        cfg.policy_coef * policy_loss
+        + magnet_coef * magnet_kl
+        + cfg.vf_coef * value_loss
+        + cfg.kl_coef * kl_loss
+    )
+    stats = {
+        "policy_loss": policy_loss,
+        "value_loss": value_loss,
+        "kl_loss": kl_loss,
+        "magnet_kl": magnet_kl,
+        "entropy": entropy.mean(),
+        "loss": loss,
+    }
+    return loss, stats
