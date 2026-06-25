@@ -3,7 +3,7 @@
 # `games/*` are games implemented against it.
 [workspace]
 resolver = "2"
-members = ["game-core", "solvers", "games/liars-dice", "games/twentyone", "games/chess", "games/othello", "games/go", "games/connect4", "games/snake", "games/pente", "games/poker", "lab", "web/engine", "ml/nn-infer"]
+members = ["game-core", "solvers", "games/liars-dice", "games/twentyone", "games/chess", "games/othello", "games/go", "games/connect4", "games/snake", "games/pente", "games/poker", "games/stratego", "lab", "web/engine", "ml/nn-infer"]
 
 [workspace.package]
 edition = "2024"

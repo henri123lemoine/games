@@ -742,6 +742,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "stratego"
+version = "0.1.0"
+dependencies = [
+ "game-core",
+ "solvers",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,15 @@
+[package]
+name = "stratego"
+version = "0.1.0"
+edition = "2024"
+description = "Stratego as a game-core Game (Ataraxos-faithful rules engine)"
+
+[lib]
+name = "stratego"
+path = "src/lib.rs"
+
+[dependencies]
+game-core = { workspace = true }
+
+[dev-dependencies]
+solvers = { path = "../../solvers" }
