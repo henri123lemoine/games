@@ -17,6 +17,7 @@
 use game_core::{Agent, Game, Rng, Turn};
 
 use crate::FastMap;
+use crate::tabular::argmax;
 
 /// Hyperparameters for [`QLearner`]. `alpha` and `epsilon` decay linearly from
 /// `*_start` to `*_end` over the first [`QConfig::decay_episodes`] training
@@ -166,7 +167,7 @@ impl<G: Game> Agent<G> for GreedyQ<'_, G> {
     fn act(&self, game: &G, state: &G::State, player: usize, rng: &mut Rng) -> usize {
         let key = game.infoset_key(state, player);
         match self.learner.tables[player].get(&key) {
-            Some(row) => argmax_first(row),
+            Some(row) => argmax(row),
             None => rng.below(game.legal_actions(state).len()),
         }
     }
@@ -188,16 +189,6 @@ fn argmax_tiebreak(row: &[f64], rng: &mut Rng) -> usize {
             if rng.unit() * ties < 1.0 {
                 best = i;
             }
-        }
-    }
-    best
-}
-
-fn argmax_first(row: &[f64]) -> usize {
-    let mut best = 0;
-    for (i, &v) in row.iter().enumerate().skip(1) {
-        if v > row[best] {
-            best = i;
         }
     }
     best

@@ -342,20 +342,20 @@ impl<G: Game> Mcts<G> {
         nodes: &mut Vec<Node<G::Action>>,
         tt: &mut FastMap<u64, usize>,
     ) -> usize {
-        if self.transpositions
-            && let Some(sk) = game.state_key(state)
+        let merge = self
+            .transpositions
+            .then(|| game.state_key(state).map(|sk| merge_key(sk, view)))
+            .flatten();
+        if let Some(key) = merge
+            && let Some(&nid) = tt.get(&key)
         {
-            let key = merge_key(sk, view);
-            if let Some(&nid) = tt.get(&key) {
-                return nid;
-            }
-            let nid = nodes.len();
-            nodes.push(self.make_node(game, state, view));
-            tt.insert(key, nid);
             return nid;
         }
         let nid = nodes.len();
         nodes.push(self.make_node(game, state, view));
+        if let Some(key) = merge {
+            tt.insert(key, nid);
+        }
         nid
     }
 
