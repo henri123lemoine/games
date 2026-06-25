@@ -120,6 +120,22 @@ fn king_distance(a: u8, b: u8) -> i32 {
     df + dr
 }
 
+/// Bare-king mop-up term from White's perspective: when one side has no
+/// material and the other holds at least a rook, drive the lone king to the
+/// edge and the kings together.
+fn mopup_bonus(board: &Board, material: [i32; 2]) -> i32 {
+    let mut bonus = 0;
+    for loser in [Color::White, Color::Black] {
+        let winner = loser.flip();
+        if material[loser.index()] == 0 && material[winner.index()] >= Piece::Rook.value() {
+            let mopup = 10 * center_distance(board.kings[loser.index()])
+                + 4 * (14 - king_distance(board.kings[0], board.kings[1]));
+            bonus += if winner == Color::White { mopup } else { -mopup };
+        }
+    }
+    bonus
+}
+
 /// Static evaluation in centipawns from the side-to-move's perspective.
 pub fn evaluate(board: &Board) -> i32 {
     let mut material = [0i32; 2];
@@ -141,18 +157,7 @@ pub fn evaluate(board: &Board) -> i32 {
         }
     }
 
-    for loser in [Color::White, Color::Black] {
-        let winner = loser.flip();
-        if material[loser.index()] == 0 && material[winner.index()] >= Piece::Rook.value() {
-            let mopup = 10 * center_distance(board.kings[loser.index()])
-                + 4 * (14 - king_distance(board.kings[0], board.kings[1]));
-            score += if winner == Color::White {
-                mopup
-            } else {
-                -mopup
-            };
-        }
-    }
+    score += mopup_bonus(board, material);
 
     match board.stm {
         Color::White => score,
@@ -402,20 +407,7 @@ pub fn rich_evaluate(board: &Board) -> i32 {
         mg += sign * pawn_shield(board, c);
     }
 
-    let mut white = (mg * phase + eg * (PHASE_MAX - phase)) / PHASE_MAX;
-
-    for loser in [Color::White, Color::Black] {
-        let winner = loser.flip();
-        if material[loser.index()] == 0 && material[winner.index()] >= Piece::Rook.value() {
-            let mopup = 10 * center_distance(board.kings[loser.index()])
-                + 4 * (14 - king_distance(board.kings[0], board.kings[1]));
-            white += if winner == Color::White {
-                mopup
-            } else {
-                -mopup
-            };
-        }
-    }
+    let white = (mg * phase + eg * (PHASE_MAX - phase)) / PHASE_MAX + mopup_bonus(board, material);
 
     let stm = match board.stm {
         Color::White => white,

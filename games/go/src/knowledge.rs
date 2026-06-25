@@ -98,7 +98,7 @@ fn liberties(cells: &[u8], size: usize, start: usize) -> usize {
     group_liberties(cells, size, &stones)
 }
 
-fn group_liberties(cells: &[u8], size: usize, stones: &[usize]) -> usize {
+pub(crate) fn group_liberties(cells: &[u8], size: usize, stones: &[usize]) -> usize {
     let mut seen = vec![false; cells.len()];
     let mut libs = 0;
     for &s in stones {

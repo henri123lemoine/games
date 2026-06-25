@@ -13,7 +13,8 @@
 
 use game_core::{Game, PolicyValueEncoder};
 
-use crate::{EMPTY, Go, GoAction, GoState, group, neighbors};
+use crate::knowledge::group_liberties;
+use crate::{EMPTY, Go, GoAction, GoState, group};
 
 /// Plane layout (all from the mover's perspective):
 /// `0` own / `1` opp stones; `2/3` own/opp groups at 1 liberty (atari);
@@ -68,7 +69,7 @@ impl PolicyValueEncoder<Go> for GoEncoder {
                 continue;
             }
             let (stones, _) = group(cells, game.size(), p);
-            let libs = group_liberty_count(cells, game.size(), &stones);
+            let libs = group_liberties(cells, game.size(), &stones);
             let side = usize::from(c != own);
             let lib_plane = match libs {
                 1 => Some(2 + side),
@@ -131,20 +132,6 @@ impl PolicyValueEncoder<Go> for GoEncoder {
             GoAction::Pass => game.size() * game.size(),
         }
     }
-}
-
-fn group_liberty_count(cells: &[u8], size: usize, stones: &[usize]) -> usize {
-    let mut seen = vec![false; cells.len()];
-    let mut libs = 0;
-    for &s in stones {
-        for nb in neighbors(size, s) {
-            if cells[nb] == EMPTY && !seen[nb] {
-                seen[nb] = true;
-                libs += 1;
-            }
-        }
-    }
-    libs
 }
 
 /// Board index `p` under symmetry `t` (0..8): rotation by `t % 4` quarter

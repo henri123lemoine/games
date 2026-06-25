@@ -214,29 +214,9 @@ impl Go {
             if seen[p] {
                 continue;
             }
-            let mut region = vec![p];
-            seen[p] = true;
-            let mut borders = [false; 2];
-            let mut i = 0;
-            while i < region.len() {
-                let q = region[i];
-                i += 1;
-                for n in neighbors(self.size, q) {
-                    match s.cells[n] {
-                        EMPTY => {
-                            if !seen[n] {
-                                seen[n] = true;
-                                region.push(n);
-                            }
-                        }
-                        c => borders[c as usize] = true,
-                    }
-                }
-            }
-            match (borders[0], borders[1]) {
-                (true, false) => score[0] += region.len() as u64,
-                (false, true) => score[1] += region.len() as u64,
-                _ => {}
+            let (region, owner) = empty_region(&s.cells, self.size, p, &mut seen);
+            if let Some(c) = owner {
+                score[c] += region.len() as u64;
             }
         }
         (score[0], score[1])
@@ -262,29 +242,11 @@ impl Go {
                     if seen[p] {
                         continue;
                     }
-                    let mut region = vec![p];
-                    seen[p] = true;
-                    let mut borders = [false; 2];
-                    let mut i = 0;
-                    while i < region.len() {
-                        let q = region[i];
-                        i += 1;
-                        for nb in neighbors(self.size, q) {
-                            match s.cells[nb] {
-                                EMPTY => {
-                                    if !seen[nb] {
-                                        seen[nb] = true;
-                                        region.push(nb);
-                                    }
-                                }
-                                c => borders[c as usize] = true,
-                            }
-                        }
-                    }
-                    let val = match (borders[0], borders[1]) {
-                        (true, false) => 1.0,
-                        (false, true) => -1.0,
-                        _ => 0.0,
+                    let (region, owner) = empty_region(&s.cells, self.size, p, &mut seen);
+                    let val = match owner {
+                        Some(0) => 1.0,
+                        Some(_) => -1.0,
+                        None => 0.0,
                     };
                     for &q in &region {
                         own[q] = val;
@@ -520,6 +482,43 @@ fn place(cells: &mut [u8], size: usize, p: usize, color: u8) -> Option<usize> {
         }
     }
     Some(captured)
+}
+
+/// Flood-fills the empty region containing `start` (which must be empty and
+/// unseen), marking visited points in `seen`. Returns the region's points and
+/// its owner: `Some(color)` when bordered exclusively by one color, `None` for
+/// a neutral region (dame, or one touching both colors).
+fn empty_region(
+    cells: &[u8],
+    size: usize,
+    start: usize,
+    seen: &mut [bool],
+) -> (Vec<usize>, Option<usize>) {
+    let mut region = vec![start];
+    seen[start] = true;
+    let mut borders = [false; 2];
+    let mut i = 0;
+    while i < region.len() {
+        let q = region[i];
+        i += 1;
+        for n in neighbors(size, q) {
+            match cells[n] {
+                EMPTY => {
+                    if !seen[n] {
+                        seen[n] = true;
+                        region.push(n);
+                    }
+                }
+                c => borders[c as usize] = true,
+            }
+        }
+    }
+    let owner = match (borders[0], borders[1]) {
+        (true, false) => Some(0),
+        (false, true) => Some(1),
+        _ => None,
+    };
+    (region, owner)
 }
 
 /// The group containing `start`, plus whether it has any liberty.
