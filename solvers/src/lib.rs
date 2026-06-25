@@ -26,6 +26,7 @@ pub mod mcts;
 pub mod os_mccfr;
 pub mod pg;
 pub mod qlearn;
+pub mod rebel_mlp;
 mod rollout;
 pub mod search;
 mod tabular;
