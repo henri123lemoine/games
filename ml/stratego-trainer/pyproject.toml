@@ -1,0 +1,24 @@
+[project]
+name = "stratego-trainer"
+version = "0.1.0"
+description = "MLX implementations of the three Ataraxos Stratego transformers (milestone 3)."
+requires-python = ">=3.12"
+dependencies = [
+    "mlx==0.31.2",
+    "numpy>=2.0",
+    "safetensors>=0.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["stratego_nets*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
