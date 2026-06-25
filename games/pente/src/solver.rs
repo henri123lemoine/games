@@ -64,6 +64,11 @@ pub struct VcfConfig {
     pub threat_horizon: u32,
 }
 
+/// VCT threat horizon for the per-leaf prover ([`VcfConfig::for_leaf`]): 2 free
+/// attacker plies, enough to admit open-threes and capture threats that ripen
+/// into an immediate win one move later, while staying cheap at every leaf.
+const LEAF_THREAT_HORIZON: u32 = 2;
+
 impl Default for VcfConfig {
     fn default() -> VcfConfig {
         VcfConfig {
@@ -88,12 +93,29 @@ impl VcfConfig {
         }
     }
 
+    /// The *per-leaf* forcing-solver config the net-MCTS bots wire in as their
+    /// prover: VCT (continuous open-three + capture threats, horizon 2) by
+    /// default, narrowed to VCF-only (fours/captures, horizon 1) when `vct` is
+    /// false as a speed lever. Bounds it to `(max_depth, max_nodes)`.
+    pub fn for_leaf(max_depth: u32, max_nodes: u64, vct: bool) -> VcfConfig {
+        if vct {
+            VcfConfig::vct(max_depth, max_nodes, LEAF_THREAT_HORIZON)
+        } else {
+            VcfConfig {
+                max_depth,
+                max_nodes,
+                ..VcfConfig::default()
+            }
+        }
+    }
+
     /// The effective threat horizon: VCF is always horizon 1 (immediate-win
-    /// threats); VCT uses `threat_horizon`, never below 1.
+    /// threats); VCT uses `threat_horizon`, which the [`VcfConfig::vct`]
+    /// constructor already clamps to at least 1.
     fn horizon(&self) -> u32 {
         match self.level {
             Level::Vcf => 1,
-            Level::Vct => self.threat_horizon.max(1),
+            Level::Vct => self.threat_horizon,
         }
     }
 }
@@ -129,8 +151,12 @@ pub struct PenteProver {
 }
 
 impl game_core::TerminalProver<Pente> for PenteProver {
-    fn prove(&self, game: &Pente, state: &PenteState) -> Option<game_core::Proof> {
-        winning_move(game, state, self.cfg).map(|_| game_core::Proof::Win)
+    fn prove(
+        &self,
+        game: &Pente,
+        state: &PenteState,
+    ) -> Option<(game_core::Proof, Option<PenteAction>)> {
+        winning_move(game, state, self.cfg).map(|a| (game_core::Proof::Win, Some(a)))
     }
 }
 
@@ -156,8 +182,15 @@ pub fn winning_move(game: &Pente, state: &PenteState, cfg: VcfConfig) -> Option<
     // win returns it. The node budget is shared across iterations, so the total
     // work is still capped (re-search overhead is the classic ID constant, tiny
     // next to the branching it tames).
+    //
+    // The root's legal moves and an outright-win check are identical at every
+    // depth, so hoist them out of the ID loop instead of recomputing per depth.
+    let moves = game.legal_actions(state);
+    if let Some(m) = first_win(game, state, &moves, attacker) {
+        return Some(m);
+    }
     for depth in 1..=cfg.max_depth {
-        if let Some(m) = attack(game, state, attacker, cfg, depth, &mut budget) {
+        if let Some(m) = attack_from(game, state, attacker, cfg, depth, &mut budget, &moves) {
             return Some(m);
         }
         if budget.nodes >= budget.max_nodes {
@@ -206,7 +239,6 @@ fn count_wins(game: &Pente, state: &PenteState, moves: &[PenteAction], color: u8
 /// that misses a free win merely under-counts threats, never invents one.)
 fn frontier(game: &Pente, state: &PenteState, side: u8) -> Vec<usize> {
     let size = game.size() as i32;
-    let mut seen = vec![false; state.cells.len()];
     let mut out = Vec::new();
     for p in 0..state.cells.len() {
         if state.cells[p] != side {
@@ -220,13 +252,18 @@ fn frontier(game: &Pente, state: &PenteState, side: u8) -> Vec<usize> {
                     continue;
                 }
                 let q = (r * size + c) as usize;
-                if state.cells[q] == EMPTY && !seen[q] {
-                    seen[q] = true;
+                if state.cells[q] == EMPTY {
                     out.push(q);
                 }
             }
         }
     }
+    // The frontier is the size of the attacker's stone neighborhood, far smaller
+    // than the board, so dedup it directly (sort+dedup) instead of allocating a
+    // board-sized seen bitmap on every recursion. The probe takes the min horizon
+    // over the frontier, so its order does not affect the result.
+    out.sort_unstable();
+    out.dedup();
     out
 }
 
@@ -333,11 +370,45 @@ fn attack(
     if let Some(m) = first_win(game, state, &moves, attacker) {
         return Some(m);
     }
+    attack_forcing(game, state, attacker, cfg, depth, budget, &moves)
+}
+
+/// [`attack`] with the node's legal `moves` and outright-win check already done
+/// — the iterative-deepening loop in [`winning_move`] reuses the root's (which
+/// are identical at every depth) instead of recomputing them. Still spends one
+/// budget node per call, matching the per-depth `attack` it replaces.
+fn attack_from(
+    game: &Pente,
+    state: &PenteState,
+    attacker: u8,
+    cfg: VcfConfig,
+    depth: u32,
+    budget: &mut Budget,
+    moves: &[PenteAction],
+) -> Option<PenteAction> {
+    if depth == 0 || !budget.spend() {
+        return None;
+    }
+    attack_forcing(game, state, attacker, cfg, depth, budget, moves)
+}
+
+/// The forcing-move OR search over `moves` (the outright-win check is the
+/// caller's): generate forcing moves, order strongest first, return the first
+/// that beats every defense.
+fn attack_forcing(
+    game: &Pente,
+    state: &PenteState,
+    attacker: u8,
+    cfg: VcfConfig,
+    depth: u32,
+    budget: &mut Budget,
+    moves: &[PenteAction],
+) -> Option<PenteAction> {
     // Forcing moves: those that leave the attacker threatening a win within the
     // horizon the defender must parry. Order stronger threats first (shorter
     // horizon, then more immediate-win follow-ups).
     let mut forcing: Vec<(PenteAction, PenteState, u32, usize)> = Vec::new();
-    for &a in &moves {
+    for &a in moves {
         if let Some((next, horizon)) = forcing_after(game, state, a, attacker, cfg) {
             let immediate = count_wins(game, &next, &game.legal_actions(&next), attacker);
             forcing.push((a, next, horizon, immediate));
@@ -566,7 +637,14 @@ mod tests {
         let prover = PenteProver {
             cfg: VcfConfig::default(),
         };
-        assert_eq!(prover.prove(&g, &forced), Some(Proof::Win));
+        let (proof, win) = prover.prove(&g, &forced).expect("a forced win is proven");
+        assert_eq!(proof, Proof::Win);
+        assert_eq!(
+            win,
+            winning_move(&g, &forced, VcfConfig::default()),
+            "the proof witnesses the solver's winning first move"
+        );
+        assert!(win.is_some(), "a proven Win carries its witnessing move");
         assert_eq!(prover.prove(&g, &quiet), None);
     }
 

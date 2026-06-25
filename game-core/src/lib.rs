@@ -49,7 +49,9 @@ pub trait Game: Sync {
     /// and parallel algorithms move states across threads.
     type State: Clone + Send + Sync;
     /// An action token. `apply` interprets it; algorithms only store positions.
-    type Action: Copy + std::fmt::Debug + Send + Sync;
+    /// `PartialEq` lets the search match a prover's witnessing move back to its
+    /// edge in a node's legal-action list.
+    type Action: Copy + std::fmt::Debug + Send + Sync + PartialEq;
 
     /// Number of players (tabular CFR and exploitability require 2).
     fn num_players(&self) -> usize {
@@ -179,23 +181,18 @@ pub enum Proof {
     Draw,
 }
 
-impl Proof {
-    /// The proof seen from the opponent's seat — the relation between a node
-    /// and its children, whose mover is the opponent. A forced win for me is a
-    /// forced loss for whoever is to move next, and vice versa.
-    pub fn flip(self) -> Proof {
-        match self {
-            Proof::Win => Proof::Loss,
-            Proof::Loss => Proof::Win,
-            Proof::Draw => Proof::Draw,
-        }
-    }
-}
-
 /// Game-supplied terminal solver: an exact game-theoretic verdict for a
 /// (typically non-terminal) state, when one is cheaply provable — an endgame
-/// tablebase, a tactical mate-search, a solved subgame. Returns `Some(Proof)`
-/// from the side-to-move's perspective when the outcome is forced, else `None`.
+/// tablebase, a tactical mate-search, a solved subgame. Returns `Some((Proof,
+/// witness))` from the side-to-move's perspective when the outcome is forced,
+/// else `None`.
+///
+/// The witness is `Some(action)` *only* for a directly proven **Win**: the move
+/// that forces it, so the search can record the proof-witnessing edge the moment
+/// it proves the node (rather than re-deriving it). It is `None` for a `Loss` or
+/// `Draw` (no single move is the witness) and may be `None` for a Win whose mover
+/// is not the searcher's seat. When a witness is present it must be a legal action
+/// at `state`.
 ///
 /// Like every capability trait this is game knowledge: a game declares it and
 /// the MCTS-solver in PUCT search consumes it, treating a proven leaf exactly
@@ -203,7 +200,7 @@ impl Proof {
 /// (see [`NoProver`]). Must be *sound*: a wrong `Some` corrupts the search's
 /// exact backups.
 pub trait TerminalProver<G: Game>: Sync {
-    fn prove(&self, game: &G, state: &G::State) -> Option<Proof>;
+    fn prove(&self, game: &G, state: &G::State) -> Option<(Proof, Option<G::Action>)>;
 }
 
 /// The trivial prover that proves nothing — search behaves exactly as if no
@@ -211,7 +208,7 @@ pub trait TerminalProver<G: Game>: Sync {
 /// by type but no game knowledge is available.
 pub struct NoProver;
 impl<G: Game> TerminalProver<G> for NoProver {
-    fn prove(&self, _game: &G, _state: &G::State) -> Option<Proof> {
+    fn prove(&self, _game: &G, _state: &G::State) -> Option<(Proof, Option<G::Action>)> {
         None
     }
 }

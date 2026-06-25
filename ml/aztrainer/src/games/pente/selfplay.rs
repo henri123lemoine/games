@@ -11,7 +11,7 @@
 //! guards a zero visit total just in case.
 
 use game_core::rand::sample_visits;
-use game_core::{Game, PolicyValueEncoder, Proof, Rng};
+use game_core::{Game, PolicyValueEncoder, Rng};
 use pente::encode::PenteEncoder;
 use pente::{Pente, PenteProver, PenteState, VcfConfig};
 use rayon::prelude::*;
@@ -80,11 +80,7 @@ impl Default for SelfPlayConfig {
             // while still proving every short forcing win — open/double fours,
             // fifth-pair captures. The richer play-time budget lives in the
             // native/wasm bots, which run one game at a time.
-            vcf: VcfConfig {
-                max_depth: 5,
-                max_nodes: 250,
-                ..VcfConfig::default()
-            },
+            vcf: VcfConfig::for_leaf(5, 250, false),
         }
     }
 }
@@ -323,22 +319,14 @@ impl Worker {
             }
         }
 
-        // A solver-proven root win is exact — play the winning move over the
-        // visit-based choice. The proof bubbled up from a winning child witnesses
-        // its edge; a root the prover proves *directly* (its own leaf) carries
-        // the verdict but no edge, so resolve the witnessing move from the
-        // solver itself. The policy target above is still the visit distribution
-        // (the net learns the search's policy, not the single forcing move), and
-        // the value target benefits automatically: a proven node backs up its
-        // exact ±1.
-        let proven_win = (self.search.root_proof() == Some(Proof::Win))
-            .then(|| {
-                pente::winning_move(&pente, &self.state, cfg.vcf)
-                    .and_then(|win| actions.iter().position(|&a| a == win))
-                    .or_else(|| self.search.best_proven_action())
-            })
-            .flatten();
-        let choice = match proven_win {
+        // A solver-proven root win is exact — play the proven move over the
+        // visit-based choice. `best_proven_action` is correct for both a proof
+        // bubbled up from a winning child and a root the prover proves *directly*
+        // (its witnessing move pins the edge in the search). The policy target
+        // above is still the visit distribution (the net learns the search's
+        // policy, not the single forcing move), and the value target benefits
+        // automatically: a proven node backs up its exact ±1.
+        let choice = match self.search.best_proven_action() {
             Some(idx) => idx,
             None if self.plies < cfg.temp_plies => sample_visits(&visits, &mut self.rng),
             None => argmax(&visits),

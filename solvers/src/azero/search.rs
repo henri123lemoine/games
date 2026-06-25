@@ -393,10 +393,14 @@ impl<G: Game> Search<G> {
         };
         // Ask the prover about this freshly expanded non-terminal leaf, while
         // its state is still in hand. `None`-prover searches skip this and
-        // never set any proof.
+        // never set any proof. A directly proven Win carries its witnessing
+        // move, whose edge index in the node's own actions pins `proof_edge` so
+        // `best_proven_action` is correct for directly proven roots/leaves too.
         let proof = prover.and_then(|p| {
-            p.prove(game, &pending.state)
-                .map(|pr| (pr, pending.to_move))
+            p.prove(game, &pending.state).map(|(pr, win)| {
+                let edge = win.and_then(|a| pending.actions.iter().position(|&x| x == a));
+                (pr, pending.to_move, edge)
+            })
         });
         let &(parent, edge) = match path.last() {
             Some(last) => last,
@@ -405,9 +409,12 @@ impl<G: Game> Search<G> {
                 let to_move = pending.to_move;
                 self.tree.nodes.push(expanded_node(pending, res));
                 self.tree.root = self.tree.nodes.len() - 1;
-                if let Some((pr, _)) = proof {
+                if let Some((pr, _, win_edge)) = proof {
                     let root = self.tree.root;
                     self.mark_proven(root, pr, to_move, game.max_return());
+                    if let Some(e) = win_edge {
+                        self.tree.nodes[root].proof_edge = e;
+                    }
                 }
                 return;
             }
@@ -421,9 +428,12 @@ impl<G: Game> Search<G> {
         self.backup(&path, leaf);
         // Prove and propagate only on first creation: a sibling resolve in the
         // same batch may have already created (and proven) this child.
-        if newly_created && let Some((pr, to_move)) = proof {
+        if newly_created && let Some((pr, to_move, win_edge)) = proof {
             let child = self.tree.nodes[parent].child[edge] as usize;
             self.mark_proven(child, pr, to_move, game.max_return());
+            if let Some(e) = win_edge {
+                self.tree.nodes[child].proof_edge = e;
+            }
             self.solver_backup(&path, game.max_return());
         }
     }
@@ -538,7 +548,11 @@ impl<G: Game> Search<G> {
             return select_edge(n, puct, forced_k);
         }
         let to_move = n.to_move;
-        let mut overrides: Vec<Option<f64>> = vec![None; n.child.len()];
+        // First pass: a proven win for us is taken outright (same edge the
+        // override path would have, since a win short-circuits); otherwise note
+        // whether any child is proven at all. With none proven (the common case
+        // even under an active solver) this is plain PUCT — no override vector.
+        let mut any_proven = false;
         for (e, &c) in n.child.iter().enumerate() {
             if c < 0 {
                 continue;
@@ -555,6 +569,26 @@ impl<G: Game> Search<G> {
             if for_m > 0.0 {
                 return e; // proven win for us — take it immediately
             }
+            any_proven = true;
+        }
+        if !any_proven {
+            return select_edge(n, puct, forced_k);
+        }
+        // ≥1 child proven (loss/draw for us): shun it via a Q override.
+        let mut overrides: Vec<Option<f64>> = vec![None; n.child.len()];
+        for (e, &c) in n.child.iter().enumerate() {
+            if c < 0 {
+                continue;
+            }
+            let child = &self.tree.nodes[c as usize];
+            if child.proven.is_none() {
+                continue;
+            }
+            let for_m = if to_move == 0 {
+                child.value0
+            } else {
+                -child.value0
+            };
             overrides[e] = Some(if for_m < 0.0 { -1.0 } else { 0.0 });
         }
         select_edge_solver(n, puct, forced_k, &overrides)

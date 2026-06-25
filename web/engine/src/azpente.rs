@@ -75,11 +75,7 @@ impl AzPenteBot {
                 root_noise: 0.0,
                 ..PuctConfig::default()
             },
-            vcf: VcfConfig {
-                max_depth: vcf_depth,
-                max_nodes: u64::from(vcf_nodes),
-                ..VcfConfig::default()
-            },
+            vcf: VcfConfig::for_leaf(vcf_depth, u64::from(vcf_nodes), true),
             rng: Rng::new(u64::from(seed)),
             model: None,
             batch: Vec::new(),
@@ -256,21 +252,14 @@ impl AzPenteBot {
         if !self.done {
             return Err(JsError::new("search is not done"));
         }
-        // A solver-proven root win is exact. `best_proven_action` witnesses the
-        // edge when the proof bubbled up from a winning child; a root proven
-        // *directly* by the prover (its own leaf, before any child is expanded)
-        // carries the verdict but no edge, so resolve the witnessing move from
-        // the solver itself, which proved it and returns the move.
-        if self.search.root_proof() == Some(Proof::Win) {
-            if let Some(win) = pente::winning_move(&self.game, &self.state, self.vcf) {
-                return Ok(self.game.action_label(&self.state, win));
-            }
-            if let Some(idx) = self.search.best_proven_action() {
-                let action = self.search.root_actions()[idx];
-                return Ok(self.game.action_label(&self.state, action));
-            }
-        }
-        let idx = argmax(self.search.root_visits());
+        // A solver-proven root win is exact — play the proven move over the visit
+        // argmax. `best_proven_action` is correct for both a proof bubbled up
+        // from a winning child and a root the prover proves *directly* (its
+        // witnessing move pins the edge in the search's `resolve`).
+        let idx = self
+            .search
+            .best_proven_action()
+            .unwrap_or_else(|| argmax(self.search.root_visits()));
         let action = self.search.root_actions()[idx];
         Ok(self.game.action_label(&self.state, action))
     }

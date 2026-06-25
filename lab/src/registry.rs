@@ -1082,27 +1082,15 @@ impl AzeroPenteBot {
                 })
                 .collect();
         }
-        // A proven win at the root is exact — play it over the visit argmax. The
-        // returned value is an index into `root_actions`, which is exactly the
-        // `legal_actions` order the search expanded, so it is the action index
-        // `Agent::act` owes its caller.
-        // A solver-proven root win is exact — play the winning move over the
-        // visit argmax. `best_proven_action` witnesses the edge when the proof
-        // bubbled up from a winning child; a root the prover proves *directly*
-        // (its own leaf, before any child is expanded) carries the verdict but
-        // no edge, so resolve the witnessing move from the solver itself, which
-        // proved it and returns the move. Both are exact and net-independent.
-        if search.root_proof() == Some(game_core::Proof::Win) {
-            if let Some(win) = pente::winning_move(game, state, self.vcf)
-                && let Some(idx) = game.legal_actions(state).iter().position(|&a| a == win)
-            {
-                return idx;
-            }
-            if let Some(idx) = search.best_proven_action() {
-                return idx;
-            }
-        }
-        solvers::azero::argmax(search.root_visits())
+        // A solver-proven root win is exact — play the proven move over the
+        // visit argmax. `best_proven_action` is correct for both a proof bubbled
+        // up from a winning child and a root the prover proves *directly* (its
+        // witnessing move pins the edge in `resolve`). The index is into
+        // `root_actions` — the `legal_actions` order the search expanded — so it
+        // is the action index `Agent::act` owes its caller.
+        search
+            .best_proven_action()
+            .unwrap_or_else(|| solvers::azero::argmax(search.root_visits()))
     }
 }
 
@@ -1134,20 +1122,13 @@ fn pente_bot(spec: &BotSpec, o: &Opts) -> Result<BotBuilder<pente::Pente>, Strin
             // search (tuned for offline analysis) would tank throughput. A small
             // budget still proves the short forcing wins (open fours,
             // double-fours, fifth-pair captures, and at VCT double-threes) that
-            // matter while staying cheap per leaf. `vct=1` widens forcing moves
-            // to bounded continuous threats (default VCF).
+            // matter while staying cheap per leaf. VCT (continuous open-three +
+            // capture threats) is the default; `vct=0` narrows to VCF-only
+            // (fours/captures) as a speed lever.
             let vcf_nodes: u64 = spec.opts.get("vcf-nodes", 1500)?;
             let vcf_depth: u32 = spec.opts.get("vcf-depth", 7)?;
-            let vct: u32 = spec.opts.get("vct", 0)?;
-            let vcf = if vct != 0 {
-                pente::VcfConfig::vct(vcf_depth, vcf_nodes, 2)
-            } else {
-                pente::VcfConfig {
-                    max_depth: vcf_depth,
-                    max_nodes: vcf_nodes,
-                    ..pente::VcfConfig::default()
-                }
-            };
+            let vct: u32 = spec.opts.get("vct", 1)?;
+            let vcf = pente::VcfConfig::for_leaf(vcf_depth, vcf_nodes, vct != 0);
             let size: usize = o.get("size", 13)?;
             Box::new(move |_| {
                 Box::new(AzeroPenteBot {

@@ -152,12 +152,27 @@ impl ScriptedProver {
     }
 }
 
+/// A prover that directly proves one named board a Win, witnessing a fixed
+/// winning move — exercising the directly-proven-Win path where the search must
+/// set `proof_edge` from the witness rather than bubbling it up from a child.
+struct WitnessProver {
+    board: TttState,
+    win_move: usize,
+}
+
+impl TerminalProver<Ttt> for WitnessProver {
+    fn prove(&self, _game: &Ttt, state: &TttState) -> Option<(Proof, Option<usize>)> {
+        (state.cells == self.board.cells && state.to_move == self.board.to_move)
+            .then_some((Proof::Win, Some(self.win_move)))
+    }
+}
+
 impl TerminalProver<Ttt> for ScriptedProver {
-    fn prove(&self, _game: &Ttt, state: &TttState) -> Option<Proof> {
+    fn prove(&self, _game: &Ttt, state: &TttState) -> Option<(Proof, Option<usize>)> {
         self.verdicts
             .iter()
             .find(|(s, _)| s.cells == state.cells && s.to_move == state.to_move)
-            .map(|&(_, p)| p)
+            .map(|&(_, p)| (p, None))
     }
 }
 
@@ -350,6 +365,37 @@ fn ttt_solve(s: &TttState) -> i32 {
         }
     }
     best
+}
+
+#[test]
+fn directly_proven_root_win_witnesses_its_move() {
+    // The prover proves the *root* a Win directly (its own leaf, before any
+    // child is expanded), witnessing a winning move. `best_proven_action` must
+    // return that move's edge — set from the witness in `resolve`, not bubbled
+    // up from a child — so a directly proven root plays the proven move too.
+    let net = Mlp::new(19, 16, 9, 43);
+    let game = Ttt;
+    // X:0,1  O:3,4 — X to move, mate-in-1 at cell 2 (a real winning move).
+    let root = board(&[(0, 0), (3, 1), (1, 0), (4, 1)]);
+    assert_eq!(Ttt.turn(&root), Turn::Player(0));
+    let prover = WitnessProver {
+        board: root.clone(),
+        win_move: 2,
+    };
+    let s = run_search(&game, &TttEnc, &net, &root, &cfg(64), 5, Some(&prover));
+    assert_eq!(
+        s.root_proof(),
+        Some(Proof::Win),
+        "root proven a Win directly"
+    );
+    let mv = s
+        .best_proven_action()
+        .expect("directly proven root yields a move");
+    assert_eq!(
+        s.root_actions()[mv],
+        2,
+        "the proven move is the witnessed winning move, not edge 0"
+    );
 }
 
 #[test]

@@ -114,15 +114,7 @@ pub fn run(args: &[String]) {
 
     let net_cfg = net_config_for(args, &dir.join("latest.ot"));
     let (blocks, channels, size) = (net_cfg.blocks, net_cfg.channels, net_cfg.size);
-    let vcf = if vct != 0 {
-        VcfConfig::vct(vcf_depth, vcf_nodes, 2)
-    } else {
-        VcfConfig {
-            max_depth: vcf_depth,
-            max_nodes: vcf_nodes,
-            ..VcfConfig::default()
-        }
-    };
+    let vcf = VcfConfig::for_leaf(vcf_depth, vcf_nodes, vct != 0);
     let sp_cfg = SelfPlayConfig {
         puct: PuctConfig {
             sims,

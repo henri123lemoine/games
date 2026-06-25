@@ -11,7 +11,7 @@
 use crate::env::Env;
 use game_core::{Game, Turn};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Stand,
     Draw,
