@@ -524,33 +524,80 @@ fn deployment_produces_a_full_legal_board() {
     }
 }
 
-#[test]
-fn deployment_forces_flag_handedness() {
+/// Whether the deployment offers the flag once placement reaches `target`,
+/// driving the real `Game` and never voluntarily placing the flag (so its
+/// supply survives to `target`).
+fn flag_offered_at(target: usize) -> bool {
     let game = Stratego;
     let mut state = game.initial_state();
-    let first = game.legal_actions(&state);
-    assert!(
-        !first.contains(&Move::Place(PieceType::Flag)),
-        "flag not offered on the first square"
-    );
     loop {
-        if let State::Deploy { current, .. } = &state
-            && current.next_square() == 35
-        {
-            let here = game.legal_actions(&state);
-            assert!(
-                here.contains(&Move::Place(PieceType::Flag)),
-                "flag offered on right-half back-row square 35"
-            );
-            break;
+        let State::Deploy { current, .. } = &state else {
+            panic!("deployment ended before reaching square {target}");
+        };
+        if current.next_square() == target {
+            return game
+                .legal_actions(&state)
+                .contains(&Move::Place(PieceType::Flag));
         }
         let actions = game.legal_actions(&state);
         let pick = actions
             .iter()
             .position(|a| !matches!(a, Move::Place(PieceType::Flag)))
-            .unwrap_or(0);
+            .expect("a non-flag placement is always available");
         game.apply(&mut state, actions[pick]);
     }
+}
+
+#[test]
+fn deployment_flag_handedness_is_right_half_any_row() {
+    // Forced handedness is a *column* constraint: the flag may sit anywhere in
+    // the right half (columns 5-9) of the home grid, on ANY home row — exactly
+    // the reference `right_side` mask. It must NOT be pinned to a single row.
+
+    // Right half (cols 5-9) offers the flag on every home row (0..=3).
+    for sq in [5, 9, 15, 19, 25, 29, 35, 39] {
+        assert!(
+            flag_offered_at(sq),
+            "flag must be legal on right-half square {sq} (row {}, col {})",
+            sq / 10,
+            sq % 10
+        );
+    }
+    // Left half (cols 0-4) never offers the flag, on any row.
+    for sq in [0, 4, 10, 14, 24, 30, 34] {
+        assert!(
+            !flag_offered_at(sq),
+            "flag must be illegal on left-half square {sq} (row {}, col {})",
+            sq / 10,
+            sq % 10
+        );
+    }
+    // Explicitly not row-locked: legal on the front row (row 0) and the back row
+    // (row 3) alike — the old `row == 3` pin would have failed square 5.
+    assert!(flag_offered_at(5), "flag legal on front row 0, col 5");
+    assert!(flag_offered_at(35), "flag legal on back row 3, col 5");
+}
+
+#[test]
+fn random_arrangement_flag_side_is_symmetric() {
+    // Forced handedness alone would put every random self-play flag on the right;
+    // the ~50% mirror flip restores symmetry, so the flag lands left about as
+    // often as right (no systematic, exploitable side bias).
+    let mut rng = Rng::new(7);
+    let (mut left, mut right) = (0u32, 0u32);
+    for _ in 0..2000 {
+        let arr = crate::game::random_arrangement(&mut rng);
+        let flag = arr.0.iter().position(|&t| t == PieceType::Flag).unwrap();
+        if flag % 10 >= 5 {
+            right += 1;
+        } else {
+            left += 1;
+        }
+    }
+    assert!(
+        left > 800 && right > 800,
+        "flag side should be ~balanced after the mirror flip, got left={left} right={right}"
+    );
 }
 
 #[test]

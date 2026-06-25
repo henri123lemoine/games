@@ -75,6 +75,13 @@ impl Stratego {
 /// Draws a uniformly-random legal classic arrangement by stepping the
 /// per-square [`DeploymentState`] machine, rejecting the rare trivially-stuck
 /// layout so the resulting game is not over before it starts.
+///
+/// Forced handedness pins every generated flag to the right half, so the raw
+/// distribution is left-right asymmetric. We restore symmetry the way the
+/// reference does (`generate_arrangements`, `arrangement/sampling.py`): flip the
+/// finished setup across the centre column with probability 1/2. The mirror flip
+/// preserves legality and non-terminality, so a self-play setup is never
+/// systematically biased to one side.
 pub fn random_arrangement(rng: &mut Rng) -> Arrangement {
     loop {
         let mut deploy = DeploymentState::classic(0, true);
@@ -82,7 +89,10 @@ pub fn random_arrangement(rng: &mut Rng) -> Arrangement {
             let types = deploy.legal_types();
             deploy.place(types[rng.below(types.len())]);
         }
-        let arrangement = deploy.arrangement();
+        let mut arrangement = deploy.arrangement();
+        if rng.below(2) == 1 {
+            arrangement = arrangement.flipped();
+        }
         if !arrangement.is_terminal() {
             return arrangement;
         }

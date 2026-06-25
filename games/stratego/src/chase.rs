@@ -15,25 +15,6 @@
 
 use crate::board::is_adjacent;
 
-/// Compact bitset state machine state from `chase_state.h` — kept as struct
-/// fields the rules reference, though the live rule logic uses [`ChaseOracle`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChaseState {
-    pub last_dst: u8,
-    pub last_src: u8,
-    pub chase_length: i32,
-}
-
-impl Default for ChaseState {
-    fn default() -> Self {
-        ChaseState {
-            last_dst: 0xee,
-            last_src: 0xee,
-            chase_length: 0,
-        }
-    }
-}
-
 /// Directional adjacency key for the threatening-pair history: encodes the move
 /// from `x` to its neighbour `y` (`pair_to_int`, `continuous_chase.py:26-36`).
 fn pair_key(x: usize, y: usize) -> usize {

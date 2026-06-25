@@ -860,18 +860,51 @@ fn prot_vec(t: &ProtectTracker, g: ProtGroup, id: usize) -> [bool; 13] {
     }
 }
 
-/// A kernel-faithful protection oracle: an independent accumulation of the four
-/// protection bitsets, keyed by `(player, own_slot)`. After each move it replays
-/// the CUDA `UPDATE_PROTECT` five-case geometry over the *committed* board (the
-/// kernel runs the protect block after the destination cell is written), reading
-/// colours/visibility/ids straight from the board. This validates the encoder
-/// against the documented CUDA geometry directly, covering the tie- and
-/// attack-revealed cases where the heuristic Python tracker is incomplete.
+/// An independently derived protection oracle that validates the production
+/// encoder (`rules.rs` geometry) without copying it. It accumulates the four
+/// protection bitsets, keyed by `(player, own_slot)`.
+///
+/// The reference semantics (`action_kernels.cu` `BoardStateKernel__Protections`
+/// plus `UPDATE_PROTECT`) reduce to one geometric invariant. A protector,
+/// protectee, aggressor triple is a protection exactly when the protectee is
+/// orthogonally adjacent to both its protector and the aggressor, and the
+/// protector and aggressor are distinct cells — the protectee sits between a
+/// defender and a threat. The per-move `step` dispatch (taken from the
+/// reference) recomputes only the triples touching a changed cell, across the
+/// five roles a changed cell can play: previously moved enemy as aggressor,
+/// surviving mover as protector, mover or tie-emptied square as protectee,
+/// revealed winning defender as aggressor, and vacated source as protectee.
+///
+/// Crucially, the neighbour enumeration here is rebuilt from [`orth_neighbors`],
+/// not from the production knight-offset tables in `rules.rs`, so a transposed
+/// or missing offset in the production geometry diverges from this oracle and
+/// fails the test where a byte-identical copy never could. The random-game
+/// driver exercises all four groups across quiet, attack, tie, and reveal moves.
 struct ProtectOracle {
     protected_: [[[bool; 13]; 40]; 2],
     protected_against: [[[bool; 13]; 40]; 2],
     was_protected_by: [[[bool; 13]; 40]; 2],
     was_protected_against: [[[bool; 13]; 40]; 2],
+}
+
+/// The orthogonal on-board neighbours of absolute cell `cell` on the 10x10 grid
+/// — the independent adjacency primitive the protection geometry is rebuilt from.
+fn orth_neighbors(cell: i32) -> Vec<i32> {
+    let (row, col) = (cell / 10, cell % 10);
+    let mut out = Vec::with_capacity(4);
+    if row > 0 {
+        out.push(cell - 10);
+    }
+    if row < 9 {
+        out.push(cell + 10);
+    }
+    if col > 0 {
+        out.push(cell - 1);
+    }
+    if col < 9 {
+        out.push(cell + 1);
+    }
+    out
 }
 
 /// Type -> protection bucket index (`pieces_with_extras`): movables 0..9,
@@ -924,101 +957,41 @@ impl ProtectOracle {
         }
     }
 
+    /// Anchor = aggressor at `center`: every protectee is an orthogonal
+    /// neighbour of the aggressor, and its protector is an orthogonal neighbour
+    /// of the protectee other than the aggressor itself.
     fn aggressor_pattern(&mut self, board: &Board, player: usize, center: i32) {
-        let (row, col) = (center / 10, center % 10);
-        let c = center;
-        let go = |s: &mut Self, a: i32, m: i32| s.update_protect(board, player, a, m, c);
-        if row >= 2 {
-            go(self, c - 20, c - 10);
-        }
-        if row < 8 {
-            go(self, c + 20, c + 10);
-        }
-        if col >= 2 {
-            go(self, c - 2, c - 1);
-        }
-        if col < 8 {
-            go(self, c + 2, c + 1);
-        }
-        if row < 9 && col >= 1 {
-            go(self, c + 9, c - 1);
-            go(self, c + 9, c + 10);
-        }
-        if row < 9 && col < 9 {
-            go(self, c + 11, c + 1);
-            go(self, c + 11, c + 10);
-        }
-        if row > 0 && col >= 1 {
-            go(self, c - 11, c - 1);
-            go(self, c - 11, c - 10);
-        }
-        if row > 0 && col < 9 {
-            go(self, c - 9, c + 1);
-            go(self, c - 9, c - 10);
+        for protectee in orth_neighbors(center) {
+            for protector in orth_neighbors(protectee) {
+                if protector != center {
+                    self.update_protect(board, player, protector, protectee, center);
+                }
+            }
         }
     }
 
+    /// Anchor = protector at `dst`: every protectee is an orthogonal neighbour of
+    /// the protector, and the aggressor is an orthogonal neighbour of the
+    /// protectee other than the protector itself.
     fn protector_pattern(&mut self, board: &Board, player: usize, dst: i32) {
-        let (row, col) = (dst / 10, dst % 10);
-        let d = dst;
-        let go = |s: &mut Self, m: i32, a: i32| s.update_protect(board, player, d, m, a);
-        if row >= 2 {
-            go(self, d - 10, d - 20);
-        }
-        if row < 8 {
-            go(self, d + 10, d + 20);
-        }
-        if col >= 2 {
-            go(self, d - 1, d - 2);
-        }
-        if col < 8 {
-            go(self, d + 1, d + 2);
-        }
-        if row < 9 && col >= 1 {
-            go(self, d - 1, d + 9);
-            go(self, d + 10, d + 9);
-        }
-        if row < 9 && col < 9 {
-            go(self, d + 1, d + 11);
-            go(self, d + 10, d + 11);
-        }
-        if row > 0 && col >= 1 {
-            go(self, d - 1, d - 11);
-            go(self, d - 10, d - 11);
-        }
-        if row > 0 && col < 9 {
-            go(self, d + 1, d - 9);
-            go(self, d - 10, d - 9);
+        for protectee in orth_neighbors(dst) {
+            for aggressor in orth_neighbors(protectee) {
+                if aggressor != dst {
+                    self.update_protect(board, player, dst, protectee, aggressor);
+                }
+            }
         }
     }
 
+    /// Anchor = protectee at `center`: the protector and the aggressor are two
+    /// distinct orthogonal neighbours of the protectee.
     fn protectee_pattern(&mut self, board: &Board, player: usize, center: i32) {
-        let (row, col) = (center / 10, center % 10);
-        let c = center;
-        let go = |s: &mut Self, pr: i32, ag: i32| s.update_protect(board, player, pr, c, ag);
-        if row < 9 && row > 0 {
-            go(self, c + 10, c - 10);
-            go(self, c - 10, c + 10);
-        }
-        if row < 9 && col > 0 {
-            go(self, c + 10, c - 1);
-            go(self, c - 1, c + 10);
-        }
-        if row < 9 && col < 9 {
-            go(self, c + 10, c + 1);
-            go(self, c + 1, c + 10);
-        }
-        if row > 0 && col > 0 {
-            go(self, c - 10, c - 1);
-            go(self, c - 1, c - 10);
-        }
-        if row > 0 && col < 9 {
-            go(self, c - 10, c + 1);
-            go(self, c + 1, c - 10);
-        }
-        if col < 9 && col > 0 {
-            go(self, c - 1, c + 1);
-            go(self, c + 1, c - 1);
+        for protector in orth_neighbors(center) {
+            for aggressor in orth_neighbors(center) {
+                if protector != aggressor {
+                    self.update_protect(board, player, protector, center, aggressor);
+                }
+            }
         }
     }
 
@@ -1061,9 +1034,10 @@ impl ProtectOracle {
     }
 }
 
-/// Drives random games checking every protection group against BOTH the kernel
-/// oracle (ground truth, all cases) and, where it is faithful (non-attack and
-/// non-tie protect events), the independent Python tracker.
+/// Drives random games checking every protection group against the independent
+/// adjacency oracle over quiet, attack, tie, and reveal moves. The
+/// `(attacks, ties, reveals)` tally is asserted nonzero so the test cannot pass
+/// by exercising quiet slides alone.
 fn run_protect_group(seeds: u64) {
     let cfg = EncoderConfig::default();
     let groups = [
@@ -1072,6 +1046,7 @@ fn run_protect_group(seeds: u64) {
         ProtGroup::WasProtectedBy,
         ProtGroup::WasProtectedAgainst,
     ];
+    let (mut attacks, mut ties, mut reveals) = (0u32, 0u32, 0u32);
     for seed in 0..seeds {
         let mut rng = Rng::new(seed + 101);
         let mut board = fresh_play(&mut rng);
@@ -1135,6 +1110,9 @@ fn run_protect_group(seeds: u64) {
             let last_moved_before = board.last_moved_piece_type;
             let applied = rules::apply(&mut board, Action(a as u16), player);
             let (to_wins, tie) = battle_kind(&applied, &board, to_abs, player);
+            attacks += u32::from(applied.was_attack);
+            ties += u32::from(tie);
+            reveals += u32::from(to_wins);
             oracle.step(
                 &board,
                 player,
@@ -1148,6 +1126,11 @@ fn run_protect_group(seeds: u64) {
             player = 1 - player;
         }
     }
+    assert!(
+        attacks > 0 && ties > 0 && reveals > 0,
+        "protection oracle must cover attack/tie/reveal cases, got \
+         attacks={attacks} ties={ties} reveals={reveals}"
+    );
 }
 
 /// Recover `(to_wins, tie)` from the applied result and the post-move board: a

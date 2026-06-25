@@ -72,6 +72,23 @@ impl Arrangement {
         self.0.iter().map(|&t| type_to_char(t)).collect()
     }
 
+    /// Mirrors the deployment left-right across the centre column: the column
+    /// order within each home row is reversed (`out[row][col] =
+    /// self[row][9 - col]`). This is the faithful equivalent of the reference
+    /// `flip_arrangements` (`arrangement/utils.py`, a `.flip(-2)` over the
+    /// `(row, col)` grid). Applied with probability 1/2 it cancels the
+    /// right-half-flag handedness bias, restoring the left-right symmetry an
+    /// equilibrium setup distribution must have.
+    pub fn flipped(&self) -> Arrangement {
+        let mut out = [PieceType::Empty; HOME_CELLS];
+        for row in 0..4 {
+            for col in 0..10 {
+                out[row * 10 + col] = self.0[row * 10 + (9 - col)];
+            }
+        }
+        Arrangement(out)
+    }
+
     /// Per-type counts over `[0, 14)` (lake/empty included at their indices).
     pub fn type_counts(&self) -> [u8; 14] {
         let mut counts = [0u8; 14];
@@ -114,8 +131,8 @@ pub struct DeploymentState {
     pub placed: Vec<PieceType>,
     /// The player currently deploying (0 = red, 1 = blue).
     pub player: usize,
-    /// Force the flag onto the right half of the back row during generation
-    /// (`force_handedness`, `arrangement_transformer.py`).
+    /// Force the flag onto the right half (columns 5-9, any home row) during
+    /// generation (`force_handedness`, `arrangement_transformer.py`).
     pub force_handedness: bool,
 }
 
@@ -148,8 +165,8 @@ impl DeploymentState {
 
     /// The piece types that may legally fill [`next_square`](Self::next_square),
     /// in [`PieceType`] order. A type is legal iff its supply is nonzero and,
-    /// for the flag under handedness, the square is on the right half of the
-    /// back home row.
+    /// for the flag under handedness, the square is on the right half (columns
+    /// 5-9) of its home row.
     pub fn legal_types(&self) -> Vec<PieceType> {
         let square = self.next_square();
         let mut out = Vec::new();
@@ -182,12 +199,16 @@ impl DeploymentState {
     }
 }
 
-/// Under forced handedness the flag must land on the right half of the back
-/// home row (cells `35..40` in arrangement coords; cols 5-9 of row 3).
+/// Under forced handedness the flag must land on the right half of the home
+/// grid — columns 5-9 of *any* home row. This is a pure column constraint that
+/// breaks the left-right mirror symmetry while leaving the flag's row free for
+/// the net to choose, mirroring the reference `right_side` mask
+/// (`arrangement_transformer.py`: `N_ARRANGEMENT_ROW * (5*[False] + 5*[True])`,
+/// the flag forbidden wherever `~right_side`). The remaining mirror axis is
+/// restored by flipping ~50% of generated setups (`flip_arrangements`); see
+/// [`Arrangement::flipped`].
 fn flag_allowed_on_right(square: usize) -> bool {
-    let row = square / 10;
-    let col = square % 10;
-    row == 3 && col >= 5
+    square % 10 >= 5
 }
 
 /// Writes a parsed red/blue arrangement pair onto a fresh board, placing lakes,

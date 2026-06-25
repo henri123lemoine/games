@@ -252,12 +252,6 @@ pub struct Board {
     pub num_moves: u32,
     /// Half-moves since the most recent attack (reset to 0 on any battle).
     pub num_moves_since_last_attack: u32,
-    /// The most recent move's destination cell in the *acting* player's POV, or
-    /// `0xff`. Drives the two-square and chase machines and the no-attack
-    /// marker. Stored as the 6-byte move summary's relevant fields.
-    pub last_move: Option<MoveSummary>,
-    /// Continuous-chase substate, per player.
-    pub chase: [crate::chase::ChaseState; 2],
     /// Two-square substate, per player.
     pub twosquare: [crate::twosquare::TwosquareState; 2],
     /// History of each piece's recent positions for the chase rule's
@@ -317,8 +311,6 @@ impl Board {
             last_moved_piece_type: 0xff,
             num_moves: 0,
             num_moves_since_last_attack: 0,
-            last_move: None,
-            chase: [crate::chase::ChaseState::default(); 2],
             twosquare: [crate::twosquare::TwosquareState::default(); 2],
             chase_oracle: Default::default(),
             zero_types: [[0xff; HOME_CELLS]; 2],
