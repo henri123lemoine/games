@@ -107,7 +107,6 @@ impl GameUi for Poker {
 
     fn parse_action(&self, s: &PokerState, input: &str) -> Option<Action> {
         let t = input.trim().to_lowercase();
-        let p = s.to_act();
         match t.as_str() {
             "f" | "fold" => return Some(Action::Fold),
             "c" | "check" => return Some(Action::Check),
@@ -125,23 +124,10 @@ impl GameUi for Poker {
             .and_then(|r| r.trim().parse::<u32>().ok());
         if let Some(to) = amount {
             let actions = self.legal_actions(s);
-            // Exact match, else the closest raise/all-in.
             if actions.contains(&Action::Raise(to)) {
                 return Some(Action::Raise(to));
             }
-            let mut best: Option<(Action, u32)> = None;
-            for &a in &actions {
-                let val = match a {
-                    Action::Raise(v) => v,
-                    Action::AllIn => s.street_bet(p) + s.stack(p),
-                    _ => continue,
-                };
-                let dist = val.abs_diff(to);
-                if best.is_none_or(|(_, d)| dist < d) {
-                    best = Some((a, dist));
-                }
-            }
-            return best.map(|(a, _)| a);
+            return crate::agents::closest_raise(&actions, s, to);
         }
         None
     }

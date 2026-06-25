@@ -128,12 +128,7 @@ impl PokerBot {
         if opponents == 0 {
             return 1.0;
         }
-        let mut seen = 0u64;
-        for &c in s.board() {
-            seen |= 1 << c;
-        }
-        seen |= 1 << hole[0];
-        seen |= 1 << hole[1];
+        let seen = seen_mask(s, seat);
         let board_have = s.board().len();
         let mut deck = Vec::with_capacity(cards::NUM_CARDS);
         let mut equity = 0.0;
@@ -266,15 +261,14 @@ impl PokerBot {
     }
 }
 
-/// Pick the raise closest to `frac` of the pot from the offered menu, else the
-/// smallest raise/all-in available.
-fn best_raise(actions: &[Action], s: &PokerState, game: &Poker, frac: f64) -> Option<Action> {
-    let target = s.current_bet() + (game.pot(s) as f64 * frac).round() as u32;
+/// The raise/all-in from `actions` whose chip total is closest to `target`.
+pub(crate) fn closest_raise(actions: &[Action], s: &PokerState, target: u32) -> Option<Action> {
+    let p = s.to_act();
     let mut best: Option<(Action, u32)> = None;
     for &a in actions {
         let to = match a {
             Action::Raise(to) => to,
-            Action::AllIn => s.street_bet(s.to_act()) + s.stack(s.to_act()),
+            Action::AllIn => s.street_bet(p) + s.stack(p),
             _ => continue,
         };
         let dist = to.abs_diff(target);
@@ -283,6 +277,13 @@ fn best_raise(actions: &[Action], s: &PokerState, game: &Poker, frac: f64) -> Op
         }
     }
     best.map(|(a, _)| a)
+}
+
+/// Pick the raise closest to `frac` of the pot from the offered menu, else the
+/// smallest raise/all-in available.
+fn best_raise(actions: &[Action], s: &PokerState, game: &Poker, frac: f64) -> Option<Action> {
+    let target = s.current_bet() + (game.pot(s) as f64 * frac).round() as u32;
+    closest_raise(actions, s, target)
 }
 
 /// Last-resort legal action when the preferred one is unavailable: check or
