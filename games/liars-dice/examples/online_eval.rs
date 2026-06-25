@@ -55,6 +55,7 @@ fn online_agent(
             max_iters: iters,
             restarts,
             seed,
+            ..OnlineSolveConfig::default()
         },
     )
 }

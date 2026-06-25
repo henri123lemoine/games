@@ -114,6 +114,12 @@ pub struct OnlineSolveConfig {
     /// situation are re-solved independently (the agent stays non-deterministic
     /// across a match) yet a fixed run seed reproduces the run.
     pub seed: u64,
+    /// Diagnostic override: when `Some(it)`, the per-round budget is a flat
+    /// `(it, restarts)` regardless of round size — the `total_dice²` work
+    /// ceiling is bypassed entirely. `None` keeps the calibrated size scaling
+    /// (the deploy path). Used to isolate the solve-budget bottleneck from the
+    /// continuation value (see `examples/budget_diag.rs`).
+    pub flat_iters: Option<u64>,
 }
 
 impl Default for OnlineSolveConfig {
@@ -123,6 +129,7 @@ impl Default for OnlineSolveConfig {
             max_iters: 8_000,
             restarts: 3,
             seed: 0xA5_0117_0E50_17E5,
+            flat_iters: None,
         }
     }
 }
@@ -164,6 +171,10 @@ where
     /// report's documented caveat). Calibrated against the speed table in
     /// `examples/online_eval.rs`.
     fn budget(&self, total_dice: u32) -> (u64, usize) {
+        // Diagnostic override: a flat per-round budget, no size scaling.
+        if let Some(it) = self.cfg.flat_iters {
+            return (it.max(1), self.cfg.restarts.max(1));
+        }
         // Enough iterations for the wide opening to leave the uniform prior even
         // at a single restart; below this the agent opens absurd bids.
         const MIN_ITERS: u64 = 1_000;
