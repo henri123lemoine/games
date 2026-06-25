@@ -29,7 +29,7 @@ fn main() -> std::io::Result<()> {
             "playouts" => cfg.playouts = v.parse().unwrap(),
             "hidden" => cfg.hidden = v.parse().unwrap(),
             "cfr_iters" => cfg.cfr_iters = v.parse().unwrap(),
-            "os_iters" => cfg.os_iters = v.parse().unwrap(),
+            "es_iters" => cfg.es_iters = v.parse().unwrap(),
             "small_total" => cfg.small_total = v.parse().unwrap(),
             "batch" => cfg.batch = v.parse().unwrap(),
             "epochs" => cfg.epochs = v.parse().unwrap(),

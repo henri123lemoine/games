@@ -3,10 +3,12 @@
 //!
 //! Each training round samples a configuration and dice vector across the whole
 //! supported space, solves that *one round* exactly (2-player, small) with
-//! [`Cfr`] or by outcome-sampling MCCFR ([`OsMccfr`]) otherwise, then distils the
-//! solved strategy into supervised samples: at every decision node the solved
-//! action distribution is the policy target and the realised round-leaf value is
-//! the value target.
+//! [`Cfr`] or by external-sampling MCCFR ([`Mccfr`]) otherwise — the *same*
+//! solver the deploy [`OnlineSolveAgent`](crate::OnlineSolveAgent) uses, so the
+//! value targets are unbiased on the wide opening nodes that outcome sampling
+//! under-converges — then distils the solved strategy into supervised samples:
+//! at every decision node the solved action distribution is the policy target
+//! and the realised round-leaf value is the value target.
 //!
 //! The continuation that closes a round's leaves runs in two phases. A
 //! `warmup_iters`-iteration **warm start** solves against the fixed
@@ -27,8 +29,7 @@ use std::time::Instant;
 use game_core::{Game, Rng, Turn, win_rate};
 use rayon::prelude::*;
 use solvers::azero::{InferCache, Mlp, Sample, SgdMomentum};
-use solvers::os_mccfr::OsMccfr;
-use solvers::{Cfr, nash_conv};
+use solvers::{Cfr, Mccfr, nash_conv};
 
 use crate::features::{encode, feature_len, legal_actions_and_support, net_policy, policy_len};
 use crate::{
@@ -92,7 +93,7 @@ impl RoundSolver for Cfr<Round<'_>> {
         self.policy(s, player)
     }
 }
-impl RoundSolver for OsMccfr<Round<'_>> {
+impl RoundSolver for Mccfr<Round<'_>> {
     fn policy_at(&self, s: &LdState, player: usize) -> Vec<f64> {
         self.policy(s, player)
     }
@@ -109,7 +110,13 @@ pub struct TrainConfig {
     pub playouts: usize,
     pub hidden: usize,
     pub cfr_iters: u64,
-    pub os_iters: u64,
+    /// Base external-sampling [`Mccfr`] iteration budget for non-tiny rounds —
+    /// the *same* solver, and the same opening-convergence floor, the deploy
+    /// [`OnlineSolveAgent`](crate::OnlineSolveAgent) uses. Scaled down for big
+    /// rounds by [`adaptive_es_iters`] but never below the floor, so the wide
+    /// opening node always leaves its uniform prior. Mirrors
+    /// `OnlineSolveConfig::iters` (8_000).
+    pub es_iters: u64,
     pub small_total: u8,
     pub batch: usize,
     pub epochs: usize,
@@ -132,7 +139,7 @@ impl Default for TrainConfig {
             playouts: 12,
             hidden: 256,
             cfr_iters: 2_000,
-            os_iters: 6_000,
+            es_iters: 8_000,
             small_total: 4,
             batch: 1024,
             epochs: 2,
@@ -302,25 +309,44 @@ fn gen_round_samples(
         sol.solve(cfg.cfr_iters);
         collect(&play_round, &sol, &feat, cfg.playouts, rng, &mut out);
     } else {
-        // Everything else: outcome-sampling MCCFR with a budget scaled DOWN for
-        // bigger rounds, so no single round can stall the parallel batch (the
-        // long-tail that was collapsing the pool to one core). Big rounds get
-        // rougher targets, but the net aggregates over many and generalizes via
-        // its features.
-        let mut sol = OsMccfr::new(solver_round, rng.next_u64());
-        sol.run(adaptive_os_iters(p, total, cfg.os_iters));
+        // Everything else: external-sampling MCCFR — the *same* solver the deploy
+        // `OnlineSolveAgent` runs. It expands every traverser action each
+        // traversal, so it estimates every opening's value and converges the wide
+        // free-open node (outcome sampling samples a single opening per traversal
+        // and leaves the average strategy near-uniform over the 54 openings at
+        // 3p3d6f, biasing exactly the big/multiplayer value targets that matter).
+        // The budget is scaled DOWN for bigger rounds but never below the
+        // opening-convergence floor, so no single round stalls the parallel batch.
+        let mut sol = Mccfr::new(solver_round, rng.next_u64());
+        sol.run(adaptive_es_iters(total, cfg.es_iters));
         collect(&play_round, &sol, &feat, cfg.playouts, rng, &mut out);
     }
     out
 }
 
-/// OsMccfr iteration budget bounded by round size (cost ~ iters x players x
-/// ladder-depth, and depth grows with total dice). Reference work is a 2-player,
-/// total-6 round; larger rounds are scaled down and clamped so per-round
-/// wall-time stays roughly constant.
-fn adaptive_os_iters(p: u8, total: u32, base: u64) -> u64 {
-    let work = u64::from(p) * u64::from(total);
-    (base * 12 / work.max(1)).clamp(1000, base)
+/// External-sampling [`Mccfr`] iteration budget bounded by round size, mirroring
+/// the deploy [`OnlineSolveAgent`](crate::OnlineSolveAgent)'s `budget`: a
+/// traversal expands every traverser action down the bidding ladder, so the
+/// per-iteration cost grows ≈ with the *square* of the total dice (ladder depth
+/// × per-node fan-out, both ∝ dice). Hold `iters × total_dice²` under a fixed
+/// ceiling, trimming `iters` toward — but never below — `MIN_ITERS`, below which
+/// the wide opening node would not leave its uniform prior. Smaller rounds keep
+/// the full `base`.
+fn adaptive_es_iters(total: u32, base: u64) -> u64 {
+    // The opening-convergence floor: deploy uses the same 1_000 (see the
+    // matching const in `OnlineSolveAgent::budget`). Below it the wide opening
+    // node never leaves its uniform prior.
+    const MIN_ITERS: u64 = 1_000;
+    // Per-round ceiling in `iters × total_dice²` units, matched to the deploy
+    // agent's same-named const in `OnlineSolveAgent::budget`, so a sampled round is
+    // solved to the same opening convergence the live agent reaches per solve —
+    // i.e. the value targets are unbiased *with respect to the deployed solver*.
+    // (Deploy then averages a few restarts to cut single-solve variance; training
+    // averages instead over the many rounds the value head sees.)
+    const WORK_CEILING: u64 = 700_000;
+    let td = u64::from(total.max(1));
+    let affordable = WORK_CEILING / (td * td);
+    affordable.min(base).max(MIN_ITERS.min(base))
 }
 
 fn fisher_yates(buf: &mut [Sample], rng: &mut Rng) {
@@ -673,7 +699,7 @@ mod tests {
     fn round_samples_are_well_formed() {
         let cfg = TrainConfig {
             cfr_iters: 200,
-            os_iters: 2_000,
+            es_iters: 2_000,
             playouts: 4,
             ..Default::default()
         };
@@ -715,7 +741,7 @@ mod tests {
             playouts: 6,
             hidden: 64,
             cfr_iters: 400,
-            os_iters: 4_000,
+            es_iters: 4_000,
             epochs: 2,
             val_every: 100, // skip validation in the test
             threads: 2,
