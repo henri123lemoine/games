@@ -23,6 +23,7 @@ use game_core::{Game, Turn};
 mod agents;
 pub mod deepcfr;
 pub mod features;
+pub mod online_solve;
 mod solve;
 mod subgame;
 pub mod train;
@@ -31,6 +32,7 @@ pub use agents::{BidConditioned, ProbConfig, ProbabilisticAgent};
 pub use features::{
     NetAgent, action_index, feature_len, legal_actions_and_support, net_policy, policy_len, support,
 };
+pub use online_solve::{OnlineSolveAgent, OnlineSolveConfig};
 pub use solve::{
     FitConfig, FitResult, LatticeValue, decomposed_game_value, decomposed_value_capped,
     entry_round_value, fit_capped, fit_two_player, round_exploitabilities,
@@ -132,6 +134,33 @@ impl LiarsDice {
         let mut p = (from + 1) % self.players;
         while !self.alive(s, p) {
             p = (p + 1) % self.players;
+        }
+        p
+    }
+
+    /// The seat that opened the round `s` is currently in — the reference point an
+    /// online round-subgame solve must rebuild the round from.
+    ///
+    /// Real bids are placed in turn order starting at the opener and cycling
+    /// through the live seats, so with `b = sum(raises_this_round)` bids placed,
+    /// the last bidder sits `b - 1` live steps after the opener. Walking back
+    /// `b - 1` live steps from `last_bidder` recovers the opener. With no bids yet
+    /// placed this round the seat to act *is* the opener (the forced `1×1` first
+    /// round is the phantom seat's bid, not a live seat's, so it does not count).
+    pub fn round_opener(&self, s: &LdState) -> u8 {
+        let bids: u32 = s.raises_this_round[..self.players as usize]
+            .iter()
+            .map(|&r| u32::from(r))
+            .sum();
+        if bids == 0 {
+            return s.turn;
+        }
+        let mut p = s.last_bidder;
+        for _ in 0..bids - 1 {
+            p = (p + self.players - 1) % self.players;
+            while !self.alive(s, p) {
+                p = (p + self.players - 1) % self.players;
+            }
         }
         p
     }
@@ -274,6 +303,18 @@ impl LdState {
     }
     pub fn last_bidder(&self) -> usize {
         self.last_bidder as usize
+    }
+    /// True only during the game's very first round (the forced `1×1` open
+    /// convention); every later round opens freely. Read by online solving to
+    /// reconstruct this round's opening subgame with the right open convention.
+    pub fn first_round(&self) -> bool {
+        self.first_round
+    }
+    /// Number of bids each seat has made *this round* (index = seat). The sum is
+    /// the count of real bids placed since the round opened; the round opener is
+    /// recovered from it (see [`LiarsDice::round_opener`]).
+    pub fn raises_this_round(&self) -> &[u8] {
+        &self.raises_this_round[..]
     }
 }
 
@@ -722,6 +763,63 @@ mod tests {
             game.state_key(&b),
             "differing raise paths must give distinct state keys"
         );
+    }
+
+    /// `round_opener` must recover the seat that opened the live round, for the
+    /// forced first round and for free-open continuing rounds, after an arbitrary
+    /// bid sequence — the reference point online solving rebuilds the round from.
+    #[test]
+    fn round_opener_recovers_the_opening_seat() {
+        // Drive a real game and, at every in-round decision node, check that
+        // `round_opener` returns the seat that actually opened the current round
+        // (tracked independently as we play).
+        for &players in &[2u8, 3, 4] {
+            let game = LiarsDice::new(players, 3, 6);
+            let mut rng = Rng::new(0xB1D + u64::from(players));
+            for _ in 0..40 {
+                let mut s = game.initial_state();
+                // The first round's opener is the first live seat to act: seat 0.
+                let mut expected_opener = 0u8;
+                let mut bids_in_round = 0u32;
+                while !game.is_terminal(&s) {
+                    match game.turn(&s) {
+                        Turn::Chance => {
+                            let a = game.sample_chance(&s, &mut rng).0;
+                            game.apply(&mut s, a);
+                        }
+                        Turn::Player(_) => {
+                            // The opener of a free-open round is the seat to act
+                            // with no bid yet standing.
+                            if s.qty == 0 && bids_in_round == 0 {
+                                expected_opener = s.turn;
+                            }
+                            assert_eq!(
+                                game.round_opener(&s),
+                                expected_opener,
+                                "players={players} qty={} bids={bids_in_round}",
+                                s.qty
+                            );
+                            let acts = game.legal_actions(&s);
+                            let a = acts[rng.below(acts.len())];
+                            let was_round = s.rounds;
+                            game.apply(&mut s, a);
+                            match a {
+                                Action::CallLiar | Action::CallExact => {
+                                    // The call may end the round (re-roll) or the
+                                    // game. If a new round opened, its opener is
+                                    // the seat now to act.
+                                    if !game.is_terminal(&s) && s.rounds != was_round {
+                                        expected_opener = s.turn;
+                                        bids_in_round = 0;
+                                    }
+                                }
+                                _ => bids_in_round += 1,
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
