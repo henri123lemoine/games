@@ -20,6 +20,8 @@ The behavior baseline (value/ent/log-prob predictions) is frozen at the start of
 the iteration (the reference's generation-time actor), held across the 5 epochs.
 """
 
+import math
+
 import mlx.core as mx
 
 import stratego_nets as S
@@ -31,6 +33,43 @@ CATS = mx.array(S.spec.CATEGORICAL_AGGREGATION, dtype=mx.float32)  # [-1, 0, 1]
 # through that magnitude produces inf/NaN gradients, so clamp to a finite floor —
 # exp(-1e9) is still 0 (the type stays impossible) but the backward stays finite.
 NEG = -1e9
+
+# Bounds on the conditional-entropy targets. Both the ent-pred MSE target
+# (`reg_returns`) and the entropy-advantage (`reg_adv`) derive from `future_nll`,
+# the suffix sum of per-placement NLL over the 40 slots. That sum is unbounded:
+# as placements sharpen (the setup temperature anneals), a forced low-probability
+# placement drives one slot's NLL to tens of nats and the suffix sum amplifies it,
+# exploding the entropy MSE and its gradient (the iter-51 divergence: entropy_loss
+# 0.09 -> 3.97, setup grad_norm 5.8 -> 16 and inf in the worst minibatches). The
+# `ent_out` head is an unbounded Linear, so `reg_adv = future_nll - reg_norm*ent_pred`
+# can blow up from either side. We clip to the trajectory max-entropy envelope: a
+# single placement's surprise is bounded by `MAX_SLOT_NLL` (inert for any placement
+# prob >= exp(-MAX_SLOT_NLL)) and the suffix sum by `MAX_FUTURE_NLL = 40*log(types)`
+# (the most a 40-placement trajectory's realized entropy can be). Healthy targets
+# (~O(1)) are unchanged; the pathological tail is hard-bounded so the stop-gradient
+# targets stay finite and O(1).
+MAX_SLOT_NLL = -math.log(1e-6)  # ~13.8 nats; one placement's surprise cap
+MAX_FUTURE_NLL = S.spec.ARRANGEMENT_SIZE * math.log(S.spec.N_PIECE_TYPE)  # 40*log(14) ~ 105.6
+MAX_ENT_NORM = MAX_FUTURE_NLL / 10.0  # ~10.56; the normalized conditional-entropy ceiling
+# Floor on the per-slot value log-prob inside the value-CE so a momentarily wrong
+# value head (true category prob -> ~0) can't drive the CE to tens of nats.
+VALUE_LOGP_FLOOR = -MAX_SLOT_NLL
+# The conditional-entropy head (`ent_out`, an unregularized Linear) is high-variance:
+# a small data shift between iterations makes its prediction extrapolate to tens in
+# magnitude (observed: -71..-88 against a target <= 3.6). A plain MSE is unbounded in
+# the *prediction*, so that extrapolation exploded the loss/grad (entropy_loss 0.07 ->
+# 6322, grad_norm -> 1.4e5). Train it with a robust (Huber-style) loss: exact MSE
+# inside +/-delta (the legitimate normalized-entropy target stays well under this, so
+# the healthy regime is unchanged) and linear beyond, bounding the gradient to
+# +/-2*delta no matter how far the head extrapolates.
+ENT_HUBER_DELTA = 4.0
+
+
+def _robust_sq(err, delta):
+    """Squared error within +/-delta, linear (bounded-gradient) beyond. Continuous in
+    value and slope at +/-delta; identical to err**2 for |err| <= delta."""
+    a = mx.abs(err)
+    return mx.where(a <= delta, err * err, delta * (2.0 * a - delta))
 
 
 def _log_softmax_legal(logits):
@@ -65,12 +104,19 @@ def setup_baseline(net, seq, reg_norm):
 
     placed = mx.argmax(seq, axis=-1)
     nll = -mx.take_along_axis(log_probs, placed[..., None], axis=-1).squeeze(-1)  # (B,40)
+    # Cap a single placement's surprise before the suffix sum (see MAX_SLOT_NLL).
+    nll = mx.minimum(nll, MAX_SLOT_NLL)
 
-    # future-nll suffix sum: future_nll[k] = sum_{j>=k} nll[j].
+    # future-nll suffix sum: future_nll[k] = sum_{j>=k} nll[j], clipped to the
+    # trajectory max-entropy envelope so both derived targets stay finite and O(1).
     future_nll = mx.cumsum(nll[:, ::-1], axis=1)[:, ::-1]
-    reg_returns = future_nll / reg_norm  # ent-pred MSE target (normalized)
-    ents_base = reg_norm * ent_pred  # denormalized baseline entropy prediction
-    reg_adv = future_nll - ents_base  # reg advantage (λ=1.0 telescoped)
+    future_nll = mx.clip(future_nll, 0.0, MAX_FUTURE_NLL)
+    reg_returns = future_nll / reg_norm  # ent-pred regression target (normalized)
+    # Conditional entropy is non-negative and at most the max-entropy ceiling; clamp the
+    # (high-variance) ent head to that range so a garbage prediction can't bias the
+    # entropy advantage even before the robust loss pulls the head back.
+    ents_base = reg_norm * mx.clip(ent_pred, 0.0, MAX_ENT_NORM)  # denormalized baseline entropy
+    reg_adv = mx.clip(future_nll - ents_base, -MAX_FUTURE_NLL, MAX_FUTURE_NLL)  # λ=1.0 telescoped
 
     return {
         "log_probs": mx.stop_gradient(log_probs),
@@ -119,11 +165,12 @@ def setup_loss_and_stats(net, batch, cfg):
     clipped = mx.clip(ratio, 1 - cfg.arr_clip_range, 1 + cfg.arr_clip_range)
     policy_loss = -mx.minimum(advantages * ratio, advantages * clipped).mean()
 
-    # categorical value-CE: two-hot(outcome) shared across all 40 slots.
+    # categorical value-CE: two-hot(outcome) shared across all 40 slots. Floor the
+    # log-prob so a momentarily-wrong value head can't drive the CE unbounded.
     target = mx.broadcast_to(two_hot(outcome)[:, None, :], value_logp.shape)
-    value_loss = -(target * value_logp).sum(-1).mean()
+    value_loss = -(target * mx.maximum(value_logp, VALUE_LOGP_FLOOR)).sum(-1).mean()
 
-    entropy_loss = ((ent_pred - reg_returns) ** 2).mean()
+    entropy_loss = _robust_sq(ent_pred - reg_returns, ENT_HUBER_DELTA).mean()
     # rev-KL to data policy, summed over legal types only (illegal log-probs are a
     # finite floor whose ~0 prob would otherwise leak a huge-magnitude gradient).
     kl_terms = mx.exp(log_probs) * (log_probs - old_log_probs)

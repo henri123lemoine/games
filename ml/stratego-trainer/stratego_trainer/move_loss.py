@@ -16,13 +16,32 @@ CATS = mx.array(S.spec.CATEGORICAL_AGGREGATION, dtype=mx.float32)  # [-1, 0, 1]
 NEG_INF = -1e30
 
 
-def advantage_filter_mask(advantage_np, rate=0.75, thresh=0.01):
-    """Boolean keep-mask: `|adv| >= max(quantile(|adv|, rate), thresh)` (`buffer.py:233-241`)."""
+def advantage_filter_mask(advantage_np, rate=0.75, thresh=0.01, min_keep=0):
+    """Spec filter `|adv| >= max(quantile(|adv|, rate), thresh)` (`buffer.py:233-241`).
+
+    Returns `(mask, n_threshold)` where `n_threshold` is how many rows actually passed
+    the spec threshold BEFORE the anti-starve floor — the real starvation signal the
+    watchdog watches (a floored `mask.sum()` would hide it).
+
+    `min_keep` is an anti-starve floor: as the policy sharpens, |adv| shrinks below the
+    abs floor for most rows so the threshold keep collapses toward 0 (the full1 freeze:
+    12762 kept at iter46 -> 945 at iter50). When fewer than `min_keep` rows pass the
+    threshold, retain the `min_keep` largest-|adv| rows instead so the pass keeps a
+    stable batch size; the quantile still does the real filtering when advantages are large.
+    """
     abs_adv = np.abs(advantage_np)
-    if abs_adv.size == 0:
-        return np.zeros(0, dtype=bool)
+    n = abs_adv.size
+    if n == 0:
+        return np.zeros(0, dtype=bool), 0
     threshold = max(float(np.quantile(abs_adv, rate)), thresh)
-    return abs_adv >= threshold
+    mask = abs_adv >= threshold
+    n_threshold = int(mask.sum())  # rows passing the spec filter, before any floor
+    k = min(min_keep, n)
+    if k > 0 and n_threshold < k:
+        keep_idx = np.argpartition(abs_adv, n - k)[n - k:]
+        mask = np.zeros(n, dtype=bool)
+        mask[keep_idx] = True
+    return mask, n_threshold
 
 
 def two_hot(scalar, cats=CATS):

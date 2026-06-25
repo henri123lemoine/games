@@ -52,6 +52,11 @@ class TrainConfig:
     gae_lambda: float = 0.5  # advantage lambda (distinct)
     adv_filt_rate: float = 0.75  # keep top-quantile |adv|
     adv_filt_thresh: float = 0.01  # abs floor
+    # Anti-starve floor: as the policy sharpens the abs floor binds and the keep
+    # count collapses (full1: 945 kept of 99k at iter50). Always retain at least
+    # this many top-|adv| rows so the move pass never starves; with max_train_batch
+    # also = 2048 the effective move batch stays ~2048 across the whole run.
+    adv_filt_min_keep: int = 2048
     max_grad_norm: float = 0.267
     uniform_magnet: bool = True  # flat legal/legal.sum magnet (shipped default)
 
@@ -89,6 +94,18 @@ class TrainConfig:
     arr_temperature_decay: float = 0.3
     arr_temperature_ceil: float = 1.0
     arr_temperature_floor: float = 0.001
+
+    # ---- stability guard (self-heal + watchdog) ----
+    # On a non-finite loss/grad (or a net that goes non-finite after its pass) we
+    # revert that net to its last-good in-memory snapshot and scale its LR by
+    # `lr_backoff`; a healthy iter nudges the scale back toward 1.0 by `lr_recover`
+    # (floor `lr_scale_min`). The watchdog HALTS the run (after checkpointing) if
+    # any net stays non-finite or `move/n_kept == 0` for `watchdog_patience`
+    # consecutive iters — so a silent multi-thousand-iter freeze is impossible.
+    watchdog_patience: int = 5
+    lr_backoff: float = 0.5
+    lr_recover: float = 1.1
+    lr_scale_min: float = 1.0 / 64.0
 
     # ---- run / infra ----
     iters: int = 1000
