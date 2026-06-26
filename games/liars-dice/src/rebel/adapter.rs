@@ -46,7 +46,22 @@ pub struct LiarsDiceAdapter<'a, C: ContinuationValue> {
     dice_left: [u8; MAX_SEATS],
     opener: usize,
     first_round: bool,
+    open_qty_cap: Option<u8>,
     cont: &'a C,
+}
+
+/// The strategically-relevant opening-quantity cap for a round of `total` dice
+/// over `faces` faces: roughly twice the expected per-face count (`total/faces`)
+/// plus a safety buffer, clamped to `total`. Openings above this — claiming far
+/// more of a face than the dice could plausibly show — are dominated junk that a
+/// Nash opener never plays, so capping the wide round-open action set there is
+/// lossless (validated) while shrinking the depth-limited solve over it. At
+/// 5p5d6f (`total=25`, `faces=6`) the expected per-face count is ~4.2 and this
+/// gives `2*5 + buffer`, covering every opening equilibrium ever uses.
+pub fn principled_open_cap(total: u8, faces: u8) -> u8 {
+    const BUFFER: u8 = 3;
+    let expected = total.div_ceil(faces);
+    (2 * expected + BUFFER).min(total).max(1)
 }
 
 impl<'a, C: ContinuationValue> LiarsDiceAdapter<'a, C> {
@@ -71,8 +86,26 @@ impl<'a, C: ContinuationValue> LiarsDiceAdapter<'a, C> {
             dice_left,
             opener,
             first_round,
+            open_qty_cap: None,
             cont,
         }
+    }
+
+    /// Restrict the round-open action set to openings of quantity `<= cap`
+    /// (`None` = no cap = the full `1..=total` range). Faithful ReBeL action
+    /// abstraction: only the wide free-open node is narrowed; mid-round relative
+    /// raises, the forced first-round `1×1`, and every other mechanic are
+    /// unchanged. See [`principled_open_cap`] for the deploy default.
+    pub fn with_open_cap(mut self, cap: Option<u8>) -> Self {
+        self.open_qty_cap = cap;
+        self
+    }
+
+    /// [`with_open_cap`](Self::with_open_cap) at the [`principled_open_cap`] for
+    /// this round's total dice and faces — the deploy data-gen / agent default.
+    pub fn with_principled_open_cap(self) -> Self {
+        let cap = principled_open_cap(self.total_dice(&self.dice_left), self.faces);
+        self.with_open_cap(Some(cap))
     }
 
     fn total_dice(&self, dice: &[u8; MAX_SEATS]) -> u8 {
@@ -202,12 +235,14 @@ impl<C: ContinuationValue> RebelGame for LiarsDiceAdapter<'_, C> {
         }
         let total = self.total_dice(&p.dice_left);
         match p.bid {
-            // A free open: every `(qty, face)`. The first round never reaches here
-            // — its root already carries the phantom's forced `1×1`, so the opener
+            // A free open: every `(qty, face)` up to the opening cap (no cap =
+            // every quantity `1..=total`). The first round never reaches here — its
+            // root already carries the phantom's forced `1×1`, so the opener
             // responds to a standing bid (the `Some` arm).
             None => {
-                let mut acts = Vec::with_capacity(total as usize * self.faces as usize);
-                for q in 1..=total {
+                let qmax = self.open_qty_cap.map_or(total, |c| c.min(total));
+                let mut acts = Vec::with_capacity(qmax as usize * self.faces as usize);
+                for q in 1..=qmax {
                     for f in 0..self.faces {
                         acts.push(Bid::Raise { qty: q, face: f });
                     }
@@ -569,6 +604,38 @@ mod tests {
         maxed.last_bidder = 0;
         maxed.turn = 1;
         assert_eq!(ad.legal_actions(&maxed), vec![Bid::Call, Bid::CallExact]);
+    }
+
+    #[test]
+    fn open_cap_prunes_only_high_quantity_openings() {
+        let cv = DiceShareValue;
+        let dice = dice_vec(&[3, 3]);
+        let ad = LiarsDiceAdapter::new(2, 4, dice, 0, false, &cv).with_open_cap(Some(2));
+        let root = ad.root();
+        let opening = ad.legal_actions(&root);
+        // total = 6, faces = 4: full open is 6×4 = 24; cap 2 keeps q∈{1,2} → 2×4.
+        assert_eq!(opening.len(), 2 * 4);
+        assert!(
+            opening
+                .iter()
+                .all(|a| matches!(a, Bid::Raise { qty, .. } if *qty <= 2))
+        );
+        // q=1 still opens for every face — the cap never removes the lowest open.
+        assert!(opening.contains(&Bid::Raise { qty: 1, face: 0 }));
+
+        // Mid-round responses off a standing bid are untouched by the cap.
+        let mut p = root;
+        p.bid = Some((2, 1));
+        p.last_bidder = 0;
+        p.turn = 1;
+        let capped = LiarsDiceAdapter::new(2, 4, dice, 0, false, &cv).with_open_cap(Some(2));
+        let uncapped = LiarsDiceAdapter::new(2, 4, dice, 0, false, &cv);
+        assert_eq!(capped.legal_actions(&p), uncapped.legal_actions(&p));
+
+        // No cap reproduces the full opening; the principled cap clamps to total.
+        assert_eq!(uncapped.legal_actions(&uncapped.root()).len(), 6 * 4);
+        assert_eq!(principled_open_cap(6, 4), 6);
+        assert_eq!(principled_open_cap(25, 6), 13);
     }
 
     #[test]

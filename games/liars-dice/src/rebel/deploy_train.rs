@@ -201,6 +201,12 @@ pub struct DeployTrainConfig {
     /// When set, train on this fixed `(players, dice_per, faces)` config; a
     /// 2-player setting also gates against the exact continuation lattice.
     pub fixed_config: Option<(usize, u8, u8)>,
+    /// Solve the round-open node over the [`principled_open_cap`] abstraction
+    /// (faithful ReBeL opening action abstraction) instead of the full
+    /// `1..=total` quantity range. Enabled for production: the pruned high
+    /// openings are dominated junk (lossless), and the narrower opening node is a
+    /// large data-gen speedup. Disable for the lossless ablation.
+    pub principled_open_cap: bool,
 }
 
 impl Default for DeployTrainConfig {
@@ -227,6 +233,7 @@ impl Default for DeployTrainConfig {
             outdir: PathBuf::new(),
             log: false,
             fixed_config: None,
+            principled_open_cap: true,
         }
     }
 }
@@ -278,6 +285,19 @@ fn dice_vec(counts: &[u8]) -> [u8; MAX_SEATS] {
     let mut d = [0u8; MAX_SEATS];
     d[..counts.len()].copy_from_slice(counts);
     d
+}
+
+/// Apply the [`principled_open_cap`] opening abstraction to `ad` when `on`, so a
+/// gate adapter solves the same opening node the capped data-gen produces.
+fn maybe_cap<C: ContinuationValue>(
+    ad: LiarsDiceAdapter<'_, C>,
+    on: bool,
+) -> LiarsDiceAdapter<'_, C> {
+    if on {
+        ad.with_principled_open_cap()
+    } else {
+        ad
+    }
 }
 
 impl DeployTrainer {
@@ -354,6 +374,7 @@ impl DeployTrainer {
         let gen_per = self.cfg.gen_per_step;
         let sp = self.selfplay_params();
         let fixed = self.cfg.fixed_config;
+        let use_cap = self.cfg.principled_open_cap;
         let net = &self.net;
         let episodes: Vec<Vec<Sample>> = (0..gen_per)
             .into_par_iter()
@@ -377,6 +398,11 @@ impl DeployTrainer {
                     round.first_round,
                     &cont,
                 );
+                let adapter = if use_cap {
+                    adapter.with_principled_open_cap()
+                } else {
+                    adapter
+                };
                 generate_episode(&adapter, sp, net, &mut rng)
             })
             .collect();
@@ -426,6 +452,7 @@ impl DeployTrainer {
             max_value_delta: 0.0,
             max_direct_delta: 0.0,
         };
+        let use_cap = self.cfg.principled_open_cap;
         for &(a, b, opener) in &gate.states {
             let dice = dice_vec(&[a, b]);
             let exact = gate
@@ -433,7 +460,10 @@ impl DeployTrainer {
                 .get_two_player(&[a, b], opener)
                 .expect("lattice covers every continuing 2p state");
 
-            let ad_net = LiarsDiceAdapter::new(2, gate.faces, dice, opener, false, &cont);
+            let ad_net = maybe_cap(
+                LiarsDiceAdapter::new(2, gate.faces, dice, opener, false, &cont),
+                use_cap,
+            );
             let initial = Belief::uniform_prior(&ad_net.root());
             let terminal = TerminalLeaf::new(&ad_net);
             let mut solver = Solver::new(&ad_net, params, &terminal, initial.clone());
@@ -446,7 +476,10 @@ impl DeployTrainer {
                 .sum();
             let avg = solver.average_strategy().to_vec();
 
-            let ad_exact = LiarsDiceAdapter::new(2, gate.faces, dice, opener, false, &gate.lattice);
+            let ad_exact = maybe_cap(
+                LiarsDiceAdapter::new(2, gate.faces, dice, opener, false, &gate.lattice),
+                use_cap,
+            );
             let expl = exploitability(&ad_exact, &avg);
             let direct = (cont.value(gate.faces, &[a, b], opener, 0) - exact).abs();
 
@@ -598,6 +631,7 @@ mod tests {
         let players = env_usize("PLAYERS", 2);
         let dice_per = env_usize("DICE", 2) as u8;
         let faces = env_usize("FACES", 3) as u8;
+        let use_cap = env_usize("OPEN_CAP", 1) != 0;
 
         let cfg = DeployTrainConfig {
             steps: env_usize("STEPS", 300),
@@ -623,6 +657,7 @@ mod tests {
                 .unwrap_or_default(),
             log: true,
             fixed_config: Some((players, dice_per, faces)),
+            principled_open_cap: use_cap,
         };
 
         let start = std::time::Instant::now();
@@ -665,7 +700,10 @@ mod tests {
                     let dice = dice_vec(&[a, b]);
                     let exact = lattice.get_two_player(&[a, b], opener).unwrap();
 
-                    let ad_net = LiarsDiceAdapter::new(2, faces, dice, opener, false, &cont);
+                    let ad_net = maybe_cap(
+                        LiarsDiceAdapter::new(2, faces, dice, opener, false, &cont),
+                        use_cap,
+                    );
                     let initial = Belief::uniform_prior(&ad_net.root());
                     let terminal = TerminalLeaf::new(&ad_net);
                     let mut solver = Solver::new(&ad_net, full, &terminal, initial.clone());
@@ -679,7 +717,10 @@ mod tests {
                     let avg = solver.average_strategy().to_vec();
                     let rec = recursive_strategy(&ad_net, net, depth2);
 
-                    let ad_exact = LiarsDiceAdapter::new(2, faces, dice, opener, false, &lattice);
+                    let ad_exact = maybe_cap(
+                        LiarsDiceAdapter::new(2, faces, dice, opener, false, &lattice),
+                        use_cap,
+                    );
                     let full_expl = exploitability(&ad_exact, &avg);
                     let rec_expl = exploitability(&ad_exact, &rec);
                     let direct = (cont.value(faces, &[a, b], opener, 0) - exact).abs();

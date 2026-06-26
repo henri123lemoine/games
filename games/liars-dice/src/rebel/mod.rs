@@ -23,7 +23,7 @@ pub mod train;
 pub mod tree;
 pub mod value_net;
 
-pub use adapter::LiarsDiceAdapter;
+pub use adapter::{LiarsDiceAdapter, principled_open_cap};
 pub use agent::RebelAgent;
 pub use buffer::Reservoir;
 pub use cfr::{CfrParams, CfrVariant, Solver};

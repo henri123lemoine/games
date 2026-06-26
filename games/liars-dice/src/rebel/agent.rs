@@ -58,6 +58,7 @@ pub struct RebelAgent {
     net: PbsNet,
     num_iters: usize,
     max_depth: u32,
+    open_cap: bool,
 }
 
 impl RebelAgent {
@@ -67,6 +68,7 @@ impl RebelAgent {
             net,
             num_iters: DEFAULT_ITERS,
             max_depth: DEFAULT_DEPTH,
+            open_cap: true,
         }
     }
 
@@ -76,7 +78,17 @@ impl RebelAgent {
             net,
             num_iters,
             max_depth,
+            open_cap: true,
         }
+    }
+
+    /// Toggle the [`principled_open_cap`](crate::rebel::principled_open_cap)
+    /// opening abstraction (on by default — the deployed agent opens from the
+    /// capped set the net trained on). Disabling restores the full opening range,
+    /// used by the lossless ablation gate.
+    pub fn with_opening_abstraction(mut self, on: bool) -> Self {
+        self.open_cap = on;
+        self
     }
 
     /// Build the agent from a serialized [`PbsNet`]/[`RebelMlp`] checkpoint's bytes.
@@ -114,8 +126,21 @@ impl RebelAgent {
         let opener = game.round_opener(state) as usize;
         let first_round = state.first_round();
 
+        // The agent opens from the same principled-cap action set the value net
+        // was trained on (faithful ReBeL opening abstraction); mid-round responses
+        // use the relative-raise (`Some`) arm, which the cap never touches. If a
+        // HUMAN opponent opens above the cap, that bid is off-tree for the opening
+        // block: the descent cannot reconstruct it through capped openings and
+        // returns `None`, so `action_probs` falls back to solving rooted directly
+        // at the live standing bid with a uniform opener range — a graceful,
+        // always-legal response (the agent only ever responds to such openings).
         let cont = NetContinuation::new(&self.net);
         let adapter = LiarsDiceAdapter::new(players, faces, dice_left, opener, first_round, &cont);
+        let adapter = if self.open_cap {
+            adapter.with_principled_open_cap()
+        } else {
+            adapter
+        };
 
         let bids: usize = state.raises_this_round()[..players]
             .iter()
