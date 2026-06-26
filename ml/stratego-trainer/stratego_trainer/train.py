@@ -518,14 +518,18 @@ def train(cfg: TrainConfig):
         move_lr = cfg.lr(t) * move_lr_scale
         setup_lr = cfg.arr_lr * setup_lr_scale
 
+        # fp32 warmup: from random init the first iters are bf16-fragile (the net can
+        # overflow before the self-heal recovers -> early NaN cascade). Train them in
+        # fp32, then switch to bf16. Collect stays bf16 throughout (sanitized inference).
+        _bf16 = cfg.bf16_train and t >= 15
         m_stats, m_nan = train_move_pass(move, move_opt, move_data, s.encode_move_obs, magnet_coef, move_lr, cfg,
-                                         bf16_net=move_bf16 if cfg.bf16_train else None)
+                                         bf16_net=move_bf16 if _bf16 else None)
         move_applied = "move/skipped" not in m_stats
         move_snap, move_lr_scale, move_nan, move_stage = _self_heal(
             move, move_opt, move_ema, move_snap, m_nan, move_applied, move_lr, move_lr_scale, cfg)
 
         a_stats, a_nan = train_setup_pass(setup, setup_opt, setup_data, reg_temp, setup_lr, cfg,
-                                          bf16_net=setup_bf16 if cfg.bf16_train else None)
+                                          bf16_net=setup_bf16 if _bf16 else None)
         setup_applied = a_stats.get("setup/n_applied", 0) > 0
         setup_snap, setup_lr_scale, setup_nan, setup_stage = _self_heal(
             setup, setup_opt, setup_ema, setup_snap, a_nan, setup_applied, setup_lr, setup_lr_scale, cfg)
