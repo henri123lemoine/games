@@ -607,6 +607,7 @@ def parse_args(argv=None):
     # configurable" — at smoke scale the magnet otherwise overwhelms the weaker
     # advantage signal and pins the policy at uniform, so the smoke lowers it.
     p.add_argument("--magnet-coef", type=float, default=TrainConfig.temperature_coef)
+    p.add_argument("--magnet-decay", type=float, default=TrainConfig.temperature_decay)
     p.add_argument("--mlx-memory-limit-gb", type=float, default=TrainConfig.mlx_memory_limit_gb)
     return p.parse_args(argv)
 
@@ -627,6 +628,7 @@ def main(argv=None):
         eval_games=a.eval_games,
         eval_temperature=a.eval_temperature,
         temperature_coef=a.magnet_coef,
+        temperature_decay=a.magnet_decay,
         work_seconds=a.work_seconds,
         mlx_memory_limit_gb=a.mlx_memory_limit_gb,
     )
