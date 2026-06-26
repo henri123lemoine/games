@@ -207,6 +207,17 @@ pub struct DeployTrainConfig {
     /// openings are dominated junk (lossless), and the narrower opening node is a
     /// large data-gen speedup. Disable for the lossless ablation.
     pub principled_open_cap: bool,
+    /// Data-gen [`CfrParams::leaf_refresh_every`]: re-query the value net at each
+    /// subgame leaf only once every this many of a traverser's CFR iterations,
+    /// recycling the cached per-hand output (still freshly opponent-reach-scaled)
+    /// in between. Net forwards dominate the 5p5d6f solve at hidden=256 (~4.7x
+    /// data-gen speedup at K=8), so this is the big throughput lever — but it is an
+    /// approximation. Held at the exact `1` by default: the K-sweep
+    /// (`examples/rebel_kcache_sweep.rs`) shows even K=2 regresses depth-2
+    /// perfect-oracle exploitability past the gate (1x5f 0.030→0.053), so it is
+    /// not enabled by default. Raise it (and the gate `eval` stays at `1`) only
+    /// after a flagship training-quality A/B justifies the trade.
+    pub leaf_refresh_every: usize,
 }
 
 impl Default for DeployTrainConfig {
@@ -234,6 +245,7 @@ impl Default for DeployTrainConfig {
             log: false,
             fixed_config: None,
             principled_open_cap: true,
+            leaf_refresh_every: 1,
         }
     }
 }
@@ -358,6 +370,7 @@ impl DeployTrainer {
             cfr: CfrParams {
                 num_iters: self.cfg.num_iters,
                 max_depth: self.cfg.max_depth,
+                leaf_refresh_every: self.cfg.leaf_refresh_every,
                 ..CfrParams::default()
             },
             explore_eps: self.cfg.explore_eps,
@@ -658,6 +671,7 @@ mod tests {
             log: true,
             fixed_config: Some((players, dice_per, faces)),
             principled_open_cap: use_cap,
+            leaf_refresh_every: env_usize("LEAF_REFRESH", 1),
         };
 
         let start = std::time::Instant::now();

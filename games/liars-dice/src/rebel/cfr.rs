@@ -37,6 +37,14 @@ pub struct CfrParams {
     /// Take leaf beliefs from the average strategy (CFR-AVG) rather than the
     /// current strategy (CFR-D).
     pub cfr_avg: bool,
+    /// Re-query each leaf's value (the expensive net forward) only once every this
+    /// many of the traverser's own iterations, reusing the cached per-hand output
+    /// in between while still applying that iteration's fresh opponent-reach
+    /// scaling. `1` (the default) refreshes every iteration — exactly the
+    /// un-cached behavior. Larger values trade a small Nash-distance approximation
+    /// for a ~K-fold cut in net forwards; gate before raising. Keep at `1` for
+    /// exact eval/exploitability paths.
+    pub leaf_refresh_every: usize,
 }
 
 impl Default for CfrParams {
@@ -47,6 +55,7 @@ impl Default for CfrParams {
             variant: CfrVariant::LinearCfr,
             alternating: true,
             cfr_avg: false,
+            leaf_refresh_every: 1,
         }
     }
 }
@@ -159,6 +168,11 @@ pub struct Solver<'a> {
     leaf_beliefs: Vec<Belief>,
     /// Reusable per-leaf opponent-reach scalers, overwritten each iteration.
     leaf_scalers: Vec<f64>,
+    /// Cached net (normalized-belief) leaf output, indexed `[traverser][leaf]`,
+    /// each inner vector sized to that seat's hand count. Refreshed every
+    /// `leaf_refresh_every` of the traverser's iterations and reused (still scaled
+    /// by fresh opponent reach) in between. Unused when `leaf_refresh_every <= 1`.
+    leaf_value_cache: Vec<Vec<Vec<f64>>>,
     /// Reusable counterfactual-value accumulator (length = max traverser hands).
     val_buf: Vec<f64>,
 }
@@ -226,6 +240,9 @@ impl<'a> Solver<'a> {
             })
             .collect();
         let leaf_scalers = vec![0.0; leaf_ids.len()];
+        let leaf_value_cache = (0..players)
+            .map(|s| vec![vec![0.0; seat_hands[s]]; leaf_ids.len()])
+            .collect();
 
         let mut solver = Self {
             params,
@@ -247,6 +264,7 @@ impl<'a> Solver<'a> {
             leaf_publics,
             leaf_beliefs,
             leaf_scalers,
+            leaf_value_cache,
             val_buf,
         };
         solver.seed_uniform_reach_weighted();
@@ -306,14 +324,23 @@ impl<'a> Solver<'a> {
             );
         }
 
+        // The cached net output is recycled across `leaf_refresh_every` of this
+        // traverser's iterations; `num_steps[traverser]` is the count of its
+        // completed steps, so step 0 always refreshes (and seeds the cache). The
+        // opponent-reach scalers below are cheap and recomputed every iteration.
+        let k_refresh = self.params.leaf_refresh_every;
+        let refresh = k_refresh <= 1 || self.num_steps[traverser].is_multiple_of(k_refresh);
+
         for k in 0..self.leaf_ids.len() {
             let idx = self.leaf_ids[k];
-            for seat in 0..self.players {
-                let r = &self.reach[seat][idx];
-                let sum = r.iter().sum::<f64>().max(SMOOTHING_EPS);
-                let dst = &mut self.leaf_beliefs[k].per_seat[seat];
-                for (d, x) in dst.iter_mut().zip(r) {
-                    *d = *x / sum;
+            if refresh {
+                for seat in 0..self.players {
+                    let r = &self.reach[seat][idx];
+                    let sum = r.iter().sum::<f64>().max(SMOOTHING_EPS);
+                    let dst = &mut self.leaf_beliefs[k].per_seat[seat];
+                    for (d, x) in dst.iter_mut().zip(r) {
+                        *d = *x / sum;
+                    }
                 }
             }
             self.leaf_scalers[k] = (0..self.players)
@@ -321,14 +348,20 @@ impl<'a> Solver<'a> {
                 .map(|j| self.reach[j][idx].iter().sum::<f64>())
                 .product();
         }
-        let raws = self
-            .leaf
-            .values_batch(&self.leaf_publics, traverser, &self.leaf_beliefs);
-        for (k, raw) in raws.iter().enumerate() {
+        if refresh {
+            let raws = self
+                .leaf
+                .values_batch(&self.leaf_publics, traverser, &self.leaf_beliefs);
+            for (cached, raw) in self.leaf_value_cache[traverser].iter_mut().zip(&raws) {
+                cached.copy_from_slice(raw);
+            }
+        }
+        for k in 0..self.leaf_ids.len() {
             let idx = self.leaf_ids[k];
             let scaler = self.leaf_scalers[k];
+            let cached = &self.leaf_value_cache[traverser][k];
             let dst = &mut self.traverser_values[idx];
-            for (d, &v) in dst.iter_mut().zip(raw) {
+            for (d, &v) in dst.iter_mut().zip(cached) {
                 *d = v * scaler;
             }
         }

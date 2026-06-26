@@ -684,6 +684,7 @@ mod tests {
             variant: CfrVariant::LinearCfr,
             alternating: true,
             cfr_avg: false,
+            leaf_refresh_every: 1,
         };
         let mut solver = Solver::new(ad, params, &terminal, initial.clone());
         solver.multistep();

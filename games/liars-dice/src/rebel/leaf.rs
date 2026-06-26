@@ -152,6 +152,7 @@ impl<G: RebelGame> LeafValue for PerfectOracleLeaf<'_, G> {
             variant: CfrVariant::LinearCfr,
             alternating: true,
             cfr_avg: false,
+            leaf_refresh_every: 1,
         };
         let terminal = TerminalLeaf::new(&subgame);
         let mut solver = Solver::new(&subgame, params, &terminal, belief.clone());
