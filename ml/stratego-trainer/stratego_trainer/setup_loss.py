@@ -131,7 +131,8 @@ def setup_loss_and_stats(net, batch, cfg):
 
     `batch` MLX arrays:
       seq (B,40,14), outcome (B,), reg_temp (scalar),
-      old_log_probs (B,40,14), old_value_scalar (B,40), reg_returns (B,40), reg_adv (B,40).
+      old_log_probs (B,40,14), optional old_action_log_prob (B,40),
+      old_value_scalar (B,40), reg_returns (B,40), reg_adv (B,40).
     """
     seq = batch["seq"]
     outcome = batch["outcome"]
@@ -150,7 +151,9 @@ def setup_loss_and_stats(net, batch, cfg):
 
     placed = mx.argmax(seq, axis=-1)
     log_prob = mx.take_along_axis(log_probs, placed[..., None], axis=-1).squeeze(-1)
-    old_lp = mx.take_along_axis(old_log_probs, placed[..., None], axis=-1).squeeze(-1)
+    old_lp = batch.get("old_action_log_prob")
+    if old_lp is None:
+        old_lp = mx.take_along_axis(old_log_probs, placed[..., None], axis=-1).squeeze(-1)
     # Clamp the log-ratio before exp: across the 5 epochs on a frozen baseline the
     # policy can drift far enough that exp(log_prob - old_lp) overflows to inf
     # (then inf*adv -> NaN). PPO already clips the ratio to [1-eps, 1+eps] for the

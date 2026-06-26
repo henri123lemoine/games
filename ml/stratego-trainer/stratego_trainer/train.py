@@ -321,9 +321,13 @@ def train_setup_pass(setup_net, opt, setup_data, reg_temp, lr, cfg):
     # Scrub the drained inputs (seq is a one-hot, outcome in {-1,0,1}); a stray
     # non-finite would otherwise flow through the baseline into every term. Count any
     # scrubbed corruption so it surfaces in metrics instead of being swallowed.
-    setup_scrub = _nonfinite(setup_data["seq"]) + _nonfinite(setup_data["outcome"])
+    setup_scrub = (_nonfinite(setup_data["seq"]) + _nonfinite(setup_data["outcome"])
+                   + _nonfinite(setup_data["old_log_prob"]))
     seq_all = mx.array(np.nan_to_num(setup_data["seq"], nan=0.0).astype(np.float32))
     outcome_all = mx.array(np.clip(np.nan_to_num(setup_data["outcome"], nan=0.0), -1.0, 1.0).astype(np.float32))
+    old_action_lp_all = mx.array(np.nan_to_num(
+        setup_data["old_log_prob"], nan=0.0, posinf=0.0, neginf=-100.0
+    ).astype(np.float32))
     # Freeze the behavior baseline once (the generation-time actor).
     base = setup_baseline(setup_net, seq_all, cfg.arr_reg_norm)
     mx.eval(base["log_probs"], base["value_scalar"], base["reg_returns"], base["reg_adv"])
@@ -342,6 +346,7 @@ def train_setup_pass(setup_net, opt, setup_data, reg_temp, lr, cfg):
                 "seq": seq_all[bidx],
                 "outcome": outcome_all[bidx],
                 "reg_temp": reg_temp,
+                "old_action_log_prob": old_action_lp_all[bidx],
                 "old_log_probs": base["log_probs"][bidx],
                 "old_value_scalar": base["value_scalar"][bidx],
                 "reg_returns": base["reg_returns"][bidx],
