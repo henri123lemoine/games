@@ -45,13 +45,13 @@ class TrainConfig:
 
     # ---- move-RL loss (§4.1, rl.py:547-579) ----
     clip_range: float = 0.2  # PPO epsilon
-    vf_coef: float = 1.0
+    vf_coef: float = 0.5  # spec 1.0, but at laptop scale the value head over-fits the limited self-play data and outpaces the policy -> GAE advantages vanish -> move policy_loss->0 -> learning STALLS ~iter350 (fullrun4 peaked at winrate 0.71 then drifted). Train the value less so advantages retain signal. EXPERIMENTAL deviation.
     policy_coef: float = 1.0
     kl_coef: float = 0.1  # rev-KL to data policy (constant)
     td_lambda: float = 0.8  # value lambda
     gae_lambda: float = 0.5  # advantage lambda (distinct)
     adv_filt_rate: float = 0.75  # keep top-quantile |adv|
-    adv_filt_thresh: float = 0.001  # abs floor (0.01 starved n_threshold_keep->0 once the value head fit and |adv| shrank, halting fullrun1 ~iter540; 0.001 keeps the spec filter ~relative top-quantile)
+    adv_filt_thresh: float = 1e-6  # ~0: the filter is purely the relative top-quantile, so it NEVER starves to 0 regardless of |adv| magnitude (0.01->0.001->1e-6 as the value-collapse kept shrinking |adv| below each floor and re-triggering the watchdog halt)
     # Anti-starve floor: as the policy sharpens the abs floor binds and the keep
     # count collapses (full1: 945 kept of 99k at iter50). Always retain at least
     # this many top-|adv| rows so the move pass never starves; with max_train_batch
