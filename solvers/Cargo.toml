@@ -10,11 +10,12 @@ path = "src/lib.rs"
 
 [features]
 default = ["parallel"]
-parallel = ["dep:rayon"]
+parallel = ["dep:rayon", "gemm/rayon"]
 
 [dependencies]
 game-core = { workspace = true }
 rayon = { workspace = true, optional = true }
+gemm = { version = "0.19", default-features = false, features = ["std"] }
 web-time = "1"
 
 [dev-dependencies]

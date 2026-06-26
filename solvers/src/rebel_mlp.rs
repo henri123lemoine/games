@@ -3,11 +3,14 @@
 //! linear head with no output activation (raw value regression). Trained with a
 //! masked Huber loss (δ=1), Adam, and global L2 gradient clipping.
 //!
-//! Parameters are stored as `f32` (compact, exact checkpoint round-trips) but
-//! every forward/backward arithmetic step runs in `f64`. The `f64` path keeps
-//! the analytic gradient tight enough to match a finite-difference check well
-//! inside the required tolerance, and lets the gradient-check test feed an
-//! explicit `f64` parameter vector with no quantization noise.
+//! Parameters are stored as `f32` (compact, exact checkpoint round-trips).
+//! Inference ([`RebelMlp::forward`] / [`RebelMlp::forward_batch`]) runs as
+//! batched f32 GEMMs — Apple Accelerate on macOS, the portable `gemm` crate
+//! elsewhere — with LayerNorm/GeLU reductions kept in f64 so the result tracks
+//! the training forward to f32 precision. Training (loss, gradients, Adam) runs
+//! in `f64`: that keeps the analytic gradient tight against a finite-difference
+//! check and lets the gradient-check test feed an explicit `f64` parameter
+//! vector with no quantization noise.
 //!
 //! GeLU uses the exact form `0.5*x*(1 + erf(x/√2))`. `erf` is the
 //! Abramowitz-Stegun 7.1.26 rational approximation; the backward pass
@@ -148,6 +151,189 @@ fn gelu_grad(x: f64) -> f64 {
     0.5 * (1.0 + erf(u)) + 0.5 * x * erf_prime(u) * FRAC_1_SQRT_2
 }
 
+/// SGEMM backend for the f32 inference forward. On macOS the default is Apple
+/// Accelerate (vecLib / AMX coprocessor); elsewhere it is the portable `gemm`
+/// crate. The non-preferred variant is still compiled so the benchmark can
+/// compare both backends on the same machine.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // `Portable` is unconstructed in macOS release builds.
+enum SgemmBackend {
+    Portable,
+    #[cfg(target_os = "macos")]
+    Accelerate,
+}
+
+impl SgemmBackend {
+    #[inline]
+    fn preferred() -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            SgemmBackend::Accelerate
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            SgemmBackend::Portable
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod accelerate {
+    pub const ROW_MAJOR: i32 = 101;
+    pub const NO_TRANS: i32 = 111;
+    pub const TRANS: i32 = 112;
+
+    #[link(name = "Accelerate", kind = "framework")]
+    unsafe extern "C" {
+        #[allow(clippy::too_many_arguments)]
+        pub fn cblas_sgemm(
+            order: i32,
+            transa: i32,
+            transb: i32,
+            m: i32,
+            n: i32,
+            k: i32,
+            alpha: f32,
+            a: *const f32,
+            lda: i32,
+            b: *const f32,
+            ldb: i32,
+            beta: f32,
+            c: *mut f32,
+            ldc: i32,
+        );
+    }
+}
+
+#[cfg(feature = "parallel")]
+#[inline]
+fn gemm_parallelism() -> gemm::Parallelism {
+    gemm::Parallelism::Rayon(0)
+}
+
+#[cfg(not(feature = "parallel"))]
+#[inline]
+fn gemm_parallelism() -> gemm::Parallelism {
+    gemm::Parallelism::None
+}
+
+/// `dst (m×n, row-major) = lhs (m×k, row-major) · weightᵀ`, where `weight` is a
+/// body matrix in its natural `(n×k)` output-major row-major layout, so its
+/// transpose is the `(k×n)` right operand with no copy. `dst` is fully written.
+fn sgemm_into(
+    backend: SgemmBackend,
+    m: usize,
+    k: usize,
+    n: usize,
+    lhs: &[f32],
+    weight: &[f32],
+    dst: &mut [f32],
+) {
+    debug_assert_eq!(lhs.len(), m * k);
+    debug_assert_eq!(weight.len(), n * k);
+    debug_assert_eq!(dst.len(), m * n);
+    match backend {
+        SgemmBackend::Portable => unsafe {
+            gemm::gemm(
+                m,
+                n,
+                k,
+                dst.as_mut_ptr(),
+                1,
+                n as isize,
+                false,
+                lhs.as_ptr(),
+                1,
+                k as isize,
+                weight.as_ptr(),
+                k as isize,
+                1,
+                0.0,
+                1.0,
+                false,
+                false,
+                false,
+                gemm_parallelism(),
+            );
+        },
+        #[cfg(target_os = "macos")]
+        SgemmBackend::Accelerate => unsafe {
+            accelerate::cblas_sgemm(
+                accelerate::ROW_MAJOR,
+                accelerate::NO_TRANS,
+                accelerate::TRANS,
+                m as i32,
+                n as i32,
+                k as i32,
+                1.0,
+                lhs.as_ptr(),
+                k as i32,
+                weight.as_ptr(),
+                k as i32,
+                0.0,
+                dst.as_mut_ptr(),
+                n as i32,
+            );
+        },
+    }
+}
+
+fn matmul(
+    backend: SgemmBackend,
+    m: usize,
+    k: usize,
+    n: usize,
+    lhs: &[f32],
+    weight: &[f32],
+) -> Vec<f32> {
+    let mut dst = vec![0.0f32; m * n];
+    sgemm_into(backend, m, k, n, lhs, weight, &mut dst);
+    dst
+}
+
+/// In place over a row-major `(rows × h)` pre-activation: add `bias`, LayerNorm
+/// (eps `LN_EPS`) with `gamma`/`beta`, then GeLU. Per-row reductions run in f64
+/// so the f32 forward tracks the f64 training forward to f32 precision.
+fn layer_norm_gelu(z: &mut [f32], h: usize, bias: &[f32], gamma: &[f32], beta: &[f32]) {
+    let per_row = |row: &mut [f32]| {
+        let mut mean = 0.0f64;
+        for (v, &b) in row.iter_mut().zip(bias) {
+            *v += b;
+            mean += *v as f64;
+        }
+        mean /= h as f64;
+        let var = row
+            .iter()
+            .map(|&v| {
+                let d = v as f64 - mean;
+                d * d
+            })
+            .sum::<f64>()
+            / h as f64;
+        let rstd = 1.0 / (var + LN_EPS).sqrt();
+        for ((v, &g), &b) in row.iter_mut().zip(gamma).zip(beta) {
+            let normalized = (*v as f64 - mean) * rstd;
+            *v = gelu(g as f64 * normalized + b as f64) as f32;
+        }
+    };
+    #[cfg(feature = "parallel")]
+    z.par_chunks_mut(h).for_each(per_row);
+    #[cfg(not(feature = "parallel"))]
+    z.chunks_mut(h).for_each(per_row);
+}
+
+fn add_bias(dst: &mut [f32], n: usize, bias: &[f32]) {
+    let per_row = |row: &mut [f32]| {
+        for (d, &b) in row.iter_mut().zip(bias) {
+            *d += b;
+        }
+    };
+    #[cfg(feature = "parallel")]
+    dst.par_chunks_mut(n).for_each(per_row);
+    #[cfg(not(feature = "parallel"))]
+    dst.chunks_mut(n).for_each(per_row);
+}
+
 /// Per-block forward activations retained for the backward pass.
 struct Cache {
     block_input: Vec<Vec<f64>>,
@@ -259,35 +445,40 @@ impl RebelMlp {
     /// Raw output values for a single `input` of length `input_dim`.
     pub fn forward(&self, input: &[f32]) -> Vec<f32> {
         assert_eq!(input.len(), self.cfg.input_dim, "input length mismatch");
-        let params = self.params_f64();
-        let mut no_cache = None;
-        self.forward_full(&params, input, &mut no_cache)
-            .iter()
-            .map(|&v| v as f32)
-            .collect()
+        self.forward_batch(input, 1)
     }
 
     /// Raw outputs for `n` inputs laid out row-major (`n * input_dim`),
-    /// returned row-major (`n * output_dim`). Rows are independent; with the
-    /// `parallel` feature they are evaluated across threads.
+    /// returned row-major (`n * output_dim`). Each layer is a single batched
+    /// f32 GEMM (Accelerate on macOS, the `gemm` crate elsewhere); LayerNorm and
+    /// GeLU are applied per row.
     pub fn forward_batch(&self, inputs: &[f32], n: usize) -> Vec<f32> {
+        self.forward_batch_with(inputs, n, SgemmBackend::preferred())
+    }
+
+    fn forward_batch_with(&self, inputs: &[f32], n: usize, backend: SgemmBackend) -> Vec<f32> {
         let id = self.cfg.input_dim;
         let od = self.cfg.output_dim;
         assert_eq!(inputs.len(), n * id, "batch input length mismatch");
-        let params = self.params_f64();
-        let mut out = vec![0.0f32; n * od];
-        let row = |(r, dst): (usize, &mut [f32])| {
-            let input = &inputs[r * id..(r + 1) * id];
-            let mut no_cache = None;
-            let values = self.forward_full(&params, input, &mut no_cache);
-            for (d, &v) in dst.iter_mut().zip(&values) {
-                *d = v as f32;
-            }
-        };
-        #[cfg(feature = "parallel")]
-        out.par_chunks_mut(od).enumerate().for_each(row);
-        #[cfg(not(feature = "parallel"))]
-        out.chunks_mut(od).enumerate().for_each(row);
+        if n == 0 {
+            return Vec::new();
+        }
+        let h = self.cfg.hidden;
+        let mut act = inputs.to_vec();
+        for blk in &self.layout.blocks {
+            let k = blk.in_dim;
+            let weight = &self.params[blk.weight..blk.weight + h * k];
+            let bias = &self.params[blk.bias..blk.bias + h];
+            let gamma = &self.params[blk.gamma..blk.gamma + h];
+            let beta = &self.params[blk.beta..blk.beta + h];
+            let mut z = matmul(backend, n, k, h, &act, weight);
+            layer_norm_gelu(&mut z, h, bias, gamma, beta);
+            act = z;
+        }
+        let hw = &self.params[self.layout.head_weight..self.layout.head_weight + od * h];
+        let hb = &self.params[self.layout.head_bias..self.layout.head_bias + od];
+        let mut out = matmul(backend, n, h, od, &act, hw);
+        add_bias(&mut out, od, hb);
         out
     }
 
@@ -664,6 +855,7 @@ mod tests {
             let denom = fd.abs().max(grad[i].abs()).max(1e-6);
             max_rel = max_rel.max((fd - grad[i]).abs() / denom);
         }
+        println!("grad-check max relative error = {max_rel:.3e}");
         assert!(max_rel < 1e-3, "gradient check failed: max_rel = {max_rel}");
     }
 
@@ -718,6 +910,100 @@ mod tests {
             for k in 0..cfg.output_dim {
                 let diff = (batched[r * cfg.output_dim + k] - single[k]).abs();
                 assert!(diff < 1e-5, "row {r} output {k} diff = {diff}");
+            }
+        }
+    }
+
+    #[test]
+    fn f32_forward_matches_f64_reference() {
+        // The fast f32 GEMM inference forward must match the f64 training
+        // forward (`forward_full`) within f32 tolerance, including at the
+        // deployment leaf size (input 2809, output 462).
+        let cfgs = [
+            RebelMlpConfig {
+                input_dim: 64,
+                hidden: 48,
+                n_layers: 1,
+                output_dim: 29,
+            },
+            RebelMlpConfig {
+                input_dim: 128,
+                hidden: 96,
+                n_layers: 2,
+                output_dim: 40,
+            },
+            RebelMlpConfig {
+                input_dim: 2809,
+                hidden: 256,
+                n_layers: 2,
+                output_dim: 462,
+            },
+        ];
+        for cfg in cfgs {
+            let net = RebelMlp::new(cfg, 100 + cfg.hidden as u64);
+            let mut rng = Rng::new(2024);
+            let n = 5;
+            let inputs: Vec<f32> = (0..n * cfg.input_dim)
+                .map(|_| normal(&mut rng) as f32)
+                .collect();
+
+            let got = net.forward_batch(&inputs, n);
+            let params = net.params_f64();
+            let mut max_diff = 0.0f64;
+            for r in 0..n {
+                let row = &inputs[r * cfg.input_dim..(r + 1) * cfg.input_dim];
+                let mut no_cache = None;
+                let reference = net.forward_full(&params, row, &mut no_cache);
+                for k in 0..cfg.output_dim {
+                    let d = (got[r * cfg.output_dim + k] as f64 - reference[k]).abs();
+                    max_diff = max_diff.max(d);
+                }
+            }
+            println!(
+                "equivalence in={:5} hidden={:4} layers={}: max abs diff = {max_diff:.3e}",
+                cfg.input_dim, cfg.hidden, cfg.n_layers
+            );
+            assert!(
+                max_diff < 1e-3,
+                "cfg {cfg:?}: f32-vs-f64 forward max diff = {max_diff}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark; run with: cargo test --release -p solvers rebel_mlp -- --ignored --nocapture"]
+    fn bench_forward_backends() {
+        use std::time::Instant;
+        for hidden in [512usize, 256] {
+            let cfg = RebelMlpConfig {
+                input_dim: 2809,
+                hidden,
+                n_layers: 2,
+                output_dim: 462,
+            };
+            let n = 600;
+            let net = RebelMlp::new(cfg, 1);
+            let mut rng = Rng::new(7);
+            let inputs: Vec<f32> = (0..n * cfg.input_dim)
+                .map(|_| normal(&mut rng) as f32)
+                .collect();
+
+            let backends: &[(&str, SgemmBackend)] = &[
+                ("gemm-crate", SgemmBackend::Portable),
+                #[cfg(target_os = "macos")]
+                ("accelerate", SgemmBackend::Accelerate),
+            ];
+            for &(name, backend) in backends {
+                for _ in 0..3 {
+                    std::hint::black_box(net.forward_batch_with(&inputs, n, backend));
+                }
+                let iters = 20;
+                let t = Instant::now();
+                for _ in 0..iters {
+                    std::hint::black_box(net.forward_batch_with(&inputs, n, backend));
+                }
+                let ms = t.elapsed().as_secs_f64() * 1000.0 / iters as f64;
+                println!("hidden={hidden:4} backend={name:11} {ms:9.3} ms/call");
             }
         }
     }
