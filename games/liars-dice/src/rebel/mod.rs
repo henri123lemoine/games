@@ -29,7 +29,8 @@ pub use buffer::Reservoir;
 pub use cfr::{CfrParams, CfrVariant, Solver};
 pub use deploy::{DeployCont, NetContinuation};
 pub use deploy_train::{
-    DeployReport, DeployRound, DeployTrainConfig, DeployTrainer, sample_deploy_round,
+    DeployReport, DeployRound, DeployTrainConfig, DeployTrainer, ExploitProbe, StepStat,
+    sample_deploy_round,
 };
 pub use exploit::{best_response, exploitability};
 pub use game::{Bid, RebelGame};

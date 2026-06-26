@@ -261,6 +261,17 @@ pub struct DeployReport {
     pub train_steps: u64,
 }
 
+/// What one externally-driven [`DeployTrainer::step`] produced.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StepStat {
+    /// Samples pushed into the reservoir this step.
+    pub generated: usize,
+    /// Summed per-`train_step` loss over the step (0 when no training ran).
+    pub loss_sum: f64,
+    /// Number of `train_step`s taken this step (0 during burn-in).
+    pub loss_count: u64,
+}
+
 /// The 2-player gate: the exact continuation lattice for the fixed config and the
 /// continuing-round states to score against it.
 struct DeployGate {
@@ -430,15 +441,20 @@ impl DeployTrainer {
         count
     }
 
-    /// Pay down the training debt incurred by `generated` new samples.
-    fn train(&mut self, generated: usize) {
+    /// Pay down the training debt incurred by `generated` new samples, returning
+    /// the summed and counted per-`train_step` losses over this call so a monitor
+    /// can report a windowed mean loss.
+    fn train(&mut self, generated: usize) -> (f64, u64) {
         if self.buffer.len() < self.cfg.burn_in {
-            return;
+            return (0.0, 0);
         }
         self.train_debt += (generated * self.cfg.train_gen_ratio) as f64;
+        let mut loss_sum = 0.0f64;
+        let mut loss_count = 0u64;
         while self.train_debt >= self.cfg.batch as f64 {
             let batch = self.buffer.sample_batch(self.cfg.batch, &mut self.rng);
-            self.net.net_mut().train_step(&batch);
+            loss_sum += f64::from(self.net.net_mut().train_step(&batch));
+            loss_count += 1;
             self.train_debt -= self.cfg.batch as f64;
             self.train_steps += 1;
             if self.cfg.lr_halflife > 0 && self.train_steps.is_multiple_of(self.cfg.lr_halflife) {
@@ -447,6 +463,41 @@ impl DeployTrainer {
                 self.net.net_mut().set_lr(lr);
             }
         }
+        (loss_sum, loss_count)
+    }
+
+    /// One outer generate+train step driven externally by a monitored long run
+    /// (`examples/monitored_train.rs`) that interleaves its own logging, probes,
+    /// and checkpoints. `use_net_cont` selects the bootstrapped net continuation
+    /// over the warmup heuristic; the caller owns the warmup schedule (e.g. to
+    /// skip it on resume).
+    pub fn step(&mut self, use_net_cont: bool) -> StepStat {
+        let generated = self.generate(use_net_cont);
+        let (loss_sum, loss_count) = self.train(generated);
+        StepStat {
+            generated,
+            loss_sum,
+            loss_count,
+        }
+    }
+
+    /// Total samples generated so far.
+    pub fn samples_generated(&self) -> u64 {
+        self.samples_generated
+    }
+
+    /// Total `train_step`s taken so far.
+    pub fn train_steps(&self) -> u64 {
+        self.train_steps
+    }
+
+    /// Replace the net with one loaded from `path` (for resuming a run): the
+    /// checkpoint's architecture is adopted as-is and the configured learning
+    /// rate re-applied.
+    pub fn load_net(&mut self, path: &std::path::Path) -> std::io::Result<()> {
+        self.net = PbsNet::load(path)?;
+        self.net.net_mut().set_lr(self.cfg.lr);
+        Ok(())
     }
 
     /// Score the current net on the 2-player gate: per continuing round, solve the
@@ -509,8 +560,7 @@ impl DeployTrainer {
         let mut best = f64::INFINITY;
         for step in 0..self.cfg.steps {
             let use_net_cont = step >= self.cfg.warmup_steps;
-            let generated = self.generate(use_net_cont);
-            self.train(generated);
+            self.step(use_net_cont);
             if (step + 1) % self.cfg.eval_every == 0 || step + 1 == self.cfg.steps {
                 if let Some(m) = self.eval() {
                     curve.push((self.samples_generated, m.max_exploitability));
@@ -549,6 +599,86 @@ impl DeployTrainer {
             return;
         }
         let _ = self.net.save(&self.cfg.outdir.join(name));
+    }
+}
+
+/// A standalone 2-player exploitability probe for monitoring a mixed-config run
+/// (where the trainer keeps no internal gate). Holds the exact continuation
+/// lattice of a fixed `(dice_per, faces)` config — fit ONCE, the heavy part — and
+/// the continuing-round states a net's net-resolved policy is scored against, so
+/// a long run can cheaply track per-round near-Nash quality as it trains.
+pub struct ExploitProbe {
+    faces: u8,
+    lattice: LatticeValue,
+    states: Vec<(u8, u8, usize)>,
+    iters: usize,
+    use_cap: bool,
+}
+
+impl ExploitProbe {
+    /// Fit the exact 2-player lattice for `(dice_per, faces)`. `fit_iters` is the
+    /// tabular CFR budget per lattice solve (accuracy of the reference), `iters`
+    /// the CFR budget when later scoring a net, and `use_cap` whether to solve
+    /// over the principled opening abstraction (match the trainer's setting).
+    pub fn fit(
+        dice_per: u8,
+        faces: u8,
+        fit_iters: u64,
+        iters: usize,
+        use_cap: bool,
+    ) -> ExploitProbe {
+        let fit_cfg = FitConfig {
+            iters_per_solve: fit_iters,
+            tol: 1e-3,
+            max_sweeps: 50,
+            measure_exploitability: false,
+        };
+        let lattice = fit_two_player(dice_per, faces, fit_cfg).lattice;
+        let mut states = Vec::new();
+        for a in 1..=dice_per {
+            for b in 1..=dice_per {
+                for opener in 0..2usize {
+                    states.push((a, b, opener));
+                }
+            }
+        }
+        ExploitProbe {
+            faces,
+            lattice,
+            states,
+            iters,
+            use_cap,
+        }
+    }
+
+    /// Worst-case per-round exploitability of `net`'s net-resolved policy vs the
+    /// exact lattice across the continuing-round states.
+    pub fn max_exploitability(&self, net: &PbsNet) -> f64 {
+        let cont = NetContinuation::new(net);
+        let params = CfrParams {
+            num_iters: self.iters,
+            max_depth: u32::MAX,
+            ..CfrParams::default()
+        };
+        let mut worst = 0.0f64;
+        for &(a, b, opener) in &self.states {
+            let dice = dice_vec(&[a, b]);
+            let ad_net = maybe_cap(
+                LiarsDiceAdapter::new(2, self.faces, dice, opener, false, &cont),
+                self.use_cap,
+            );
+            let initial = Belief::uniform_prior(&ad_net.root());
+            let terminal = TerminalLeaf::new(&ad_net);
+            let mut solver = Solver::new(&ad_net, params, &terminal, initial.clone());
+            solver.multistep();
+            let avg = solver.average_strategy().to_vec();
+            let ad_exact = maybe_cap(
+                LiarsDiceAdapter::new(2, self.faces, dice, opener, false, &self.lattice),
+                self.use_cap,
+            );
+            worst = worst.max(exploitability(&ad_exact, &avg));
+        }
+        worst
     }
 }
 
