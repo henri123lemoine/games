@@ -51,7 +51,7 @@ class TrainConfig:
     td_lambda: float = 0.8  # value lambda
     gae_lambda: float = 0.5  # advantage lambda (distinct)
     adv_filt_rate: float = 0.75  # keep top-quantile |adv|
-    adv_filt_thresh: float = 0.01  # abs floor
+    adv_filt_thresh: float = 0.001  # abs floor (0.01 starved n_threshold_keep->0 once the value head fit and |adv| shrank, halting fullrun1 ~iter540; 0.001 keeps the spec filter ~relative top-quantile)
     # Anti-starve floor: as the policy sharpens the abs floor binds and the keep
     # count collapses (full1: 945 kept of 99k at iter50). Always retain at least
     # this many top-|adv| rows so the move pass never starves; with max_train_batch
@@ -68,7 +68,7 @@ class TrainConfig:
     temperature_coef: float = 0.05  # magnet-KL coefficient
     temperature_decay: float = 0.3
     temperature_ceil: float = 0.1
-    temperature_floor: float = 0.001
+    temperature_floor: float = 0.003  # 0.001 let the magnet fully decay -> policy over-converged -> value collapse -> advantage starvation ~iter540; keep some late exploration
 
     # ---- optimizer (AdamW; betas/eps PyTorch defaults) ----
     weight_decay: float = 0.0
