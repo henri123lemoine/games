@@ -108,7 +108,7 @@ def setup_baseline(net, seq, reg_norm):
     value_logp = out["value"].astype(mx.float32)
     value_logp = value_logp - mx.logsumexp(value_logp, axis=-1, keepdims=True)
     value_scalar = (mx.exp(value_logp) * CATS).sum(-1)
-    ent_pred = out["ent_pred"].squeeze(-1)  # (B,40) normalized prediction
+    ent_pred = out["ent_pred"].astype(mx.float32).squeeze(-1)  # (B,40) normalized prediction
 
     placed = mx.argmax(seq, axis=-1)
     nll = -mx.take_along_axis(log_probs, placed[..., None], axis=-1).squeeze(-1)  # (B,40)
@@ -155,7 +155,7 @@ def setup_loss_and_stats(net, batch, cfg):
     log_probs, legal = _log_softmax_legal(logits)
     value_logp = out["value"].astype(mx.float32)
     value_logp = value_logp - mx.logsumexp(value_logp, axis=-1, keepdims=True)
-    ent_pred = out["ent_pred"].squeeze(-1)  # (B,40)
+    ent_pred = out["ent_pred"].astype(mx.float32).squeeze(-1)  # (B,40)
 
     placed = mx.argmax(seq, axis=-1)
     log_prob = mx.take_along_axis(log_probs, placed[..., None], axis=-1).squeeze(-1)

@@ -249,7 +249,7 @@ def collect_iter(s, move_net, setup_net, steps):
     return steps * s.num_envs, n_term, rsum, scrub, t_coll, t_fwd, t_comm
 
 
-def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg):
+def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg, bf16_net=None):
     """One advantage-filtered PPO pass over the drained move-RL transitions.
 
     Returns `(stats, nan)`; `nan` is True iff the update was non-finite (skipped).
@@ -301,8 +301,11 @@ def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg):
     _t_enc = time.time()
     obs_idx = encode_fn(data["env"][idx], data["slot"][idx])
     _encode_s = time.time() - _t_enc
+    _obs = mx.array(fin(obs_idx))
+    if bf16_net is not None:
+        _obs = _obs.astype(mx.bfloat16)
     batch = {
-        "obs": mx.array(fin(obs_idx)),
+        "obs": _obs,
         "legal": mx.array(data["legal_mask"][idx]),
         "action": mx.array(data["action"][idx].astype(np.int32)),
         "old_log_prob": mx.array(fin(data["old_log_prob"][idx], neg=-100.0, pos=0.0)),
@@ -315,7 +318,14 @@ def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg):
         loss, stats = move_loss_and_stats(net, batch, magnet_coef, cfg)
         return loss, stats
 
-    (loss, stats), grads = nn.value_and_grad(move_net, loss_fn)(move_net)
+    if bf16_net is not None:
+        bf16_net.update(tree_map(lambda p: p.astype(mx.bfloat16), move_net.parameters()))
+        _fwd_net = bf16_net
+        (loss, stats), grads = nn.value_and_grad(bf16_net, loss_fn)(bf16_net)
+        grads = tree_map(lambda g: g.astype(mx.float32), grads)
+    else:
+        _fwd_net = move_net
+        (loss, stats), grads = nn.value_and_grad(move_net, loss_fn)(move_net)
     grads, gnorm = optim.clip_grad_norm(grads, cfg.max_grad_norm)
     loss_v = float(loss)
     gnorm_v = float(gnorm)
@@ -324,7 +334,7 @@ def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg):
     if not (np.isfinite(loss_v) and np.isfinite(gnorm_v)):
         return {"move/n_kept": int(keep.sum()), "move/n_threshold_keep": n_threshold,
                 "move/n_total": int(n), "move/scrub": move_scrub,
-                "move/nan_stage": _move_nan_stage(move_net, batch, stats),
+                "move/nan_stage": _move_nan_stage(_fwd_net, batch, stats),
                 "move/skipped": True}, True
     opt.update(move_net, grads)
     mx.eval(move_net.parameters(), opt.state)
@@ -344,7 +354,7 @@ def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg):
     }, False
 
 
-def train_setup_pass(setup_net, opt, setup_data, reg_temp, lr, cfg):
+def train_setup_pass(setup_net, opt, setup_data, reg_temp, lr, cfg, bf16_net=None):
     """5 epochs of the pure-MC setup loss over the drained arrangements.
 
     Returns `(stats, nan)`; `nan` is True iff every minibatch was non-finite (the
@@ -379,7 +389,7 @@ def train_setup_pass(setup_net, opt, setup_data, reg_temp, lr, cfg):
             bi = perm[i:i + bs]
             bidx = mx.array(bi)
             batch = {
-                "seq": seq_all[bidx],
+                "seq": (seq_all[bidx].astype(mx.bfloat16) if bf16_net is not None else seq_all[bidx]),
                 "outcome": outcome_all[bidx],
                 "reg_temp": reg_temp,
                 "old_action_log_prob": old_action_lp_all[bidx],
@@ -393,7 +403,14 @@ def train_setup_pass(setup_net, opt, setup_data, reg_temp, lr, cfg):
                 loss, stats = setup_loss_and_stats(net, batch, cfg)
                 return loss, stats
 
-            (loss, stats), grads = nn.value_and_grad(setup_net, loss_fn)(setup_net)
+            if bf16_net is not None:
+                bf16_net.update(tree_map(lambda p: p.astype(mx.bfloat16), setup_net.parameters()))
+                _fwd_net = bf16_net
+                (loss, stats), grads = nn.value_and_grad(bf16_net, loss_fn)(bf16_net)
+                grads = tree_map(lambda g: g.astype(mx.float32), grads)
+            else:
+                _fwd_net = setup_net
+                (loss, stats), grads = nn.value_and_grad(setup_net, loss_fn)(setup_net)
             # The setup net reuses `start_token` inside its legal-mask cumsum, so
             # it must stay the fixed-zero start it is documented to be — training
             # it would corrupt the per-slot legality. Freeze its gradient.
@@ -409,7 +426,7 @@ def train_setup_pass(setup_net, opt, setup_data, reg_temp, lr, cfg):
             if not (np.isfinite(loss_v) and np.isfinite(gnorm_v)):
                 n_skipped += 1
                 if not nan_stage:
-                    nan_stage = _setup_nan_stage(setup_net, batch, stats)
+                    nan_stage = _setup_nan_stage(_fwd_net, batch, stats)
                 continue
             opt.update(setup_net, grads)
             mx.eval(setup_net.parameters(), opt.state)
@@ -501,12 +518,14 @@ def train(cfg: TrainConfig):
         move_lr = cfg.lr(t) * move_lr_scale
         setup_lr = cfg.arr_lr * setup_lr_scale
 
-        m_stats, m_nan = train_move_pass(move, move_opt, move_data, s.encode_move_obs, magnet_coef, move_lr, cfg)
+        m_stats, m_nan = train_move_pass(move, move_opt, move_data, s.encode_move_obs, magnet_coef, move_lr, cfg,
+                                         bf16_net=move_bf16 if cfg.bf16_train else None)
         move_applied = "move/skipped" not in m_stats
         move_snap, move_lr_scale, move_nan, move_stage = _self_heal(
             move, move_opt, move_ema, move_snap, m_nan, move_applied, move_lr, move_lr_scale, cfg)
 
-        a_stats, a_nan = train_setup_pass(setup, setup_opt, setup_data, reg_temp, setup_lr, cfg)
+        a_stats, a_nan = train_setup_pass(setup, setup_opt, setup_data, reg_temp, setup_lr, cfg,
+                                          bf16_net=setup_bf16 if cfg.bf16_train else None)
         setup_applied = a_stats.get("setup/n_applied", 0) > 0
         setup_snap, setup_lr_scale, setup_nan, setup_stage = _self_heal(
             setup, setup_opt, setup_ema, setup_snap, a_nan, setup_applied, setup_lr, setup_lr_scale, cfg)
@@ -663,6 +682,7 @@ def parse_args(argv=None):
     p.add_argument("--magnet-coef", type=float, default=TrainConfig.temperature_coef)
     p.add_argument("--magnet-decay", type=float, default=TrainConfig.temperature_decay)
     p.add_argument("--mlx-memory-limit-gb", type=float, default=TrainConfig.mlx_memory_limit_gb)
+    p.add_argument("--bf16-train", action="store_true", default=TrainConfig.bf16_train)
     return p.parse_args(argv)
 
 
@@ -685,6 +705,7 @@ def main(argv=None):
         temperature_decay=a.magnet_decay,
         work_seconds=a.work_seconds,
         mlx_memory_limit_gb=a.mlx_memory_limit_gb,
+        bf16_train=a.bf16_train,
     )
     train(cfg)
 

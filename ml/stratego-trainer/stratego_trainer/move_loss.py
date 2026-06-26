@@ -82,7 +82,7 @@ def move_loss_and_stats(net, batch, magnet_coef, cfg):
     out = net(obs, legal_mask=legal)
     move_logits = out["move_logits"].astype(mx.float32)
     log_probs = move_logits - mx.logsumexp(move_logits, axis=-1, keepdims=True)  # (B,1800)
-    value_logp = out["value_logp"]  # (B,3) log-softmax
+    value_logp = out["value_logp"].astype(mx.float32)  # (B,3) log-softmax
 
     # PPO-clip policy loss on the chosen action. Clamp the log-ratio before exp so
     # a policy that drifts far from the data policy can't overflow exp() to inf

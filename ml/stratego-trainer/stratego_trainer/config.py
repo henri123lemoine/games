@@ -78,6 +78,11 @@ class TrainConfig:
     ema_decay: float = 0.999  # move + setup
     bucket: int = 256  # pad effective batch to a multiple of this (MPS shape cache)
     max_train_batch: int = 2048  # cap kept rows per move pass (bounds peak Metal mem)
+    # Run the training forward/backward matmuls in bf16 (the loss math still promotes
+    # to fp32 where it meets the fp32 advantages/returns, and the optimizer keeps fp32
+    # master weights — grads are cast bf16->fp32 before the update). ~1.75x on the
+    # matmuls. Off by default until validated past the stability danger zones.
+    bf16_train: bool = False
 
     # ---- setup loop (§4.2, rl.py:616-702) ----
     arr_clip_range: float = 0.2
