@@ -19,7 +19,7 @@
 //!
 //!     cargo run --release -p liars-dice --features parallel --example monitored_train
 //!
-//! Env: STEPS HIDDEN NUM_ITERS GEN_PER OUTDIR SEED LOG_EVERY EVAL_EVERY RESUME
+//! Env: STEPS HIDDEN NUM_ITERS DEPTH GEN_PER OUTDIR SEED LOG_EVERY EVAL_EVERY RESUME
 //! (plus WARMUP TRAIN_RATIO BURN_IN BUFFER EVAL_ITERS FIT_ITERS WINSHARE_GAMES
 //! WINSHARE_ROLLOUTS WINSHARE_ITERS). Tail the run with `tail -f OUTDIR/metrics.jsonl`.
 
@@ -91,6 +91,7 @@ fn main() {
     let hidden = env_usize("HIDDEN", 256);
     let num_iters = env_usize("NUM_ITERS", 256);
     let gen_per = env_usize("GEN_PER", threads);
+    let depth = env_usize("DEPTH", 2) as u32;
     let warmup = env_usize("WARMUP", 200);
     let log_every = env_usize("LOG_EVERY", 25).max(1);
     let eval_every = env_usize("EVAL_EVERY", 250).max(1);
@@ -115,7 +116,7 @@ fn main() {
         steps,
         warmup_steps: warmup,
         num_iters,
-        max_depth: 2,
+        max_depth: depth,
         batch: 512,
         lr: 3e-4,
         gen_per_step: gen_per,
@@ -157,7 +158,7 @@ fn main() {
 
     println!(
         "=== monitored ReBeL deploy training (mixed sampler, 5p5d6f-biased) ===\n\
-         hidden={hidden} num_iters={num_iters} depth=2 gen_per={gen_per} train_ratio={train_ratio} \
+         hidden={hidden} num_iters={num_iters} depth={depth} gen_per={gen_per} train_ratio={train_ratio} \
          buffer={buffer} threads={threads}\n\
          steps={steps} warmup={warmup} log_every={log_every} eval_every={eval_every} \
          resume={} outdir={}\n\

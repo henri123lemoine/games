@@ -9,8 +9,8 @@
 //!     cargo run --release -p liars-dice --example rebel_eval
 //!
 //! Env overrides: PLAYERS DICE FACES (train config), STEPS GEN_PER NUM_ITERS
-//! HIDDEN (train budget), GAMES ROLLOUTS (eval), PERF_ITERS PERF_HIDDEN
-//! GEN_EPISODES (perf).
+//! HIDDEN (train budget), GAMES ROLLOUTS EVAL_ITERS DEPTH (eval/deploy depth),
+//! PERF_ITERS PERF_HIDDEN GEN_EPISODES (perf).
 
 use std::time::Instant;
 
@@ -42,6 +42,10 @@ fn main() {
     let games = env_usize("GAMES", 1200) as u32;
     let rollouts = env_usize("ROLLOUTS", 200) as u32;
     let eval_iters = env_usize("EVAL_ITERS", 256);
+    // Deploy/solve depth for the agent gates (2, 3a) and data-gen (3b). The net is
+    // trained at depth 2 but can be RE-SOLVED deeper at deploy; default 2 keeps the
+    // gates backward-compatible.
+    let depth = env_usize("DEPTH", 2) as u32;
 
     // ---- Gate 2: train a small net (reuse a cached one), then field-win-share ----
     let outdir = std::env::temp_dir().join(format!("ld_rebel_{players}p{dice}d{faces}f"));
@@ -89,7 +93,7 @@ fn main() {
         );
     }
 
-    let agent = RebelAgent::with_config(PbsNet::load(&net_path).unwrap(), eval_iters, 2);
+    let agent = RebelAgent::with_config(PbsNet::load(&net_path).unwrap(), eval_iters, depth);
     // Cap round count so a rare exact-call stall can't make one game run minutes
     // of re-solves; the natural game is far shorter than this.
     let game = LiarsDice::new(players as u8, dice, faces)
@@ -116,7 +120,7 @@ fn main() {
     let perf_hidden = env_usize("PERF_HIDDEN", 256);
     let perf_iters = env_usize("PERF_ITERS", 1024);
     let perf_net = PbsNet::new(perf_hidden, 2, 0);
-    let perf_agent = RebelAgent::with_config(perf_net, perf_iters, 2);
+    let perf_agent = RebelAgent::with_config(perf_net, perf_iters, depth);
     let perf_moves = env_usize("PERF_MOVES", 3);
     let big = LiarsDice::new(5, 5, 6);
     let mut rng = Rng::new(99);
@@ -151,7 +155,7 @@ fn main() {
     let avg_ms = 1000.0 * times.iter().sum::<f64>() / times.len() as f64;
     let max_ms = 1000.0 * times.iter().cloned().fold(0.0, f64::max);
     println!(
-        "=== gate 3a: 5p5d6f per-move solve (hidden={perf_hidden}, {perf_iters} iters, depth 2) ==="
+        "=== gate 3a: 5p5d6f per-move solve (hidden={perf_hidden}, {perf_iters} iters, depth {depth}) ==="
     );
     println!(
         "avg {avg_ms:.0} ms/move  max {max_ms:.0} ms/move  over {} moves",
@@ -164,7 +168,7 @@ fn main() {
     let sp = SelfPlayParams {
         cfr: CfrParams {
             num_iters,
-            max_depth: 2,
+            max_depth: depth,
             ..CfrParams::default()
         },
         explore_eps: 0.25,
@@ -183,13 +187,15 @@ fn main() {
                 round.opener,
                 round.first_round,
                 &cont,
-            );
+            )
+            .with_principled_open_cap();
             generate_episode(&adapter, sp, &gen_net, &mut r).len()
         })
         .sum();
     let gen_secs = t2.elapsed().as_secs_f64();
     println!(
-        "=== gate 3b: 5p5d6f deploy data-gen (hidden={perf_hidden}, num_iters={num_iters}) ==="
+        "=== gate 3b: 5p5d6f deploy data-gen \
+         (hidden={perf_hidden}, num_iters={num_iters}, depth={depth}, principled_open_cap) ==="
     );
     println!(
         "{gen_episodes} episodes in {gen_secs:.2}s  =>  {:.1} episodes/s  {:.0} samples/s  \
