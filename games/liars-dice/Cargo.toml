@@ -15,6 +15,10 @@ path = "src/lib.rs"
 # distillation trainer parallelizes data generation through liars-dice's own
 # direct rayon dependency regardless.
 parallel = ["solvers/parallel"]
+# Route the data-gen net forward through the Metal GPU batched-inference server
+# (macOS only; opt-in). Off by default — the Accelerate/AMX CPU path stays the
+# default and the only fallback. See `solvers::rebel_gpu`.
+gpu = ["solvers/gpu"]
 
 [dependencies]
 game-core = { workspace = true }

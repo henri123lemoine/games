@@ -327,24 +327,46 @@ impl<G: RebelGame> LeafValue for NetLeaf<'_, G> {
             }
         }
         if !net_rows.is_empty() {
-            // Every leaf in a solve shares `dice_left` (tree-constant), so one
-            // active-position list — built once per call — drives both the compact
-            // encode and the gathered first-layer GEMM. The skipped positions are
-            // structural zeros, so the forward is exact (see `forward_batch_active`).
-            let active = active_indices(&publics[net_rows[0]], traverser);
-            let n_active = active.len();
-            let mut compact = vec![0.0f32; net_rows.len() * n_active];
-            for (row, &k) in net_rows.iter().enumerate() {
-                let dst = &mut compact[row * n_active..(row + 1) * n_active];
-                encode_active_into(dst, &publics[k], traverser, &beliefs[k], &active);
+            // GPU path (opt-in): the differing per-solve active-index sets across
+            // the unsynchronized CFR threads can't share a compact first-layer
+            // GEMM, so the cross-thread batched-inference server coalesces in dense
+            // space. Submit dense encodings; the server runs the whole forward on
+            // the GPU (see `solvers::rebel_gpu`).
+            #[cfg(feature = "gpu")]
+            {
+                let mut dense = vec![0.0f32; net_rows.len() * INPUT_DIM];
+                for (row, &k) in net_rows.iter().enumerate() {
+                    let dst = &mut dense[row * INPUT_DIM..(row + 1) * INPUT_DIM];
+                    encode_into(dst, &publics[k], traverser, &beliefs[k]);
+                }
+                let raw = self.net.net().forward_batch_gpu(&dense, net_rows.len());
+                for (row, &k) in net_rows.iter().enumerate() {
+                    let slice = &raw[row * OUTPUT_DIM..(row + 1) * OUTPUT_DIM];
+                    out[k] = decode(&publics[k], traverser, slice);
+                }
             }
-            let raw = self
-                .net
-                .net()
-                .forward_batch_active(&compact, net_rows.len(), &active);
-            for (row, &k) in net_rows.iter().enumerate() {
-                let slice = &raw[row * OUTPUT_DIM..(row + 1) * OUTPUT_DIM];
-                out[k] = decode(&publics[k], traverser, slice);
+            // Default AMX path: every leaf in a solve shares `dice_left`
+            // (tree-constant), so one active-position list — built once per call —
+            // drives both the compact encode and the gathered first-layer GEMM. The
+            // skipped positions are structural zeros, so the forward is exact (see
+            // `forward_batch_active`).
+            #[cfg(not(feature = "gpu"))]
+            {
+                let active = active_indices(&publics[net_rows[0]], traverser);
+                let n_active = active.len();
+                let mut compact = vec![0.0f32; net_rows.len() * n_active];
+                for (row, &k) in net_rows.iter().enumerate() {
+                    let dst = &mut compact[row * n_active..(row + 1) * n_active];
+                    encode_active_into(dst, &publics[k], traverser, &beliefs[k], &active);
+                }
+                let raw = self
+                    .net
+                    .net()
+                    .forward_batch_active(&compact, net_rows.len(), &active);
+                for (row, &k) in net_rows.iter().enumerate() {
+                    let slice = &raw[row * OUTPUT_DIM..(row + 1) * OUTPUT_DIM];
+                    out[k] = decode(&publics[k], traverser, slice);
+                }
             }
         }
         out

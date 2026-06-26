@@ -76,22 +76,22 @@ pub struct Sample {
     pub mask: Vec<f32>,
 }
 
-struct Block {
-    in_dim: usize,
-    weight: usize,
-    bias: usize,
-    gamma: usize,
-    beta: usize,
+pub(crate) struct Block {
+    pub(crate) in_dim: usize,
+    pub(crate) weight: usize,
+    pub(crate) bias: usize,
+    pub(crate) gamma: usize,
+    pub(crate) beta: usize,
 }
 
-struct Layout {
-    blocks: Vec<Block>,
-    head_weight: usize,
-    head_bias: usize,
+pub(crate) struct Layout {
+    pub(crate) blocks: Vec<Block>,
+    pub(crate) head_weight: usize,
+    pub(crate) head_bias: usize,
     total: usize,
 }
 
-fn layout(cfg: &RebelMlpConfig) -> Layout {
+pub(crate) fn layout(cfg: &RebelMlpConfig) -> Layout {
     let h = cfg.hidden;
     let mut off = 0usize;
     let mut blocks = Vec::with_capacity(cfg.n_layers);
@@ -364,6 +364,8 @@ pub struct RebelMlp {
     step: u64,
     lr: f64,
     grad_clip: f64,
+    #[cfg(feature = "gpu")]
+    gpu: std::sync::OnceLock<crate::rebel_gpu::GpuServer>,
 }
 
 impl RebelMlp {
@@ -411,6 +413,8 @@ impl RebelMlp {
             step: 0,
             lr: DEFAULT_LR,
             grad_clip: DEFAULT_GRAD_CLIP,
+            #[cfg(feature = "gpu")]
+            gpu: std::sync::OnceLock::new(),
         }
     }
 
@@ -454,6 +458,35 @@ impl RebelMlp {
     /// GeLU are applied per row.
     pub fn forward_batch(&self, inputs: &[f32], n: usize) -> Vec<f32> {
         self.forward_batch_with(inputs, n, SgemmBackend::preferred())
+    }
+
+    /// Dense forward for `n` row-major inputs (`n * input_dim`) run on the Metal
+    /// GPU via the cross-thread batched-inference server (see
+    /// [`crate::rebel_gpu`]). Mathematically the same as [`Self::forward_batch`];
+    /// the result matches it (and the compact [`Self::forward_batch_active`]) to
+    /// f32 precision. The server is built lazily on first use (uploading the
+    /// fixed weights once) and shared across all calling threads.
+    #[cfg(feature = "gpu")]
+    pub fn forward_batch_gpu(&self, inputs: &[f32], n: usize) -> Vec<f32> {
+        assert_eq!(
+            inputs.len(),
+            n * self.cfg.input_dim,
+            "batch input length mismatch"
+        );
+        if n == 0 {
+            return Vec::new();
+        }
+        let server = self
+            .gpu
+            .get_or_init(|| crate::rebel_gpu::GpuServer::new(self.params.clone(), self.cfg));
+        server.forward(inputs.to_vec(), n)
+    }
+
+    /// The lazily-built GPU server's `(submitted_queries, submitted_rows)`, if it
+    /// has been initialized — for bench reporting.
+    #[cfg(feature = "gpu")]
+    pub fn gpu_submit_stats(&self) -> Option<(u64, u64)> {
+        self.gpu.get().map(|s| s.submit_stats())
     }
 
     fn forward_batch_with(&self, inputs: &[f32], n: usize, backend: SgemmBackend) -> Vec<f32> {
@@ -1111,6 +1144,67 @@ mod tests {
         }
         println!("active-vs-dense forward max abs diff = {max_diff:.3e}");
         assert!(max_diff < 1e-4, "active forward max diff = {max_diff}");
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn gpu_forward_matches_cpu() {
+        // The Metal GPU forward (MPS matmuls + f32 LayerNorm/GeLU kernel) must
+        // match the CPU `forward_batch_active` (and the dense `forward_batch`) to
+        // < 1e-3, the data-gen gate. 5p5d6f deployment shapes, varied batch sizes.
+        let cfgs = [
+            RebelMlpConfig {
+                input_dim: 2809,
+                hidden: 256,
+                n_layers: 2,
+                output_dim: 462,
+            },
+            RebelMlpConfig {
+                input_dim: 2809,
+                hidden: 512,
+                n_layers: 2,
+                output_dim: 462,
+            },
+        ];
+        for cfg in cfgs {
+            const PUBLIC_TEST_LEN: usize = 37;
+            let net = RebelMlp::new(cfg, 99 + cfg.hidden as u64);
+            let mut rng = Rng::new(424242);
+            // Active subset mimicking a 5p5d6f solve: public block + sparse belief.
+            let mut active: Vec<usize> = (0..PUBLIC_TEST_LEN).collect();
+            active.extend((0..1260).map(|i| PUBLIC_TEST_LEN + i * 2));
+            active.retain(|&i| i < cfg.input_dim);
+            active.sort_unstable();
+            active.dedup();
+            let k = active.len();
+            for &n in &[1usize, 7, 300, 1024, 2500] {
+                let mut dense = vec![0.0f32; n * cfg.input_dim];
+                let mut compact = vec![0.0f32; n * k];
+                for r in 0..n {
+                    for (a, &idx) in active.iter().enumerate() {
+                        let v = normal(&mut rng) as f32;
+                        dense[r * cfg.input_dim + idx] = v;
+                        compact[r * k + a] = v;
+                    }
+                }
+                let cpu = net.forward_batch_active(&compact, n, &active);
+                let gpu = net.forward_batch_gpu(&dense, n);
+                assert_eq!(gpu.len(), cpu.len());
+                let mut max_diff = 0.0f64;
+                for (a, b) in cpu.iter().zip(&gpu) {
+                    max_diff = max_diff.max((*a as f64 - *b as f64).abs());
+                }
+                println!(
+                    "gpu-vs-cpu hidden={:4} n={n:5}: max abs diff = {max_diff:.3e}",
+                    cfg.hidden
+                );
+                assert!(
+                    max_diff < 1e-3,
+                    "gpu forward max diff = {max_diff} (hidden={}, n={n})",
+                    cfg.hidden
+                );
+            }
+        }
     }
 
     #[test]
