@@ -45,7 +45,7 @@ class TrainConfig:
 
     # ---- move-RL loss (§4.1, rl.py:547-579) ----
     clip_range: float = 0.2  # PPO epsilon
-    vf_coef: float = 0.5  # spec 1.0, but at laptop scale the value head over-fits the limited self-play data and outpaces the policy -> GAE advantages vanish -> move policy_loss->0 -> learning STALLS ~iter350 (fullrun4 peaked at winrate 0.71 then drifted). Train the value less so advantages retain signal. EXPERIMENTAL deviation.
+    vf_coef: float = 1.0  # spec. (vf_coef=0.5 experiment did NOT break the value-collapse stall — fullrun5 still stalled ~iter549 and peaked lower; reverted. The fix needs a target-network value or more data, not this knob.)
     policy_coef: float = 1.0
     kl_coef: float = 0.1  # rev-KL to data policy (constant)
     td_lambda: float = 0.8  # value lambda
