@@ -31,7 +31,7 @@
 //! the whole block.
 
 use crate::rebel::game::RebelGame;
-use crate::rebel::hands::{self, H, MAX_DICE, MAX_FACES, global_index};
+use crate::rebel::hands::{self, H, MAX_DICE, MAX_FACES};
 use crate::rebel::leaf::LeafValue;
 use crate::rebel::pbs::{Belief, PublicState};
 
@@ -68,9 +68,19 @@ const QTY_SCALE: f32 = (MAX_REBEL_SEATS * MAX_DICE) as f32;
 
 /// Seat-rotated, config-invariant encoding of `(public, traverser, belief)`.
 pub fn encode(public: &PublicState, traverser: usize, belief: &Belief) -> Vec<f32> {
+    let mut x = vec![0.0f32; INPUT_DIM];
+    encode_into(&mut x, public, traverser, belief);
+    x
+}
+
+/// [`encode`] into a caller-reused buffer of length [`INPUT_DIM`], zeroing it
+/// first. The per-seat belief scatter reads each seat's cached global-index map
+/// (no per-call hand enumeration or `global_index` recompute).
+pub fn encode_into(x: &mut [f32], public: &PublicState, traverser: usize, belief: &Belief) {
+    debug_assert_eq!(x.len(), INPUT_DIM, "encode_into buffer must be INPUT_DIM");
+    x.fill(0.0);
     let players = public.players as usize;
     let faces = public.faces;
-    let mut x = vec![0.0f32; INPUT_DIM];
 
     for r in 0..players {
         let seat = (traverser + r) % players;
@@ -99,15 +109,14 @@ pub fn encode(public: &PublicState, traverser: usize, belief: &Belief) -> Vec<f3
         let seat = (traverser + r) % players;
         let d = public.dice_left[seat];
         let base = PUBLIC_LEN + r * H;
-        for (hand, &mass) in hands::enumerate(d, faces)
+        for (&g, &mass) in hands::tables(d, faces)
+            .global_index
             .iter()
             .zip(&belief.per_seat[seat])
         {
-            x[base + global_index(hand, d)] = mass as f32;
+            x[base + g] = mass as f32;
         }
     }
-
-    x
 }
 
 /// Read the traverser's per-hand values out of a length-[`H`] network output:
@@ -115,9 +124,10 @@ pub fn encode(public: &PublicState, traverser: usize, belief: &Belief) -> Vec<f3
 pub fn decode(public: &PublicState, traverser: usize, out: &[f32]) -> Vec<f64> {
     assert_eq!(out.len(), OUTPUT_DIM, "decode expects a length-H output");
     let d = public.dice_left[traverser];
-    hands::enumerate(d, public.faces)
+    hands::tables(d, public.faces)
+        .global_index
         .iter()
-        .map(|hand| f64::from(out[global_index(hand, d)]))
+        .map(|&g| f64::from(out[g]))
         .collect()
 }
 
@@ -178,14 +188,13 @@ impl PbsNet {
         let mut target = vec![0.0f32; OUTPUT_DIM];
         let mut mask = vec![0.0f32; OUTPUT_DIM];
         let d = public.dice_left[traverser];
-        let hands = hands::enumerate(d, public.faces);
+        let table = hands::tables(d, public.faces);
         assert_eq!(
-            hands.len(),
+            table.hand_count(),
             root_values_mean.len(),
             "target length must match the traverser's hand count"
         );
-        for (hand, &v) in hands.iter().zip(root_values_mean) {
-            let g = global_index(hand, d);
+        for (&g, &v) in table.global_index.iter().zip(root_values_mean) {
             target[g] = v as f32;
             mask[g] = 1.0;
         }
@@ -235,17 +244,20 @@ impl<G: RebelGame> LeafValue for NetLeaf<'_, G> {
         beliefs: &[Belief],
     ) -> Vec<Vec<f64>> {
         let mut out = vec![Vec::new(); publics.len()];
-        let mut inputs: Vec<f32> = Vec::new();
         let mut net_rows: Vec<usize> = Vec::new();
         for (k, (public, belief)) in publics.iter().zip(beliefs).enumerate() {
             if self.game.is_terminal(public) {
                 out[k] = self.game.terminal_cfv(public, traverser, belief);
             } else {
-                inputs.extend_from_slice(&encode(public, traverser, belief));
                 net_rows.push(k);
             }
         }
         if !net_rows.is_empty() {
+            let mut inputs = vec![0.0f32; net_rows.len() * INPUT_DIM];
+            for (row, &k) in net_rows.iter().enumerate() {
+                let dst = &mut inputs[row * INPUT_DIM..(row + 1) * INPUT_DIM];
+                encode_into(dst, &publics[k], traverser, &beliefs[k]);
+            }
             let raw = self.net.net().forward_batch(&inputs, net_rows.len());
             for (row, &k) in net_rows.iter().enumerate() {
                 let slice = &raw[row * OUTPUT_DIM..(row + 1) * OUTPUT_DIM];
@@ -260,6 +272,7 @@ impl<G: RebelGame> LeafValue for NetLeaf<'_, G> {
 mod tests {
     use super::*;
     use crate::rebel::cfr::{CfrParams, Solver};
+    use crate::rebel::hands::global_index;
     use crate::rebel::pbs::MAX_SEATS;
     use crate::rebel::standard::StandardLiarsDice;
 

@@ -45,7 +45,11 @@ impl Belief {
     /// The round-opening belief: each seat's fair-dice prior over its hands.
     pub fn uniform_prior(public: &PublicState) -> Belief {
         let per_seat = (0..public.players as usize)
-            .map(|s| hands::prior(public.dice_left[s], public.faces))
+            .map(|s| {
+                hands::tables(public.dice_left[s], public.faces)
+                    .prior
+                    .clone()
+            })
             .collect();
         Belief { per_seat }
     }

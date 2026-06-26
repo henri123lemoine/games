@@ -157,6 +157,90 @@ pub fn face_count_marginal(belief: &[f64], d: u8, faces: u8, face: usize) -> Vec
     out
 }
 
+/// Read-only precomputed tables for one `(dice, faces)` config, shared across
+/// threads via [`tables`]. Holds the data the per-leaf / per-iteration hot paths
+/// would otherwise recompute (re-enumerating hands, recomputing global indices,
+/// re-deriving per-face counts) on every call.
+pub struct HandTables {
+    pub dice: u8,
+    pub faces: u8,
+    /// Every hand of this config in canonical order; index = hand index within.
+    pub hands: Vec<Hand>,
+    /// `global_index[i]` is the global `H`-layout slot of `hands[i]`.
+    pub global_index: Vec<usize>,
+    /// Multinomial fair-dice prior, indexed within (sums to 1).
+    pub prior: Vec<f64>,
+    /// `face_count[f][i]` is `hands[i][f]` — the count of face `f` in hand `i`.
+    pub face_count: [Vec<u8>; MAX_FACES],
+}
+
+impl HandTables {
+    fn build(dice: u8, faces: u8) -> HandTables {
+        if faces < 2 {
+            return HandTables {
+                dice,
+                faces,
+                hands: Vec::new(),
+                global_index: Vec::new(),
+                prior: Vec::new(),
+                face_count: std::array::from_fn(|_| Vec::new()),
+            };
+        }
+        let hands = enumerate(dice, faces);
+        let global_index = hands.iter().map(|h| global_index(h, dice)).collect();
+        let prior = prior(dice, faces);
+        let face_count = std::array::from_fn(|f| hands.iter().map(|h| h[f]).collect());
+        HandTables {
+            dice,
+            faces,
+            hands,
+            global_index,
+            prior,
+            face_count,
+        }
+    }
+
+    /// Number of hands in this config.
+    pub fn hand_count(&self) -> usize {
+        self.hands.len()
+    }
+
+    /// [`face_count_marginal`] as a gather-sum over the precomputed per-face count
+    /// map: no enumeration or allocation beyond the length-`dice+1` output.
+    pub fn face_marginal(&self, belief: &[f64], face: usize) -> Vec<f64> {
+        let mut out = vec![0.0; self.dice as usize + 1];
+        for (&c, &b) in self.face_count[face].iter().zip(belief) {
+            out[c as usize] += b;
+        }
+        out
+    }
+}
+
+const N_FACES_SLOTS: usize = MAX_FACES + 1;
+const N_DICE_SLOTS: usize = MAX_DICE + 1;
+
+#[inline]
+fn table_slot(dice: u8, faces: u8) -> usize {
+    dice as usize * N_FACES_SLOTS + faces as usize
+}
+
+static HAND_TABLES: std::sync::LazyLock<Vec<HandTables>> = std::sync::LazyLock::new(|| {
+    let mut tables = Vec::with_capacity(N_DICE_SLOTS * N_FACES_SLOTS);
+    for dice in 0..N_DICE_SLOTS as u8 {
+        for faces in 0..N_FACES_SLOTS as u8 {
+            tables.push(HandTables::build(dice, faces));
+        }
+    }
+    tables
+});
+
+/// The precomputed [`HandTables`] for `(dice, faces)`, built once and shared
+/// read-only across threads. Valid for `dice` in `0..=MAX_DICE` and `faces` in
+/// `2..=MAX_FACES` (the configs every supported seat/round spans).
+pub fn tables(dice: u8, faces: u8) -> &'static HandTables {
+    &HAND_TABLES[table_slot(dice, faces)]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +350,41 @@ mod tests {
                 assert_eq!(m.len(), b.len());
                 for (mi, bi) in m.iter().zip(&b) {
                     assert!((mi - bi).abs() < 1e-12);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cached_tables_match_the_pure_functions_for_every_config() {
+        for faces in 2..=MAX_FACES as u8 {
+            for dice in 0..=MAX_DICE as u8 {
+                let t = tables(dice, faces);
+                assert_eq!(t.dice, dice);
+                assert_eq!(t.faces, faces);
+
+                let pure_hands = enumerate(dice, faces);
+                assert_eq!(t.hands, pure_hands, "hands mismatch {dice}x{faces}");
+                assert_eq!(t.hand_count(), hand_count(dice, faces));
+
+                for (i, h) in pure_hands.iter().enumerate() {
+                    assert_eq!(
+                        t.global_index[i],
+                        global_index(h, dice),
+                        "gidx {dice}x{faces}"
+                    );
+                    for (face, &count) in h.iter().enumerate() {
+                        assert_eq!(t.face_count[face][i], count, "face_count {dice}x{faces}");
+                    }
+                }
+
+                let pure_prior = prior(dice, faces);
+                assert_eq!(t.prior, pure_prior, "prior {dice}x{faces}");
+
+                for face in 0..faces as usize {
+                    let pure_m = face_count_marginal(&pure_prior, dice, faces, face);
+                    let cached_m = t.face_marginal(&pure_prior, face);
+                    assert_eq!(pure_m, cached_m, "face_marginal {dice}x{faces} face {face}");
                 }
             }
         }

@@ -5,7 +5,7 @@
 //! reach mass. Alternating Linear CFR is the deployed (and default) setting.
 
 use crate::rebel::game::RebelGame;
-use crate::rebel::hands::hand_count;
+use crate::rebel::hands::{self, hand_count};
 use crate::rebel::leaf::LeafValue;
 use crate::rebel::pbs::Belief;
 use crate::rebel::tree::Tree;
@@ -270,7 +270,7 @@ impl<'a> Solver<'a> {
             if is_leaf {
                 continue;
             }
-            let trav_hands = hand_count(dice_trav, self.faces);
+            let trav_hands = hands::tables(dice_trav, self.faces).hand_count();
             let mut val = vec![0.0; trav_hands];
             if acting == traverser {
                 for (action_idx, &child) in children.iter().enumerate() {

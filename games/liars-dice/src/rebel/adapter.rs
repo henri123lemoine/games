@@ -34,7 +34,7 @@
 //! `next_alive(last_bidder)`.
 
 use crate::rebel::game::{Bid, RebelGame};
-use crate::rebel::hands::{self, face_count_marginal, hand_count};
+use crate::rebel::hands::{self, hand_count};
 use crate::rebel::pbs::{Belief, MAX_SEATS, PublicState};
 use crate::subgame::ContinuationValue;
 
@@ -310,13 +310,13 @@ impl<C: ContinuationValue> RebelGame for LiarsDiceAdapter<'_, C> {
             if seat == traverser || p.dice_left[seat] == 0 {
                 continue;
             }
-            let marginal =
-                face_count_marginal(&belief.per_seat[seat], p.dice_left[seat], self.faces, face);
+            let marginal = hands::tables(p.dice_left[seat], self.faces)
+                .face_marginal(&belief.per_seat[seat], face);
             others = convolve(&others, &marginal);
         }
         let others_max = others.len() - 1;
 
-        let own_counts = hands::enumerate(trav_dice, self.faces);
+        let own_counts = &hands::tables(trav_dice, self.faces).hands;
 
         if is_exact {
             let value_exact = self.value_no_loss(&p.dice_left, caller, traverser);
