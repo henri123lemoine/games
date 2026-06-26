@@ -168,13 +168,24 @@ def _nonfinite(a):
     return int(a.size - int(np.isfinite(a).sum())) if a.size else 0
 
 
-def _move_forward(net, obs_np, legal_np):
-    """Net forward on a move-phase batch -> (logits_np, scalar_values_np, n_scrub)."""
+PIECE_COUNTS_MX = mx.array(list(S.spec.CLASSIC_PIECE_COUNTS), dtype=mx.float32)
+
+
+def _move_forward_raw(net, obs_np, legal_np):
+    """Build the move-net forward graph (lazy, un-evaluated). Returns the float32
+    (move_logits, value_logp) tuple, or None for an empty batch. The collect loop
+    evaluates move + setup graphs together in ONE mx.eval to cut per-step syncs."""
     if obs_np.shape[0] == 0:
-        return (np.zeros((0, sim.N_ACTION), np.float32), np.zeros(0, np.float32), 0)
+        return None
     out = net(mx.array(obs_np), legal_mask=mx.array(legal_np))
-    raw_logits = np.array(out["move_logits"].astype(mx.float32))
-    vlogp = np.array(out["value_logp"])  # already a stable log-softmax (net side)
+    return (out["move_logits"].astype(mx.float32), out["value_logp"].astype(mx.float32))
+
+
+def _move_forward_finish(raw, obs_np):
+    if raw is None:
+        return (np.zeros((0, sim.N_ACTION), np.float32), np.zeros(0, np.float32), 0)
+    raw_logits = np.array(raw[0])  # already float32 + evaluated
+    vlogp = np.array(raw[1])
     raw_vals = (np.exp(vlogp) * CATS).sum(-1)
     scrub = _nonfinite(raw_logits) + _nonfinite(raw_vals)
     logits = _sanitize_logits(raw_logits)
@@ -182,19 +193,25 @@ def _move_forward(net, obs_np, legal_np):
     return logits, vals, scrub
 
 
-def _setup_forward(net, obs_np):
-    """Setup net forward on a deploy-phase batch -> (logits_np(B,14), scalar_values, n_scrub)."""
+def _setup_forward_raw(net, obs_np):
+    """Build the setup-net forward graph (lazy). Returns (logits(B,40,14), value),
+    or None for an empty batch."""
     if obs_np.shape[0] == 0:
+        return None
+    out = net(mx.array(obs_np), PIECE_COUNTS_MX)
+    return (out["logits"].astype(mx.float32), out["value"].astype(mx.float32))
+
+
+def _setup_forward_finish(raw, obs_np):
+    if raw is None:
         return (np.zeros((0, sim.DEPLOY_WIDTH), np.float32), np.zeros(0, np.float32), 0)
-    pc = mx.array(list(S.spec.CLASSIC_PIECE_COUNTS), dtype=mx.float32)
-    out = net(mx.array(obs_np), pc)
     n_placed = obs_np.reshape(obs_np.shape[0], 40, 14).sum(axis=(1, 2)).astype(int)
     slot = np.clip(n_placed, 0, 39)
-    raw_logits = np.array(out["logits"].astype(mx.float32))  # (B,40,14)
+    raw_logits = np.array(raw[0])  # (B,40,14), float32 + evaluated
     scrub = _nonfinite(raw_logits)
     all_logits = _sanitize_logits(raw_logits)
     logits = all_logits[np.arange(obs_np.shape[0]), slot]
-    vlogp = _stable_log_softmax(np.array(out["value"].astype(mx.float32)), axis=-1)
+    vlogp = _stable_log_softmax(np.array(raw[1]), axis=-1)
     vals = np.clip((np.exp(vlogp[np.arange(obs_np.shape[0]), slot]) * CATS).sum(-1), -1.0, 1.0)
     return logits, vals.astype(np.float32), scrub
 
@@ -208,15 +225,27 @@ def collect_iter(s, move_net, setup_net, steps):
     n_term = 0
     rsum = 0.0
     scrub = 0
+    t_coll = t_fwd = t_comm = 0.0
     for _ in range(steps):
-        b = s.collect()
-        m_logits, m_vals, m_scrub = _move_forward(move_net, b["move_obs"], b["move_legal"])
-        d_logits, d_vals, d_scrub = _setup_forward(setup_net, b["deploy_obs"])
+        a = time.time(); b = s.collect(); t_coll += time.time() - a
+        a = time.time()
+        m_raw = _move_forward_raw(move_net, b["move_obs"], b["move_legal"])
+        s_raw = _setup_forward_raw(setup_net, b["deploy_obs"])
+        ev = []
+        if m_raw is not None:
+            ev += list(m_raw)
+        if s_raw is not None:
+            ev += list(s_raw)
+        if ev:
+            mx.eval(*ev)
+        m_logits, m_vals, m_scrub = _move_forward_finish(m_raw, b["move_obs"])
+        d_logits, d_vals, d_scrub = _setup_forward_finish(s_raw, b["deploy_obs"])
+        t_fwd += time.time() - a
         scrub += m_scrub + d_scrub
-        out = s.commit(m_logits, m_vals, d_logits, d_vals)
+        a = time.time(); out = s.commit(m_logits, m_vals, d_logits, d_vals); t_comm += time.time() - a
         n_term += int(out["terminal"].sum())
         rsum += float(out["reward_pl0"].sum())
-    return steps * s.num_envs, n_term, rsum, scrub
+    return steps * s.num_envs, n_term, rsum, scrub, t_coll, t_fwd, t_comm
 
 
 def train_move_pass(move_net, opt, data, magnet_coef, lr, cfg):
@@ -442,10 +471,12 @@ def train(cfg: TrainConfig):
         it_start = time.time()
 
         # 1-2: self-play + drain
-        env_steps, n_term, rsum, collect_scrub = collect_iter(s, move, setup, cfg.collect_steps)
+        env_steps, n_term, rsum, collect_scrub, _tc, _tf, _tm = collect_iter(s, move, setup, cfg.collect_steps)
         total_env_steps += env_steps
+        _t_collect = time.time()
         move_data = s.drain_training_batch(cfg.td_lambda, cfg.gae_lambda)
         setup_data = s.drain_setup_batch()
+        _t_drain = time.time()
 
         # 3: train, with per-net self-heal (revert + LR backoff on a non-finite
         # update so a transient blow-up can't corrupt a net or freeze the run).
@@ -464,6 +495,7 @@ def train(cfg: TrainConfig):
         setup_snap, setup_lr_scale, setup_nan, setup_stage = _self_heal(
             setup, setup_opt, setup_ema, setup_snap, a_nan, setup_applied, setup_lr, setup_lr_scale, cfg)
 
+        _t_train = time.time()
         # Drop the large drained numpy batches and flush the MLX buffer cache each
         # iteration — without this the Metal allocator's cache grows unbounded
         # (iter time balloons, then OOM on a shared 64 GB box).
@@ -475,6 +507,12 @@ def train(cfg: TrainConfig):
             "env_steps": total_env_steps,
             "work_seconds": round(run.elapsed(), 1),
             "iter_seconds": round(time.time() - it_start, 2),
+            "t/collect": round(_t_collect - it_start, 3),
+            "t/c_rust_collect": round(_tc, 3),
+            "t/c_forward": round(_tf, 3),
+            "t/c_rust_commit": round(_tm, 3),
+            "t/drain": round(_t_drain - _t_collect, 3),
+            "t/train": round(_t_train - _t_drain, 3),
             "lr": move_lr,
             "magnet_coef": magnet_coef,
             "setup_temp": reg_temp,
