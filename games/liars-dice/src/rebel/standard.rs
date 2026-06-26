@@ -121,6 +121,7 @@ impl RebelGame for StandardLiarsDice {
             Bid::Call => {
                 next.turn = p.players as usize;
             }
+            Bid::CallExact => unreachable!("standard Liar's Dice has no exact call"),
         }
         next
     }
@@ -261,7 +262,7 @@ mod tests {
             .iter()
             .map(|a| match a {
                 Bid::Raise { qty, face } => g.bid_id(*qty, *face),
-                Bid::Call => unreachable!(),
+                Bid::Call | Bid::CallExact => unreachable!(),
             })
             .collect();
         assert!(ids.windows(2).all(|w| w[0] < w[1]));
@@ -275,7 +276,7 @@ mod tests {
             .iter()
             .filter_map(|a| match a {
                 Bid::Raise { qty, face } => Some(g.bid_id(*qty, *face)),
-                Bid::Call => None,
+                Bid::Call | Bid::CallExact => None,
             })
             .collect();
         assert!(raises.iter().all(|&id| id > cur));

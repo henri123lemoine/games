@@ -3,14 +3,18 @@
 
 use crate::rebel::pbs::{Belief, PublicState};
 
-/// A bidding action. The reference standard game uses only higher-bid-or-liar,
-/// so call-exact is intentionally absent here.
+/// A bidding action. The reference standard game uses only higher-bid-or-liar
+/// (`Raise`/`Call`); the deploy adapter for the real non-standard rules also uses
+/// [`Bid::CallExact`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Bid {
     /// Raise to `(qty, face)` with a 0-based `face`.
     Raise { qty: u8, face: u8 },
-    /// Call the standing bid a lie.
+    /// Call the standing bid a lie (the real rules' `CallLiar`).
     Call,
+    /// Call the standing bid exactly right (the real rules' `CallExact`): if the
+    /// true count equals the bid no die is lost, otherwise the caller loses one.
+    CallExact,
 }
 
 /// A game defined over public states, abstracted so the public-tree vector CFR

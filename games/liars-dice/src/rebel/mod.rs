@@ -6,6 +6,7 @@
 //! recursive self-play data generator, the replay reservoir, and the self-play
 //! training loop with its recursive-policy exploitability gate.
 
+pub mod adapter;
 pub mod buffer;
 pub mod cfr;
 pub mod exploit;
@@ -19,6 +20,7 @@ pub mod train;
 pub mod tree;
 pub mod value_net;
 
+pub use adapter::LiarsDiceAdapter;
 pub use buffer::Reservoir;
 pub use cfr::{CfrParams, CfrVariant, Solver};
 pub use exploit::{best_response, exploitability};
