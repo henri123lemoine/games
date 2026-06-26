@@ -7,7 +7,7 @@
 use crate::rebel::game::RebelGame;
 use crate::rebel::hands::{self, hand_count};
 use crate::rebel::leaf::LeafValue;
-use crate::rebel::pbs::Belief;
+use crate::rebel::pbs::{Belief, PublicState};
 use crate::rebel::tree::Tree;
 
 /// Reach and regret smoothing floor, matching the reference `1e-80`.
@@ -91,6 +91,41 @@ pub(crate) fn reach_probabilities(
     reach
 }
 
+/// [`reach_probabilities`] computed in place into `dst` — one preallocated vector
+/// per node, each already sized to `player`'s (tree-constant) hand count — instead
+/// of allocating a fresh reach table per call. Every node's reach is fully
+/// overwritten, so prior contents are irrelevant. Children always follow their
+/// parent in the BFS node order, so `split_at_mut(node_id)` cleanly separates the
+/// parent (read) from the node being written.
+pub(crate) fn fill_reach(
+    tree: &Tree,
+    parent_action: &[Option<usize>],
+    strategy: &[Vec<Vec<f64>>],
+    initial: &[f64],
+    player: usize,
+    dst: &mut [Vec<f64>],
+) {
+    dst[0].copy_from_slice(initial);
+    // `node_id` indexes `dst` for the `split_at_mut` parent/child split, so the
+    // range loop is intrinsic here, not a needless index.
+    #[allow(clippy::needless_range_loop)]
+    for node_id in 1..tree.len() {
+        let parent = tree.nodes[node_id].parent.expect("non-root has a parent");
+        let (left, right) = dst.split_at_mut(node_id);
+        let cur = &mut right[0];
+        if tree.nodes[parent].acting == player {
+            let action_idx = parent_action[node_id].expect("non-root has a parent action");
+            let parent_reach = &left[parent];
+            let strat_parent = &strategy[parent];
+            for (hand, c) in cur.iter_mut().enumerate() {
+                *c = parent_reach[hand] * strat_parent[hand][action_idx];
+            }
+        } else {
+            cur.copy_from_slice(&left[parent]);
+        }
+    }
+}
+
 fn normalize_in_place(v: &mut [f64]) {
     let sum: f64 = v.iter().sum::<f64>().max(SMOOTHING_EPS);
     for x in v.iter_mut() {
@@ -116,6 +151,16 @@ pub struct Solver<'a> {
     traverser_values: Vec<Vec<f64>>,
     root_values_means: Vec<Vec<f64>>,
     num_steps: Vec<usize>,
+    /// Node ids of the tree's leaves, ascending (fixed across iterations).
+    leaf_ids: Vec<usize>,
+    /// Each leaf's public state, cloned once (fixed across iterations).
+    leaf_publics: Vec<PublicState>,
+    /// Reusable per-leaf normalized beliefs, overwritten each iteration.
+    leaf_beliefs: Vec<Belief>,
+    /// Reusable per-leaf opponent-reach scalers, overwritten each iteration.
+    leaf_scalers: Vec<f64>,
+    /// Reusable counterfactual-value accumulator (length = max traverser hands).
+    val_buf: Vec<f64>,
 }
 
 impl<'a> Solver<'a> {
@@ -148,12 +193,39 @@ impl<'a> Solver<'a> {
             average_strategies[idx] = vec![vec![uniform; num_actions]; num_hands];
         }
 
-        let reach = vec![vec![Vec::new(); n]; players];
-        let traverser_values = vec![Vec::new(); n];
-        let root_values_means = (0..players)
-            .map(|s| vec![0.0; hand_count(tree.root().public.dice_left[s], faces)])
+        // Dice (hence per-seat hand counts) are tree-constant: `apply` only changes
+        // `turn`/`bid`/`last_bidder`, never `dice_left`. So every node's reach and
+        // counterfactual-value vectors keep a fixed length and can be preallocated
+        // once here and overwritten in place each iteration.
+        let root_dice = tree.root().public.dice_left;
+        let seat_hands: Vec<usize> = (0..players)
+            .map(|s| hand_count(root_dice[s], faces))
             .collect();
+        let max_hands = seat_hands.iter().copied().max().unwrap_or(1);
+
+        let reach = (0..players)
+            .map(|s| vec![vec![0.0; seat_hands[s]]; n])
+            .collect();
+        let traverser_values = vec![vec![0.0; max_hands]; n];
+        let val_buf = vec![0.0; max_hands];
+        let root_values_means = seat_hands.iter().map(|&h| vec![0.0; h]).collect();
         let num_steps = vec![0; players];
+
+        let mut leaf_ids = Vec::new();
+        let mut leaf_publics = Vec::new();
+        for (idx, node) in tree.nodes.iter().enumerate() {
+            if node.is_leaf {
+                leaf_ids.push(idx);
+                leaf_publics.push(node.public.clone());
+            }
+        }
+        let leaf_beliefs = leaf_ids
+            .iter()
+            .map(|_| Belief {
+                per_seat: seat_hands.iter().map(|&h| vec![0.0; h]).collect(),
+            })
+            .collect();
+        let leaf_scalers = vec![0.0; leaf_ids.len()];
 
         let mut solver = Self {
             params,
@@ -171,6 +243,11 @@ impl<'a> Solver<'a> {
             traverser_values,
             root_values_means,
             num_steps,
+            leaf_ids,
+            leaf_publics,
+            leaf_beliefs,
+            leaf_scalers,
+            val_buf,
         };
         solver.seed_uniform_reach_weighted();
         solver
@@ -219,80 +296,74 @@ impl<'a> Solver<'a> {
             &self.last_strategies
         };
         for seat in 0..self.players {
-            self.reach[seat] = reach_probabilities(
+            fill_reach(
                 &self.tree,
                 &self.parent_action,
                 strat_for_reach,
                 &self.initial_beliefs.per_seat[seat],
                 seat,
+                &mut self.reach[seat],
             );
         }
 
-        let mut leaf_ids = Vec::new();
-        let mut publics = Vec::new();
-        let mut beliefs = Vec::new();
-        let mut scalers = Vec::new();
-        for idx in 0..self.tree.len() {
-            if !self.tree.nodes[idx].is_leaf {
-                continue;
+        for k in 0..self.leaf_ids.len() {
+            let idx = self.leaf_ids[k];
+            for seat in 0..self.players {
+                let r = &self.reach[seat][idx];
+                let sum = r.iter().sum::<f64>().max(SMOOTHING_EPS);
+                let dst = &mut self.leaf_beliefs[k].per_seat[seat];
+                for (d, x) in dst.iter_mut().zip(r) {
+                    *d = *x / sum;
+                }
             }
-            let per_seat = (0..self.players)
-                .map(|seat| {
-                    let r = &self.reach[seat][idx];
-                    let sum = r.iter().sum::<f64>().max(SMOOTHING_EPS);
-                    r.iter().map(|x| x / sum).collect()
-                })
-                .collect();
-            let scaler: f64 = (0..self.players)
+            self.leaf_scalers[k] = (0..self.players)
                 .filter(|&j| j != traverser)
                 .map(|j| self.reach[j][idx].iter().sum::<f64>())
                 .product();
-            leaf_ids.push(idx);
-            publics.push(self.tree.nodes[idx].public.clone());
-            beliefs.push(Belief { per_seat });
-            scalers.push(scaler);
         }
-        let raws = self.leaf.values_batch(&publics, traverser, &beliefs);
-        for ((&idx, raw), &scaler) in leaf_ids.iter().zip(&raws).zip(&scalers) {
-            self.traverser_values[idx] = raw.iter().map(|v| v * scaler).collect();
+        let raws = self
+            .leaf
+            .values_batch(&self.leaf_publics, traverser, &self.leaf_beliefs);
+        for (k, raw) in raws.iter().enumerate() {
+            let idx = self.leaf_ids[k];
+            let scaler = self.leaf_scalers[k];
+            let dst = &mut self.traverser_values[idx];
+            for (d, &v) in dst.iter_mut().zip(raw) {
+                *d = v * scaler;
+            }
         }
 
         for idx in (0..self.tree.len()).rev() {
-            let (is_leaf, acting, dice_trav, children) = {
-                let node = &self.tree.nodes[idx];
-                (
-                    node.is_leaf,
-                    node.acting,
-                    node.public.dice_left[traverser],
-                    node.children.clone(),
-                )
-            };
-            if is_leaf {
+            let node = &self.tree.nodes[idx];
+            if node.is_leaf {
                 continue;
             }
-            let trav_hands = hands::tables(dice_trav, self.faces).hand_count();
-            let mut val = vec![0.0; trav_hands];
+            let acting = node.acting;
+            let trav_hands =
+                hands::tables(node.public.dice_left[traverser], self.faces).hand_count();
+            self.val_buf[..trav_hands].fill(0.0);
             if acting == traverser {
-                for (action_idx, &child) in children.iter().enumerate() {
-                    for (hand, v) in val.iter_mut().enumerate() {
+                for (action_idx, &child) in node.children.iter().enumerate() {
+                    for hand in 0..trav_hands {
                         self.regrets[idx][hand][action_idx] += self.traverser_values[child][hand];
-                        *v += self.traverser_values[child][hand]
+                        self.val_buf[hand] += self.traverser_values[child][hand]
                             * self.last_strategies[idx][hand][action_idx];
                     }
                 }
-                for (hand, &v) in val.iter().enumerate() {
+                for hand in 0..trav_hands {
+                    let v = self.val_buf[hand];
                     for regret in self.regrets[idx][hand].iter_mut() {
                         *regret -= v;
                     }
                 }
             } else {
-                for &child in &children {
-                    for (hand, v) in val.iter_mut().enumerate() {
-                        *v += self.traverser_values[child][hand];
+                for &child in &node.children {
+                    for hand in 0..trav_hands {
+                        self.val_buf[hand] += self.traverser_values[child][hand];
                     }
                 }
             }
-            self.traverser_values[idx] = val;
+            self.traverser_values[idx][..trav_hands].copy_from_slice(&self.val_buf[..trav_hands]);
         }
     }
 
@@ -330,10 +401,9 @@ impl<'a> Solver<'a> {
         } else {
             1.0 / (steps as f64 + 1.0)
         };
-        let root_values = self.traverser_values[0].clone();
         for (mean, &value) in self.root_values_means[traverser]
             .iter_mut()
-            .zip(&root_values)
+            .zip(&self.traverser_values[0])
         {
             *mean += (value - *mean) * alpha;
         }
@@ -354,19 +424,24 @@ impl<'a> Solver<'a> {
             }
         }
 
-        let reach_buf = reach_probabilities(
+        // The traverser's reach buffer is dead after `update_regrets` consumed it
+        // for leaf beliefs, so reuse it for this iteration's (post-regret-match)
+        // reach pass rather than allocating a fresh table.
+        fill_reach(
             &self.tree,
             &self.parent_action,
             &self.last_strategies,
             &self.initial_beliefs.per_seat[traverser],
             traverser,
+            &mut self.reach[traverser],
         );
 
-        for (idx, reach_node) in reach_buf.iter().enumerate() {
+        for idx in 0..self.tree.len() {
             if !self.acts_here(idx, traverser) {
                 continue;
             }
-            for (hand, &reach_hand) in reach_node.iter().enumerate() {
+            for hand in 0..self.regrets[idx].len() {
+                let reach_hand = self.reach[traverser][idx][hand];
                 for action in 0..self.regrets[idx][hand].len() {
                     let regret = self.regrets[idx][hand][action];
                     self.regrets[idx][hand][action] = regret * if regret > 0.0 { pos } else { neg };
