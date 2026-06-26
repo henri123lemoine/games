@@ -212,24 +212,6 @@ impl<'a> Solver<'a> {
         }
     }
 
-    fn leaf_values_at(&self, idx: usize, traverser: usize) -> Vec<f64> {
-        let public = &self.tree.nodes[idx].public;
-        let per_seat = (0..self.players)
-            .map(|seat| {
-                let r = &self.reach[seat][idx];
-                let sum = r.iter().sum::<f64>().max(SMOOTHING_EPS);
-                r.iter().map(|x| x / sum).collect()
-            })
-            .collect();
-        let belief = Belief { per_seat };
-        let raw = self.leaf.values(public, traverser, &belief);
-        let scaler: f64 = (0..self.players)
-            .filter(|&j| j != traverser)
-            .map(|j| self.reach[j][idx].iter().sum::<f64>())
-            .product();
-        raw.iter().map(|v| v * scaler).collect()
-    }
-
     fn update_regrets(&mut self, traverser: usize) {
         let strat_for_reach = if self.params.cfr_avg {
             &self.average_strategies
@@ -246,10 +228,33 @@ impl<'a> Solver<'a> {
             );
         }
 
+        let mut leaf_ids = Vec::new();
+        let mut publics = Vec::new();
+        let mut beliefs = Vec::new();
+        let mut scalers = Vec::new();
         for idx in 0..self.tree.len() {
-            if self.tree.nodes[idx].is_leaf {
-                self.traverser_values[idx] = self.leaf_values_at(idx, traverser);
+            if !self.tree.nodes[idx].is_leaf {
+                continue;
             }
+            let per_seat = (0..self.players)
+                .map(|seat| {
+                    let r = &self.reach[seat][idx];
+                    let sum = r.iter().sum::<f64>().max(SMOOTHING_EPS);
+                    r.iter().map(|x| x / sum).collect()
+                })
+                .collect();
+            let scaler: f64 = (0..self.players)
+                .filter(|&j| j != traverser)
+                .map(|j| self.reach[j][idx].iter().sum::<f64>())
+                .product();
+            leaf_ids.push(idx);
+            publics.push(self.tree.nodes[idx].public.clone());
+            beliefs.push(Belief { per_seat });
+            scalers.push(scaler);
+        }
+        let raws = self.leaf.values_batch(&publics, traverser, &beliefs);
+        for ((&idx, raw), &scaler) in leaf_ids.iter().zip(&raws).zip(&scalers) {
+            self.traverser_values[idx] = raw.iter().map(|v| v * scaler).collect();
         }
 
         for idx in (0..self.tree.len()).rev() {
@@ -393,6 +398,12 @@ impl<'a> Solver<'a> {
 
     pub fn average_strategy(&self) -> &[Vec<Vec<f64>>] {
         &self.average_strategies
+    }
+
+    /// The current-iteration (regret-matched) strategy per node/hand/action. The
+    /// recursive self-play loop descends a sampled trajectory under this policy.
+    pub fn last_strategy(&self) -> &[Vec<Vec<f64>>] {
+        &self.last_strategies
     }
 
     pub fn root_values_mean(&self, seat: usize) -> &[f64] {

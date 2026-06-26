@@ -22,6 +22,22 @@ pub trait LeafValue {
         traverser: usize,
         normalized_belief: &Belief,
     ) -> Vec<f64>;
+
+    /// Per-hand values for `traverser` at each `(public, belief)` query, aligned
+    /// to the input order. The default loops over [`LeafValue::values`]; a
+    /// net-backed leaf overrides this to amortize a single batched forward pass.
+    fn values_batch(
+        &self,
+        publics: &[PublicState],
+        traverser: usize,
+        beliefs: &[Belief],
+    ) -> Vec<Vec<f64>> {
+        publics
+            .iter()
+            .zip(beliefs)
+            .map(|(public, belief)| self.values(public, traverser, belief))
+            .collect()
+    }
 }
 
 /// Values a terminal leaf by the game's exact terminal counterfactual payoffs.
@@ -46,14 +62,15 @@ impl<G: RebelGame> LeafValue for TerminalLeaf<'_, G> {
 }
 
 /// A game re-rooted at an arbitrary public state, delegating all mechanics to an
-/// inner game. Lets a leaf spin up the full-depth subgame that begins there.
-struct RootedGame<'a, G: RebelGame> {
+/// inner game. Lets a leaf — or the recursive self-play loop — spin up the
+/// subgame that begins there.
+pub struct RootedGame<'a, G: RebelGame> {
     inner: &'a G,
     root: PublicState,
 }
 
 impl<'a, G: RebelGame> RootedGame<'a, G> {
-    fn new(inner: &'a G, root: PublicState) -> Self {
+    pub fn new(inner: &'a G, root: PublicState) -> Self {
         Self { inner, root }
     }
 }
