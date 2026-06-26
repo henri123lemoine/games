@@ -74,6 +74,11 @@ pub struct Transition {
     /// Terminal reward to the acting player (`is_terminating_action * reward`),
     /// 0 otherwise.
     pub terminal_reward: f32,
+    /// True when this terminating action is a `move_cap` TRUNCATION (not a real
+    /// rules-terminal). Its value target resolves to its own `value` (delta 0)
+    /// instead of `terminal_reward`, so a timeout neither poisons the value head
+    /// toward 0 nor rewards stalling, while still breaking the replay segment.
+    pub truncated: bool,
     /// Two-ply-later value target for this position, filled by [`record`] once
     /// the same player's next position is known, or the one-hot terminal reward.
     /// `None` until resolved.
@@ -196,6 +201,7 @@ impl ReplayBuffer {
         let boundary = terminating && !transition.is_terminated_position;
         let terminal_reward = transition.terminal_reward;
         let value = transition.value;
+        let truncated = transition.truncated;
 
         self.rings[env][slot] = Some(transition);
 
@@ -204,6 +210,9 @@ impl ReplayBuffer {
             if let Some(p) = self.rings[env][prev].as_mut() {
                 p.terminal_reward -= terminal_reward;
                 p.is_terminating_action = true;
+                if truncated {
+                    p.truncated = true;
+                }
             }
         }
 
@@ -211,7 +220,11 @@ impl ReplayBuffer {
             let prev_prev = (slot + cap - 2) % cap;
             if let Some(pp) = self.rings[env][prev_prev].as_mut() {
                 pp.target_value = Some(if pp.is_terminating_action {
-                    pp.terminal_reward
+                    if pp.truncated {
+                        pp.value
+                    } else {
+                        pp.terminal_reward
+                    }
                 } else {
                     value
                 });
@@ -379,6 +392,7 @@ mod tests {
             is_terminated_position: false,
             is_terminating_action: false,
             terminal_reward: 0.0,
+            truncated: false,
             target_value: None,
         }
     }
@@ -409,6 +423,7 @@ mod tests {
             is_terminated_position,
             is_terminating_action,
             terminal_reward,
+            truncated: false,
             target_value: None,
         }
     }
@@ -500,6 +515,7 @@ mod tests {
                 is_terminated_position: false,
                 is_terminating_action: false,
                 terminal_reward: 0.0,
+                truncated: false,
                 target_value: None,
             },
         );

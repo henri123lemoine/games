@@ -423,6 +423,7 @@ fn sample_apply(
         is_terminated_position: false,
         is_terminating_action,
         terminal_reward,
+        truncated: capped && !rules_terminal,
         target_value: None,
     };
 
@@ -552,6 +553,7 @@ mod tests {
                     "cap must break replay bootstrapping"
                 );
                 assert_eq!(t.terminal_reward, 0.0, "cap carries no game reward");
+                assert!(t.truncated, "cap is a truncation (value-bootstrapped target)");
                 return;
             }
         }
