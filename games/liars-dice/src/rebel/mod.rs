@@ -7,6 +7,7 @@
 //! training loop with its recursive-policy exploitability gate.
 
 pub mod adapter;
+pub mod agent;
 pub mod buffer;
 pub mod cfr;
 pub mod deploy;
@@ -23,6 +24,7 @@ pub mod tree;
 pub mod value_net;
 
 pub use adapter::LiarsDiceAdapter;
+pub use agent::RebelAgent;
 pub use buffer::Reservoir;
 pub use cfr::{CfrParams, CfrVariant, Solver};
 pub use deploy::{DeployCont, NetContinuation};

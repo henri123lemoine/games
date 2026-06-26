@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use game_core::{Agent, Game, NoSpec, hash};
+use liars_dice::rebel::RebelAgent;
 use liars_dice::{BidConditioned, LiarsDice, NetOnlineSolveAgent, ProbabilisticAgent};
 use nn_infer::Net;
 use poker::{HoleSampler, Poker, PokerBot};
@@ -518,7 +519,8 @@ pub fn entries() -> Vec<Entry> {
             make: Box::new(|o| make_versus(o, liars_dice_game(o)?, "rollout", liars_dice_bot)),
             eval: Some(eval_entry(
                 "rollout[:rollouts=1000] | belief | \
-                 solve[:net=runs/ld_value/best.bin] | random",
+                 solve[:net=runs/ld_value/best.bin] | \
+                 rebel[:net=runs/ld_rebel/best.bin] | random",
                 0,
                 true,
                 liars_dice_game,
@@ -1121,10 +1123,26 @@ fn liars_dice_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<LiarsDice>, St
                 ) as BoxedAgent<LiarsDice>
             })
         }
+        "rebel" => {
+            // Test-time ReBeL: depth-limited block-resolving search played by the
+            // trained PBS value net. Load the net bytes once and validate at build
+            // time; each bot seat parses its own agent from the shared bytes. The
+            // search budget is the deploy default (depth-2, 1024 iters).
+            let path = spec.opts.str("net", "runs/ld_rebel/best.bin");
+            let bytes = crate::artifacts::read(&path)?;
+            RebelAgent::from_bytes(&bytes)
+                .map_err(|e| format!("failed to load liars-dice rebel net '{path}': {e}"))?;
+            Box::new(move |_| {
+                Box::new(
+                    RebelAgent::from_bytes(&bytes)
+                        .expect("rebel net bytes already validated at build time"),
+                ) as BoxedAgent<LiarsDice>
+            })
+        }
         "random" => Box::new(|_| Box::new(game_core::RandomAgent) as BoxedAgent<LiarsDice>),
         other => {
             return Err(format!(
-                "unknown liars-dice bot '{other}' (rollout|belief|solve|random)"
+                "unknown liars-dice bot '{other}' (rollout|belief|solve|rebel|random)"
             ));
         }
     })
