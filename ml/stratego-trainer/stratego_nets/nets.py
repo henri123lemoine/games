@@ -51,6 +51,8 @@ def _sdpa(q, k, v, mask=None):
     numerically faithful to the naive impl end-to-end (argmax identical, logits/value
     diff < 1e-3) and a notable speedup on the bandwidth-bound collect forward."""
     scale = 1.0 / math.sqrt(q.shape[-1])
+    if mask is not None:
+        mask = mask.astype(q.dtype)  # fused kernel requires mask to promote to q's dtype (bf16 inference)
     return mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
 
 

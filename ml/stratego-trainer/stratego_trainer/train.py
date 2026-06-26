@@ -169,6 +169,7 @@ def _nonfinite(a):
 
 
 PIECE_COUNTS_MX = mx.array(list(S.spec.CLASSIC_PIECE_COUNTS), dtype=mx.float32)
+PIECE_COUNTS_MX_BF16 = PIECE_COUNTS_MX.astype(mx.bfloat16)
 
 
 def _move_forward_raw(net, obs_np, legal_np):
@@ -177,7 +178,7 @@ def _move_forward_raw(net, obs_np, legal_np):
     evaluates move + setup graphs together in ONE mx.eval to cut per-step syncs."""
     if obs_np.shape[0] == 0:
         return None
-    out = net(mx.array(obs_np), legal_mask=mx.array(legal_np))
+    out = net(mx.array(obs_np).astype(mx.bfloat16), legal_mask=mx.array(legal_np))
     return (out["move_logits"].astype(mx.float32), out["value_logp"].astype(mx.float32))
 
 
@@ -198,7 +199,7 @@ def _setup_forward_raw(net, obs_np):
     or None for an empty batch."""
     if obs_np.shape[0] == 0:
         return None
-    out = net(mx.array(obs_np), PIECE_COUNTS_MX)
+    out = net(mx.array(obs_np).astype(mx.bfloat16), PIECE_COUNTS_MX_BF16)
     return (out["logits"].astype(mx.float32), out["value"].astype(mx.float32))
 
 
@@ -455,6 +456,12 @@ def train(cfg: TrainConfig):
         mx.set_cache_limit(int(cfg.mlx_cache_limit_gb * 1024**3))
     run = RunDir(cfg.runs_root, cfg.run_name, cfg.work_seconds)
     move, setup, move_opt, setup_opt, move_ema, setup_ema = build(cfg)
+    # bf16 inference copies for the collect (self-play) forward — the collect forward
+    # is the per-iter bottleneck and runs ~1.75x faster in bf16. Self-play data is
+    # precision-insensitive (argmax/value barely move); TRAINING stays fp32 (the
+    # validated loss/optimizer math and stability are untouched).
+    move_bf16 = S.MoveTransformer.from_config(cfg.move_net_config())
+    setup_bf16 = S.ArrangementTransformer.from_config(cfg.setup_net_config())
 
     s = sim.BatchSim(num_envs=cfg.num_envs, move_cap=cfg.move_cap, seed=cfg.seed,
                      buffer_capacity=cfg.buffer_capacity)
@@ -477,7 +484,10 @@ def train(cfg: TrainConfig):
         it_start = time.time()
 
         # 1-2: self-play + drain
-        env_steps, n_term, rsum, collect_scrub, _tc, _tf, _tm = collect_iter(s, move, setup, cfg.collect_steps)
+        move_bf16.update(tree_map(lambda p: p.astype(mx.bfloat16), move.parameters()))
+        setup_bf16.update(tree_map(lambda p: p.astype(mx.bfloat16), setup.parameters()))
+        mx.eval(move_bf16.parameters(), setup_bf16.parameters())
+        env_steps, n_term, rsum, collect_scrub, _tc, _tf, _tm = collect_iter(s, move_bf16, setup_bf16, cfg.collect_steps)
         total_env_steps += env_steps
         _t_collect = time.time()
         move_data = s.drain_training_batch(cfg.td_lambda, cfg.gae_lambda)
