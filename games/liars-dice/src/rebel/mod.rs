@@ -9,6 +9,8 @@
 pub mod adapter;
 pub mod buffer;
 pub mod cfr;
+pub mod deploy;
+pub mod deploy_train;
 pub mod exploit;
 pub mod game;
 pub mod hands;
@@ -23,6 +25,10 @@ pub mod value_net;
 pub use adapter::LiarsDiceAdapter;
 pub use buffer::Reservoir;
 pub use cfr::{CfrParams, CfrVariant, Solver};
+pub use deploy::{DeployCont, NetContinuation};
+pub use deploy_train::{
+    DeployReport, DeployRound, DeployTrainConfig, DeployTrainer, sample_deploy_round,
+};
 pub use exploit::{best_response, exploitability};
 pub use game::{Bid, RebelGame};
 pub use hands::{H, MAX_DICE, MAX_FACES};

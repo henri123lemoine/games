@@ -163,16 +163,25 @@ impl<C: ContinuationValue> RebelGame for LiarsDiceAdapter<'_, C> {
     }
 
     fn root(&self) -> PublicState {
-        let last_bidder = if self.first_round {
-            (self.opener + self.players - 1) % self.players
+        // The real game's first round forces a `1×1` open OWNED BY THE PHANTOM seat
+        // (the seat before the opener); the opener then RESPONDS to that standing
+        // bid — exactly `LiarsDice::initial_state` (seat 0 faces seat `players-1`'s
+        // forced `1×1`). So a first-round root already carries the bid; only a
+        // continuing round opens free. `(1, 0)` is the 0-based form of the real
+        // `1×1` (face 1 → 0-based face 0).
+        let (bid, last_bidder) = if self.first_round {
+            (
+                Some((1, 0)),
+                (self.opener + self.players - 1) % self.players,
+            )
         } else {
-            self.prev_alive(&self.dice_left, self.opener)
+            (None, self.prev_alive(&self.dice_left, self.opener))
         };
         PublicState {
             players: self.players as u8,
             faces: self.faces,
             dice_left: self.dice_left,
-            bid: None,
+            bid,
             turn: self.opener,
             last_bidder,
             first_round: self.first_round,
@@ -193,10 +202,10 @@ impl<C: ContinuationValue> RebelGame for LiarsDiceAdapter<'_, C> {
         }
         let total = self.total_dice(&p.dice_left);
         match p.bid {
+            // A free open: every `(qty, face)`. The first round never reaches here
+            // — its root already carries the phantom's forced `1×1`, so the opener
+            // responds to a standing bid (the `Some` arm).
             None => {
-                if p.first_round {
-                    return vec![Bid::Raise { qty: 1, face: 0 }];
-                }
                 let mut acts = Vec::with_capacity(total as usize * self.faces as usize);
                 for q in 1..=total {
                     for f in 0..self.faces {
@@ -563,17 +572,34 @@ mod tests {
     }
 
     #[test]
-    fn first_round_forces_a_single_one_by_one_open() {
+    fn first_round_root_is_the_phantom_one_by_one_with_the_opener_responding() {
+        // The real entry round: the phantom (seat `players-1`) owns the forced
+        // `1×1` and the opener (seat 0) responds to it, mirroring
+        // `LiarsDice::initial_state`.
         let cv = DiceShareValue;
         let dice = dice_vec(&[2, 2]);
         let ad = LiarsDiceAdapter::new(2, 3, dice, 0, true, &cv);
         let root = ad.root();
+        assert_eq!(root.bid, Some((1, 0)), "0-based 1×1 stands at the root");
+        assert_eq!(root.turn, 0, "the opener acts");
+        assert_eq!(root.last_bidder, 1, "the phantom (prev seat) owns the bid");
+
+        // The opener responds: relative raises off the 1×1, plus both calls. With
+        // total 4 and 3 faces, RaiseQuantity → 2×1 (0-based (2,0)) and RaiseFace →
+        // 1×2 (0-based (1,1)).
         assert_eq!(
             ad.legal_actions(&root),
-            vec![Bid::Raise { qty: 1, face: 0 }]
+            vec![
+                Bid::Raise { qty: 2, face: 0 },
+                Bid::Raise { qty: 1, face: 1 },
+                Bid::Call,
+                Bid::CallExact,
+            ]
         );
-        let after = ad.apply(&root, Bid::Raise { qty: 1, face: 0 });
-        assert_eq!(after.bid, Some((1, 0)));
+
+        // The opener's first real raise becomes the standing bid it owns.
+        let after = ad.apply(&root, Bid::Raise { qty: 2, face: 0 });
+        assert_eq!(after.bid, Some((2, 0)));
         assert_eq!(after.last_bidder, 0);
         assert_eq!(ad.acting(&after), 1);
     }
