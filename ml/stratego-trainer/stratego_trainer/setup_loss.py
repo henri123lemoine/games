@@ -63,6 +63,14 @@ VALUE_LOGP_FLOOR = -MAX_SLOT_NLL
 # the healthy regime is unchanged) and linear beyond, bounding the gradient to
 # +/-2*delta no matter how far the head extrapolates.
 ENT_HUBER_DELTA = 4.0
+# Dual-clip PPO constant. Standard PPO clipping leaves the negative-advantage
+# surrogate (|adv|*ratio) UNBOUNDED when the off-policy ratio is large: the setup
+# net's generation-time-vs-current ratios (after the log-prob fix) grow as the
+# policy sharpens, producing a pathological-DIRECTION gradient that survives
+# grad-norm clipping (magnitude only) and diverges the setup net (~iter 310: ent
+# 0.02->25.7, grad_norm ->220, both nets NaN). Bound the adv<0 surrogate to
+# DUAL_CLIP*adv (Ye et al. dual-clip PPO); the trusted adv>=0 region is unchanged.
+DUAL_CLIP = 3.0
 
 
 def _robust_sq(err, delta):
@@ -166,7 +174,9 @@ def setup_loss_and_stats(net, batch, cfg):
     advantages = grounded_adv + reg_temp * reg_adv
 
     clipped = mx.clip(ratio, 1 - cfg.arr_clip_range, 1 + cfg.arr_clip_range)
-    policy_loss = -mx.minimum(advantages * ratio, advantages * clipped).mean()
+    surrogate = mx.minimum(advantages * ratio, advantages * clipped)
+    surrogate = mx.where(advantages < 0, mx.maximum(surrogate, DUAL_CLIP * advantages), surrogate)
+    policy_loss = -surrogate.mean()
 
     # categorical value-CE: two-hot(outcome) shared across all 40 slots. Floor the
     # log-prob so a momentarily-wrong value head can't drive the CE unbounded.
