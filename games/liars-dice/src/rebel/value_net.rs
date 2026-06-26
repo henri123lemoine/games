@@ -73,12 +73,10 @@ pub fn encode(public: &PublicState, traverser: usize, belief: &Belief) -> Vec<f3
     x
 }
 
-/// [`encode`] into a caller-reused buffer of length [`INPUT_DIM`], zeroing it
-/// first. The per-seat belief scatter reads each seat's cached global-index map
-/// (no per-call hand enumeration or `global_index` recompute).
-pub fn encode_into(x: &mut [f32], public: &PublicState, traverser: usize, belief: &Belief) {
-    debug_assert_eq!(x.len(), INPUT_DIM, "encode_into buffer must be INPUT_DIM");
-    x.fill(0.0);
+/// Fill the public block (`x[0..PUBLIC_LEN]`) of an encoding. Shared by the
+/// dense [`encode_into`] and the compact [`encode_active_into`]; the belief
+/// block that follows is laid out by the caller.
+fn encode_public(x: &mut [f32], public: &PublicState, traverser: usize) {
     let players = public.players as usize;
     let faces = public.faces;
 
@@ -104,7 +102,17 @@ pub fn encode_into(x: &mut [f32], public: &PublicState, traverser: usize, belief
     x[OFF_ACTING + acting_rel] = 1.0;
     let bidder_rel = (public.last_bidder + players - traverser) % players;
     x[OFF_BIDDER + bidder_rel] = 1.0;
+}
 
+/// [`encode`] into a caller-reused buffer of length [`INPUT_DIM`], zeroing it
+/// first. The per-seat belief scatter reads each seat's cached global-index map
+/// (no per-call hand enumeration or `global_index` recompute).
+pub fn encode_into(x: &mut [f32], public: &PublicState, traverser: usize, belief: &Belief) {
+    debug_assert_eq!(x.len(), INPUT_DIM, "encode_into buffer must be INPUT_DIM");
+    x.fill(0.0);
+    encode_public(x, public, traverser);
+    let players = public.players as usize;
+    let faces = public.faces;
     for r in 0..players {
         let seat = (traverser + r) % players;
         let d = public.dice_left[seat];
@@ -117,6 +125,72 @@ pub fn encode_into(x: &mut [f32], public: &PublicState, traverser: usize, belief
             x[base + g] = mass as f32;
         }
     }
+}
+
+/// The dense-input positions [`encode_into`] can write nonzero for a solve with
+/// this `(dice_left, faces, players)` and `traverser`: the whole public block,
+/// then per rotated seat its actual dice-count's global hand block. Every other
+/// position is a structural zero. `dice_left` is constant across a CFR solve, so
+/// this list is fixed for the whole solve and shared by every leaf — pair it with
+/// [`encode_active_into`] and [`RebelMlp::forward_batch_active`] for the exact
+/// compact forward.
+pub fn active_indices(public: &PublicState, traverser: usize) -> Vec<usize> {
+    let players = public.players as usize;
+    let n_active: usize = PUBLIC_LEN
+        + (0..players)
+            .map(|r| hands::global_block(public.dice_left[(traverser + r) % players]).len())
+            .sum::<usize>();
+    let mut idx = Vec::with_capacity(n_active);
+    idx.extend(0..PUBLIC_LEN);
+    for r in 0..players {
+        let seat = (traverser + r) % players;
+        let base = PUBLIC_LEN + r * H;
+        for g in hands::global_block(public.dice_left[seat]) {
+            idx.push(base + g);
+        }
+    }
+    idx
+}
+
+/// [`encode_into`] restricted to the compact layout of [`active_indices`]: fill
+/// `buf` (length `active_indices.len()`) with the public block followed by, per
+/// rotated seat, that seat's belief scattered into its global hand block —
+/// exactly the nonzero dense values, in `active_indices` order. The omitted dense
+/// positions are zero, so a forward over `buf` against the first-layer weights
+/// gathered to `active_indices` equals the dense forward.
+pub fn encode_active_into(
+    buf: &mut [f32],
+    public: &PublicState,
+    traverser: usize,
+    belief: &Belief,
+    active_indices: &[usize],
+) {
+    debug_assert_eq!(
+        buf.len(),
+        active_indices.len(),
+        "compact buffer must match active_indices length"
+    );
+    buf.fill(0.0);
+    encode_public(buf, public, traverser);
+    let players = public.players as usize;
+    let faces = public.faces;
+    let mut off = PUBLIC_LEN;
+    for r in 0..players {
+        let seat = (traverser + r) % players;
+        let d = public.dice_left[seat];
+        let block = hands::global_block(d);
+        debug_assert_eq!(active_indices[off], PUBLIC_LEN + r * H + block.start);
+        let start = block.start;
+        for (&g, &mass) in hands::tables(d, faces)
+            .global_index
+            .iter()
+            .zip(&belief.per_seat[seat])
+        {
+            buf[off + (g - start)] = mass as f32;
+        }
+        off += block.len();
+    }
+    debug_assert_eq!(off, buf.len(), "compact fill did not cover the buffer");
 }
 
 /// Read the traverser's per-hand values out of a length-[`H`] network output:
@@ -253,12 +327,21 @@ impl<G: RebelGame> LeafValue for NetLeaf<'_, G> {
             }
         }
         if !net_rows.is_empty() {
-            let mut inputs = vec![0.0f32; net_rows.len() * INPUT_DIM];
+            // Every leaf in a solve shares `dice_left` (tree-constant), so one
+            // active-position list — built once per call — drives both the compact
+            // encode and the gathered first-layer GEMM. The skipped positions are
+            // structural zeros, so the forward is exact (see `forward_batch_active`).
+            let active = active_indices(&publics[net_rows[0]], traverser);
+            let n_active = active.len();
+            let mut compact = vec![0.0f32; net_rows.len() * n_active];
             for (row, &k) in net_rows.iter().enumerate() {
-                let dst = &mut inputs[row * INPUT_DIM..(row + 1) * INPUT_DIM];
-                encode_into(dst, &publics[k], traverser, &beliefs[k]);
+                let dst = &mut compact[row * n_active..(row + 1) * n_active];
+                encode_active_into(dst, &publics[k], traverser, &beliefs[k], &active);
             }
-            let raw = self.net.net().forward_batch(&inputs, net_rows.len());
+            let raw = self
+                .net
+                .net()
+                .forward_batch_active(&compact, net_rows.len(), &active);
             for (row, &k) in net_rows.iter().enumerate() {
                 let slice = &raw[row * OUTPUT_DIM..(row + 1) * OUTPUT_DIM];
                 out[k] = decode(&publics[k], traverser, slice);
@@ -369,6 +452,113 @@ mod tests {
         }
         let mask_sum: f32 = sample.mask.iter().sum();
         assert!((mask_sum - values.len() as f32).abs() < 1e-6);
+    }
+
+    #[test]
+    fn compact_forward_matches_dense_across_configs() {
+        use crate::rebel::hands::hand_count;
+        use game_core::Rng;
+
+        fn rand_belief(public: &PublicState, rng: &mut Rng) -> Belief {
+            let players = public.players as usize;
+            let per_seat = (0..players)
+                .map(|seat| {
+                    let n = hand_count(public.dice_left[seat], public.faces);
+                    let mut v: Vec<f64> = (0..n).map(|_| rng.unit() + 1e-3).collect();
+                    let s: f64 = v.iter().sum();
+                    for x in &mut v {
+                        *x /= s;
+                    }
+                    v
+                })
+                .collect();
+            Belief { per_seat }
+        }
+
+        fn state(
+            players: usize,
+            dice_per: u8,
+            faces: u8,
+            turn: usize,
+            bid: Option<(u8, u8)>,
+        ) -> PublicState {
+            let mut dice_left = [0u8; MAX_SEATS];
+            for d in dice_left.iter_mut().take(players) {
+                *d = dice_per;
+            }
+            PublicState {
+                players: players as u8,
+                faces,
+                dice_left,
+                bid,
+                turn: turn % players,
+                last_bidder: (turn + players - 1) % players,
+                first_round: bid.is_none(),
+            }
+        }
+
+        let configs = [(5usize, 5u8, 6u8), (3, 3, 4), (2, 2, 3)];
+        let mut rng = Rng::new(20260626);
+        let mut overall_max = 0.0f64;
+        for (players, dice_per, faces) in configs {
+            let net = PbsNet::new(96, 2, 7 + players as u64);
+            for traverser in 0..players {
+                let total = players as u8 * dice_per;
+                let states: Vec<PublicState> = (0..8)
+                    .map(|i| {
+                        let bid = if i == 0 {
+                            None
+                        } else {
+                            Some((1 + (i as u8 % total), (i as u8) % faces))
+                        };
+                        state(players, dice_per, faces, i, bid)
+                    })
+                    .collect();
+                let beliefs: Vec<Belief> =
+                    states.iter().map(|s| rand_belief(s, &mut rng)).collect();
+
+                let mut dense = vec![0.0f32; states.len() * INPUT_DIM];
+                for (row, (s, b)) in states.iter().zip(&beliefs).enumerate() {
+                    encode_into(
+                        &mut dense[row * INPUT_DIM..(row + 1) * INPUT_DIM],
+                        s,
+                        traverser,
+                        b,
+                    );
+                }
+                let dense_out = net.net().forward_batch(&dense, states.len());
+
+                let active = active_indices(&states[0], traverser);
+                let n_active = active.len();
+                let mut compact = vec![0.0f32; states.len() * n_active];
+                for (row, (s, b)) in states.iter().zip(&beliefs).enumerate() {
+                    encode_active_into(
+                        &mut compact[row * n_active..(row + 1) * n_active],
+                        s,
+                        traverser,
+                        b,
+                        &active,
+                    );
+                }
+                let active_out = net
+                    .net()
+                    .forward_batch_active(&compact, states.len(), &active);
+
+                let mut max_diff = 0.0f64;
+                for (a, b) in dense_out.iter().zip(&active_out) {
+                    max_diff = max_diff.max((*a as f64 - *b as f64).abs());
+                }
+                overall_max = overall_max.max(max_diff);
+                if players == 5 && traverser == 0 {
+                    println!("5p5d6f n_active = {n_active}");
+                }
+            }
+        }
+        println!("compact-vs-dense max abs diff = {overall_max:.3e}");
+        assert!(
+            overall_max < 1e-4,
+            "compact forward max diff = {overall_max}"
+        );
     }
 
     #[test]

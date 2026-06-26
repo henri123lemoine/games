@@ -458,22 +458,83 @@ impl RebelMlp {
 
     fn forward_batch_with(&self, inputs: &[f32], n: usize, backend: SgemmBackend) -> Vec<f32> {
         let id = self.cfg.input_dim;
-        let od = self.cfg.output_dim;
         assert_eq!(inputs.len(), n * id, "batch input length mismatch");
         if n == 0 {
             return Vec::new();
         }
         let h = self.cfg.hidden;
-        let mut act = inputs.to_vec();
-        for blk in &self.layout.blocks {
+        let blk0 = &self.layout.blocks[0];
+        let weight = &self.params[blk0.weight..blk0.weight + h * blk0.in_dim];
+        let z = matmul(backend, n, blk0.in_dim, h, inputs, weight);
+        self.forward_after_first(z, n, backend)
+    }
+
+    /// Raw outputs for `n` COMPACT inputs that carry only the dense layout's
+    /// `active_indices` positions (row-major `n × active_indices.len()`); every
+    /// dense position absent from `active_indices` is a structural zero and so
+    /// contributes a `×0` term to each first-layer sum. Gathering the first
+    /// block's weight columns to `active_indices` and running the first Linear as
+    /// `(n × n_active)·(n_active × hidden)` is therefore mathematically identical
+    /// to [`RebelMlp::forward_batch`] on the equivalent dense input — the result
+    /// differs only by f32 GEMM summation reordering (~1e-6). The remaining
+    /// LayerNorm/GeLU body and the head are unchanged. Active positions must lie
+    /// in `0..input_dim`.
+    pub fn forward_batch_active(
+        &self,
+        compact: &[f32],
+        n: usize,
+        active_indices: &[usize],
+    ) -> Vec<f32> {
+        let backend = SgemmBackend::preferred();
+        let k = active_indices.len();
+        assert_eq!(compact.len(), n * k, "compact input length mismatch");
+        if n == 0 {
+            return Vec::new();
+        }
+        let h = self.cfg.hidden;
+        let blk0 = &self.layout.blocks[0];
+        let in_dim = blk0.in_dim;
+        let w1 = &self.params[blk0.weight..blk0.weight + h * in_dim];
+        let mut w1_active = vec![0.0f32; h * k];
+        let gather = |(j, dst): (usize, &mut [f32])| {
+            let src = &w1[j * in_dim..(j + 1) * in_dim];
+            for (d, &idx) in dst.iter_mut().zip(active_indices) {
+                *d = src[idx];
+            }
+        };
+        #[cfg(feature = "parallel")]
+        w1_active.par_chunks_mut(k).enumerate().for_each(gather);
+        #[cfg(not(feature = "parallel"))]
+        w1_active.chunks_mut(k).enumerate().for_each(gather);
+        let z = matmul(backend, n, k, h, compact, &w1_active);
+        self.forward_after_first(z, n, backend)
+    }
+
+    /// Finish the forward from the first block's raw GEMM output `z` (row-major
+    /// `n × hidden`, pre bias/LayerNorm/GeLU): the first block's
+    /// bias/LayerNorm/GeLU, the remaining blocks, then the linear head. Shared by
+    /// the dense and compact first-layer paths.
+    fn forward_after_first(&self, mut z: Vec<f32>, n: usize, backend: SgemmBackend) -> Vec<f32> {
+        let h = self.cfg.hidden;
+        let od = self.cfg.output_dim;
+        let blk0 = &self.layout.blocks[0];
+        layer_norm_gelu(
+            &mut z,
+            h,
+            &self.params[blk0.bias..blk0.bias + h],
+            &self.params[blk0.gamma..blk0.gamma + h],
+            &self.params[blk0.beta..blk0.beta + h],
+        );
+        let mut act = z;
+        for blk in &self.layout.blocks[1..] {
             let k = blk.in_dim;
             let weight = &self.params[blk.weight..blk.weight + h * k];
             let bias = &self.params[blk.bias..blk.bias + h];
             let gamma = &self.params[blk.gamma..blk.gamma + h];
             let beta = &self.params[blk.beta..blk.beta + h];
-            let mut z = matmul(backend, n, k, h, &act, weight);
-            layer_norm_gelu(&mut z, h, bias, gamma, beta);
-            act = z;
+            let mut z2 = matmul(backend, n, k, h, &act, weight);
+            layer_norm_gelu(&mut z2, h, bias, gamma, beta);
+            act = z2;
         }
         let hw = &self.params[self.layout.head_weight..self.layout.head_weight + od * h];
         let hb = &self.params[self.layout.head_bias..self.layout.head_bias + od];
@@ -1006,6 +1067,50 @@ mod tests {
                 println!("hidden={hidden:4} backend={name:11} {ms:9.3} ms/call");
             }
         }
+    }
+
+    #[test]
+    fn active_forward_matches_dense_forward() {
+        // A compact forward over a subset of active input positions (with the
+        // complementary dense positions zeroed) must match the dense forward to
+        // f32 GEMM tolerance, since the skipped positions contribute only ×0.
+        let cfg = RebelMlpConfig {
+            input_dim: 2809,
+            hidden: 256,
+            n_layers: 2,
+            output_dim: 462,
+        };
+        let net = RebelMlp::new(cfg, 314);
+        let mut rng = Rng::new(2718);
+
+        // Pick a sorted set of active positions; everything else is structural 0.
+        let mut active: Vec<usize> = (0..cfg.input_dim).filter(|i| i % 2 == 0).collect();
+        active.extend([7usize, 11, 2801]);
+        active.sort_unstable();
+        active.dedup();
+        let n_active = active.len();
+
+        let n = 9;
+        let mut dense = vec![0.0f32; n * cfg.input_dim];
+        let mut compact = vec![0.0f32; n * n_active];
+        for r in 0..n {
+            let drow = &mut dense[r * cfg.input_dim..(r + 1) * cfg.input_dim];
+            let crow = &mut compact[r * n_active..(r + 1) * n_active];
+            for (a, &idx) in active.iter().enumerate() {
+                let v = normal(&mut rng) as f32;
+                drow[idx] = v;
+                crow[a] = v;
+            }
+        }
+
+        let dense_out = net.forward_batch(&dense, n);
+        let active_out = net.forward_batch_active(&compact, n, &active);
+        let mut max_diff = 0.0f64;
+        for (a, b) in dense_out.iter().zip(&active_out) {
+            max_diff = max_diff.max((*a as f64 - *b as f64).abs());
+        }
+        println!("active-vs-dense forward max abs diff = {max_diff:.3e}");
+        assert!(max_diff < 1e-4, "active forward max diff = {max_diff}");
     }
 
     #[test]
