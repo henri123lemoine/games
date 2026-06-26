@@ -68,7 +68,7 @@ class TrainConfig:
     temperature_coef: float = 0.05  # magnet-KL coefficient
     temperature_decay: float = 0.3
     temperature_ceil: float = 0.1
-    temperature_floor: float = 0.003  # 0.001 let the magnet fully decay -> policy over-converged -> value collapse -> advantage starvation ~iter540; keep some late exploration
+    temperature_floor: float = 0.001  # spec value. (raising to 0.003 over-regularized: entropy pinned ~2.46, weak policy; the adv_filt_thresh=0.001 relative filter is what actually prevents the iter-540 starvation halt, so the magnet floor can stay low and let the policy sharpen)
 
     # ---- optimizer (AdamW; betas/eps PyTorch defaults) ----
     weight_decay: float = 0.0
