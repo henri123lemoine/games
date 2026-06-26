@@ -13,7 +13,10 @@ physically cannot touch the trainer's. Usage:
 
     python -m stratego_trainer.eval_ckpt --ckpt <latest.safetensors> [...]
 
-prints one JSON line: ``{"ws_rand": float, "ema_ws_rand": float}``.
+prints one JSON line. With ``--opponent random`` (default) it is
+``{"ws_rand": float, "ema_ws_rand": float}``; with ``--opponent heuristic`` it
+is ``{"ws_heur": float, "ema_ws_heur": float}`` (win share of the working and
+EMA nets vs the codebase `HeuristicBot` baseline).
 """
 
 import argparse
@@ -33,7 +36,10 @@ def main() -> None:
     ap.add_argument("--move-cap", type=int, default=400)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--temperature", type=float, default=0.25)
+    ap.add_argument("--opponent", choices=("random", "heuristic"), default="random")
     args = ap.parse_args()
+
+    heuristic = args.opponent == "heuristic"
 
     def load(prefer_ema: bool):
         move = S.MoveTransformer.from_config(S.MoveConfig())
@@ -45,12 +51,15 @@ def main() -> None:
         return win_share(
             move, setup, None, None,
             num_envs=args.num_envs, games=args.games, move_cap=args.move_cap,
-            seed=args.seed, hero_temperature=args.temperature,
+            seed=args.seed, hero_temperature=args.temperature, heuristic=heuristic,
         )
 
-    ws_rand = winrate(*load(prefer_ema=False))
-    ema_ws_rand = winrate(*load(prefer_ema=True))
-    print(json.dumps({"ws_rand": ws_rand, "ema_ws_rand": ema_ws_rand}))
+    ws = winrate(*load(prefer_ema=False))
+    ema_ws = winrate(*load(prefer_ema=True))
+    if heuristic:
+        print(json.dumps({"ws_heur": ws, "ema_ws_heur": ema_ws}))
+    else:
+        print(json.dumps({"ws_rand": ws, "ema_ws_rand": ema_ws}))
 
 
 if __name__ == "__main__":

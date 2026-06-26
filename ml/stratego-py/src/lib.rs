@@ -168,6 +168,10 @@ struct BatchSim {
     move_feat: usize,
     pending: Option<Pending>,
     setup: SetupAccumulator,
+    /// Constructor seed, kept so the heuristic-opponent eval can derive a
+    /// per-env [`HeuristicBot`] RNG deterministically (the live sampler path
+    /// never reads it).
+    seed: u64,
 }
 
 #[pymethods]
@@ -199,6 +203,7 @@ impl BatchSim {
             move_feat: cfg.num_token_features(),
             pending: None,
             setup: SetupAccumulator::new(num_envs),
+            seed,
         })
     }
 
@@ -540,7 +545,10 @@ impl BatchSim {
         for i in 0..n {
             let env = envs[i] as usize;
             let slot = slots[i] as usize;
-            let view = self.buffer.encode_view(env, slot).expect("resident move slot");
+            let view = self
+                .buffer
+                .encode_view(env, slot)
+                .expect("resident move slot");
             obs.slice_mut(numpy::ndarray::s![i, .., ..])
                 .as_slice_mut()
                 .expect("contiguous row")
@@ -615,6 +623,52 @@ impl BatchSim {
             rollouts: None,
             pending: None,
         })
+    }
+
+    /// Run the codebase [`HeuristicBot`] on each requested env's live position
+    /// and return its chosen move in the 1800-space, so an eval can use the
+    /// heuristic as a non-net opponent (build a near-one-hot logit row at the
+    /// returned index). Reads the same live arena `collect` snapshots via
+    /// [`Simulator::move_root`], independent of the resident `commit` path.
+    ///
+    /// A mid-deployment, out-of-range, or no-legal-move env yields `-1` (the
+    /// heuristic plays the move phase only; deployment stays uniform, matching
+    /// [`HeuristicBot`]'s own random legal fill). The bot RNG is seeded
+    /// deterministically from the bridge seed and env id, so the opponent is
+    /// reproducible across eval runs.
+    fn heuristic_move_actions(&self, envs: Vec<i64>) -> Vec<i64> {
+        use game_core::{Agent, Game};
+        let game = stratego::Stratego;
+        envs.iter()
+            .map(|&e| {
+                if e < 0 || e as usize >= self.sim.num_envs() {
+                    return -1;
+                }
+                let env = e as usize;
+                let Some((board, to_play)) = self.sim.move_root(env) else {
+                    return -1;
+                };
+                let state = stratego::State::Play {
+                    board: Box::new(board),
+                    to_play,
+                    flag_captured: None,
+                };
+                let actions = game.legal_actions(&state);
+                if actions.is_empty() {
+                    return -1;
+                }
+                let mut rng = game_core::Rng::new(
+                    self.seed
+                        .wrapping_mul(0x9e3779b97f4a7c15)
+                        .wrapping_add(env as u64),
+                );
+                let idx = stratego::HeuristicBot.act(&game, &state, to_play, &mut rng);
+                match actions[idx] {
+                    stratego::Move::Step(a) => i64::from(a.0),
+                    stratego::Move::Place(_) => -1,
+                }
+            })
+            .collect()
     }
 }
 
