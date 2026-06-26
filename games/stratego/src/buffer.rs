@@ -68,8 +68,8 @@ pub struct Transition {
     /// True if this position is itself terminal (no action was taken from it in
     /// the live game — a dummy reset transition).
     pub is_terminated_position: bool,
-    /// True if the action taken here terminated the game (possibly via the
-    /// solipsistic fix-up).
+    /// True if the action taken here ends the replay segment (rules-terminal,
+    /// forced cap reset, or solipsistic fix-up).
     pub is_terminating_action: bool,
     /// Terminal reward to the acting player (`is_terminating_action * reward`),
     /// 0 otherwise.

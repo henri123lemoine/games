@@ -83,6 +83,10 @@ impl RunStats {
 pub struct CommitResult {
     pub stats: RunStats,
     pub completed: Vec<Option<f64>>,
+    /// True when an env completed only because the defensive `move_cap` fired.
+    /// These boundaries break replay bootstrapping, but do not provide a real
+    /// setup-game outcome.
+    pub capped: Vec<bool>,
 }
 
 /// The decision inputs encoded from one env, owning the buffers the batched
@@ -133,6 +137,7 @@ struct EnvOutcome {
     /// `Some(player0_reward)` when this step completed a game and the env must
     /// reset; the reset itself happens serially so seeds stay deterministic.
     completed: Option<f64>,
+    capped: bool,
 }
 
 impl Simulator {
@@ -249,6 +254,7 @@ impl Simulator {
 
         let mut result = CommitResult {
             completed: vec![None; self.arenas.len()],
+            capped: vec![false; self.arenas.len()],
             ..CommitResult::default()
         };
         for (env, outcome) in outcomes.into_iter().enumerate() {
@@ -258,6 +264,7 @@ impl Simulator {
                 result.stats.games_completed += 1;
                 result.stats.reward_pl0_sum += reward_pl0;
                 result.completed[env] = Some(reward_pl0);
+                result.capped[env] = outcome.capped;
                 self.reset_env(env);
             } else {
                 self.arenas[env].state = outcome.next_state;
@@ -387,10 +394,9 @@ fn sample_apply(
     let rules_terminal = game.is_terminal(&next_state);
     let capped = was_move && plies >= move_cap;
 
-    // A capped game is force-reset but carries no bogus reward; only a genuine
-    // rules-terminal action is a terminating action with a real reward. The
-    // completion reward fed to `reward_pl0_sum` is 0 for a pure cap.
-    let is_terminating_action = rules_terminal;
+    // A capped game is force-reset with zero reward. It still has to break the
+    // replay segment so lambda returns never bootstrap across the fresh game.
+    let is_terminating_action = rules_terminal || capped;
     let terminal_reward = if rules_terminal {
         game.returns(&next_state, decision.player) as f32
     } else {
@@ -426,6 +432,7 @@ fn sample_apply(
         rng,
         plies,
         completed,
+        capped,
     }
 }
 
@@ -521,6 +528,34 @@ mod tests {
             "completed {} games but no terminating transition was recorded",
             stats.games_completed
         );
+    }
+
+    #[test]
+    fn forced_cap_breaks_replay_without_real_reward() {
+        let mut sim = Simulator::new(1, EncoderConfig::default(), 7, 1);
+        let mut buf = buffer(1);
+
+        for _ in 0..200 {
+            let collected = sim.collect();
+            let evals = UniformEvaluator.evaluate_batch(&collected.requests());
+            let result = sim.commit(&collected, &evals, &mut buf);
+            if result.completed[0].is_some() {
+                assert!(
+                    result.capped[0],
+                    "first completion should be the one-ply cap"
+                );
+                let t = buf
+                    .get(0, buf.head(0) - 1)
+                    .expect("cap transition recorded");
+                assert!(
+                    t.is_terminating_action,
+                    "cap must break replay bootstrapping"
+                );
+                assert_eq!(t.terminal_reward, 0.0, "cap carries no game reward");
+                return;
+            }
+        }
+        panic!("cap did not fire");
     }
 
     #[test]

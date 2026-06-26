@@ -425,7 +425,7 @@ impl BatchSim {
                         .buffer
                         .get(env, head - 1)
                         .is_some_and(|t| t.is_terminating_action);
-                if genuine {
+                if genuine && !result.capped[env] {
                     self.setup.record_terminal(env, *r as f32);
                 } else {
                     self.setup.discard(env);
