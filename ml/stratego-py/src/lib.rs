@@ -471,9 +471,9 @@ impl BatchSim {
             }
         }
         let n = rows.len();
-        let feat = self.move_feat;
 
-        let mut obs = Array3::<f32>::zeros((n, MOVE_TOKENS, feat));
+        let mut env_arr = Array1::<i64>::zeros(n);
+        let mut slot_arr = Array1::<i64>::zeros(n);
         let mut action = Array1::<i64>::zeros(n);
         let mut legal_mask = Array2::<bool>::default((n, N_ACTION));
         let mut old_log_prob = Array1::<f32>::zeros(n);
@@ -488,12 +488,8 @@ impl BatchSim {
 
         for (i, &(env, slot, targets)) in rows.iter().enumerate() {
             let t = self.buffer.get(env, slot).expect("resident move slot");
-            let view = self.buffer.encode_view(env, slot).expect("resident slot");
-
-            obs.slice_mut(numpy::ndarray::s![i, .., ..])
-                .as_slice_mut()
-                .expect("contiguous row")
-                .copy_from_slice(&view.obs);
+            env_arr[i] = env as i64;
+            slot_arr[i] = slot as i64;
             action[i] = t.action as i64;
             for (&a, &lp) in t.legal.iter().zip(t.old_log_probs.iter()) {
                 legal_mask[(i, a as usize)] = true;
@@ -510,7 +506,8 @@ impl BatchSim {
         }
 
         let out = PyDict::new(py);
-        out.set_item("obs", obs.into_pyarray(py))?;
+        out.set_item("env", env_arr.into_pyarray(py))?;
+        out.set_item("slot", slot_arr.into_pyarray(py))?;
         out.set_item("action", action.into_pyarray(py))?;
         out.set_item("legal_mask", legal_mask.into_pyarray(py))?;
         out.set_item("old_log_prob", old_log_prob.into_pyarray(py))?;
@@ -523,6 +520,33 @@ impl BatchSim {
         out.set_item("num_moves", num_moves.into_pyarray(py))?;
         out.set_item("is_terminating", is_terminating.into_pyarray(py))?;
         Ok(out)
+    }
+
+    /// Encode the move-net obs for a specific set of (env, slot) rows. The move
+    /// pass trains on only the advantage-filtered subset (<= max_train_batch), so
+    /// `drain_training_batch` returns env/slot but NOT obs, and we encode obs here
+    /// for just those rows — skipping the ~94% of resident transitions the filter
+    /// discards (the dominant per-iter encode cost).
+    fn encode_move_obs<'py>(
+        &self,
+        py: Python<'py>,
+        envs: PyReadonlyArray1<'py, i64>,
+        slots: PyReadonlyArray1<'py, i64>,
+    ) -> PyResult<Bound<'py, numpy::PyArray3<f32>>> {
+        let envs = envs.as_array();
+        let slots = slots.as_array();
+        let n = envs.len();
+        let mut obs = Array3::<f32>::zeros((n, MOVE_TOKENS, self.move_feat));
+        for i in 0..n {
+            let env = envs[i] as usize;
+            let slot = slots[i] as usize;
+            let view = self.buffer.encode_view(env, slot).expect("resident move slot");
+            obs.slice_mut(numpy::ndarray::s![i, .., ..])
+                .as_slice_mut()
+                .expect("contiguous row")
+                .copy_from_slice(&view.obs);
+        }
+        Ok(obs.into_pyarray(py))
     }
 
     /// Drain completed setup (deployment) trajectories into the co-trained

@@ -248,7 +248,7 @@ def collect_iter(s, move_net, setup_net, steps):
     return steps * s.num_envs, n_term, rsum, scrub, t_coll, t_fwd, t_comm
 
 
-def train_move_pass(move_net, opt, data, magnet_coef, lr, cfg):
+def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg):
     """One advantage-filtered PPO pass over the drained move-RL transitions.
 
     Returns `(stats, nan)`; `nan` is True iff the update was non-finite (skipped).
@@ -295,8 +295,13 @@ def train_move_pass(move_net, opt, data, magnet_coef, lr, cfg):
                   + _nonfinite(data["old_log_prob"][idx])
                   + int(np.isnan(data["data_log_prob"][idx]).sum()))
 
+    # Encode obs for ONLY the filtered/sampled rows (env/slot identify them in the
+    # sim's ring) — the drain no longer encodes the ~94% of transitions discarded here.
+    _t_enc = time.time()
+    obs_idx = encode_fn(data["env"][idx], data["slot"][idx])
+    _encode_s = time.time() - _t_enc
     batch = {
-        "obs": mx.array(fin(data["obs"][idx])),
+        "obs": mx.array(fin(obs_idx)),
         "legal": mx.array(data["legal_mask"][idx]),
         "action": mx.array(data["action"][idx].astype(np.int32)),
         "old_log_prob": mx.array(fin(data["old_log_prob"][idx], neg=-100.0, pos=0.0)),
@@ -334,6 +339,7 @@ def train_move_pass(move_net, opt, data, magnet_coef, lr, cfg):
         "move/n_threshold_keep": n_threshold,
         "move/n_total": int(n),
         "move/scrub": move_scrub,
+        "move/t_encode": round(_encode_s, 3),
     }, False
 
 
@@ -485,7 +491,7 @@ def train(cfg: TrainConfig):
         move_lr = cfg.lr(t) * move_lr_scale
         setup_lr = cfg.arr_lr * setup_lr_scale
 
-        m_stats, m_nan = train_move_pass(move, move_opt, move_data, magnet_coef, move_lr, cfg)
+        m_stats, m_nan = train_move_pass(move, move_opt, move_data, s.encode_move_obs, magnet_coef, move_lr, cfg)
         move_applied = "move/skipped" not in m_stats
         move_snap, move_lr_scale, move_nan, move_stage = _self_heal(
             move, move_opt, move_ema, move_snap, m_nan, move_applied, move_lr, move_lr_scale, cfg)
