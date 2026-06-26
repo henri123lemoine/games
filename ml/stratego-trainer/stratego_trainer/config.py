@@ -51,12 +51,11 @@ class TrainConfig:
     td_lambda: float = 0.8  # value lambda
     gae_lambda: float = 0.5  # advantage lambda (distinct)
     adv_filt_rate: float = 0.75  # keep top-quantile |adv|
-    adv_filt_thresh: float = 1e-6  # ~0: the filter is purely the relative top-quantile, so it NEVER starves to 0 regardless of |adv| magnitude (0.01->0.001->1e-6 as the value-collapse kept shrinking |adv| below each floor and re-triggering the watchdog halt)
-    # Anti-starve floor: as the policy sharpens the abs floor binds and the keep
-    # count collapses (full1: 945 kept of 99k at iter50). Always retain at least
-    # this many top-|adv| rows so the move pass never starves; with max_train_batch
-    # also = 2048 the effective move batch stays ~2048 across the whole run.
-    adv_filt_min_keep: int = 2048
+    adv_filt_thresh: float = 0.01  # reference rl.py:64: threshold = max(quantile(|adv|,0.75), 0.01). When nothing exceeds it the move pass legitimately idles that iter (nothing to learn) instead of training on low-|adv| noise.
+    # No anti-starve floor (the reference has none). The real fix for "advantages
+    # vanish" is training hard enough per iter (move_num_epoch over the full kept set)
+    # to keep them alive, not a floor that force-feeds noise and masks the collapse.
+    adv_filt_min_keep: int = 0
     max_grad_norm: float = 0.267
     uniform_magnet: bool = True  # flat legal/legal.sum magnet (shipped default)
 
@@ -77,7 +76,12 @@ class TrainConfig:
     adam_eps: float = 1e-8
     ema_decay: float = 0.999  # move + setup
     bucket: int = 256  # pad effective batch to a multiple of this (MPS shape cache)
-    max_train_batch: int = 2048  # cap kept rows per move pass (bounds peak Metal mem)
+    # Move pass minibatches the WHOLE advantage-filtered set (reference rl.py:516-585:
+    # many gradient steps/iter, not one over a capped sample). move_batch_size ~ the
+    # reference's per-step minibatch (num_envs * adv_filt_rate ~ 400); obs is encoded
+    # per minibatch so peak Metal memory stays bounded regardless of the kept-set size.
+    move_batch_size: int = 512
+    move_num_epoch: int = 1
     # Run the training forward/backward matmuls in bf16 (the loss math still promotes
     # to fp32 where it meets the fp32 advantages/returns, and the optimizer keeps fp32
     # master weights — grads are cast bf16->fp32 before the update). ~1.75x on the

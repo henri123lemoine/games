@@ -268,18 +268,7 @@ def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg, bf16_n
                 "move/n_total": int(n), "move/skipped": True}, False
 
     opt.learning_rate = lr
-    idx = np.nonzero(keep)[0]
-    # Bound the per-pass batch: a large kept set would blow up peak Metal memory
-    # (obs is 92*F floats/row) and can trigger a GPU page-fault on a shared box.
-    # Subsample the kept rows to at most `max_train_batch` before bucketing.
-    if idx.size > cfg.max_train_batch:
-        idx = np.random.choice(idx, cfg.max_train_batch, replace=False)
-    # Pad to a bucket multiple by repeating filtered rows (keeps MPS shape stable;
-    # repeated rows only rescale the mean, which advantage filtering already does).
-    target = _bucket(idx.size, cfg.bucket)
-    if target > idx.size:
-        pad = np.random.choice(idx, target - idx.size, replace=True)
-        idx = np.concatenate([idx, pad])
+    idx_all = np.nonzero(keep)[0]
 
     # Sanitize every drained float fed to the loss. If a poisoned sim transition ever
     # carried a NaN/inf (e.g. a value bootstrap that overflowed), an un-scrubbed input
@@ -292,66 +281,92 @@ def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg, bf16_n
 
     # Count genuine corruption scrubbed from the drained inputs (data_log_prob's -inf
     # for illegal actions is the expected legal-mask artifact, so only its NaNs count).
-    move_scrub = (_nonfinite(data["advantage"][idx]) + _nonfinite(data["ret"][idx])
-                  + _nonfinite(data["old_log_prob"][idx])
-                  + int(np.isnan(data["data_log_prob"][idx]).sum()))
+    move_scrub = (_nonfinite(data["advantage"][idx_all]) + _nonfinite(data["ret"][idx_all])
+                  + _nonfinite(data["old_log_prob"][idx_all])
+                  + int(np.isnan(data["data_log_prob"][idx_all]).sum()))
 
-    # Encode obs for ONLY the filtered/sampled rows (env/slot identify them in the
-    # sim's ring) — the drain no longer encodes the ~94% of transitions discarded here.
-    _t_enc = time.time()
-    obs_idx = encode_fn(data["env"][idx], data["slot"][idx])
-    _encode_s = time.time() - _t_enc
-    _obs = mx.array(fin(obs_idx))
-    if bf16_net is not None:
-        _obs = _obs.astype(mx.bfloat16)
-    batch = {
-        "obs": _obs,
-        "legal": mx.array(data["legal_mask"][idx]),
-        "action": mx.array(data["action"][idx].astype(np.int32)),
-        "old_log_prob": mx.array(fin(data["old_log_prob"][idx], neg=-100.0, pos=0.0)),
-        "data_log_prob": mx.array(fin(data["data_log_prob"][idx], neg=-100.0, pos=0.0)),
-        "advantage": mx.array(fin(data["advantage"][idx])),
-        "ret": mx.array(np.clip(fin(data["ret"][idx]), -1.0, 1.0)),
-    }
+    # Reference parity (rl.py:516-585): take MANY gradient steps over the WHOLE
+    # advantage-filtered set each iteration — NOT one step over a capped sample. We
+    # minibatch the kept rows (encoding obs per minibatch to bound Metal memory) and run
+    # `move_num_epoch` epochs, mirroring the setup pass below. PPO clipping only does real
+    # work because earlier minibatches move the net before later ones are seen; a single
+    # step leaves the ratio ~1 and the clip inert (= one tiny vanilla-PG step / iter).
+    bs = cfg.move_batch_size
+    last: dict = {}
+    n_applied = 0
+    n_skipped = 0
+    nan_stage = ""
+    _encode_s = 0.0
+    for _ in range(cfg.move_num_epoch):
+        perm = np.random.permutation(idx_all)
+        for i in range(0, perm.size, bs):
+            mb = perm[i:i + bs]
+            # Pad the last partial minibatch to a bucket multiple (stable MPS shape;
+            # repeated rows only reweight the mean, which the advantage filter already does).
+            target = _bucket(mb.size, cfg.bucket)
+            if target > mb.size:
+                mb = np.concatenate([mb, np.random.choice(mb, target - mb.size, replace=True)])
+            _t_enc = time.time()
+            obs_mb = encode_fn(data["env"][mb], data["slot"][mb])
+            _encode_s += time.time() - _t_enc
+            _obs = mx.array(fin(obs_mb))
+            if bf16_net is not None:
+                _obs = _obs.astype(mx.bfloat16)
+            batch = {
+                "obs": _obs,
+                "legal": mx.array(data["legal_mask"][mb]),
+                "action": mx.array(data["action"][mb].astype(np.int32)),
+                "old_log_prob": mx.array(fin(data["old_log_prob"][mb], neg=-100.0, pos=0.0)),
+                "data_log_prob": mx.array(fin(data["data_log_prob"][mb], neg=-100.0, pos=0.0)),
+                "advantage": mx.array(fin(data["advantage"][mb])),
+                "ret": mx.array(np.clip(fin(data["ret"][mb]), -1.0, 1.0)),
+            }
 
-    def loss_fn(net):
-        loss, stats = move_loss_and_stats(net, batch, magnet_coef, cfg)
-        return loss, stats
+            def loss_fn(net):
+                loss, stats = move_loss_and_stats(net, batch, magnet_coef, cfg)
+                return loss, stats
 
-    if bf16_net is not None:
-        bf16_net.update(tree_map(lambda p: p.astype(mx.bfloat16), move_net.parameters()))
-        _fwd_net = bf16_net
-        (loss, stats), grads = nn.value_and_grad(bf16_net, loss_fn)(bf16_net)
-        grads = tree_map(lambda g: g.astype(mx.float32), grads)
-    else:
-        _fwd_net = move_net
-        (loss, stats), grads = nn.value_and_grad(move_net, loss_fn)(move_net)
-    grads, gnorm = optim.clip_grad_norm(grads, cfg.max_grad_norm)
-    loss_v = float(loss)
-    gnorm_v = float(gnorm)
-    # Signal a non-finite update so the caller self-heals (revert + LR backoff)
-    # rather than corrupting the net or silently spinning.
-    if not (np.isfinite(loss_v) and np.isfinite(gnorm_v)):
-        return {"move/n_kept": int(keep.sum()), "move/n_threshold_keep": n_threshold,
-                "move/n_total": int(n), "move/scrub": move_scrub,
-                "move/nan_stage": _move_nan_stage(_fwd_net, batch, stats),
-                "move/skipped": True}, True
-    opt.update(move_net, grads)
-    mx.eval(move_net.parameters(), opt.state)
-    return {
-        "move/policy_loss": float(stats["policy_loss"]),
-        "move/value_loss": float(stats["value_loss"]),
-        "move/kl_loss": float(stats["kl_loss"]),
-        "move/magnet_kl": float(stats["magnet_kl"]),
-        "move/entropy": float(stats["entropy"]),
-        "move/loss": float(loss),
-        "move/grad_norm": float(gnorm),
+            if bf16_net is not None:
+                bf16_net.update(tree_map(lambda p: p.astype(mx.bfloat16), move_net.parameters()))
+                _fwd_net = bf16_net
+                (loss, stats), grads = nn.value_and_grad(bf16_net, loss_fn)(bf16_net)
+                grads = tree_map(lambda g: g.astype(mx.float32), grads)
+            else:
+                _fwd_net = move_net
+                (loss, stats), grads = nn.value_and_grad(move_net, loss_fn)(move_net)
+            grads, gnorm = optim.clip_grad_norm(grads, cfg.max_grad_norm)
+            loss_v = float(loss)
+            gnorm_v = float(gnorm)
+            # Skip a single non-finite minibatch rather than corrupt the net or crash;
+            # the next minibatch resumes cleanly (only an all-skipped pass reverts).
+            if not (np.isfinite(loss_v) and np.isfinite(gnorm_v)):
+                n_skipped += 1
+                if not nan_stage:
+                    nan_stage = _move_nan_stage(_fwd_net, batch, stats)
+                continue
+            opt.update(move_net, grads)
+            mx.eval(move_net.parameters(), opt.state)
+            n_applied += 1
+            last = {
+                "move/policy_loss": float(stats["policy_loss"]),
+                "move/value_loss": float(stats["value_loss"]),
+                "move/kl_loss": float(stats["kl_loss"]),
+                "move/magnet_kl": float(stats["magnet_kl"]),
+                "move/entropy": float(stats["entropy"]),
+                "move/loss": float(loss),
+                "move/grad_norm": float(gnorm),
+            }
+    last.update({
         "move/n_kept": int(keep.sum()),
         "move/n_threshold_keep": n_threshold,
         "move/n_total": int(n),
         "move/scrub": move_scrub,
+        "move/n_applied": n_applied,
+        "move/n_skipped": n_skipped,
+        "move/nan_stage": nan_stage,
         "move/t_encode": round(_encode_s, 3),
-    }, False
+    })
+    return last, n_applied == 0
 
 
 def train_setup_pass(setup_net, opt, setup_data, reg_temp, lr, cfg, bf16_net=None):
@@ -572,17 +587,16 @@ def train(cfg: TrainConfig):
         rec["train/scrubbed"] = scrubbed
 
         # Watchdog: a healthy iter resets the streak; otherwise count it. HALT after
-        # `watchdog_patience` straight bad iters. "Bad" = a net stayed non-finite, OR
-        # the REAL spec advantage filter kept ~nothing (`move/n_threshold_keep`, the
-        # pre-floor count — full1's silent starvation freeze had NO NaN), OR a reported
-        # loss is non-finite, OR genuine corruption was scrubbed. The min_keep floor
-        # keeps the batch size stable but must NOT hide the starvation alarm, so the
-        # alarm watches the pre-floor count, not the floored `move/n_kept`.
+        # `watchdog_patience` straight bad iters. "Bad" = a net stayed non-finite, a
+        # reported loss is non-finite, or genuine corruption was scrubbed. NOTE:
+        # `move/n_threshold_keep == 0` is NOT bad — with the spec filter (thresh=0.01,
+        # no min_keep) an iter where no |adv| clears the threshold legitimately trains
+        # on nothing (the reference idles too); progress is judged by the eval, not by
+        # forcing an update every iter.
         move_threshold = m_stats.get("move/n_threshold_keep", 1)
         reported_finite = (np.isfinite(rec.get("move/loss", 0.0))
                            and np.isfinite(rec.get("setup/loss", 0.0)))
-        iter_bad = (move_nan or setup_nan or (move_threshold == 0)
-                    or (scrubbed > 0) or not reported_finite)
+        iter_bad = (move_nan or setup_nan or (scrubbed > 0) or not reported_finite)
         bad_streak = bad_streak + 1 if iter_bad else 0
         rec["bad_streak"] = bad_streak
 

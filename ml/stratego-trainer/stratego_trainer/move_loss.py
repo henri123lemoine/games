@@ -74,7 +74,7 @@ def move_loss_and_stats(net, batch, magnet_coef, cfg):
     obs = batch["obs"]
     legal = batch["legal"]
     action = batch["action"]
-    advantages = batch["advantage"]
+    advantages = batch["advantage"]  # raw, per reference rl.py:541 (no standardization)
     old_log_prob = batch["old_log_prob"]
     data_log_prob = batch["data_log_prob"]
     ret = batch["ret"]
