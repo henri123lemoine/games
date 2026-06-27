@@ -136,11 +136,7 @@ fn proven_value0(proof: Proof, to_move: usize, max: f64) -> f64 {
 /// 0, negated otherwise. Its own inverse, so it also maps a mover-relative value
 /// back to player 0's.
 fn for_mover(value0: f64, to_move: usize) -> f64 {
-    if to_move == 0 {
-        value0
-    } else {
-        -value0
-    }
+    if to_move == 0 { value0 } else { -value0 }
 }
 
 pub struct Tree<G: Game> {

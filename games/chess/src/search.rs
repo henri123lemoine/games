@@ -130,7 +130,11 @@ fn mopup_bonus(board: &Board, material: [i32; 2]) -> i32 {
         if material[loser.index()] == 0 && material[winner.index()] >= Piece::Rook.value() {
             let mopup = 10 * center_distance(board.kings[loser.index()])
                 + 4 * (14 - king_distance(board.kings[0], board.kings[1]));
-            bonus += if winner == Color::White { mopup } else { -mopup };
+            bonus += if winner == Color::White {
+                mopup
+            } else {
+                -mopup
+            };
         }
     }
     bonus
