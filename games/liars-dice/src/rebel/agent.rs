@@ -39,11 +39,11 @@ use crate::rebel::adapter::LiarsDiceAdapter;
 use crate::rebel::cfr::{CfrParams, SMOOTHING_EPS, Solver, parent_actions, reach_probabilities};
 use crate::rebel::deploy::NetContinuation;
 use crate::rebel::game::{Bid, RebelGame};
-use crate::rebel::hands::{self, MAX_FACES};
+use crate::rebel::hands::{self, MAX_DICE, MAX_FACES};
 use crate::rebel::leaf::RootedGame;
 use crate::rebel::pbs::{Belief, MAX_SEATS, PublicState};
 use crate::rebel::tree::Node;
-use crate::rebel::value_net::{NetLeaf, PbsNet};
+use crate::rebel::value_net::{MAX_REBEL_SEATS, NetLeaf, PbsNet};
 use crate::subgame::ContinuationValue;
 use crate::{Action, LdState, LiarsDice};
 
@@ -109,6 +109,14 @@ impl RebelAgent {
         }
     }
 
+    fn net_supports(game: &LiarsDice, state: &LdState) -> bool {
+        game.players as usize <= MAX_REBEL_SEATS
+            && game.faces as usize <= MAX_FACES
+            && state.dice_left()[..game.players as usize]
+                .iter()
+                .all(|&d| d as usize <= MAX_DICE)
+    }
+
     /// The agent's mixed strategy at `state` as a distribution over
     /// `game.legal_actions(state)`. Deterministic given the net (the search uses
     /// no randomness); [`Agent::act`] samples from it.
@@ -118,6 +126,13 @@ impl RebelAgent {
         if n_real <= 1 {
             return vec![1.0; n_real.max(1)];
         }
+        assert!(
+            Self::net_supports(game, state),
+            "ReBeL net does not support this Liar's Dice state: players={} faces={} dice_left={:?}",
+            game.players,
+            game.faces,
+            &state.dice_left()[..game.players as usize]
+        );
 
         let players = game.players as usize;
         let faces = game.faces;
@@ -187,7 +202,7 @@ impl RebelAgent {
 
 impl Agent<LiarsDice> for RebelAgent {
     fn act(&self, game: &LiarsDice, state: &LdState, player: usize, rng: &mut Rng) -> usize {
-        if game.legal_actions(state).len() <= 1 {
+        if game.num_actions(state) <= 1 {
             return 0;
         }
         let probs = self.action_probs(game, state, player);
@@ -419,7 +434,7 @@ mod tests {
             while !game.is_terminal(&s) {
                 match game.turn(&s) {
                     Turn::Chance => {
-                        let a = game.sample_chance(&s, &mut rng).0;
+                        let a = game.sample_chance_action(&s, &mut rng);
                         game.apply(&mut s, a);
                     }
                     Turn::Player(p) => {

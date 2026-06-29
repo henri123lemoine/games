@@ -2,7 +2,7 @@
 //! run. Trains the single config-invariant PBS value net by bootstrapped
 //! self-play on the real multi-round game (the mixed config sampler, biased to
 //! the 5p5d6f flagship), checkpointing `ckpt.bin` into OUTDIR (default
-//! `runs/ld_rebel`) so the bot loads it with `bot=rebel net=runs/ld_rebel/ckpt.bin`.
+//! `runs/ld_rebel`) for explicit ReBeL evaluation or experiments.
 //!
 //!     cargo run --release -p liars-dice --features parallel --example deploy_train
 //!
