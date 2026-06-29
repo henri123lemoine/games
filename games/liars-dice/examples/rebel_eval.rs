@@ -134,7 +134,7 @@ fn main() {
         while !big.is_terminal(&s) && times.len() < perf_moves && moves < 8 {
             match big.turn(&s) {
                 Turn::Chance => {
-                    let a = big.sample_chance(&s, &mut rng).0;
+                    let a = big.sample_chance_action(&s, &mut rng);
                     big.apply(&mut s, a);
                 }
                 Turn::Player(p) => {

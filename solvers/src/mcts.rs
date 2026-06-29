@@ -449,7 +449,7 @@ impl<G: Game> Mcts<G> {
 
 impl<G: Game> Agent<G> for Mcts<G> {
     fn act(&self, game: &G, state: &G::State, player: usize, rng: &mut Rng) -> usize {
-        if game.legal_actions(state).len() <= 1 {
+        if game.num_actions(state) <= 1 {
             return 0;
         }
         let nodes = self.run(game, state, player, rng);

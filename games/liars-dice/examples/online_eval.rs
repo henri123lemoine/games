@@ -227,7 +227,7 @@ fn mid_round_state(game: &LiarsDice, dice_left: [u8; liars_dice::MAX_PLAYERS]) -
     let mut s = round.initial_state();
     let mut rng = Rng::new(0x5EED);
     while let Turn::Chance = round.turn(&s) {
-        let a = round.sample_chance(&s, &mut rng).0;
+        let a = round.sample_chance_action(&s, &mut rng);
         round.apply(&mut s, a);
     }
     // The opener places a modest opening bid; control returns to the next seat.

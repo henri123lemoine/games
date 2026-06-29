@@ -42,9 +42,8 @@ pub fn sample_visits(visits: &[u32], rng: &mut Rng) -> usize {
 /// Advances `state` through any chance nodes by sampling outcomes.
 pub fn step_chance<G: crate::Game>(game: &G, state: &mut G::State, rng: &mut Rng) {
     while !game.is_terminal(state) && matches!(game.turn(state), crate::Turn::Chance) {
-        let outs = game.chance_outcomes(state);
-        let i = sample_outcome(&outs, rng);
-        game.apply(state, outs[i].0);
+        let action = game.sample_chance_action(state, rng);
+        game.apply(state, action);
     }
 }
 

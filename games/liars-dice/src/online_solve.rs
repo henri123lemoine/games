@@ -257,7 +257,7 @@ where
         player: usize,
         nonce: u64,
     ) -> Vec<f64> {
-        let n = game.legal_actions(state).len();
+        let n = game.num_actions(state);
         let (iters, restarts) = self.round_budget(game, state);
         let mut avg = vec![0.0; n];
         for k in 0..restarts {
@@ -377,7 +377,7 @@ mod tests {
                 while !game.is_terminal(&s) {
                     match game.turn(&s) {
                         Turn::Chance => {
-                            let a = game.sample_chance(&s, &mut rng).0;
+                            let a = game.sample_chance_action(&s, &mut rng);
                             game.apply(&mut s, a);
                         }
                         Turn::Player(_) => {
@@ -424,7 +424,7 @@ mod tests {
             while !game.is_terminal(&s) {
                 match game.turn(&s) {
                     Turn::Chance => {
-                        let a = game.sample_chance(&s, &mut rng).0;
+                        let a = game.sample_chance_action(&s, &mut rng);
                         game.apply(&mut s, a);
                     }
                     Turn::Player(p) => {

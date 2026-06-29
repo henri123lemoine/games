@@ -3,7 +3,7 @@
 //! distribution (each unknown die shows a given face with probability `1/faces`,
 //! since 1s are not wild), which scales to any number of players and dice.
 
-use game_core::{Agent, Determinizer, Game, Rng};
+use game_core::{Agent, Determinizer, Rng};
 
 use crate::{Action, LdState, LiarsDice};
 
@@ -61,12 +61,13 @@ pub struct ProbConfig {
 }
 
 impl Default for ProbConfig {
-    /// League-tuned on 5p5d6f (see `examples/league`): aggressive bids, eager
-    /// EXACT calls (this variant punishes neither when right), ready to call liar.
+    /// League-tuned on 5p5d6f: aggressive bids, moderate exact calls, ready to
+    /// call liar. After cap ties were scored as draws, independent same-game
+    /// validation favored `exact_cut=0.70` over the legacy eager-exact setting.
     fn default() -> Self {
         Self {
             liar_cut: 0.238,
-            exact_cut: 0.523,
+            exact_cut: 0.70,
             safety: 0.129,
             bluff: 0.005,
             bidder_bias: 0.412,
@@ -148,7 +149,6 @@ impl ProbabilisticAgent {
     }
 
     fn choose(&self, game: &LiarsDice, s: &LdState, player: usize, rng: &mut Rng) -> Action {
-        let actions = game.legal_actions(s);
         let (q, face) = s.current_bid();
 
         if q == 0 {
@@ -176,34 +176,39 @@ impl ProbabilisticAgent {
 
         let p_true = self.p_true(game, s, player, q, face, self.cfg.bidder_bias);
         let p_exact = self.p_exact(game, s, player, q, face);
-        let can_exact = actions.contains(&Action::CallExact);
-        let can_liar = actions.contains(&Action::CallLiar);
 
         // Strong exact read takes precedence (it risks nothing when right).
-        if can_exact && p_exact > self.cfg.exact_cut {
+        if p_exact > self.cfg.exact_cut {
             return Action::CallExact;
         }
         // Bid looks like a lie: call it, with a soft randomized band so the
         // calling threshold isn't perfectly readable.
-        if can_liar {
-            let call_p = if p_true < self.cfg.liar_cut {
-                1.0
-            } else if self.cfg.mix > 0.0 && p_true < self.cfg.liar_cut + self.cfg.mix {
-                (self.cfg.liar_cut + self.cfg.mix - p_true) / self.cfg.mix
-            } else {
-                0.0
-            };
-            // A fresh draw per stochastic decision: reusing one sample across
-            // the bluff/call/raise thresholds correlates them and distorts
-            // the tuned marginal probabilities.
-            if rng.unit() < call_p {
-                return Action::CallLiar;
-            }
+        let call_p = if p_true < self.cfg.liar_cut {
+            1.0
+        } else if self.cfg.mix > 0.0 && p_true < self.cfg.liar_cut + self.cfg.mix {
+            (self.cfg.liar_cut + self.cfg.mix - p_true) / self.cfg.mix
+        } else {
+            0.0
+        };
+        // A fresh draw per stochastic decision: reusing one sample across
+        // the bluff/call/raise thresholds correlates them and distorts
+        // the tuned marginal probabilities.
+        if rng.unit() < call_p {
+            return Action::CallLiar;
         }
 
         // Otherwise raise to the most plausible reachable bid.
         let mut best: Option<(Action, f64)> = None;
-        for &a in &actions {
+        let total: u8 = s.dice_left().iter().sum();
+        if q < total {
+            let a = Action::RaiseQuantity;
+            if let Some((nq, nf)) = self.raised_bid(game, q, face, a) {
+                let pt = self.p_true(game, s, player, nq, nf, 0.0);
+                best = Some((a, pt));
+            }
+        }
+        if face < game.faces || q < total {
+            let a = Action::RaiseFace;
             if let Some((nq, nf)) = self.raised_bid(game, q, face, a) {
                 let pt = self.p_true(game, s, player, nq, nf, 0.0);
                 if best.is_none_or(|(_, b)| pt > b) {
@@ -214,9 +219,41 @@ impl ProbabilisticAgent {
         match best {
             Some((a, pt)) if pt >= self.cfg.safety || rng.unit() < self.cfg.bluff => a,
             // No safe raise and not bluffing: prefer to call the current bid.
-            _ if can_liar => Action::CallLiar,
-            Some((a, _)) => a,
-            None => Action::CallLiar,
+            _ => Action::CallLiar,
+        }
+    }
+
+    fn action_index(&self, game: &LiarsDice, s: &LdState, a: Action) -> Option<usize> {
+        let total: u8 = s.dice_left().iter().sum();
+        let (q, face) = s.current_bid();
+        if q == 0 {
+            return match a {
+                Action::Open(oq, of)
+                    if (1..=total).contains(&oq) && (1..=game.faces).contains(&of) =>
+                {
+                    Some(usize::from(oq - 1) * usize::from(game.faces) + usize::from(of - 1))
+                }
+                _ => None,
+            };
+        }
+
+        let mut idx = 0usize;
+        if q < total {
+            if a == Action::RaiseQuantity {
+                return Some(idx);
+            }
+            idx += 1;
+        }
+        if face < game.faces || q < total {
+            if a == Action::RaiseFace {
+                return Some(idx);
+            }
+            idx += 1;
+        }
+        match a {
+            Action::CallLiar => Some(idx),
+            Action::CallExact => Some(idx + 1),
+            _ => None,
         }
     }
 }
@@ -224,8 +261,7 @@ impl ProbabilisticAgent {
 impl Agent<LiarsDice> for ProbabilisticAgent {
     fn act(&self, game: &LiarsDice, state: &LdState, player: usize, rng: &mut Rng) -> usize {
         let desired = self.choose(game, state, player, rng);
-        let actions = game.legal_actions(state);
-        if let Some(i) = actions.iter().position(|&a| a == desired) {
+        if let Some(i) = self.action_index(game, state, desired) {
             return i;
         }
         // `choose` should always return a legal action; if a future edit ever
@@ -233,7 +269,7 @@ impl Agent<LiarsDice> for ProbabilisticAgent {
         // legal index when any action exists) rather than emitting a stale index.
         debug_assert!(
             false,
-            "ProbabilisticAgent chose {desired:?}, not legal among {actions:?}"
+            "ProbabilisticAgent chose {desired:?}, not legal in the current state"
         );
         0
     }
@@ -266,6 +302,7 @@ impl Determinizer<LiarsDice> for BidConditioned {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use game_core::Game;
 
     /// Reference `P(Binomial(n, p) == k)` by direct evaluation of C(n,k).
     fn pmf_ref(n: u32, p: f64, k: i64) -> f64 {
@@ -314,6 +351,72 @@ mod tests {
         assert_eq!(binom_pmf(0, 1.0 / 6.0, 0), 1.0);
         assert_eq!(binom_sf(10, 1.0 / 6.0, -3), 1.0);
         assert_eq!(binom_pmf(10, 1.0 / 6.0, 11), 0.0);
+    }
+
+    #[test]
+    fn default_exact_threshold_matches_validated_rollout_base() {
+        assert!(
+            (ProbConfig::default().exact_cut - 0.70).abs() < 1e-12,
+            "the deployed rollout base policy should stay on the validated moderate exact threshold"
+        );
+    }
+
+    #[test]
+    fn probabilistic_agent_returns_legal_indices() {
+        let agent = ProbabilisticAgent::default_agent();
+        let mut rng = Rng::new(0xA91CE);
+        for &(players, dice, faces) in &[(2, 1, 6), (3, 3, 4), (5, 5, 6)] {
+            let game = LiarsDice::new(players, dice, faces);
+            for _ in 0..20 {
+                let mut s = game.initial_state();
+                let mut steps = 0;
+                while !game.is_terminal(&s) {
+                    steps += 1;
+                    assert!(steps < 100_000, "probabilistic games should terminate");
+                    match game.turn(&s) {
+                        game_core::Turn::Chance => {
+                            let a = game.sample_chance_action(&s, &mut rng);
+                            game.apply(&mut s, a);
+                        }
+                        game_core::Turn::Player(p) => {
+                            let actions = game.legal_actions(&s);
+                            for (expected, &action) in actions.iter().enumerate() {
+                                assert_eq!(
+                                    agent.action_index(&game, &s, action),
+                                    Some(expected),
+                                    "direct action index must match legal_actions order"
+                                );
+                            }
+                            let i = agent.act(&game, &s, p, &mut rng);
+                            assert!(
+                                i < actions.len(),
+                                "agent returned index {i} for {} legal actions",
+                                actions.len()
+                            );
+                            game.apply(&mut s, actions[i]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn opening_action_indices_scale_to_large_legal_configs() {
+        let agent = ProbabilisticAgent::default_agent();
+        let game = LiarsDice::new(8, 6, 6);
+        let mut s = game.initial_state();
+        s.qty = 0;
+        s.face = 0;
+        let actions = game.legal_actions(&s);
+        assert_eq!(actions.len(), 8 * 6 * 6);
+        for (expected, &action) in actions.iter().enumerate() {
+            assert_eq!(
+                agent.action_index(&game, &s, action),
+                Some(expected),
+                "large opening action indices must not overflow"
+            );
+        }
     }
 
     #[test]

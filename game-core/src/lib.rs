@@ -82,6 +82,21 @@ pub trait Game: Sync {
     /// Legal actions at a decision node, in a stable order for the information set.
     fn legal_actions(&self, state: &Self::State) -> Vec<Self::Action>;
 
+    /// Number of legal actions at a decision node. The default materializes
+    /// [`Game::legal_actions`]; games with closed-form action orderings should
+    /// override this alongside [`Game::action_at`] to avoid hot-path allocation.
+    fn num_actions(&self, state: &Self::State) -> usize {
+        self.legal_actions(state).len()
+    }
+
+    /// The legal action at index `i`, using the same stable order as
+    /// [`Game::legal_actions`]. The default materializes `legal_actions` and
+    /// indexes it; games with cheap closed-form action orderings can override
+    /// this to make simulation hot paths allocation-free.
+    fn action_at(&self, state: &Self::State, i: usize) -> Self::Action {
+        self.legal_actions(state)[i]
+    }
+
     /// Chance outcomes and their probabilities at a chance node (sum to 1).
     fn chance_outcomes(&self, state: &Self::State) -> Vec<(Self::Action, f64)>;
 
@@ -96,6 +111,14 @@ pub trait Game: Sync {
         let outs = self.chance_outcomes(state);
         let i = rand::sample_outcome(&outs, rng);
         (outs[i].0, outs[i].1)
+    }
+
+    /// Sample one chance outcome when the caller does not need the outcome
+    /// probability. The default preserves the [`Game::sample_chance`]
+    /// distribution and discards its probability; games with expensive
+    /// probability calculations can override this for simulation hot paths.
+    fn sample_chance_action(&self, state: &Self::State, rng: &mut Rng) -> Self::Action {
+        self.sample_chance(state, rng).0
     }
 
     /// Apply an action (decision or chance outcome), mutating the state.

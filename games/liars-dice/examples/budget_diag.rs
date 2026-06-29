@@ -123,7 +123,7 @@ fn ms_per_move(p: u8, d: u8, f: u8, flat_iters: u64, restarts: usize, seed: u64)
     let mut s = round.initial_state();
     let mut rng = Rng::new(0x5EED);
     while let Turn::Chance = round.turn(&s) {
-        let a = round.sample_chance(&s, &mut rng).0;
+        let a = round.sample_chance_action(&s, &mut rng);
         round.apply(&mut s, a);
     }
     round.apply(&mut s, Action::Open(2, 3));

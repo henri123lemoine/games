@@ -131,10 +131,29 @@ impl GameUi for LiarsDice {
             None => out.push_str(" Exact! Nobody loses a die."),
         }
         if self.adjudicated(after) {
-            out.push_str(&format!(
-                "\n→ round cap ({}) reached: adjudicated by dice count — Player {} wins with {}.",
-                self.max_rounds, after.winner, after.dice_left[after.winner as usize]
-            ));
+            let leaders = self.cap_leaders(after);
+            if leaders.len() == self.num_alive(after) as usize {
+                out.push_str(&format!(
+                    "\n→ round cap ({}) reached: adjudicated by dice count — tied leaders draw with {}.",
+                    self.max_rounds, after.dice_left[leaders[0]]
+                ));
+            } else if leaders.len() == 1 {
+                let p = leaders[0];
+                out.push_str(&format!(
+                    "\n→ round cap ({}) reached: adjudicated by dice count — Player {p} wins with {}.",
+                    self.max_rounds, after.dice_left[p]
+                ));
+            } else {
+                let names = leaders
+                    .iter()
+                    .map(|p| format!("Player {p}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push_str(&format!(
+                    "\n→ round cap ({}) reached: adjudicated by dice count — {names} share the lead with {}.",
+                    self.max_rounds, after.dice_left[leaders[0]]
+                ));
+            }
         }
         Some(out)
     }
@@ -182,7 +201,14 @@ impl GameUi for LiarsDice {
             })
             .collect::<Vec<_>>()
             .join(",");
-        let winner = if s.done {
+        let winner = if self.adjudicated(s) {
+            let leaders = self.cap_leaders(s);
+            if leaders.len() == 1 {
+                leaders[0].to_string()
+            } else {
+                "null".to_string()
+            }
+        } else if s.done {
             s.winner.to_string()
         } else {
             "null".to_string()
@@ -233,7 +259,14 @@ impl GameUi for LiarsDice {
             .map(|p| dice_json(&before.hand(p)))
             .collect::<Vec<_>>()
             .join(",");
-        let winner = if after.done {
+        let winner = if self.adjudicated(after) {
+            let leaders = self.cap_leaders(after);
+            if leaders.len() == 1 {
+                leaders[0].to_string()
+            } else {
+                "null".to_string()
+            }
+        } else if after.done {
             after.winner.to_string()
         } else {
             "null".to_string()
@@ -443,5 +476,34 @@ mod tests {
         assert_valid_json(&t);
         assert!(t.contains(r#""gameOver":true,"winner":0"#), "{t}");
         assert!(t.contains(r#""adjudicated":true"#), "{t}");
+    }
+
+    #[test]
+    fn tied_round_cap_adjudication_is_announced_as_draw() {
+        let game = LiarsDice::new(2, 1, 6).with_max_rounds(1);
+        let mut s = game.initial_state();
+        game.apply(&mut s, Action::Roll([1, 0, 0, 0, 0, 0]));
+        game.apply(&mut s, Action::Roll([0, 1, 0, 0, 0, 0]));
+        let before = s.clone();
+        game.apply(&mut s, Action::CallExact);
+        assert!(game.is_terminal(&s));
+
+        let text = game
+            .describe_transition(&before, Action::CallExact, &s, 0)
+            .unwrap();
+        assert!(text.contains("round cap (1) reached"), "{text}");
+        assert!(text.contains("tied leaders draw with 1"), "{text}");
+
+        let t = game
+            .transition_data(&before, Action::CallExact, &s, 0)
+            .unwrap();
+        assert_valid_json(&t);
+        assert!(t.contains(r#""gameOver":true,"winner":null"#), "{t}");
+        assert!(t.contains(r#""adjudicated":true"#), "{t}");
+
+        let v = game.view_data(&s, 2).unwrap();
+        assert_valid_json(&v);
+        assert!(v.contains(r#""phase":"over""#), "{v}");
+        assert!(v.contains(r#""winner":null"#), "{v}");
     }
 }

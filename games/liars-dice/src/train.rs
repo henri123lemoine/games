@@ -227,7 +227,7 @@ fn collect<S: RoundSolver>(
         while !round.is_terminal(&s) {
             match round.turn(&s) {
                 Turn::Chance => {
-                    let (a, _p) = round.sample_chance(&s, rng);
+                    let a = round.sample_chance_action(&s, rng);
                     round.apply(&mut s, a);
                 }
                 Turn::Player(pl) => {

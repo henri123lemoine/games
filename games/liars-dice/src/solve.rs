@@ -96,26 +96,37 @@ struct LatticeState {
     opener: u8,
 }
 
-/// The round-cap adjudication outcome as a [`ContinuationValue`]: the seat with
-/// the most dice wins outright (ties broken toward the *highest* seat index),
-/// exactly mirroring [`LiarsDice`](crate::LiarsDice)'s `resolve_after_call`
-/// when `rounds` exceeds `max_rounds`. This closes the *last* round of a
-/// finite-horizon (cap-`K`) game, where it must match the full game's own cap
-/// behaviour so the two values are the *same game* (see [`fit_capped`]).
+/// The round-cap adjudication outcome as a [`ContinuationValue`]: live seats
+/// with the most dice share the leader value, and all-live ties are draws. This
+/// mirrors [`LiarsDice`](crate::LiarsDice)'s capped-game returns when `rounds`
+/// exceeds `max_rounds`. It closes the *last* round of a finite-horizon
+/// (cap-`K`) game, where it must match the full game's own cap behaviour so the
+/// two values are the *same game* (see [`fit_capped`]).
 #[derive(Clone)]
 struct AdjudicationValue;
 
 impl ContinuationValue for AdjudicationValue {
     fn value(&self, _faces: u8, dice_left: &[u8], _next_opener: usize, player: usize) -> f64 {
-        let n = dice_left.len();
-        // `max_by_key` returns the last maximum, i.e. the highest seat on ties —
-        // matching `(0..players).max_by_key(|p| dice_left[p])` in the game.
-        let winner = (0..n).max_by_key(|&p| dice_left[p]).unwrap();
-        if player == winner {
-            1.0
-        } else {
-            -1.0 / (n as f64 - 1.0)
+        let live: Vec<usize> = dice_left
+            .iter()
+            .enumerate()
+            .filter_map(|(p, &d)| (d > 0).then_some(p))
+            .collect();
+        let Some(max_dice) = live.iter().map(|&p| dice_left[p]).max() else {
+            return 0.0;
+        };
+        let leaders: Vec<usize> = live
+            .iter()
+            .copied()
+            .filter(|&p| dice_left[p] == max_dice)
+            .collect();
+        if leaders.len() == live.len() {
+            return 0.0;
         }
+        if leaders.contains(&player) {
+            return 1.0 / leaders.len() as f64;
+        }
+        -1.0 / (live.len() - leaders.len()) as f64
     }
 }
 
@@ -390,13 +401,17 @@ mod tests {
     }
 
     #[test]
-    fn adjudication_value_matches_game_cap_tiebreak() {
-        // The game breaks dice-count ties toward the *highest* seat.
+    fn adjudication_value_matches_game_cap_returns() {
+        // The game scores all-live dice-count ties as draws and splits partial
+        // ties among the max-dice leaders.
         let v = AdjudicationValue;
         assert_eq!(v.value(6, &[2, 1], 0, 0), 1.0); // seat 0 has more
         assert_eq!(v.value(6, &[2, 1], 0, 1), -1.0);
-        assert_eq!(v.value(6, &[1, 1], 0, 1), 1.0); // tie -> highest seat (1)
-        assert_eq!(v.value(6, &[1, 1], 0, 0), -1.0);
+        assert_eq!(v.value(6, &[1, 1], 0, 0), 0.0);
+        assert_eq!(v.value(6, &[1, 1], 0, 1), 0.0);
+        assert_eq!(v.value(6, &[2, 2, 1], 0, 0), 0.5);
+        assert_eq!(v.value(6, &[2, 2, 1], 0, 1), 0.5);
+        assert_eq!(v.value(6, &[2, 2, 1], 0, 2), -1.0);
     }
 
     #[test]

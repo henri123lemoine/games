@@ -106,7 +106,7 @@ impl NetTruncRollout {
         while moves < self.plies && !game.is_terminal(&s) {
             match game.turn(&s) {
                 Turn::Chance => {
-                    let (a, _) = game.sample_chance(&s, rng);
+                    let a = game.sample_chance_action(&s, rng);
                     game.apply(&mut s, a);
                 }
                 Turn::Player(p) => {
@@ -185,7 +185,7 @@ mod tests {
                     assert!(steps < 100_000);
                     match game.turn(&s) {
                         Turn::Chance => {
-                            let a = game.sample_chance(&s, &mut rng).0;
+                            let a = game.sample_chance_action(&s, &mut rng);
                             game.apply(&mut s, a);
                         }
                         Turn::Player(pl) => {

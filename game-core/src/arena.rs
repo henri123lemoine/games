@@ -22,7 +22,7 @@ pub struct RandomAgent;
 
 impl<G: Game> Agent<G> for RandomAgent {
     fn act(&self, game: &G, state: &G::State, _player: usize, rng: &mut Rng) -> usize {
-        rng.below(game.legal_actions(state).len())
+        rng.below(game.num_actions(state))
     }
 }
 
@@ -89,14 +89,13 @@ pub fn playout_from<G: Game>(
     while !game.is_terminal(&s) {
         match game.turn(&s) {
             Turn::Chance => {
-                let outs = game.chance_outcomes(&s);
-                let i = crate::rand::sample_outcome(&outs, rng);
-                game.apply(&mut s, outs[i].0);
+                let action = game.sample_chance_action(&s, rng);
+                game.apply(&mut s, action);
             }
             Turn::Player(p) => {
-                let actions = game.legal_actions(&s);
                 let i = agents[p].act(game, &s, p, rng);
-                game.apply(&mut s, actions[i]);
+                let action = game.action_at(&s, i);
+                game.apply(&mut s, action);
             }
         }
     }
@@ -244,6 +243,92 @@ mod tests {
         }
     }
 
+    /// One chance node whose enumerated distribution is intentionally unusable.
+    /// Playouts should use `sample_chance`, which lets games provide a direct
+    /// sampler for large chance spaces.
+    struct SampleOnlyChance;
+
+    impl Game for SampleOnlyChance {
+        type State = bool; // terminal after chance
+        type Action = u8;
+
+        fn initial_state(&self) -> bool {
+            false
+        }
+        fn turn(&self, s: &bool) -> Turn {
+            if *s { Turn::Player(0) } else { Turn::Chance }
+        }
+        fn is_terminal(&self, s: &bool) -> bool {
+            *s
+        }
+        fn returns(&self, _s: &bool, _player: usize) -> f64 {
+            0.0
+        }
+        fn legal_actions(&self, _s: &bool) -> Vec<u8> {
+            vec![0]
+        }
+        fn chance_outcomes(&self, _s: &bool) -> Vec<(u8, f64)> {
+            panic!("playouts must use sample_chance, not enumerate chance_outcomes")
+        }
+        fn sample_chance(&self, _s: &bool, _rng: &mut Rng) -> (u8, f64) {
+            panic!("playouts must use sample_chance_action when probability is unused")
+        }
+        fn sample_chance_action(&self, _s: &bool, _rng: &mut Rng) -> u8 {
+            7
+        }
+        fn apply(&self, s: &mut bool, a: u8) {
+            assert_eq!(a, 7);
+            *s = true;
+        }
+        fn infoset_key(&self, s: &bool, _player: usize) -> u64 {
+            *s as u64
+        }
+    }
+
+    /// One player node whose materialized action vector is intentionally
+    /// unusable. Playouts should map an agent's chosen index through
+    /// `action_at`, which lets games with closed-form action orderings avoid
+    /// allocation in simulation hot paths.
+    struct ActionAtOnly;
+
+    impl Game for ActionAtOnly {
+        type State = bool; // terminal after one player action
+        type Action = u8;
+
+        fn initial_state(&self) -> bool {
+            false
+        }
+        fn turn(&self, _s: &bool) -> Turn {
+            Turn::Player(0)
+        }
+        fn is_terminal(&self, s: &bool) -> bool {
+            *s
+        }
+        fn returns(&self, _s: &bool, _player: usize) -> f64 {
+            0.0
+        }
+        fn legal_actions(&self, _s: &bool) -> Vec<u8> {
+            panic!("playouts must use action_at, not materialize legal_actions")
+        }
+        fn num_actions(&self, _s: &bool) -> usize {
+            1
+        }
+        fn action_at(&self, _s: &bool, i: usize) -> u8 {
+            assert_eq!(i, 0);
+            9
+        }
+        fn chance_outcomes(&self, _s: &bool) -> Vec<(u8, f64)> {
+            Vec::new()
+        }
+        fn apply(&self, s: &mut bool, a: u8) {
+            assert_eq!(a, 9);
+            *s = true;
+        }
+        fn infoset_key(&self, s: &bool, _player: usize) -> u64 {
+            *s as u64
+        }
+    }
+
     #[test]
     fn adjacent_seeds_give_distinct_streams() {
         for seed in [0u64, 1, 2, 6, 7, 41, 42] {
@@ -290,6 +375,26 @@ mod tests {
         let mut rng = Rng::new(1);
         assert_eq!(play(&game, &RandomAgent, &RandomAgent, &mut rng), 0.0);
         assert_eq!(win_rate(&game, &RandomAgent, &RandomAgent, 10, 3), 0.5);
+    }
+
+    #[test]
+    fn playouts_use_direct_chance_sampler() {
+        let game = SampleOnlyChance;
+        let agents: [&dyn Agent<SampleOnlyChance>; 2] = [&RandomAgent, &RandomAgent];
+        let terminal = play_n(&game, &agents, &mut Rng::new(123));
+        assert!(terminal);
+
+        let mut state = false;
+        crate::rand::step_chance(&game, &mut state, &mut Rng::new(456));
+        assert!(state);
+    }
+
+    #[test]
+    fn playouts_use_direct_action_lookup() {
+        let game = ActionAtOnly;
+        let agents: [&dyn Agent<ActionAtOnly>; 1] = [&RandomAgent];
+        let terminal = playout_from(&game, game.initial_state(), &agents, &mut Rng::new(123));
+        assert!(terminal);
     }
 
     #[test]

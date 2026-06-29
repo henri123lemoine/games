@@ -180,6 +180,16 @@ impl LiarsDice {
         s.done && self.num_alive(s) > 1
     }
 
+    fn cap_leaders(&self, s: &LdState) -> Vec<usize> {
+        let live: Vec<usize> = (0..self.players as usize)
+            .filter(|&p| s.dice_left[p] > 0)
+            .collect();
+        let max_dice = live.iter().map(|&p| s.dice_left[p]).max().unwrap_or(0);
+        live.into_iter()
+            .filter(|&p| s.dice_left[p] == max_dice)
+            .collect()
+    }
+
     fn push_hist(&self, s: &mut LdState, code: u16) {
         s.hist.copy_within(1..HIST_K, 0);
         s.hist[HIST_K - 1] = code;
@@ -278,6 +288,14 @@ impl LiarsDice {
             Action::Open(q, f) => format!("open {q}x{f}"),
             Action::Roll(_) => "roll".into(),
         }
+    }
+
+    fn sample_roll_counts(&self, dice: u8, rng: &mut game_core::Rng) -> [u8; MAX_FACES] {
+        let mut counts = [0u8; MAX_FACES];
+        for _ in 0..dice {
+            counts[rng.below(self.faces as usize)] += 1;
+        }
+        counts
     }
 }
 
@@ -427,6 +445,19 @@ impl Game for LiarsDice {
     }
 
     fn returns(&self, s: &LdState, player: usize) -> f64 {
+        if self.adjudicated(s) {
+            let live: Vec<usize> = (0..self.players as usize)
+                .filter(|&p| s.dice_left[p] > 0)
+                .collect();
+            let leaders = self.cap_leaders(s);
+            if leaders.len() == live.len() {
+                return 0.0;
+            }
+            if leaders.contains(&player) {
+                return 1.0 / leaders.len() as f64;
+            }
+            return -1.0 / (live.len() - leaders.len()) as f64;
+        }
         // Win the game: +1 to the last player standing, shared -1 to the rest.
         if s.winner as usize == player {
             1.0
@@ -456,10 +487,7 @@ impl Game for LiarsDice {
         if d == 0 {
             return (Action::Roll([0; MAX_FACES]), 1.0);
         }
-        let mut counts = [0u8; MAX_FACES];
-        for _ in 0..d {
-            counts[rng.below(self.faces as usize)] += 1;
-        }
+        let counts = self.sample_roll_counts(d, rng);
         let mut ways = (1..=u64::from(d)).product::<u64>() as f64;
         for &c in &counts {
             for k in 1..=u64::from(c) {
@@ -468,6 +496,14 @@ impl Game for LiarsDice {
         }
         let prob = ways * (1.0 / f64::from(self.faces)).powi(i32::from(d));
         (Action::Roll(counts), prob)
+    }
+
+    fn sample_chance_action(&self, s: &LdState, rng: &mut game_core::Rng) -> Action {
+        let d = s.dice_left[s.rolled as usize];
+        if d == 0 {
+            return Action::Roll([0; MAX_FACES]);
+        }
+        Action::Roll(self.sample_roll_counts(d, rng))
     }
 
     fn legal_actions(&self, s: &LdState) -> Vec<Action> {
@@ -490,6 +526,56 @@ impl Game for LiarsDice {
         acts.push(Action::CallLiar);
         acts.push(Action::CallExact);
         acts
+    }
+
+    fn num_actions(&self, s: &LdState) -> usize {
+        let total = self.total_dice(s);
+        if s.qty == 0 {
+            return usize::from(total) * usize::from(self.faces);
+        }
+        let mut n = 2; // CallLiar, CallExact.
+        if s.qty < total {
+            n += 1;
+        }
+        if s.face < self.faces || s.qty < total {
+            n += 1;
+        }
+        n
+    }
+
+    fn action_at(&self, s: &LdState, i: usize) -> Action {
+        let total = self.total_dice(s);
+        if s.qty == 0 {
+            let faces = usize::from(self.faces);
+            let n = usize::from(total) * faces;
+            assert!(
+                i < n,
+                "action index {i} out of range for {} opening actions",
+                n
+            );
+            return Action::Open((i / faces + 1) as u8, (i % faces + 1) as u8);
+        }
+
+        let mut idx = 0usize;
+        if s.qty < total {
+            if i == idx {
+                return Action::RaiseQuantity;
+            }
+            idx += 1;
+        }
+        if s.face < self.faces || s.qty < total {
+            if i == idx {
+                return Action::RaiseFace;
+            }
+            idx += 1;
+        }
+        if i == idx {
+            return Action::CallLiar;
+        }
+        if i == idx + 1 {
+            return Action::CallExact;
+        }
+        panic!("action index {i} out of range for Liar's Dice state");
     }
 
     fn apply(&self, s: &mut LdState, a: Action) {
@@ -699,6 +785,30 @@ mod tests {
         assert_eq!(LiarsDice::new(8, 6, 6).max_rounds, 144);
     }
 
+    #[test]
+    fn tied_round_cap_is_scored_as_draw() {
+        let game = LiarsDice::new(2, 1, 6).with_max_rounds(1);
+        let mut s = rolled(&game, &[[1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0]]);
+        game.apply(&mut s, Action::CallExact);
+        assert!(game.is_terminal(&s));
+        assert!(game.adjudicated(&s));
+        assert_eq!(s.dice_left[..2], [1, 1]);
+        assert_eq!(game.returns(&s, 0), 0.0);
+        assert_eq!(game.returns(&s, 1), 0.0);
+    }
+
+    #[test]
+    fn unique_round_cap_leader_keeps_winning_returns() {
+        let game = LiarsDice::new(2, 2, 6).with_max_rounds(1);
+        let mut s = rolled(&game, &[[0, 2, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0]]);
+        game.apply(&mut s, Action::CallLiar);
+        assert!(game.is_terminal(&s));
+        assert!(game.adjudicated(&s));
+        assert_eq!(s.dice_left[..2], [2, 1]);
+        assert_eq!(game.returns(&s, 0), 1.0);
+        assert_eq!(game.returns(&s, 1), -1.0);
+    }
+
     /// A 5p5d game played to the natural end — one die lost per round plus a
     /// few no-loss exact rounds — must finish by elimination, not round-cap
     /// adjudication. Under the old fixed cap of 24 this game was cut off with
@@ -787,7 +897,7 @@ mod tests {
                 while !game.is_terminal(&s) {
                     match game.turn(&s) {
                         Turn::Chance => {
-                            let a = game.sample_chance(&s, &mut rng).0;
+                            let a = game.sample_chance_action(&s, &mut rng);
                             game.apply(&mut s, a);
                         }
                         Turn::Player(_) => {
@@ -830,6 +940,53 @@ mod tests {
         for &(d, f) in &[(2u8, 6u8), (5, 6), (3, 4)] {
             let t: f64 = hand_distribution(d, f).iter().map(|(_, p)| p).sum();
             assert!((t - 1.0).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn chance_action_sampler_matches_probability_sampler_rolls() {
+        for &(players, dice, faces) in &[(2, 1, 6), (5, 5, 6), (8, 6, 6)] {
+            let game = LiarsDice::new(players, dice, faces);
+            let s = game.initial_state();
+            for seed in 0..20 {
+                let mut with_prob = Rng::new(seed);
+                let mut action_only = Rng::new(seed);
+                assert_eq!(
+                    game.sample_chance(&s, &mut with_prob).0,
+                    game.sample_chance_action(&s, &mut action_only)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn action_at_matches_legal_actions_order() {
+        for &(players, dice, faces) in &[(2, 1, 6), (3, 3, 4), (5, 5, 6), (8, 6, 6)] {
+            let game = LiarsDice::new(players, dice, faces);
+            let mut rng = Rng::new(0xAC7100 + u64::from(players));
+            for _ in 0..20 {
+                let mut s = game.initial_state();
+                let mut steps = 0;
+                while !game.is_terminal(&s) {
+                    steps += 1;
+                    assert!(steps < 100_000, "random game should terminate");
+                    match game.turn(&s) {
+                        Turn::Chance => {
+                            let a = game.sample_chance_action(&s, &mut rng);
+                            game.apply(&mut s, a);
+                        }
+                        Turn::Player(_) => {
+                            let actions = game.legal_actions(&s);
+                            assert_eq!(game.num_actions(&s), actions.len());
+                            for (i, &a) in actions.iter().enumerate() {
+                                assert_eq!(game.action_at(&s, i), a);
+                            }
+                            let a = game.action_at(&s, rng.below(actions.len()));
+                            game.apply(&mut s, a);
+                        }
+                    }
+                }
+            }
         }
     }
 }

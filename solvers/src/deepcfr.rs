@@ -404,7 +404,7 @@ impl DeepCfr {
         }
         match game.turn(state) {
             Turn::Chance => {
-                let (action, _p) = game.sample_chance(state, rng);
+                let action = game.sample_chance_action(state, rng);
                 let mut child = state.clone();
                 game.apply(&mut child, action);
                 self.traverse(game, enc, &child, traverser, iter, rng)

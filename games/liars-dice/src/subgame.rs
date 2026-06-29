@@ -333,12 +333,24 @@ impl<V: ContinuationValue> Game for RoundSubgame<V> {
         self.inner.legal_actions(s)
     }
 
+    fn num_actions(&self, s: &LdState) -> usize {
+        self.inner.num_actions(s)
+    }
+
+    fn action_at(&self, s: &LdState, i: usize) -> Action {
+        self.inner.action_at(s, i)
+    }
+
     fn chance_outcomes(&self, s: &LdState) -> Vec<(Action, f64)> {
         self.inner.chance_outcomes(s)
     }
 
     fn sample_chance(&self, s: &LdState, rng: &mut game_core::Rng) -> (Action, f64) {
         self.inner.sample_chance(s, rng)
+    }
+
+    fn sample_chance_action(&self, s: &LdState, rng: &mut game_core::Rng) -> Action {
+        self.inner.sample_chance_action(s, rng)
     }
 
     fn apply(&self, s: &mut LdState, a: Action) {

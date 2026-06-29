@@ -168,7 +168,7 @@ impl<G: Game> Agent<G> for GreedyQ<'_, G> {
         let key = game.infoset_key(state, player);
         match self.learner.tables[player].get(&key) {
             Some(row) => argmax(row),
-            None => rng.below(game.legal_actions(state).len()),
+            None => rng.below(game.num_actions(state)),
         }
     }
 }

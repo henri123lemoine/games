@@ -127,19 +127,18 @@ fn play_scored<G: Game>(
     while !game.is_terminal(&s) {
         match game.turn(&s) {
             Turn::Chance => {
-                let outs = game.chance_outcomes(&s);
-                let i = game_core::rand::sample_outcome(&outs, &mut rng);
-                game.apply(&mut s, outs[i].0);
+                let action = game.sample_chance_action(&s, &mut rng);
+                game.apply(&mut s, action);
             }
             Turn::Player(p) => {
-                let actions = game.legal_actions(&s);
                 let i = if plies < open_plies {
-                    rng.below(actions.len())
+                    rng.below(game.num_actions(&s))
                 } else {
                     let agent = if p == 0 { first } else { second };
                     agent.act(game, &s, p, &mut rng)
                 };
-                game.apply(&mut s, actions[i]);
+                let action = game.action_at(&s, i);
+                game.apply(&mut s, action);
                 plies += 1;
             }
         }

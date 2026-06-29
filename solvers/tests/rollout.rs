@@ -2,7 +2,12 @@
 //! win frequency — margins and draws count — and is deterministic given the
 //! arena's rng.
 
-use game_core::{Agent, Game, Identity, RandomAgent, Rng, Turn};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
+use game_core::{Agent, Determinizer, Game, Identity, RandomAgent, Rng, Turn};
 use solvers::Rollout;
 
 /// One decision, then one chance step. Action 0 wins 60% of the time but the
@@ -74,6 +79,72 @@ impl Game for Stakes {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum IndexedState {
+    Pick,
+    Done(i8),
+}
+
+struct IndexedOnly;
+
+impl Game for IndexedOnly {
+    type State = IndexedState;
+    type Action = u8;
+
+    fn initial_state(&self) -> IndexedState {
+        IndexedState::Pick
+    }
+
+    fn turn(&self, _s: &IndexedState) -> Turn {
+        Turn::Player(0)
+    }
+
+    fn is_terminal(&self, s: &IndexedState) -> bool {
+        matches!(s, IndexedState::Done(_))
+    }
+
+    fn returns(&self, s: &IndexedState, player: usize) -> f64 {
+        let IndexedState::Done(v) = s else {
+            unreachable!()
+        };
+        let v = f64::from(*v);
+        if player == 0 { v } else { -v }
+    }
+
+    fn legal_actions(&self, _s: &IndexedState) -> Vec<u8> {
+        panic!("rollout should use num_actions/action_at for root candidates")
+    }
+
+    fn num_actions(&self, _s: &IndexedState) -> usize {
+        2
+    }
+
+    fn action_at(&self, _s: &IndexedState, i: usize) -> u8 {
+        assert!(i < 2);
+        i as u8
+    }
+
+    fn chance_outcomes(&self, _s: &IndexedState) -> Vec<(u8, f64)> {
+        Vec::new()
+    }
+
+    fn apply(&self, s: &mut IndexedState, a: u8) {
+        *s = match (*s, a) {
+            (IndexedState::Pick, 0) => IndexedState::Done(-1),
+            (IndexedState::Pick, 1) => IndexedState::Done(1),
+            (IndexedState::Done(_), _) => unreachable!("apply on terminal"),
+            (_, _) => unreachable!("invalid action"),
+        }
+    }
+
+    fn infoset_key(&self, s: &IndexedState, _player: usize) -> u64 {
+        match s {
+            IndexedState::Pick => 0,
+            IndexedState::Done(v) => 100 + (*v as i64 + 2) as u64,
+        }
+    }
+}
+
 #[test]
 fn maximizes_expected_return_not_win_rate() {
     let game = Stakes;
@@ -88,10 +159,41 @@ fn maximizes_expected_return_not_win_rate() {
 }
 
 #[test]
+fn rollout_uses_indexed_action_lookup_for_root_candidates() {
+    let game = IndexedOnly;
+    let rollout = Rollout::new(10, RandomAgent, Identity);
+    let mut rng = Rng::new(9);
+    let i = rollout.act(&game, &IndexedState::Pick, 0, &mut rng);
+    assert_eq!(i, 1);
+}
+
+#[test]
 fn deterministic_given_the_arena_rng() {
     let game = Stakes;
     let rollout = Rollout::new(200, RandomAgent, Identity);
     let a = rollout.act(&game, &S::Pick, 0, &mut Rng::new(7));
     let b = rollout.act(&game, &S::Pick, 0, &mut Rng::new(7));
     assert_eq!(a, b);
+}
+
+struct CountingDet(Arc<AtomicUsize>);
+
+impl Determinizer<Stakes> for CountingDet {
+    fn determinize(&self, _game: &Stakes, _state: &mut S, _observer: usize, _rng: &mut Rng) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn shared_worlds_are_determinized_once_per_rollout() {
+    let game = Stakes;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let rollouts = 37;
+    let rollout = Rollout::new(rollouts, RandomAgent, CountingDet(Arc::clone(&calls)));
+    let _ = rollout.act(&game, &S::Pick, 0, &mut Rng::new(11));
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        rollouts as usize,
+        "common-random rollout worlds should be shared across candidate actions"
+    );
 }

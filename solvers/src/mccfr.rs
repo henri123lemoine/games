@@ -99,7 +99,7 @@ impl<G: Game> Mccfr<G> {
 
     /// Average-strategy distribution at `state`'s information set for `player`.
     pub fn policy(&self, state: &G::State, player: usize) -> Vec<f64> {
-        let n = self.game.legal_actions(state).len();
+        let n = self.game.num_actions(state);
         self.tab.average(self.game.infoset_key(state, player), n)
     }
 

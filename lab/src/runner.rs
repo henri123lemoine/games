@@ -101,8 +101,7 @@ impl<G: GameUi + 'static> TypedMatch<G> {
 
     fn apply_event(&mut self, actor: usize, index: usize) -> MatchEvent {
         let viewer = self.viewer();
-        let actions = self.game.legal_actions(&self.state);
-        let action = actions[index];
+        let action = self.game.action_at(&self.state, index);
         let before = self.state.clone();
         self.game.apply(&mut self.state, action);
         let label = self.game.action_label(&before, action);
@@ -133,9 +132,8 @@ impl<G: GameUi + 'static> AnyMatch for TypedMatch<G> {
             }
             match self.game.turn(&self.state) {
                 Turn::Chance => {
-                    let outs = self.game.chance_outcomes(&self.state);
-                    let i = game_core::rand::sample_outcome(&outs, &mut self.rng);
-                    self.game.apply(&mut self.state, outs[i].0);
+                    let action = self.game.sample_chance_action(&self.state, &mut self.rng);
+                    self.game.apply(&mut self.state, action);
                 }
                 Turn::Player(p) if self.bots[p].is_none() => return None,
                 Turn::Player(p) => {
@@ -175,8 +173,9 @@ impl<G: GameUi + 'static> AnyMatch for TypedMatch<G> {
         };
         let actions = self.game.legal_actions(&self.state);
         let index = if let Ok(i) = input.trim().parse::<usize>() {
-            if i >= actions.len() {
-                return Err(format!("{i} is out of range (0-{})", actions.len() - 1));
+            let n = self.game.num_actions(&self.state);
+            if i >= n {
+                return Err(format!("{i} is out of range (0-{})", n - 1));
             }
             i
         } else if let Some(parsed) = self.game.parse_action(&self.state, input) {
