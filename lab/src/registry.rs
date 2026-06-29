@@ -8,7 +8,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use game_core::{Agent, Game, NoSpec, hash};
-use liars_dice::rebel::RebelAgent;
 use liars_dice::{BidConditioned, LiarsDice, NetOnlineSolveAgent, ProbabilisticAgent};
 use nn_infer::Net;
 use poker::{HoleSampler, Poker, PokerBot};
@@ -370,11 +369,11 @@ const LIARS_DICE_OPTS: &[OptSpec] = &[
     opt("dice", "5", ""),
     opt("faces", "6", ""),
     opt("bot", "rollout|belief|solve|random", ""),
-    bot_opt("rollouts", "1000", "", &["rollout"]),
+    bot_opt("rollouts", "400", "", &["rollout"]),
     bot_opt(
         "net",
         "runs/ld_value/best.bin",
-        "(value net for online solving)",
+        "(solve value net)",
         &["solve"],
     ),
     opt("seat", "0|..|watch", ""),
@@ -518,9 +517,7 @@ pub fn entries() -> Vec<Entry> {
             opts: LIARS_DICE_OPTS,
             make: Box::new(|o| make_versus(o, liars_dice_game(o)?, "rollout", liars_dice_bot)),
             eval: Some(eval_entry(
-                "rollout[:rollouts=1000] | belief | \
-                 solve[:net=runs/ld_value/best.bin] | \
-                 rebel[:net=runs/ld_rebel/best.bin] | random",
+                "rollout[:rollouts=400] | belief | solve[:net=runs/ld_value/best.bin] | random",
                 0,
                 true,
                 liars_dice_game,
@@ -1092,7 +1089,7 @@ fn pente_bot(spec: &BotSpec, o: &Opts) -> Result<BotBuilder<pente::Pente>, Strin
 fn liars_dice_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<LiarsDice>, String> {
     Ok(match spec.name.as_str() {
         "rollout" => {
-            let rollouts: u32 = spec.opts.get("rollouts", 1000)?;
+            let rollouts: u32 = spec.opts.get("rollouts", 400)?;
             Box::new(move |_| {
                 Box::new(Rollout::new(
                     rollouts,
@@ -1123,26 +1120,10 @@ fn liars_dice_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<LiarsDice>, St
                 ) as BoxedAgent<LiarsDice>
             })
         }
-        "rebel" => {
-            // Test-time ReBeL: depth-limited block-resolving search played by the
-            // trained PBS value net. Load the net bytes once and validate at build
-            // time; each bot seat parses its own agent from the shared bytes. The
-            // search budget is the deploy default (depth-2, 1024 iters).
-            let path = spec.opts.str("net", "runs/ld_rebel/best.bin");
-            let bytes = crate::artifacts::read(&path)?;
-            RebelAgent::from_bytes(&bytes)
-                .map_err(|e| format!("failed to load liars-dice rebel net '{path}': {e}"))?;
-            Box::new(move |_| {
-                Box::new(
-                    RebelAgent::from_bytes(&bytes)
-                        .expect("rebel net bytes already validated at build time"),
-                ) as BoxedAgent<LiarsDice>
-            })
-        }
         "random" => Box::new(|_| Box::new(game_core::RandomAgent) as BoxedAgent<LiarsDice>),
         other => {
             return Err(format!(
-                "unknown liars-dice bot '{other}' (rollout|belief|solve|rebel|random)"
+                "unknown liars-dice bot '{other}' (rollout|belief|solve|random)"
             ));
         }
     })

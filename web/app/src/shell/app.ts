@@ -40,7 +40,7 @@ const PENTE_AZ_SIZE = "19";
 
 const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   chess: { bot: "azero-gpu", sims: "256" },
-  "liars-dice": { players: "5", dice: "5", rollouts: "400" },
+  "liars-dice": { players: "5", dice: "5", faces: "6", rollouts: "400" },
   twentyone: { hearts: "3" },
   othello: { depth: "5" },
   connect4: { depth: "7" },
