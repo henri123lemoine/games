@@ -1,0 +1,21 @@
+[package]
+name = "ld-ppo"
+version = "0.1.0"
+edition = "2024"
+description = "PPO self-play trainer for the Liar's Dice bake-off roster"
+
+# Standalone on purpose: keeps libtorch out of the root workspace checks unless
+# this PPO contender is built explicitly.
+[workspace]
+
+[dependencies]
+game-core = { path = "../../game-core" }
+liars-dice = { path = "../../games/liars-dice" }
+ppo-core = { path = "../ppo-core" }
+solvers = { path = "../../solvers" }
+tch = { version = "0.23", features = ["download-libtorch"] }
+
+[profile.release-dbg]
+inherits = "release"
+debug-assertions = true
+debug = true
