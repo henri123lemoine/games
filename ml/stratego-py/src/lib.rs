@@ -708,6 +708,35 @@ impl BatchSim {
             })
             .collect()
     }
+
+    /// A human-readable render of `env`'s current state from `viewer`'s seat (the
+    /// deployment prompt, or the board with the opponent's unrevealed pieces
+    /// hidden) — the play CLI's board display. Delegates to
+    /// [`Simulator::render`], the same render every other front end drives
+    /// through.
+    fn render(&self, env: usize, viewer: usize) -> PyResult<String> {
+        if env >= self.sim.num_envs() {
+            return Err(PyValueError::new_err(format!("env {env} out of range")));
+        }
+        Ok(self.sim.render(env, viewer))
+    }
+}
+
+/// Decodes a move-phase action index to absolute `(src, dst)` board cells for
+/// `player`'s POV — the play CLI's "which action index did the human's typed
+/// move correspond to" and "what did the net actually just play" lookups.
+#[pyfunction]
+fn action_to_srcdst(action: u16, player: usize) -> (usize, usize) {
+    stratego::action::Action(action).to_abs(player)
+}
+
+/// Encodes an absolute `(src, dst)` orthogonal slide for `player` back into the
+/// 1800-slot action space, or `None` if it is not a legal-shaped straight-line
+/// move (the play CLI validates the human's typed move against the engine's own
+/// legal set separately; this only handles the coordinate encoding).
+#[pyfunction]
+fn srcdst_to_action(src: usize, dst: usize, player: usize) -> Option<u16> {
+    stratego::action::Action::from_abs(src, dst, player).map(|a| a.0)
 }
 
 /// A resident test-time search session over one root position. Owns the cloned
@@ -1069,6 +1098,8 @@ fn stratego_sim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Searcher>()?;
     m.add_function(wrap_pyfunction!(encode_view_obs, m)?)?;
     m.add_function(wrap_pyfunction!(last_move_obs, m)?)?;
+    m.add_function(wrap_pyfunction!(action_to_srcdst, m)?)?;
+    m.add_function(wrap_pyfunction!(srcdst_to_action, m)?)?;
     m.add("N_ACTION", N_ACTION)?;
     m.add("DEPLOY_SLOTS", DEPLOY_SLOTS)?;
     m.add("DEPLOY_WIDTH", DEPLOY_WIDTH)?;

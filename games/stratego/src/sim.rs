@@ -188,6 +188,15 @@ impl Simulator {
         }
     }
 
+    /// A human-readable render of `env`'s current state from `viewer`'s
+    /// perspective (deploy prompt or board), reusing the exact [`GameUi::render`]
+    /// every other front end (the `lab` CLI) plays through — including its
+    /// hidden-info guarantee that an opponent's unrevealed pieces never leak.
+    pub fn render(&self, env: usize, viewer: usize) -> String {
+        use game_core::GameUi;
+        Stratego.render(&self.arenas[env].state, viewer)
+    }
+
     /// A fresh per-env seed, mixing the top-level RNG stream with the advancing
     /// counter so reseeds stay deterministic given the constructor `seed` and
     /// never collide with an in-flight env's stream.
