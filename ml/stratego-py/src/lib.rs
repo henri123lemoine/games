@@ -432,6 +432,7 @@ impl BatchSim {
 
         let mut terminal = Array1::<bool>::default(n_envs);
         let mut reward_pl0 = Array1::<f32>::zeros(n_envs);
+        let mut capped = Array1::<bool>::default(n_envs);
         for (env, completed) in result.completed.iter().enumerate() {
             // Feed the setup accumulator from the transition this commit just
             // recorded for `env` (most recent ring slot). A deploy placement
@@ -449,6 +450,7 @@ impl BatchSim {
             if let Some(r) = completed {
                 terminal[env] = true;
                 reward_pl0[env] = *r as f32;
+                capped[env] = result.capped[env];
                 // A genuine rules-terminal stamps the outcome onto the deploy
                 // sides; a pure ply-cap (no terminating action recorded)
                 // carries no real result and is discarded.
@@ -468,6 +470,11 @@ impl BatchSim {
         let out = PyDict::new(py);
         out.set_item("terminal", terminal.into_pyarray(py))?;
         out.set_item("reward_pl0", reward_pl0.into_pyarray(py))?;
+        // `capped[env]` is only meaningful where `terminal[env]` — a ply-cap
+        // force-reset with zero reward, distinct from a genuine rules-terminal
+        // draw (rare, e.g. a chase/twosquare repetition ruling), so trainers can
+        // tell "the game timed out" from "the game was actually drawn."
+        out.set_item("capped", capped.into_pyarray(py))?;
         Ok(out)
     }
 

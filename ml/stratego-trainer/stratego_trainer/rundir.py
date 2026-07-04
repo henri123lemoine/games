@@ -16,12 +16,16 @@ import time
 
 
 class RunDir:
-    def __init__(self, root: str, name: str, work_seconds: float = 0.0):
+    def __init__(self, root: str, name: str, work_seconds: float = 0.0, net_size: str = "default"):
         self.path = os.path.join(root, name)
         os.makedirs(self.path, exist_ok=True)
         self.metrics_path = os.path.join(self.path, "metrics.jsonl")
         self.stop_path = os.path.join(self.path, "STOP")
         self.work_seconds = work_seconds
+        # Stamped into every checkpoint's metadata so a standalone reload (gate
+        # eval, play CLI) can reconstruct the right net shape without the caller
+        # having to remember or pass it back in.
+        self.net_size = net_size
         self.start = time.time()
         self.best_eval = float("-inf")
         # Truncate metrics on a fresh run so a re-run does not append to stale curves.
@@ -61,7 +65,7 @@ class RunDir:
         add("setup.opt", setup_opt.state)
         add("setup.ema", setup_ema.shadow_params())
         mx.eval(flat)
-        mx.save_safetensors(path, flat, metadata={"step": str(step)})
+        mx.save_safetensors(path, flat, metadata={"step": str(step), "net_size": self.net_size})
         return path
 
     def save_latest(self, *args, step):

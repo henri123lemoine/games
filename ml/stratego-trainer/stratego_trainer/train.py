@@ -237,10 +237,16 @@ def _setup_forward_finish(raw, obs_np):
 def collect_iter(s, move_net, setup_net, steps):
     """Run `steps` self-play decision steps.
 
-    Returns (env_steps, n_terminals, reward_pl0_sum, n_scrub) where n_scrub counts the
-    non-finite net outputs scrubbed before they could poison the sim's stored transitions.
+    Returns (env_steps, n_terminals, reward_pl0_sum, n_decisive, n_capped, n_scrub)
+    where n_decisive counts terminals with a nonzero reward (a real win/loss —
+    the complement, among terminals, is a draw or a ply-cap timeout), n_capped
+    counts terminals that were force-reset by the ply cap rather than a genuine
+    rules-terminal, and n_scrub counts the non-finite net outputs scrubbed before
+    they could poison the sim's stored transitions.
     """
     n_term = 0
+    n_decisive = 0
+    n_capped = 0
     rsum = 0.0
     scrub = 0
     t_coll = t_fwd = t_comm = 0.0
@@ -265,7 +271,9 @@ def collect_iter(s, move_net, setup_net, steps):
         t_comm += time.time() - a
         n_term += int(out["terminal"].sum())
         rsum += float(out["reward_pl0"].sum())
-    return steps * s.num_envs, n_term, rsum, scrub, t_coll, t_fwd, t_comm
+        n_decisive += int((out["reward_pl0"] != 0.0).sum())
+        n_capped += int(out["capped"].sum())
+    return steps * s.num_envs, n_term, rsum, n_decisive, n_capped, scrub, t_coll, t_fwd, t_comm
 
 
 def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg, bf16_net=None):
@@ -505,7 +513,7 @@ def train(cfg: TrainConfig):
         mx.set_memory_limit(int(cfg.mlx_memory_limit_gb * 1024**3))
     if cfg.mlx_cache_limit_gb > 0:
         mx.set_cache_limit(int(cfg.mlx_cache_limit_gb * 1024**3))
-    run = RunDir(cfg.runs_root, cfg.run_name, cfg.work_seconds)
+    run = RunDir(cfg.runs_root, cfg.run_name, cfg.work_seconds, net_size=cfg.net_size)
     move, setup, move_opt, setup_opt, move_ema, setup_ema = build(cfg)
     # bf16 inference copies for the collect (self-play) forward — the collect forward
     # is the per-iter bottleneck and runs ~1.75x faster in bf16. Self-play data is
@@ -538,7 +546,8 @@ def train(cfg: TrainConfig):
         move_bf16.update(tree_map(lambda p: p.astype(mx.bfloat16), move.parameters()))
         setup_bf16.update(tree_map(lambda p: p.astype(mx.bfloat16), setup.parameters()))
         mx.eval(move_bf16.parameters(), setup_bf16.parameters())
-        env_steps, n_term, rsum, collect_scrub, _tc, _tf, _tm = collect_iter(s, move_bf16, setup_bf16, cfg.collect_steps)
+        env_steps, n_term, rsum, n_decisive, n_capped, collect_scrub, _tc, _tf, _tm = collect_iter(
+            s, move_bf16, setup_bf16, cfg.collect_steps)
         total_env_steps += env_steps
         _t_collect = time.time()
         move_data = s.drain_training_batch(cfg.td_lambda, cfg.gae_lambda)
@@ -591,6 +600,14 @@ def train(cfg: TrainConfig):
             "setup_temp": reg_temp,
             "n_terminals": n_term,
             "reward_pl0_mean": (rsum / n_term) if n_term else 0.0,
+            # `draw_frac`: share of terminals with zero reward (a genuine rules
+            # draw OR a ply-cap timeout — the direct symptom of draw collapse).
+            # `capped_frac`: of those, the share that hit the ply cap specifically
+            # (as opposed to a real rules-terminal draw, which is rare). A healthy
+            # run keeps both low; both climbing toward 1.0 is the iter-540-style
+            # passivity stall this pair of fields exists to catch early.
+            "draw_frac": ((n_term - n_decisive) / n_term) if n_term else 0.0,
+            "capped_frac": (n_capped / n_term) if n_term else 0.0,
             "move/nan": move_nan,
             "setup/nan": setup_nan,
             "move/nan_where": (m_stats.get("move/nan_stage", "") or move_stage),
@@ -648,7 +665,7 @@ def train(cfg: TrainConfig):
             _proc = _sp.run(
                 [_sys.executable, "-m", "stratego_trainer.eval_ckpt", "--ckpt", ck,
                  "--num-envs", str(min(128, cfg.num_envs)), "--games", str(cfg.eval_games),
-                 "--move-cap", str(cfg.move_cap), "--seed", str(cfg.seed + 999),
+                 "--move-cap", str(cfg.eval_move_cap), "--seed", str(cfg.seed + 999),
                  "--temperature", str(cfg.eval_temperature)],
                 capture_output=True, text=True, env=_env,
             )
@@ -669,7 +686,8 @@ def train(cfg: TrainConfig):
                    f"mag={rec.get('move/magnet_kl', 0):+.3f} lr={move_lr:.1e} "
                    f"setupL={rec.get('setup/loss', 0):.3f} "
                    f"nkept={m_stats.get('move/n_kept', 0)}(thr={move_threshold}) "
-                   f"scrub={scrubbed} term={n_term} {rec.get('iter_seconds', 0):.1f}s")
+                   f"scrub={scrubbed} term={n_term} draw={rec['draw_frac']:.2f}"
+                   f"(cap={rec['capped_frac']:.2f}) {rec.get('iter_seconds', 0):.1f}s")
             if iter_bad:
                 msg += (f"  [BAD move_nan={move_nan} setup_nan={setup_nan} thr={move_threshold} "
                         f"scrub={scrubbed} streak={bad_streak} mscale={move_lr_scale:.3g} "
@@ -711,6 +729,7 @@ def parse_args(argv=None):
     p.add_argument("--save-every", type=int, default=TrainConfig.save_every)
     p.add_argument("--eval-every", type=int, default=TrainConfig.eval_every)
     p.add_argument("--eval-games", type=int, default=TrainConfig.eval_games)
+    p.add_argument("--eval-move-cap", type=int, default=TrainConfig.eval_move_cap)
     p.add_argument("--eval-temperature", type=float, default=TrainConfig.eval_temperature)
     p.add_argument("--work-seconds", type=float, default=TrainConfig.work_seconds)
     # The magnet-KL strength is the shipped-default 0.05 (spec §4.1) but "make it
@@ -720,6 +739,7 @@ def parse_args(argv=None):
     p.add_argument("--magnet-decay", type=float, default=TrainConfig.temperature_decay)
     p.add_argument("--mlx-memory-limit-gb", type=float, default=TrainConfig.mlx_memory_limit_gb)
     p.add_argument("--bf16-train", action="store_true", default=TrainConfig.bf16_train)
+    p.add_argument("--net-size", choices=tuple(S.NET_SIZES), default=TrainConfig.net_size)
     return p.parse_args(argv)
 
 
@@ -737,12 +757,14 @@ def main(argv=None):
         save_every=a.save_every,
         eval_every=a.eval_every,
         eval_games=a.eval_games,
+        eval_move_cap=a.eval_move_cap,
         eval_temperature=a.eval_temperature,
         temperature_coef=a.magnet_coef,
         temperature_decay=a.magnet_decay,
         work_seconds=a.work_seconds,
         mlx_memory_limit_gb=a.mlx_memory_limit_gb,
         bf16_train=a.bf16_train,
+        net_size=a.net_size,
     )
     train(cfg)
 

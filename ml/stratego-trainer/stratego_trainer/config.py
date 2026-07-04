@@ -26,7 +26,13 @@ class TrainConfig:
     # 64 GB shared box -> stay conservative. The full ~1-day run scales this up
     # (spec §4.1 targets ~1024-2048); the smoke default is small and steady.
     num_envs: int = 512
-    move_cap: int = 400  # defensive per-game ply cap before force-reset
+    # Per-game ply cap before a force-reset (a truncation, not a rules draw).
+    # Reference parity: `final_run/train.log`'s `max_num_moves: 4000`. A cap this
+    # much shorter (we ran 400 through valrun1) throttles decisive outcomes —
+    # cautious self-play can't be resolved by attrition, self-play converges into
+    # near-universal draws/timeouts, and the value head collapses toward 0
+    # everywhere (see `draw_frac`/`capped_frac` in the training record).
+    move_cap: int = 4000
     seed: int = 0
     # Collect this many decision steps before a train pass.
     collect_steps: int = 120
@@ -120,7 +126,18 @@ class TrainConfig:
     iters: int = 1000
     save_every: int = 100
     eval_every: int = 50
-    eval_games: int = 200  # win share has ~2sigma noise; average enough games
+    # This is the PERIODIC in-run telemetry eval (train.py spawns eval_ckpt.py as a
+    # blocking subprocess every `eval_every` iters — the loop stalls until it
+    # returns). It exists to plot a learning curve while training runs, NOT to
+    # make a keep/gate decision, so it stays cheap: far fewer games and a much
+    # shorter move_cap than a real game needs to reach a decisive result. The
+    # GATE decision (is this checkpoint actually good?) is a separate, deliberate
+    # offline call to `python -m stratego_trainer.eval_ckpt`, which defaults to
+    # the full `move_cap` (see eval_ckpt.py's `--move-cap` default) and should use
+    # more games than this to keep gate-decision noise down (~0.04-0.08 win-share
+    # spread was measured at n=200, seed-to-seed).
+    eval_games: int = 50
+    eval_move_cap: int = 1000
     # Sharpen the hero's sampling at eval so a still-exploratory (high-entropy)
     # policy's learned preferences show through against random (1.0 = as-trained).
     eval_temperature: float = 0.25
@@ -131,12 +148,15 @@ class TrainConfig:
     # constraint here). Set on a shared box only if you want a hard ceiling.
     mlx_memory_limit_gb: float = 0.0
     mlx_cache_limit_gb: float = 0.0
+    # Move/setup net size preset, one of `S.NET_SIZES` ("default" | "mid" | "ref";
+    # see stratego_nets/config.py). Chosen once at run-start and never mixed mid-run.
+    net_size: str = "default"
 
     def move_net_config(self) -> S.MoveConfig:
-        return S.MoveConfig()
+        return S.NET_SIZES[self.net_size][0]
 
     def setup_net_config(self) -> S.SetupConfig:
-        return S.SetupConfig()
+        return S.NET_SIZES[self.net_size][1]
 
     def lr(self, step: int) -> float:
         return power_schedule(self.lr_coef, step, self.lr_decay, self.lr_ceil, self.lr_floor)
