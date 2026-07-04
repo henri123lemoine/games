@@ -1,14 +1,15 @@
 use std::convert::TryFrom as _;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Instant;
 
-use game_core::{Game, RandomAgent, Rng, Turn, winrate_vs_field};
-use liars_dice::features::{MAX_DICE_PER, encode};
+use game_core::{Agent, Game, RandomAgent, Rng, Turn, winrate_vs_field};
+use liars_dice::features::{MAX_DICE_PER, encode, history_encode};
 use liars_dice::{
-    BidConditioned, DiceShareValue, LdState, LiarsDice, MAX_FACES, MAX_PLAYERS, NetAgent,
-    ProbabilisticAgent, RoundSubgame, feature_len, legal_actions_and_support, net_policy,
-    policy_len,
+    BidConditioned, DiceShareValue, HistoryNetAgent, LdState, LiarsDice, MAX_FACES, MAX_PLAYERS,
+    NetAgent, ProbabilisticAgent, RoundSubgame, feature_len, history_feature_len,
+    history_net_policy, legal_actions_and_support, net_policy, policy_len,
 };
 use ppo_core::{AdvNorm, Minibatch, PpoConfig, Step, UpdateStats};
 use solvers::azero::Mlp;
@@ -50,6 +51,114 @@ struct Args {
     device: Device,
     outdir: PathBuf,
     seed: u64,
+    /// Feature encoding fed to the net: the flat per-round summary ([`encode`])
+    /// or the C13 bid-history-attention variant ([`history_encode`]). History
+    /// carries the multi-round bid line the flat encoding collapses away — the
+    /// signal an opponent-belief head needs to catch a bluffer, not just an
+    /// honest bidder.
+    input: InputMode,
+    /// Raw `(spec, weight)` opponent-pool entries as given on the CLI; empty
+    /// means pure self-play (the historical behavior). Resolving a `Checkpoint`
+    /// entry into a loaded net is fallible I/O, so it happens once in
+    /// [`build_pool`], not here.
+    opponents: Vec<(OpponentSpec, f64)>,
+    /// Coefficient for the opponent-hand belief auxiliary loss ([`PpoAdapter::aux_term`]).
+    belief_coef: f64,
+    /// The resolved pool actors sample opponent seats from each episode.
+    /// Starts as pure self-play (matching `opponents` empty); [`main`] replaces
+    /// it with [`build_pool`]'s output once `opponents` is parsed.
+    pool: Rc<Vec<PoolEntry>>,
+}
+
+/// Which feature encoding — and therefore which net input width — a run uses.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum InputMode {
+    Flat,
+    History,
+}
+
+/// One `opponents=` CLI entry before resolution (parsing is infallible and I/O-free;
+/// loading a `Checkpoint` happens in [`build_pool`]).
+#[derive(Clone, Debug)]
+enum OpponentSpec {
+    SelfPlay,
+    Belief,
+    Rollout(u32),
+    Checkpoint(PathBuf),
+}
+
+impl OpponentSpec {
+    fn label(&self) -> String {
+        match self {
+            OpponentSpec::SelfPlay => "self".to_string(),
+            OpponentSpec::Belief => "belief".to_string(),
+            OpponentSpec::Rollout(n) => format!("rollout:{n}"),
+            OpponentSpec::Checkpoint(path) => format!("ckpt:{}", path.display()),
+        }
+    }
+}
+
+/// A resolved, ready-to-play pool member and the weight it's sampled with.
+struct PoolEntry {
+    label: String,
+    weight: f64,
+    kind: OpponentKind,
+}
+
+enum OpponentKind {
+    /// Play the live, training net (the historical, only behavior).
+    SelfPlay,
+    /// Play a fixed agent: a rollout bot, the belief agent, or a frozen
+    /// checkpoint — never the net being trained.
+    Static(Box<dyn Agent<LiarsDice>>),
+}
+
+/// Resolve `cfg.opponents` into ready-to-play pool entries, loading any
+/// checkpoint files. Empty `opponents` (the default) resolves to pure
+/// self-play, identical to [`Args::default`]'s own pool.
+fn build_pool(cfg: &Args) -> io::Result<Vec<PoolEntry>> {
+    if cfg.opponents.is_empty() {
+        return Ok(self_play_pool());
+    }
+    let mut pool = Vec::with_capacity(cfg.opponents.len());
+    for (spec, weight) in &cfg.opponents {
+        let kind = match spec {
+            OpponentSpec::SelfPlay => OpponentKind::SelfPlay,
+            OpponentSpec::Belief => {
+                OpponentKind::Static(Box::new(ProbabilisticAgent::default_agent()))
+            }
+            OpponentSpec::Rollout(n) => OpponentKind::Static(Box::new(Rollout::new(
+                *n,
+                ProbabilisticAgent::default_agent(),
+                BidConditioned::default(),
+            ))),
+            OpponentSpec::Checkpoint(path) => {
+                let agent: Box<dyn Agent<LiarsDice>> = match cfg.input {
+                    InputMode::Flat => Box::new(NetAgent::load(path).map_err(|e| {
+                        invalid_input(format!("failed to load ckpt '{}': {e}", path.display()))
+                    })?),
+                    InputMode::History => Box::new(HistoryNetAgent::load(path).map_err(|e| {
+                        invalid_input(format!("failed to load ckpt '{}': {e}", path.display()))
+                    })?),
+                };
+                OpponentKind::Static(agent)
+            }
+        };
+        pool.push(PoolEntry {
+            label: spec.label(),
+            weight: *weight,
+            kind,
+        });
+    }
+    Ok(pool)
+}
+
+fn self_play_pool() -> Vec<PoolEntry> {
+    vec![PoolEntry {
+        label: "self".to_string(),
+        weight: 1.0,
+        kind: OpponentKind::SelfPlay,
+    }]
 }
 
 impl Default for Args {
@@ -87,6 +196,10 @@ impl Default for Args {
             device: default_device(),
             outdir: PathBuf::from("runs/ld_ppo"),
             seed: 0xAA55_9900,
+            input: InputMode::Flat,
+            opponents: Vec::new(),
+            belief_coef: 0.1,
+            pool: Rc::new(self_play_pool()),
         }
     }
 }
@@ -104,6 +217,47 @@ struct Transition {
     terminal: bool,
     truncated: bool,
     log_prob: f32,
+    /// Ground-truth opponent-hand belief targets computed at collection time
+    /// (the collector has full state; the deployed net never sees it). Flat
+    /// `(MAX_PLAYERS, MAX_FACES)`, rotated so slot `k` is `history_encode`'s
+    /// seat `k`; self's own slot (`k == 0`) is zero and unsupervised.
+    belief_target: Vec<f32>,
+    /// `(MAX_PLAYERS,)`, `1.0` for opponent seats to supervise (alive, `k != 0`).
+    belief_seat_mask: Vec<f32>,
+    /// `(MAX_FACES,)` additive mask, `0.0` for `f < faces` else `-1e9` — masks
+    /// out face bins the game config doesn't use, shared across all seats.
+    belief_face_mask: Vec<f32>,
+}
+
+/// Ground-truth opponent-hand targets for the belief head, computed from the
+/// collector's full state (never seen by the deployed policy). Per-seat
+/// targets are the seat's own face histogram normalized by its dice count —
+/// a distribution a per-seat softmax cross-entropy can train against directly.
+fn belief_targets(
+    game: &LiarsDice,
+    state: &LdState,
+    player: usize,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let p = game.players as usize;
+    let dice_left = state.dice_left();
+    let mut target = vec![0.0f32; MAX_PLAYERS * MAX_FACES];
+    let mut seat_mask = vec![0.0f32; MAX_PLAYERS];
+    for k in 1..p.min(MAX_PLAYERS) {
+        let seat = (player + k) % p;
+        let d = dice_left[seat];
+        if d == 0 {
+            continue;
+        }
+        seat_mask[k] = 1.0;
+        for f in 0..game.faces as usize {
+            target[k * MAX_FACES + f] = f32::from(state.my_count(seat, f as u8 + 1)) / f32::from(d);
+        }
+    }
+    let mut face_mask = vec![0.0f32; MAX_FACES];
+    for slot in face_mask.iter_mut().skip(game.faces as usize) {
+        *slot = -1.0e9;
+    }
+    (target, seat_mask, face_mask)
 }
 
 #[derive(Clone, Copy, Default)]
@@ -122,6 +276,10 @@ struct Actor {
     state: LdState,
     perspective: usize,
     decisions: usize,
+    /// Per-seat index into `cfg.pool`, sampled fresh each episode: which
+    /// opponent (or the live net, for the perspective seat's own — unused —
+    /// slot) plays each seat this episode.
+    seat_pool: [usize; MAX_PLAYERS],
 }
 
 impl Actor {
@@ -129,11 +287,13 @@ impl Actor {
         let game = sample_game(cfg, rng);
         let state = game.initial_state();
         let perspective = rng.below(game.players as usize);
+        let seat_pool = sample_seat_pool(cfg, &game, perspective, rng);
         Self {
             game,
             state,
             perspective,
             decisions: 0,
+            seat_pool,
         }
     }
 
@@ -141,6 +301,7 @@ impl Actor {
         self.game = sample_game(cfg, rng);
         self.state = self.game.initial_state();
         self.perspective = rng.below(self.game.players as usize);
+        self.seat_pool = sample_seat_pool(cfg, &self.game, self.perspective, rng);
         self.decisions = 0;
     }
 
@@ -162,6 +323,11 @@ struct PolicyNet {
     fc2: nn::Linear,
     policy: nn::Linear,
     value: nn::Linear,
+    /// Opponent-hand belief head: `(MAX_PLAYERS, MAX_FACES)` logits off the
+    /// same trunk. Training-only — never part of the exported [`Mlp`] (the
+    /// deployed policy only ever plays off `policy`/`value`), so it's *not*
+    /// warm-started by [`Self::load_mlp`]: every run initializes it fresh.
+    belief: nn::Linear,
     device: Device,
 }
 
@@ -192,6 +358,12 @@ impl PolicyNet {
             Default::default(),
         );
         let value = nn::linear(path / "value", hidden as i64, 1, Default::default());
+        let belief = nn::linear(
+            path / "belief",
+            hidden as i64,
+            (MAX_PLAYERS * MAX_FACES) as i64,
+            Default::default(),
+        );
         Self {
             input,
             hidden,
@@ -200,6 +372,7 @@ impl PolicyNet {
             fc2,
             policy,
             value,
+            belief,
             device,
         }
     }
@@ -216,11 +389,23 @@ impl PolicyNet {
         net
     }
 
+    fn trunk(&self, x: &Tensor) -> Tensor {
+        x.apply(&self.fc1).relu().apply(&self.fc2).relu()
+    }
+
     fn forward(&self, x: &Tensor) -> (Tensor, Tensor) {
-        let h = x.apply(&self.fc1).relu().apply(&self.fc2).relu();
+        let h = self.trunk(x);
         let logits = h.apply(&self.policy);
         let value = h.apply(&self.value).tanh().squeeze_dim(-1);
         (logits, value)
+    }
+
+    /// Belief-head logits, flat `(B, MAX_PLAYERS * MAX_FACES)` — the caller
+    /// reshapes and masks (see [`PpoAdapter::aux_term`]). A second trunk
+    /// forward from `evaluate`'s, matching the existing `bc_term` hook's
+    /// already-independent-forward design rather than fusing the two.
+    fn forward_belief(&self, x: &Tensor) -> Tensor {
+        self.trunk(x).apply(&self.belief)
     }
 
     fn act_one(&self, x: &[f32], mask: &[f32]) -> (Vec<f32>, f32) {
@@ -308,6 +493,12 @@ struct PpoAdapter<'a> {
     x_all: Tensor,
     mask_all: Tensor,
     action_all: Tensor,
+    /// `(N, MAX_PLAYERS * MAX_FACES)` — see [`Transition::belief_target`].
+    belief_target: Tensor,
+    /// `(N, MAX_PLAYERS)` — see [`Transition::belief_seat_mask`].
+    belief_seat_mask: Tensor,
+    /// `(N, MAX_FACES)` additive — see [`Transition::belief_face_mask`].
+    belief_face_mask: Tensor,
 }
 
 impl ppo_core::Policy for PpoAdapter<'_> {
@@ -328,6 +519,33 @@ impl ppo_core::Policy for PpoAdapter<'_> {
             value,
         }
     }
+
+    /// Per-seat softmax cross-entropy between the belief head's predicted
+    /// face distribution and the ground-truth (opponent-hand) target,
+    /// averaged over the seats [`Transition::belief_seat_mask`] marks
+    /// supervised, then over the minibatch.
+    fn aux_term(&self, idx: &Tensor) -> Option<Tensor> {
+        let x = self.x_all.index_select(0, idx);
+        let belief_logits =
+            self.policy
+                .forward_belief(&x)
+                .view([-1, MAX_PLAYERS as i64, MAX_FACES as i64]);
+        let face_mask = self.belief_face_mask.index_select(0, idx).unsqueeze(1);
+        let log_probs = (belief_logits + face_mask).log_softmax(-1, Kind::Float);
+        let target = self.belief_target.index_select(0, idx).view([
+            -1,
+            MAX_PLAYERS as i64,
+            MAX_FACES as i64,
+        ]);
+        let seat_mask = self.belief_seat_mask.index_select(0, idx);
+        let ce = -(target * log_probs).sum_dim_intlist(&[2i64][..], false, Kind::Float);
+        let seat_count = seat_mask
+            .sum_dim_intlist(&[1i64][..], false, Kind::Float)
+            .clamp_min(1.0);
+        let per_sample =
+            (ce * &seat_mask).sum_dim_intlist(&[1i64][..], false, Kind::Float) / seat_count;
+        Some(per_sample.mean(Kind::Float))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -344,8 +562,9 @@ struct Layout {
 }
 
 fn main() -> io::Result<()> {
-    let cfg = Args::parse()?;
+    let mut cfg = Args::parse()?;
     validate_config(&cfg)?;
+    cfg.pool = Rc::new(build_pool(&cfg)?);
     train(&cfg)
 }
 
@@ -357,14 +576,15 @@ fn train(cfg: &Args) -> io::Result<()> {
     write_ppo_config(&mut metrics, cfg)?;
 
     let vs = nn::VarStore::new(cfg.device);
-    let init = Mlp::new(feature_len(), cfg.hidden, policy_len(), cfg.seed);
+    let init = Mlp::new(input_len(cfg), cfg.hidden, policy_len(), cfg.seed);
     let policy = PolicyNet::from_mlp(&vs.root(), &init, cfg.device);
     let mut opt = nn::Adam::default().build(&vs, cfg.lr).expect("optimizer");
     let mut rng = Rng::new(cfg.seed ^ 0x5050_5050);
     let mut actors: Vec<Actor> = (0..cfg.actors).map(|_| Actor::new(cfg, &mut rng)).collect();
 
+    let pool_desc = pool_desc(cfg);
     println!(
-        "ld-ppo: target {}p{}d{}f train={} iters={} actors={} steps={} hidden={} device={:?} eval={}x{} expl={} -> {}",
+        "ld-ppo: target {}p{}d{}f train={} iters={} actors={} steps={} hidden={} input={:?} pool=[{pool_desc}] belief_coef={} device={:?} eval={}x{} expl={} -> {}",
         cfg.players,
         cfg.dice,
         cfg.faces,
@@ -373,6 +593,8 @@ fn train(cfg: &Args) -> io::Result<()> {
         cfg.actors,
         cfg.steps,
         cfg.hidden,
+        cfg.input,
+        cfg.belief_coef,
         cfg.device,
         cfg.eval_rollouts,
         cfg.eval_games,
@@ -412,7 +634,7 @@ fn train(cfg: &Args) -> io::Result<()> {
             winshares = validate_winshares(&exported, cfg, cfg.seed ^ iter as u64);
         }
         let exploitability = if val_now && cfg.eval_exploitability {
-            Some(validate_exploitability(&exported))
+            Some(validate_exploitability(&exported, cfg))
         } else {
             None
         };
@@ -437,7 +659,7 @@ fn train(cfg: &Args) -> io::Result<()> {
 
         let iter_s = iter_start.elapsed().as_secs_f64();
         let mut line = format!(
-            "iter {iter:4}  trans {:6}  done {:4}  cfg {:.1}p{:.1}d{:.1}f  rew {:+.3}  ploss {:+.4}  vloss {:.4}  ent {:.3}  kl {:.5}  {iter_s:5.1}s",
+            "iter {iter:4}  trans {:6}  done {:4}  cfg {:.1}p{:.1}d{:.1}f  rew {:+.3}  ploss {:+.4}  vloss {:.4}  bloss {:.4}  ent {:.3}  kl {:.5}  {iter_s:5.1}s",
             rollout_stats.transitions,
             rollout_stats.done_count,
             rollout_stats.mean_players(),
@@ -446,6 +668,7 @@ fn train(cfg: &Args) -> io::Result<()> {
             rollout_stats.mean_reward(),
             stats.policy_loss,
             stats.value_loss,
+            stats.aux_loss,
             stats.entropy,
             stats.approx_kl,
         );
@@ -536,6 +759,9 @@ impl Args {
                 "device" => cfg.device = parse_device(value)?,
                 "outdir" | "out" => cfg.outdir = PathBuf::from(value),
                 "seed" => cfg.seed = parse_num(value, key)?,
+                "input" => cfg.input = parse_input_mode(value)?,
+                "opponents" => cfg.opponents = parse_opponents(value)?,
+                "belief_coef" => cfg.belief_coef = parse_num(value, key)?,
                 other => return Err(invalid_input(format!("unknown argument '{other}'"))),
             }
         }
@@ -587,6 +813,9 @@ fn validate_config(cfg: &Args) -> io::Result<()> {
     if cfg.max_faces as usize > MAX_FACES {
         return Err(err(format!("max_faces must be <= {MAX_FACES}")));
     }
+    if cfg.belief_coef < 0.0 {
+        return Err(err("belief_coef must be >= 0".to_string()));
+    }
     Ok(())
 }
 
@@ -628,7 +857,9 @@ fn actor_step(cfg: &Args, policy: &PolicyNet, actor: &mut Actor, rng: &mut Rng) 
     };
     debug_assert_eq!(player, actor.perspective);
     let (actions, support) = legal_actions_and_support(&actor.game, &actor.state);
-    let x = encode(&actor.game, &actor.state, player);
+    let x = encode_for(cfg, &actor.game, &actor.state, player);
+    let (belief_target, belief_seat_mask, belief_face_mask) =
+        belief_targets(&actor.game, &actor.state, player);
     let mask = support_mask(&support);
     let players = actor.game.players;
     let dice = actor.game.dice;
@@ -665,6 +896,9 @@ fn actor_step(cfg: &Args, policy: &PolicyNet, actor: &mut Actor, rng: &mut Rng) 
         terminal,
         truncated,
         log_prob,
+        belief_target,
+        belief_seat_mask,
+        belief_face_mask,
     }
 }
 
@@ -680,7 +914,13 @@ fn advance_to_perspective(cfg: &Args, policy: &PolicyNet, actor: &mut Actor, rng
         if player == actor.perspective {
             return;
         }
-        let action = sample_policy_action(policy, &actor.game, &actor.state, player, rng);
+        let entry = &cfg.pool[actor.seat_pool[player]];
+        let action = match &entry.kind {
+            OpponentKind::SelfPlay => {
+                sample_policy_action(cfg, policy, &actor.game, &actor.state, player, rng)
+            }
+            OpponentKind::Static(agent) => agent.act(&actor.game, &actor.state, player, rng),
+        };
         let actions = actor.game.legal_actions(&actor.state);
         actor.game.apply(&mut actor.state, actions[action]);
         actor.decisions += 1;
@@ -688,6 +928,7 @@ fn advance_to_perspective(cfg: &Args, policy: &PolicyNet, actor: &mut Actor, rng
 }
 
 fn sample_policy_action(
+    cfg: &Args,
     policy: &PolicyNet,
     game: &LiarsDice,
     state: &LdState,
@@ -695,7 +936,7 @@ fn sample_policy_action(
     rng: &mut Rng,
 ) -> usize {
     let (_actions, support) = legal_actions_and_support(game, state);
-    let x = encode(game, state, player);
+    let x = encode_for(cfg, game, state, player);
     let mask = support_mask(&support);
     let (probs, _) = policy.act_one(&x, &mask);
     let weights: Vec<f64> = support.iter().map(|&idx| f64::from(probs[idx])).collect();
@@ -719,7 +960,7 @@ fn bootstrap_values(
                     return 0.0;
                 };
                 debug_assert_eq!(player, actor.perspective);
-                let x = encode(&actor.game, &actor.state, actor.perspective);
+                let x = encode_for(cfg, &actor.game, &actor.state, actor.perspective);
                 policy.value_one(&x)
             }
         })
@@ -734,25 +975,44 @@ fn ppo_update(
     bootstrap_values: &[f32],
 ) -> UpdateStats {
     let batch = buf.len();
-    let mut x_flat = Vec::with_capacity(batch * feature_len());
+    let input = input_len(cfg);
+    let mut x_flat = Vec::with_capacity(batch * input);
     let mut mask_flat = Vec::with_capacity(batch * policy_len());
+    let mut belief_target_flat = Vec::with_capacity(batch * MAX_PLAYERS * MAX_FACES);
+    let mut belief_seat_mask_flat = Vec::with_capacity(batch * MAX_PLAYERS);
+    let mut belief_face_mask_flat = Vec::with_capacity(batch * MAX_FACES);
     for tr in buf {
         x_flat.extend_from_slice(&tr.x);
         mask_flat.extend_from_slice(&tr.mask);
+        belief_target_flat.extend_from_slice(&tr.belief_target);
+        belief_seat_mask_flat.extend_from_slice(&tr.belief_seat_mask);
+        belief_face_mask_flat.extend_from_slice(&tr.belief_face_mask);
     }
     let x_all = Tensor::from_slice(&x_flat)
-        .view([batch as i64, feature_len() as i64])
+        .view([batch as i64, input as i64])
         .to_device(cfg.device);
     let mask_all = Tensor::from_slice(&mask_flat)
         .view([batch as i64, policy_len() as i64])
         .to_device(cfg.device);
     let action_all =
         Tensor::from_slice(&buf.iter().map(|t| t.action).collect::<Vec<_>>()).to_device(cfg.device);
+    let belief_target = Tensor::from_slice(&belief_target_flat)
+        .view([batch as i64, (MAX_PLAYERS * MAX_FACES) as i64])
+        .to_device(cfg.device);
+    let belief_seat_mask = Tensor::from_slice(&belief_seat_mask_flat)
+        .view([batch as i64, MAX_PLAYERS as i64])
+        .to_device(cfg.device);
+    let belief_face_mask = Tensor::from_slice(&belief_face_mask_flat)
+        .view([batch as i64, MAX_FACES as i64])
+        .to_device(cfg.device);
     let adapter = PpoAdapter {
         policy,
         x_all,
         mask_all,
         action_all,
+        belief_target,
+        belief_seat_mask,
+        belief_face_mask,
     };
     let steps: Vec<Step> = buf
         .iter()
@@ -778,6 +1038,7 @@ fn ppo_update(
             count: cfg.minibatches,
         },
         bc_anchor: None,
+        aux_coef: cfg.belief_coef,
     };
     ppo_core::update(
         &adapter,
@@ -792,7 +1053,10 @@ fn ppo_update(
 
 fn validate_winshares(net: &Mlp, cfg: &Args, seed: u64) -> Vec<(String, f64)> {
     let game = LiarsDice::new(cfg.players, cfg.dice, cfg.faces);
-    let agent = NetAgent::new(clone_mlp(net));
+    let agent: Box<dyn Agent<LiarsDice>> = match cfg.input {
+        InputMode::Flat => Box::new(NetAgent::new(clone_mlp(net))),
+        InputMode::History => Box::new(HistoryNetAgent::new(clone_mlp(net))),
+    };
     let random = RandomAgent;
     let belief = ProbabilisticAgent::default_agent();
     let rollout = Rollout::new(
@@ -803,25 +1067,43 @@ fn validate_winshares(net: &Mlp, cfg: &Args, seed: u64) -> Vec<(String, f64)> {
     [
         (
             "field_random".to_string(),
-            winrate_vs_field(&game, &agent, &random, cfg.eval_games, seed ^ 0x9999),
+            winrate_vs_field(
+                &game,
+                agent.as_ref(),
+                &random,
+                cfg.eval_games,
+                seed ^ 0x9999,
+            ),
         ),
         (
             "field_belief".to_string(),
-            winrate_vs_field(&game, &agent, &belief, cfg.eval_games, seed ^ 0xB311EF),
+            winrate_vs_field(
+                &game,
+                agent.as_ref(),
+                &belief,
+                cfg.eval_games,
+                seed ^ 0xB311EF,
+            ),
         ),
         (
             "field_rollout".to_string(),
-            winrate_vs_field(&game, &agent, &rollout, cfg.eval_games, seed ^ 0x50110),
+            winrate_vs_field(
+                &game,
+                agent.as_ref(),
+                &rollout,
+                cfg.eval_games,
+                seed ^ 0x50110,
+            ),
         ),
     ]
     .into()
 }
 
-fn validate_exploitability(net: &Mlp) -> f64 {
-    validate_exploitability_configs(net, &[(1, 6), (2, 4)])
+fn validate_exploitability(net: &Mlp, cfg: &Args) -> f64 {
+    validate_exploitability_configs(net, cfg, &[(1, 6), (2, 4)])
 }
 
-fn validate_exploitability_configs(net: &Mlp, configs: &[(u8, u8)]) -> f64 {
+fn validate_exploitability_configs(net: &Mlp, cfg: &Args, configs: &[(u8, u8)]) -> f64 {
     let cache = net.infer_cache();
     let mut sum = 0.0;
     for &(d, f) in configs {
@@ -830,8 +1112,9 @@ fn validate_exploitability_configs(net: &Mlp, configs: &[(u8, u8)]) -> f64 {
         dice[0] = d;
         dice[1] = d;
         let round = RoundSubgame::new(2, d, f, dice, 0, true, 1, DiceShareValue);
-        let policy = |_g: &RoundSubgame<DiceShareValue>, s: &LdState, pl: usize| {
-            net_policy(net, &cache, &feat, s, pl)
+        let policy = |_g: &RoundSubgame<DiceShareValue>, s: &LdState, pl: usize| match cfg.input {
+            InputMode::Flat => net_policy(net, &cache, &feat, s, pl),
+            InputMode::History => history_net_policy(net, &cache, &feat, s, pl),
         };
         let (_, _, nc) = nash_conv(&round, &policy);
         sum += nc / 2.0;
@@ -852,6 +1135,39 @@ fn sample_game(cfg: &Args, rng: &mut Rng) -> LiarsDice {
 
 fn sample_range(rng: &mut Rng, lo: u8, hi: u8) -> u8 {
     lo + rng.below((hi - lo) as usize + 1) as u8
+}
+
+/// Sample which pool entry plays each non-perspective seat this episode.
+fn sample_seat_pool(
+    cfg: &Args,
+    game: &LiarsDice,
+    perspective: usize,
+    rng: &mut Rng,
+) -> [usize; MAX_PLAYERS] {
+    let weights: Vec<f64> = cfg.pool.iter().map(|e| e.weight).collect();
+    let mut seats = [0usize; MAX_PLAYERS];
+    for (seat, slot) in seats.iter_mut().enumerate().take(game.players as usize) {
+        if seat != perspective {
+            *slot = rng.pick(&weights);
+        }
+    }
+    seats
+}
+
+/// The feature vector for `(game, state, player)` under `cfg`'s input mode.
+fn encode_for(cfg: &Args, game: &LiarsDice, state: &LdState, player: usize) -> Vec<f32> {
+    match cfg.input {
+        InputMode::Flat => encode(game, state, player),
+        InputMode::History => history_encode(game, state, player),
+    }
+}
+
+/// The net input width for `cfg`'s input mode.
+fn input_len(cfg: &Args) -> usize {
+    match cfg.input {
+        InputMode::Flat => feature_len(),
+        InputMode::History => history_feature_len(),
+    }
 }
 
 fn support_mask(support: &[usize]) -> Vec<f32> {
@@ -975,6 +1291,58 @@ fn default_device() -> Device {
     }
 }
 
+fn parse_input_mode(value: &str) -> io::Result<InputMode> {
+    match value {
+        "flat" => Ok(InputMode::Flat),
+        "history" => Ok(InputMode::History),
+        other => Err(invalid_input(format!(
+            "input must be flat or history, got '{other}'"
+        ))),
+    }
+}
+
+/// Parse `opponents=spec=weight,spec=weight,...` where `spec` is `self`,
+/// `belief`, `rollout:<n>`, or `ckpt:<path>`.
+fn parse_opponents(value: &str) -> io::Result<Vec<(OpponentSpec, f64)>> {
+    let mut out = Vec::new();
+    for raw in value.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let (spec, weight) = raw
+            .rsplit_once('=')
+            .ok_or_else(|| invalid_input(format!("opponents entry '{raw}' must be spec=weight")))?;
+        let weight: f64 = weight
+            .parse()
+            .map_err(|_| invalid_input(format!("bad weight in opponents entry '{raw}'")))?;
+        if weight <= 0.0 {
+            return Err(invalid_input(format!(
+                "opponents weight must be positive, got '{raw}'"
+            )));
+        }
+        let kind = if spec == "self" {
+            OpponentSpec::SelfPlay
+        } else if spec == "belief" {
+            OpponentSpec::Belief
+        } else if let Some(n) = spec.strip_prefix("rollout:") {
+            OpponentSpec::Rollout(
+                n.parse()
+                    .map_err(|_| invalid_input(format!("bad rollout count in '{spec}'")))?,
+            )
+        } else if let Some(path) = spec.strip_prefix("ckpt:") {
+            OpponentSpec::Checkpoint(PathBuf::from(path))
+        } else {
+            return Err(invalid_input(format!(
+                "unknown opponents entry '{spec}' (self,belief,rollout:<n>,ckpt:<path>)"
+            )));
+        };
+        out.push((kind, weight));
+    }
+    if out.is_empty() {
+        return Err(invalid_input(
+            "opponents must list at least one entry".to_string(),
+        ));
+    }
+    Ok(out)
+}
+
 fn parse_device(value: &str) -> io::Result<Device> {
     match value {
         "cpu" => Ok(Device::Cpu),
@@ -1022,7 +1390,8 @@ fn write_ppo_config(metrics: &mut std::fs::File, cfg: &Args) -> io::Result<()> {
          \"clip\":{:.6},\"value_coef\":{:.6},\"entropy_coef\":{:.8},\
          \"max_grad_norm\":{:.6},\"epochs\":{},\"minibatches\":{},\
          \"val_every\":{},\"eval_games\":{},\"eval_rollouts\":{},\"eval_exploitability\":{},\
-         \"keep_checkpoints\":{},\"device\":\"{:?}\",\"seed\":{},\"outdir\":\"{}\"}}",
+         \"keep_checkpoints\":{},\"device\":\"{:?}\",\"seed\":{},\"outdir\":\"{}\",\
+         \"input\":\"{:?}\",\"belief_coef\":{:.6},\"pool\":\"{}\"}}",
         cfg.players,
         cfg.dice,
         cfg.faces,
@@ -1055,7 +1424,18 @@ fn write_ppo_config(metrics: &mut std::fs::File, cfg: &Args) -> io::Result<()> {
         cfg.device,
         cfg.seed,
         json_escape(&cfg.outdir.display().to_string()),
+        cfg.input,
+        cfg.belief_coef,
+        json_escape(&pool_desc(cfg)),
     )
+}
+
+fn pool_desc(cfg: &Args) -> String {
+    cfg.pool
+        .iter()
+        .map(|e| format!("{}x{}", e.label, e.weight))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 #[expect(
@@ -1099,6 +1479,7 @@ fn write_ppo_iter(
         format!("\"mean_reward\":{:.6}", rollout_stats.mean_reward()),
         format!("\"policy_loss\":{:.6}", stats.policy_loss),
         format!("\"value_loss\":{:.6}", stats.value_loss),
+        format!("\"belief_loss\":{:.6}", stats.aux_loss),
         format!("\"entropy\":{:.6}", stats.entropy),
         format!("\"approx_kl\":{:.8}", stats.approx_kl),
         format!("\"clip_frac\":{:.6}", stats.clip_frac),
@@ -1217,7 +1598,149 @@ mod tests {
     #[test]
     fn tiny_exploitability_probe_is_finite() {
         let net = Mlp::new(feature_len(), 8, policy_len(), 9);
-        let expl = validate_exploitability_configs(&net, &[(1, 2)]);
+        let expl = validate_exploitability_configs(&net, &Args::default(), &[(1, 2)]);
         assert!(expl.is_finite());
+    }
+
+    #[test]
+    fn parse_opponents_accepts_all_kinds() {
+        let parsed = parse_opponents("self=1,belief=2,rollout:64=1,ckpt:runs/champ.bin=3").unwrap();
+        assert_eq!(parsed.len(), 4);
+        assert!(matches!(parsed[0], (OpponentSpec::SelfPlay, w) if w == 1.0));
+        assert!(matches!(parsed[1], (OpponentSpec::Belief, w) if w == 2.0));
+        assert!(matches!(parsed[2], (OpponentSpec::Rollout(64), w) if w == 1.0));
+        assert!(
+            matches!(&parsed[3], (OpponentSpec::Checkpoint(p), w) if p.to_str() == Some("runs/champ.bin") && *w == 3.0)
+        );
+    }
+
+    #[test]
+    fn parse_opponents_rejects_bad_input() {
+        assert!(parse_opponents("").is_err());
+        assert!(parse_opponents("self").is_err(), "missing weight");
+        assert!(parse_opponents("self=0").is_err(), "nonpositive weight");
+        assert!(parse_opponents("self=-1").is_err(), "negative weight");
+        assert!(parse_opponents("mystery=1").is_err(), "unknown spec");
+        assert!(
+            parse_opponents("rollout:oops=1").is_err(),
+            "bad rollout count"
+        );
+    }
+
+    #[test]
+    fn build_pool_defaults_to_self_play_when_opponents_unset() {
+        let cfg = Args::default();
+        let pool = build_pool(&cfg).unwrap();
+        assert_eq!(pool.len(), 1);
+        assert!(matches!(pool[0].kind, OpponentKind::SelfPlay));
+        assert_eq!(pool[0].weight, 1.0);
+    }
+
+    #[test]
+    fn build_pool_resolves_belief_and_rollout_entries() {
+        let cfg = Args {
+            opponents: vec![(OpponentSpec::Belief, 2.0), (OpponentSpec::Rollout(8), 1.0)],
+            ..Args::default()
+        };
+        let pool = build_pool(&cfg).unwrap();
+        assert_eq!(pool.len(), 2);
+        assert!(matches!(pool[0].kind, OpponentKind::Static(_)));
+        assert!(matches!(pool[1].kind, OpponentKind::Static(_)));
+    }
+
+    #[test]
+    fn belief_targets_mask_self_dead_seats_and_extra_faces() {
+        let game = LiarsDice::new(3, 2, 4);
+        let mut state = game.initial_state();
+        while matches!(game.turn(&state), Turn::Chance) {
+            let a = game.sample_chance_action(&state, &mut Rng::new(1));
+            game.apply(&mut state, a);
+        }
+        let (target, seat_mask, face_mask) = belief_targets(&game, &state, 0);
+        // Self (slot 0) is never supervised.
+        assert_eq!(seat_mask[0], 0.0);
+        assert!(target[..4].iter().all(|&v| v == 0.0));
+        // Every seat's row sums to 1 (it's a normalized histogram) when alive.
+        for k in 1..3 {
+            let row: f32 = target[k * MAX_FACES..k * MAX_FACES + 4].iter().sum();
+            if seat_mask[k] == 1.0 {
+                assert!(
+                    (row - 1.0).abs() < 1e-5,
+                    "seat {k} row should sum to 1, got {row}"
+                );
+            }
+        }
+        // Faces beyond the game's 4 are masked out of the softmax.
+        assert!(face_mask[4..].iter().all(|&m| m < -1.0e8));
+        assert!(face_mask[..4].iter().all(|&m| m == 0.0));
+    }
+
+    #[test]
+    fn actor_step_runs_under_a_static_opponent_pool() {
+        let cfg = Args {
+            players: 3,
+            dice: 1,
+            faces: 2,
+            mixed: false,
+            max_episode_len: 256,
+            hidden: 8,
+            device: Device::Cpu,
+            opponents: vec![(OpponentSpec::Belief, 1.0)],
+            ..Args::default()
+        };
+        let pool = build_pool(&cfg).unwrap();
+        let cfg = Args {
+            pool: Rc::new(pool),
+            ..cfg
+        };
+        let vs = nn::VarStore::new(Device::Cpu);
+        let init = Mlp::new(input_len(&cfg), cfg.hidden, policy_len(), cfg.seed);
+        let policy = PolicyNet::from_mlp(&vs.root(), &init, Device::Cpu);
+        let mut rng = Rng::new(123);
+        let mut actor = Actor::new(&cfg, &mut rng);
+        let perspective = actor.perspective;
+        for _ in 0..8 {
+            let tr = actor_step(&cfg, &policy, &mut actor, &mut rng);
+            assert_eq!(tr.player, perspective);
+            assert!(tr.belief_target.iter().all(|v| v.is_finite()));
+            if tr.terminal || tr.truncated {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn ppo_update_trains_belief_head_under_history_input() {
+        let cfg = Args {
+            players: 3,
+            dice: 1,
+            faces: 2,
+            mixed: false,
+            max_episode_len: 64,
+            hidden: 8,
+            actors: 2,
+            steps: 4,
+            minibatches: 2,
+            device: Device::Cpu,
+            input: InputMode::History,
+            belief_coef: 1.0,
+            ..Args::default()
+        };
+        let vs = nn::VarStore::new(Device::Cpu);
+        let init = Mlp::new(input_len(&cfg), cfg.hidden, policy_len(), cfg.seed);
+        let policy = PolicyNet::from_mlp(&vs.root(), &init, Device::Cpu);
+        let mut opt = nn::Adam::default().build(&vs, cfg.lr).unwrap();
+        let mut rng = Rng::new(7);
+        let mut actors: Vec<Actor> = (0..cfg.actors)
+            .map(|_| Actor::new(&cfg, &mut rng))
+            .collect();
+        let (buf, _) = collect_rollout(&cfg, &policy, &mut actors, &mut rng);
+        let boot = bootstrap_values(&cfg, &policy, &mut actors, &mut rng);
+        let stats = ppo_update(&policy, &mut opt, &cfg, &buf, &boot);
+        assert!(stats.aux_loss.is_finite());
+        assert!(
+            stats.aux_loss >= 0.0,
+            "cross-entropy loss can't be negative"
+        );
     }
 }
