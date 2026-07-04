@@ -39,6 +39,10 @@ fi
 RUN="$ROOT/runs/ld_league_$(date -u +%Y%m%d_%H%M%S 2>/dev/null || echo run)"
 mkdir -p "$RUN"
 MANIFEST="$RUN/manifest.jsonl"
+STATUS_LOG="$RUN/status.log"
+STATUS_JSONL="$RUN/status.jsonl"
+HAVE_JQ=0
+command -v jq >/dev/null 2>&1 && HAVE_JQ=1
 
 # Tournament agent/flag names differ by input mode (both already exist in
 # tournament.rs; this script adds no new eval code, only picks the right one).
@@ -69,9 +73,11 @@ for round in $(seq 1 "$ROUNDS"); do
   CHAMP="$CHAMP_DIR/best.bin"
 
   echo "=== round $round: field eval (tournament, hero rotated, fair=1/${PLAYERS}) ==="
+  TOURNAMENT_METRICS="$RUN/tournament_round${round}.jsonl"
   cargo run --release -p liars-dice --example tournament -- \
     players="$PLAYERS" dice="$DICE" faces="$FACES" \
     "agents=belief,rollout,${NET_AGENTS}" "${NET_FLAG}=${CHAMP}" \
+    "metrics=${TOURNAMENT_METRICS}" \
     2>&1 | tee "$RUN/tournament_round${round}.log"
 
   echo "=== round $round: exploiter probe (best-response trained vs the frozen champion) ==="
@@ -84,13 +90,55 @@ for round in $(seq 1 "$ROUNDS"); do
   EXPLOITER="$EXPLOITER_DIR/best.bin"
 
   echo "=== round $round: exploiter edge (exploiter vs champion-only field — the anti-exploitability metric) ==="
+  EXPLOITER_EVAL_METRICS="$RUN/exploiter_eval_round${round}.jsonl"
   cargo run --release -p liars-dice --example tournament -- \
     players="$PLAYERS" dice="$DICE" faces="$FACES" \
     "agents=${MULTI_AGENTS}" "${MULTI_FLAG}=exploiter:${EXPLOITER},champion:${CHAMP}" \
+    "metrics=${EXPLOITER_EVAL_METRICS}" \
     2>&1 | tee "$RUN/exploiter_eval_round${round}.log"
 
   printf '{"round":%d,"champion":"%s","exploiter":"%s","pool":"%s"}\n' \
     "$round" "$CHAMP" "$EXPLOITER" "$POOL" >>"$MANIFEST"
+
+  # Parse this round's numbers straight from the structured metrics (not
+  # screen-scraped tables) and append both a machine- and human-readable
+  # status line — this is the file to read overnight without re-running
+  # anything: field win-share vs fair share, the exploiter's edge over the
+  # frozen champion, and whether the belief head's cross-entropy is actually
+  # dropping within the round (vs sitting at the uniform-prior baseline).
+  CHAMP_LABEL="${NET_AGENTS}-best"
+  EXPLOITER_LABEL="${NET_AGENTS}-exploiter"
+  CHAMP_VS_LABEL="${NET_AGENTS}-champion"
+  FAIR=$(awk "BEGIN{printf \"%.6f\", 1.0/${PLAYERS}}")
+  if [[ "$HAVE_JQ" == "1" ]]; then
+    FIELD_WS=$(jq -s --arg h "$CHAMP_LABEL" \
+      '[.[] | select(.event=="tournament_cell" and .hero==$h) | .win_share] | if length>0 then (add/length) else null end' \
+      "$TOURNAMENT_METRICS" 2>/dev/null || echo null)
+    EXPLOITER_WS=$(jq -s --arg h "$EXPLOITER_LABEL" --arg f "$CHAMP_VS_LABEL" \
+      '[.[] | select(.event=="tournament_cell" and .hero==$h and .field==$f) | .win_share] | if length>0 then .[0] else null end' \
+      "$EXPLOITER_EVAL_METRICS" 2>/dev/null || echo null)
+    BELIEF_FIRST=$(jq -s '[.[] | select(.event=="ppo_iter") | .belief_loss] | if length>0 then .[0] else null end' \
+      "$CHAMP_DIR/metrics.jsonl" 2>/dev/null || echo null)
+    BELIEF_LAST=$(jq -s '[.[] | select(.event=="ppo_iter") | .belief_loss] | if length>0 then .[-1] else null end' \
+      "$CHAMP_DIR/metrics.jsonl" 2>/dev/null || echo null)
+  else
+    FIELD_WS=null
+    EXPLOITER_WS=null
+    BELIEF_FIRST=null
+    BELIEF_LAST=null
+  fi
+  EXPLOITER_EDGE="null"
+  if [[ "$EXPLOITER_WS" != "null" ]]; then
+    EXPLOITER_EDGE=$(awk "BEGIN{printf \"%.6f\", ${EXPLOITER_WS} - ${FAIR}}")
+  fi
+  printf '{"round":%d,"champion":"%s","field_win_share":%s,"fair_share":%s,"exploiter_win_share_vs_champion":%s,"exploiter_edge_over_fair":%s,"belief_loss_first":%s,"belief_loss_last":%s}\n' \
+    "$round" "$CHAMP" "$FIELD_WS" "$FAIR" "$EXPLOITER_WS" "$EXPLOITER_EDGE" "$BELIEF_FIRST" "$BELIEF_LAST" >>"$STATUS_JSONL"
+  {
+    echo "round $round  ($(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown))"
+    echo "  champion field win-share: ${FIELD_WS} (fair=${FAIR})"
+    echo "  exploiter vs champion:    ${EXPLOITER_WS} (edge over fair: ${EXPLOITER_EDGE})"
+    echo "  belief loss:              ${BELIEF_FIRST} -> ${BELIEF_LAST}"
+  } | tee -a "$STATUS_LOG"
 
   # Promote this round's champion into next round's pool as a frozen opponent,
   # alongside the rollout/belief bots, so future champions can't just overfit
@@ -101,4 +149,4 @@ for round in $(seq 1 "$ROUNDS"); do
   POOL="self=2,rollout:128=1,rollout:256=1,belief=1,ckpt:${CHAMP}=1"
 done
 
-echo "league done. manifest: $MANIFEST"
+echo "league done. manifest: $MANIFEST, status: $STATUS_LOG"
