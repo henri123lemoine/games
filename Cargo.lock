@@ -96,14 +96,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "g2048"
-version = "0.1.0"
-dependencies = [
- "game-core",
- "solvers",
-]
-
-[[package]]
 name = "game-core"
 version = "0.1.0"
 
@@ -138,7 +130,6 @@ version = "0.1.0"
 dependencies = [
  "chess",
  "connect4",
- "g2048",
  "game-core",
  "go",
  "liars-dice",

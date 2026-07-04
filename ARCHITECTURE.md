@@ -86,7 +86,7 @@ The CLI and the browser arcade are two thin frontends over exactly these calls; 
 | `Rollout` | possible | possible | possible | possible | possible | ✓ (the bot) | ✓ (a bot) | possible | — |
 | bespoke | — | — | — | — | — | belief policy | equity bot (the bot) | decomposed CFR+ (the bot) | — |
 
-(The matrix is the two-player-search story. The single-player and real-time games — 2048, snake, slither — also live in the lab; their bots are MCTS/eval truncation or a learned net, trained as described below.)
+(The matrix is the two-player-search story. The real-time games also live in the lab; their bots are trained as described below.)
 
 The dashes are honest: tabular CFR can't fit big games, search can't see hidden information, and Go's `GoEval` feeds MCTS/azero rather than alpha-beta. Two durable facts the matrix doesn't show: outcome-sampling MCCFR runs the deep liar's-dice ladder in milliseconds/iteration where external sampling would need astronomically many nodes (~1e41), and CFR+ regret flooring empirically stalls outcome sampling (documented in `solvers/src/os_mccfr.rs`) — which is why liar's dice uses outcome sampling, not the CFR+ variant the perfect-recall games would. Where a learned net is the bot (the `azero` row), the net is trained out-of-tree; see *Learning: the ml tree* below.
 

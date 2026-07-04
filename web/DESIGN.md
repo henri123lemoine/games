@@ -78,7 +78,7 @@ web/app/
     _generic/         fallback: renders text view + action buttons
     chess/            SVG board, drag-to-move, piece animation
     liars-dice/       dice cups, bid ladder, reveal choreography
-    connect4/ othello/ go/ 2048/ snake/ twentyone/ pente/ poker/ slither/
+    connect4/ othello/ go/ snake/ twentyone/ pente/ poker/ slither/
 ```
 
 Each frontend is a framework-free TS package implementing one interface:

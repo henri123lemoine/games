@@ -54,8 +54,6 @@ export const DIFFICULTY: Record<string, Difficulty> = {
   "liars-dice/rollout": { key: "rollouts", levels: [["Easy", "100"], ["Medium", "400"], ["Hard", "1000"]] },
   "poker/equity": { key: "samples", levels: [["Easy", "300"], ["Medium", "1200"], ["Hard", "3000"]] },
   "poker/rollout": { key: "rollouts", levels: [["Easy", "60"], ["Medium", "150"], ["Hard", "400"]] },
-  "2048/mcts": { key: "sims", levels: [["Easy", "100"], ["Medium", "200"], ["Hard", "600"]] },
-  "2048/mcts-eval": { key: "sims", levels: [["Easy", "100"], ["Medium", "200"], ["Hard", "600"]] },
   "snake/mcts": { key: "sims", levels: [["Easy", "60"], ["Medium", "150"], ["Hard", "400"]] },
   "snake/mcts-eval": { key: "sims", levels: [["Easy", "60"], ["Medium", "150"], ["Hard", "400"]] },
   "snake/azero-gpu": { key: "sims", levels: [["Easy", "16"], ["Medium", "64"], ["Hard", "128"]] },

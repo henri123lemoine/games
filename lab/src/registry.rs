@@ -469,13 +469,6 @@ const GO_OPTS: &[OptSpec] = &[
     opt("seed", "...", ""),
 ];
 
-const G2048_OPTS: &[OptSpec] = &[
-    opt("bot", "mcts|mcts-eval", "(omit to play yourself)"),
-    bot_opt("sims", "200", "", &["mcts", "mcts-eval"]),
-    bot_opt("depth", "8", "", &["mcts-eval"]),
-    opt("seed", "...", ""),
-];
-
 const SNAKE_OPTS: &[OptSpec] = &[
     opt("seat", "0|1|watch", "(0=Snake A)"),
     opt(
@@ -642,16 +635,6 @@ pub fn entries() -> Vec<Entry> {
             )),
         },
         Entry {
-            id: "2048",
-            name: "2048",
-            solo: true,
-            watch_bot: "mcts-eval",
-            summary: "2048 (single-player) — play it, or watch an MCTS bot",
-            opts: G2048_OPTS,
-            make: Box::new(|o| make_solo(o, g2048::G2048, g2048_bot)),
-            eval: None,
-        },
-        Entry {
             id: "snake",
             name: "Snake",
             solo: false,
@@ -702,62 +685,6 @@ fn pente_game(o: &Opts) -> Result<pente::Pente, String> {
         return Err("pente size must be in 5..=19 (13 or 15 are standard)".into());
     }
     Ok(pente::Pente::new(size))
-}
-
-/// Single-player entry: with `bot=` set, that bot plays and you watch;
-/// without it, you play. Bots come through the same [`BotParser`] convention
-/// as the versus games, so the next single-player game (or a future solo
-/// compare mode) adds a parser instead of copying this scaffold.
-fn make_solo<G: game_core::GameUi + Sync + 'static>(
-    o: &Opts,
-    game: G,
-    parse: BotParser<G>,
-) -> Result<Box<dyn AnyMatch>, String> {
-    let seed = o.get("seed", default_seed())?;
-    let name = o.str("bot", "");
-    let bot = if name.is_empty() {
-        None
-    } else {
-        let spec = BotSpec {
-            name,
-            opts: o.clone(),
-        };
-        Some(parse(&spec, o)?(seed))
-    };
-    let human = if bot.is_some() { None } else { Some(0) };
-    Ok(TypedMatch::new(game, vec![bot], human, seed).boxed())
-}
-
-/// The `mcts|mcts-eval` parser the single-player games share; `with_eval`
-/// builds the eval-guided variant from `(sims, depth)`.
-fn mcts_solo_bot<G: Game + 'static>(
-    spec: &BotSpec,
-    default_depth: u32,
-    with_eval: fn(u32, u32) -> BoxedAgent<G>,
-    game_name: &str,
-) -> Result<BotBuilder<G>, String> {
-    let sims: u32 = spec.opts.get("sims", 200)?;
-    Ok(match spec.name.as_str() {
-        "mcts" => Box::new(move |_| Box::new(Mcts::new(sims)) as BoxedAgent<G>),
-        "mcts-eval" => {
-            let depth: u32 = spec.opts.get("depth", default_depth)?;
-            Box::new(move |_| with_eval(sims, depth))
-        }
-        other => {
-            return Err(format!(
-                "unknown {game_name} bot '{other}' (mcts|mcts-eval)"
-            ));
-        }
-    })
-}
-
-fn g2048_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<g2048::G2048>, String> {
-    mcts_solo_bot(
-        spec,
-        8,
-        |sims, depth| Box::new(Mcts::with_eval(sims, g2048::Heuristic2048, depth)),
-        "2048",
-    )
 }
 
 fn snake_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<snake::Duel>, String> {

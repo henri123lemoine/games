@@ -13,7 +13,7 @@
 //! parent picks among its children. Chance nodes live in the tree too — descent
 //! samples an outcome from [`Game::chance_outcomes`] and descends into that
 //! outcome's child, so deeper statistics never mix different chance branches
-//! (2048-style player-move-then-random-tile games work out of the box).
+//! (player-move-then-random-event games work out of the box).
 //!
 //! The variants:
 //!

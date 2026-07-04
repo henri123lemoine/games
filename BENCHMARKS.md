@@ -1,6 +1,6 @@
 # Benchmarks
 
-Cross-game benchmark round using the `lab compare` (SPRT) and `lab tourney` harness, plus per-crate score benches for the single-player games.
+Cross-game benchmark round using the `lab compare` (SPRT) and `lab tourney` harness.
 
 - **Date:** 2026-06-10
 - **Machine:** Apple M5 Max, 18 cores, 64 GB RAM, macOS 26.5
@@ -18,7 +18,6 @@ Cross-game benchmark round using the `lab compare` (SPRT) and `lab tourney` harn
 | othello | alphabeta d5 vs mcts 2000 (10x time) | 30-0-2 (32) | +470 +/- 231 | accepted H1 |
 | go 9x9 | mcts-eval 500 vs mcts 500 | 23-0-17 (40) | +53 +/- 107 | inconclusive |
 | liars-dice 5p | rollout 400 vs belief field | 23-41 (64) | share 0.359 (fair 0.200) | accepted H1 |
-| 2048 | mcts-eval sims=200 depth=8, 50 eps | — | mean 15950, median 15752 | 10/50 reach 2048 |
 
 ## connect4 — harness sanity: depth 7 vs depth 5
 
@@ -72,16 +71,6 @@ lab compare liars-dice a=rollout:rollouts=400 b=belief max-games=400 seed=17
 ```
 
 Hero-vs-field binomial SPRT (H0 share 0.200, H1 share 0.300, hero rotated through all 5 seats). Accepted H1 after 64 games: **23-41, win share 0.359** — nearly double the fair share against four belief-agent opponents. Matches the league result that the determinized-rollout agent is the house champion. Note the share drifted down from 0.500 over the first 16 games, so 0.359 is itself an optimistic-side estimate of a real but smaller edge.
-
-## 2048 — registered bot score bench
-
-```
-cargo run --release -p g2048 --example bench 50 200 8 1
-```
-
-50 episodes of the registered `mcts-eval` bot (sims=200, depth=8 — the `lab play 2048` defaults), 14.8 s total: **score mean 15950, median 15752, min 7112, max 32180; 41/50 episodes reach the 1024 tile, 10/50 reach 2048.** Solid play for 200 sims/move — the Heuristic2048-truncated search reliably builds 1024+ positions, and a fifth of runs hit 2048.
-
-> Snake has since been reworked into a 1v1 game with a trained AlphaZero bot (`lab play snake`), so the single-player score bench from this round no longer applies and has been dropped rather than restated; snake strength now belongs with the trained-net results, not this handcrafted-search round.
 
 ## Deferred / caveats
 

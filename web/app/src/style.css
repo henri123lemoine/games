@@ -567,40 +567,6 @@ button {
   background: radial-gradient(circle at 35% 30%, #fff, #b9bfd2);
 }
 
-.mini-2048 {
-  display: grid;
-  grid-template-columns: repeat(2, 44px);
-  grid-auto-rows: 44px;
-  gap: 6px;
-  place-content: center;
-  background: #243024;
-}
-
-.mini-2048 span {
-  display: grid;
-  place-items: center;
-  aspect-ratio: 1;
-  background: #ece2cc;
-  color: #5a503e;
-  border-radius: 5px;
-  font-weight: 800;
-  font-size: 0.95rem;
-}
-
-.mini-2048 .v4 {
-  background: #e8d4ac;
-}
-
-.mini-2048 .v8 {
-  background: #e3a35f;
-  color: #fff;
-}
-
-.mini-2048 .v16 {
-  background: #d97f4e;
-  color: #fff;
-}
-
 .mini-snake {
   position: relative;
   background:

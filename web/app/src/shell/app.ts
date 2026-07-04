@@ -50,7 +50,6 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   pente: { size: PENTE_AZ_SIZE, bot: "azero-gpu", sims: "400" },
   go: { size: "19", bot: "azero-gpu", sims: "1500" },
   snake: { bot: "azero-gpu", sims: "128" },
-  "2048": {},
 };
 
 /** Games registered in the lab but not surfaced on the site. */
@@ -169,7 +168,6 @@ const SHOWN_BOTS: Record<string, readonly string[]> = {
   connect4: ["alphabeta"],
   go: ["azero-gpu"],
   pente: ["azero-gpu", "alphabeta"],
-  "2048": ["mcts"],
   snake: ["azero-gpu"],
 };
 
@@ -316,8 +314,6 @@ function miniFor(id: string): string {
       ]
         .map(([c, x, y]) => `<span class="mini-pstone mini-pstone-${c}" style="left:${x}px;top:${y}px"></span>`)
         .join("")}</div>`;
-    case "2048":
-      return `<div class="mini mini-2048"><span>2</span><span class="v4">4</span><span class="v8">8</span><span class="v16">16</span></div>`;
     case "snake":
       // The Snake-game snake: a glossy tube that follows the grid with
       // right-angle (rounded) turns, ending in a detailed head — two eyes,

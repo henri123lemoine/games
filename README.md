@@ -11,8 +11,8 @@ solvers/             the algorithms, generic over any game with the right
                      PUCT/AlphaZero self-play search
 games/               one crate per game — perfect-information board games
                      (chess, othello, connect4, pente, go), N-player imperfect
-                     info (liars-dice, poker, twentyone), and single-player /
-                     real-time (2048, snake). Each ships only rules + knowledge;
+                     info (liars-dice, poker, twentyone), and real-time
+                     snake. Each ships only rules + knowledge;
                      its bot is a generic solver (alpha-beta / MCTS / rollout /
                      azero) or, where the structure demands it, a bespoke
                      in-crate solver exposed as an ordinary Agent
@@ -42,7 +42,6 @@ cargo run --release -p lab -- play pente size=13 depth=4
 cargo run --release -p lab -- play liars-dice players=5 dice=5 rollouts=1000
 cargo run --release -p lab -- play poker players=6 samples=2000
 cargo run --release -p lab -- play twentyone hearts=6
-cargo run --release -p lab -- play 2048                       # or watch: bot=mcts-eval
 cargo run --release -p lab -- play snake                      # 1v1; the AlphaZero seat is browser-only
 ```
 
