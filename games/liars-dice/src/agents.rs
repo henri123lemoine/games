@@ -90,6 +90,46 @@ impl ProbConfig {
             mix: 0.0,
         }
     }
+
+    /// Exact-Bayes-style caller: no deliberate bluffing, conservative exact
+    /// calls, and raises only while the bid still has decent posterior support.
+    pub fn honest_bayes() -> Self {
+        Self {
+            liar_cut: 0.30,
+            exact_cut: 0.92,
+            safety: 0.42,
+            bluff: 0.0,
+            bidder_bias: 0.0,
+            open_frac: 0.0,
+            mix: 0.0,
+        }
+    }
+
+    /// High-pressure styled baseline for league and tournament fields.
+    pub fn aggressive_bluffer() -> Self {
+        Self {
+            liar_cut: 0.42,
+            exact_cut: 0.55,
+            safety: 0.18,
+            bluff: 0.22,
+            bidder_bias: 0.25,
+            open_frac: 0.75,
+            mix: 0.12,
+        }
+    }
+
+    /// Trusting, low-bluff baseline that calls liar only on stronger evidence.
+    pub fn conservative_caller() -> Self {
+        Self {
+            liar_cut: 0.18,
+            exact_cut: 0.75,
+            safety: 0.58,
+            bluff: 0.0,
+            bidder_bias: 0.85,
+            open_frac: 0.20,
+            mix: 0.02,
+        }
+    }
 }
 
 pub struct ProbabilisticAgent {

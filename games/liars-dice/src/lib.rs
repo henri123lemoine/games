@@ -20,19 +20,26 @@
 use game_core::hash::{combine, splitmix64};
 use game_core::{Game, Turn};
 
+pub mod action_abstraction;
 mod agents;
 pub mod deepcfr;
 pub mod features;
 pub mod net_search;
 pub mod online_solve;
+pub mod pg_train;
 pub mod rebel;
 mod solve;
 mod subgame;
 pub mod train;
 mod ui;
+pub use action_abstraction::{
+    AbstractedLiarsDice, AbstractedMccfrAgent, AbstractedQAgent, AbstractedRolloutAgent,
+    ActionAbstractionConfig, DeterminizedMctsAgent,
+};
 pub use agents::{BidConditioned, ProbConfig, ProbabilisticAgent};
 pub use features::{
-    NetAgent, action_index, feature_len, legal_actions_and_support, net_policy, policy_len, support,
+    HistoryNetAgent, NetAgent, action_index, feature_len, history_feature_len, history_net_policy,
+    legal_actions_and_support, net_policy, policy_len, support,
 };
 pub use net_search::NetTruncRollout;
 pub use online_solve::{NetOnlineSolveAgent, OnlineSolveAgent, OnlineSolveConfig};
@@ -77,6 +84,7 @@ pub struct LdState {
     winner: u8,
 }
 
+#[derive(Clone)]
 pub struct LiarsDice {
     pub players: u8,
     pub dice: u8,
@@ -336,6 +344,13 @@ impl LdState {
     /// recovered from it (see [`LiarsDice::round_opener`]).
     pub fn raises_this_round(&self) -> &[u8] {
         &self.raises_this_round[..]
+    }
+    /// Fixed-size raw recent action window, oldest to newest. Codes are the
+    /// same compact bidding action codes used in the information-state history:
+    /// 0 = empty, 1 = raise quantity, 2 = raise face, 3 = call liar,
+    /// 4 = call exact, and 5+ = free-open `(quantity, face)` codes.
+    pub fn raw_history(&self) -> &[u16] {
+        &self.hist[..]
     }
 }
 

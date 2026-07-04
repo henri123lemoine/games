@@ -12,7 +12,7 @@
 use game_core::{Agent, Game, Rng};
 use solvers::azero::{InferCache, Mlp};
 
-use crate::{Action, LdState, LiarsDice, MAX_FACES, MAX_PLAYERS};
+use crate::{Action, HIST_K, LdState, LiarsDice, MAX_FACES, MAX_PLAYERS};
 
 /// Seats the featurization reserves room for (= [`MAX_PLAYERS`]).
 pub const MP: usize = MAX_PLAYERS;
@@ -41,6 +41,20 @@ pub const fn feature_len() -> usize {
     + (MP + 1)// H: per-seat endorsed face + endorsers of the bid face
     + 2       // I: config (faces, players)
     + (MP + 1) // J: per-seat raises this round (rotated) + total round bid-depth
+}
+
+/// Per raw-history token features used by [`history_encode`].
+pub const HISTORY_TOKEN_WIDTH: usize = 10;
+/// Extra features appended by the history-attention architecture: the full
+/// recent-token window plus one deterministic attention-pooled summary token.
+pub const HISTORY_EXTRA: usize = HIST_K * HISTORY_TOKEN_WIDTH + HISTORY_TOKEN_WIDTH;
+
+/// Input width for the C13 history-attention policy/value variant. It keeps the
+/// base information-state features and appends a compact tokenized view of the
+/// recent public bid path plus an attention-pooled summary. The downstream MLP
+/// is trained with the same PG/R-NaD objective as the standard net.
+pub const fn history_feature_len() -> usize {
+    feature_len() + HISTORY_EXTRA
 }
 
 /// Policy-head index for an action. `Open(q, f)` occupies the grid above the
@@ -199,6 +213,76 @@ pub fn encode(game: &LiarsDice, s: &LdState, player: usize) -> Vec<f32> {
     x
 }
 
+/// C13 architecture input: base features plus a compact bid-history attention
+/// encoding. The raw recent action window is exposed oldest-to-newest; each
+/// token is featurized independently, then a recency/current-bid-aware attention
+/// summary is appended. The attention weights are deterministic, keeping the
+/// artifact dependency-free while giving the learned head a direct architecture
+/// variant focused on public bid path, not only aggregate per-seat counts.
+pub fn history_encode(game: &LiarsDice, s: &LdState, player: usize) -> Vec<f32> {
+    let mut x = encode(game, s, player);
+    let mut pooled = [0.0f32; HISTORY_TOKEN_WIDTH];
+    let mut weight_sum = 0.0f32;
+    for (idx, &code) in s.raw_history().iter().enumerate() {
+        let tok = history_token_features(code, game.faces, idx);
+        let w = history_attention_weight(&tok, game, s);
+        for (acc, &v) in pooled.iter_mut().zip(&tok) {
+            *acc += w * v;
+        }
+        weight_sum += w;
+        x.extend_from_slice(&tok);
+    }
+    if weight_sum > 0.0 {
+        for v in &mut pooled {
+            *v /= weight_sum;
+        }
+    }
+    x.extend_from_slice(&pooled);
+    debug_assert_eq!(x.len(), history_feature_len());
+    x
+}
+
+fn history_token_features(code: u16, faces: u8, idx: usize) -> [f32; HISTORY_TOKEN_WIDTH] {
+    let present = (code != 0) as u8 as f32;
+    let recency = (idx + 1) as f32 / HIST_K as f32;
+    let is_rq = (code == 1) as u8 as f32;
+    let is_rf = (code == 2) as u8 as f32;
+    let is_liar = (code == 3) as u8 as f32;
+    let is_exact = (code == 4) as u8 as f32;
+    let is_open = (code >= 5) as u8 as f32;
+    let (q, f) = if code >= 5 {
+        let off = code - 5;
+        let q = off / u16::from(faces) + 1;
+        let f = off % u16::from(faces) + 1;
+        (q as f32 / MAXTOTAL as f32, f as f32 / MF as f32)
+    } else {
+        (0.0, 0.0)
+    };
+    let code_norm = (f32::from(code) / (5.0 + MAXTOTAL as f32 * MF as f32)).min(1.0);
+    [
+        present, recency, is_rq, is_rf, is_liar, is_exact, is_open, q, f, code_norm,
+    ]
+}
+
+fn history_attention_weight(
+    tok: &[f32; HISTORY_TOKEN_WIDTH],
+    game: &LiarsDice,
+    s: &LdState,
+) -> f32 {
+    if tok[0] == 0.0 {
+        return 0.0;
+    }
+    let (_, face) = s.current_bid();
+    let face_match = if face > 0 && tok[8] > 0.0 {
+        let tok_face = (tok[8] * MF as f32).round() as u8;
+        (tok_face == face) as u8 as f32
+    } else {
+        0.0
+    };
+    let pressure = f32::from(s.current_bid().0) / f32::from(game.players * game.dice).max(1.0);
+    tok[1] * (1.0 + 0.5 * face_match + 0.25 * pressure * (tok[2] + tok[3] + tok[6]))
+}
+
 /// Distribution over the legal actions at `(state, player)` per the net's policy
 /// head — usable as a [`solvers::Policy`] for exploitability measurement.
 pub fn net_policy(
@@ -210,6 +294,20 @@ pub fn net_policy(
 ) -> Vec<f64> {
     let sup = support(game, state);
     let x = encode(game, state, player);
+    let (probs, _) = net.policy_value_cached(cache, &x, &sup);
+    probs.iter().map(|&p| f64::from(p)).collect()
+}
+
+/// Distribution over legal actions for a history-attention net.
+pub fn history_net_policy(
+    net: &Mlp,
+    cache: &InferCache,
+    game: &LiarsDice,
+    state: &LdState,
+    player: usize,
+) -> Vec<f64> {
+    let sup = support(game, state);
+    let x = history_encode(game, state, player);
     let (probs, _) = net.policy_value_cached(cache, &x, &sup);
     probs.iter().map(|&p| f64::from(p)).collect()
 }
@@ -258,6 +356,56 @@ impl Agent<LiarsDice> for NetAgent {
     }
 }
 
+/// Policy/value agent for the C13 bid-history architecture variant. It uses the
+/// same policy vocabulary and checkpoint container as [`NetAgent`], but the MLP
+/// input width is [`history_feature_len`] and inference runs over
+/// [`history_encode`].
+pub struct HistoryNetAgent {
+    net: Mlp,
+    cache: InferCache,
+}
+
+impl HistoryNetAgent {
+    pub fn new(net: Mlp) -> Self {
+        assert_eq!(
+            net.input_len(),
+            history_feature_len(),
+            "history net input width"
+        );
+        assert_eq!(net.policy_len(), policy_len(), "history net policy width");
+        let cache = net.infer_cache();
+        Self { net, cache }
+    }
+
+    pub fn from_bytes(data: &[u8]) -> std::io::Result<Self> {
+        Ok(Self::new(Mlp::from_bytes(data)?))
+    }
+
+    pub fn load(path: &std::path::Path) -> std::io::Result<Self> {
+        Ok(Self::new(Mlp::load(path)?))
+    }
+
+    pub fn net(&self) -> &Mlp {
+        &self.net
+    }
+}
+
+impl Agent<LiarsDice> for HistoryNetAgent {
+    fn act(&self, game: &LiarsDice, state: &LdState, player: usize, rng: &mut Rng) -> usize {
+        let (acts, sup) = legal_actions_and_support(game, state);
+        if acts.is_empty() {
+            return 0;
+        }
+        let x = history_encode(game, state, player);
+        let (probs, _) = self.net.policy_value_cached(&self.cache, &x, &sup);
+        let weights: Vec<f64> = probs.iter().map(|&p| f64::from(p)).collect();
+        if weights.iter().sum::<f64>() <= 0.0 {
+            return 0;
+        }
+        rng.pick(&weights)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +435,15 @@ mod tests {
         s.last_bidder = 2;
         s.turn = 3;
         assert_eq!(encode(&game, &s, 3).len(), feature_len());
+    }
+
+    #[test]
+    fn history_feature_length_is_config_invariant() {
+        for &(p, d, f) in &[(2u8, 2u8, 2u8), (3, 4, 6), (6, 8, 6), (5, 5, 6)] {
+            let game = LiarsDice::new(p, d, f);
+            let s = game.initial_state();
+            assert_eq!(history_encode(&game, &s, 0).len(), history_feature_len());
+        }
     }
 
     #[test]
@@ -449,5 +606,21 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn history_net_agent_plays_only_legal_actions() {
+        let net = Mlp::new(history_feature_len(), 16, policy_len(), 0xC13);
+        let agent = HistoryNetAgent::new(net);
+        let game = LiarsDice::new(3, 2, 4);
+        let mut rng = Rng::new(0x5157);
+        let mut s = game.initial_state();
+        while matches!(game.turn(&s), Turn::Chance) {
+            let a = game.sample_chance_action(&s, &mut rng);
+            game.apply(&mut s, a);
+        }
+        let acts = game.legal_actions(&s);
+        let i = agent.act(&game, &s, s.turn(), &mut rng);
+        assert!(i < acts.len());
     }
 }

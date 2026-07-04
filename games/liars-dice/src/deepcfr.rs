@@ -80,6 +80,12 @@ impl Encoder<Round<'_>> for LdEncoder {
 
 #[derive(Clone)]
 pub struct DeepCfrTrainConfig {
+    /// If true, sample across the high-dice training family. If false, sample
+    /// only rounds from `players`/`dice`/`faces`.
+    pub mixed: bool,
+    pub players: u8,
+    pub dice: u8,
+    pub faces: u8,
     /// Total CFR iterations (each iteration runs traversals on one sampled
     /// round, per traverser).
     pub iters: usize,
@@ -116,11 +122,19 @@ pub struct DeepCfrTrainConfig {
     /// small slice of the block (the Rollout bot, not the net, is the cost).
     pub eval_rollouts: u32,
     pub eval_games: u32,
+    /// Keep a durable `ckpt_<iters>.bin` at every block in addition to the
+    /// rolling `ckpt.bin`. These are the checkpoint curve points consumed by the
+    /// tournament bake-off.
+    pub keep_checkpoints: bool,
 }
 
 impl Default for DeepCfrTrainConfig {
     fn default() -> Self {
         Self {
+            mixed: true,
+            players: 5,
+            dice: 5,
+            faces: 6,
             iters: 4000,
             block: 200,
             warmup_iters: 800,
@@ -141,6 +155,7 @@ impl Default for DeepCfrTrainConfig {
             seed: 0xD1CE_DEEC,
             eval_rollouts: 100,
             eval_games: 40,
+            keep_checkpoints: true,
         }
     }
 }
@@ -247,6 +262,69 @@ fn sample_round_config(rng: &mut Rng) -> RoundCfg {
         dice,
         opener: opener as u8,
         first_round,
+    }
+}
+
+/// Sample one round from a fixed target config. This keeps full-opening mass
+/// high for the deployed game while still exposing the value continuation to
+/// realistic dice-loss states.
+fn sample_target_round_config(rng: &mut Rng, players: u8, dice_per: u8, faces: u8) -> RoundCfg {
+    let p = players as usize;
+    let d = dice_per as usize;
+    let mut dice = [0u8; crate::MAX_PLAYERS];
+    let want_full = rng.unit() < 0.70;
+
+    if want_full {
+        for die in dice.iter_mut().take(p) {
+            *die = dice_per;
+        }
+    } else {
+        let mut ok = false;
+        for _ in 0..32 {
+            for die in dice.iter_mut().take(p) {
+                *die = if rng.unit() < 0.90 {
+                    let a = 1 + rng.below(d);
+                    let b = 1 + rng.below(d);
+                    a.max(b) as u8
+                } else {
+                    0
+                };
+            }
+            if (0..p).filter(|&i| dice[i] > 0).count() >= 2 {
+                ok = true;
+                break;
+            }
+        }
+        if !ok {
+            for die in dice.iter_mut().take(p) {
+                *die = dice_per;
+            }
+        }
+    }
+
+    let all_full = (0..p).all(|i| dice[i] == dice_per);
+    let first_round = all_full && rng.unit() < 0.85;
+    let opener = if first_round {
+        0
+    } else {
+        let live: Vec<usize> = (0..p).filter(|&i| dice[i] > 0).collect();
+        live[rng.below(live.len())]
+    };
+    RoundCfg {
+        players,
+        dice_per,
+        faces,
+        dice,
+        opener: opener as u8,
+        first_round,
+    }
+}
+
+fn sample_training_round_config(cfg: &DeepCfrTrainConfig, rng: &mut Rng) -> RoundCfg {
+    if cfg.mixed {
+        sample_round_config(rng)
+    } else {
+        sample_target_round_config(rng, cfg.players, cfg.dice, cfg.faces)
     }
 }
 
@@ -381,6 +459,22 @@ fn engine_config(cfg: &DeepCfrTrainConfig, collect_root_value: bool) -> DeepCfrC
 /// (vs the deployed Rollout bot at the high-dice configs) at `{outdir}/best.bin`.
 /// Returns the final average-strategy net.
 pub fn train(cfg: &DeepCfrTrainConfig) -> std::io::Result<Mlp> {
+    if !cfg.mixed
+        && (cfg.players < 2
+            || cfg.players as usize > crate::MAX_PLAYERS
+            || cfg.dice == 0
+            || cfg.dice as usize > MAX_TRAIN_DICE
+            || cfg.faces < 2
+            || cfg.faces > 6)
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "invalid target DeepCFR config: {}p{}d{}f",
+                cfg.players, cfg.dice, cfg.faces
+            ),
+        ));
+    }
     rayon::ThreadPoolBuilder::new()
         .num_threads(cfg.threads.max(1))
         .build_global()
@@ -388,6 +482,43 @@ pub fn train(cfg: &DeepCfrTrainConfig) -> std::io::Result<Mlp> {
     std::fs::create_dir_all(&cfg.outdir)?;
     let log_path = format!("{}/train.log", cfg.outdir);
     let mut log = std::fs::File::create(&log_path)?;
+    let metrics_path = format!("{}/metrics.jsonl", cfg.outdir);
+    let mut metrics = std::fs::File::create(&metrics_path)?;
+    writeln!(
+        metrics,
+        "{{\"event\":\"deepcfr_config\",\"mixed\":{},\"players\":{},\"dice\":{},\"faces\":{},\
+         \"iters\":{},\"block\":{},\"warmup_iters\":{},\
+         \"traversals\":{},\"train_every\":{},\"hidden\":{},\"adv_reservoir\":{},\
+         \"strat_reservoir\":{},\"adv_steps\":{},\"strat_steps\":{},\"batch\":{},\
+         \"lr\":{:.8},\"momentum\":{:.6},\"l2\":{:.8},\"explore_eps\":{:.6},\
+         \"threads\":{},\"seed\":{},\"eval_rollouts\":{},\"eval_games\":{},\
+         \"keep_checkpoints\":{},\"outdir\":\"{}\"}}",
+        cfg.mixed,
+        cfg.players,
+        cfg.dice,
+        cfg.faces,
+        cfg.iters,
+        cfg.block,
+        cfg.warmup_iters,
+        cfg.traversals,
+        cfg.train_every,
+        cfg.hidden,
+        cfg.adv_reservoir,
+        cfg.strat_reservoir,
+        cfg.adv_steps,
+        cfg.strat_steps,
+        cfg.batch,
+        cfg.lr,
+        cfg.momentum,
+        cfg.l2,
+        cfg.explore_eps,
+        cfg.threads,
+        cfg.seed,
+        cfg.eval_rollouts,
+        cfg.eval_games,
+        cfg.keep_checkpoints,
+        json_escape(&cfg.outdir),
+    )?;
 
     let enc = LdEncoder;
     // `players` only sets the default advantage-net count, which `engine_config`
@@ -405,6 +536,7 @@ pub fn train(cfg: &DeepCfrTrainConfig) -> std::io::Result<Mlp> {
     let mut best = f64::NEG_INFINITY;
     let mut done = 0usize;
     let mut sampler_rng = Rng::new(cfg.seed ^ 0x9E37_79B9);
+    let total_start = Instant::now();
 
     while done < cfg.iters {
         let t = Instant::now();
@@ -417,13 +549,20 @@ pub fn train(cfg: &DeepCfrTrainConfig) -> std::io::Result<Mlp> {
         let block_seed = sampler_rng.next_u64();
         let mut sample_rng = Rng::new(block_seed);
         let new_net = engine.run_family(n, &enc, |_engine_rng| {
-            let c = sample_round_config(&mut sample_rng);
+            let c = sample_training_round_config(cfg, &mut sample_rng);
             build_round(&c, warm, &cont_net, &cont_cache)
         });
         net = new_net;
         done += n;
 
-        net.save(Path::new(&format!("{}/ckpt.bin", cfg.outdir)))?;
+        let ckpt_path = format!("{}/ckpt.bin", cfg.outdir);
+        net.save(Path::new(&ckpt_path))?;
+        let durable_ckpt = cfg
+            .keep_checkpoints
+            .then(|| format!("{}/ckpt_{done}.bin", cfg.outdir));
+        if let Some(path) = durable_ckpt.as_deref() {
+            net.save(Path::new(path))?;
+        }
         // Keep-best on the user's actual goal: mean win-share vs the deployed
         // Rollout bot at the high-dice configs (fair = 1/players; >fair beats it).
         let eval_seed = cfg.seed ^ (done as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
@@ -435,6 +574,7 @@ pub fn train(cfg: &DeepCfrTrainConfig) -> std::io::Result<Mlp> {
             .collect();
         let secs = t.elapsed().as_secs_f64();
         let phase = if warm { "warm" } else { "fvi " };
+        let improved = mean_share > best;
         let mut line = format!(
             "iters {done:5} [{phase}]  strat-buf {:8}  adv-buf {:8}  {secs:6.1}s  \
              winshare {mean_share:.4}  [{}]",
@@ -442,7 +582,7 @@ pub fn train(cfg: &DeepCfrTrainConfig) -> std::io::Result<Mlp> {
             engine.advantage_reservoir_len(0),
             shares.join("  "),
         );
-        if mean_share > best {
+        if improved {
             best = mean_share;
             net.save(Path::new(&format!("{}/best.bin", cfg.outdir)))?;
             line.push_str(" *best");
@@ -450,10 +590,85 @@ pub fn train(cfg: &DeepCfrTrainConfig) -> std::io::Result<Mlp> {
         println!("{line}");
         writeln!(log, "{line}")?;
         log.flush()?;
+        write_block_metric(
+            &mut metrics,
+            cfg,
+            done,
+            n,
+            warm,
+            secs,
+            total_start.elapsed().as_secs_f64(),
+            engine.strat_reservoir_len(),
+            engine.advantage_reservoir_len(0),
+            mean_share,
+            &per_config,
+            best,
+            improved,
+            durable_ckpt.as_deref().unwrap_or(&ckpt_path),
+        )?;
+        metrics.flush()?;
     }
     // Sanity: the produced net loads as a NetAgent (the deployable form).
     let _agent = NetAgent::new(clone_net(&net));
     Ok(net)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "flat JSONL schema is clearer here"
+)]
+fn write_block_metric(
+    metrics: &mut std::fs::File,
+    cfg: &DeepCfrTrainConfig,
+    iters_done: usize,
+    block_iters: usize,
+    warm: bool,
+    block_wall_s: f64,
+    total_wall_s: f64,
+    strat_rows: usize,
+    adv_rows: usize,
+    winshare_mean: f64,
+    per_config: &[(String, f64)],
+    best_winshare: f64,
+    improved: bool,
+    checkpoint: &str,
+) -> std::io::Result<()> {
+    let mut fields = vec![
+        "\"event\":\"deepcfr_block\"".to_string(),
+        format!("\"iters_done\":{iters_done}"),
+        format!("\"block_iters\":{block_iters}"),
+        format!("\"phase\":\"{}\"", if warm { "warm" } else { "fvi" }),
+        format!("\"block_wall_s\":{block_wall_s:.6}"),
+        format!("\"total_wall_s\":{total_wall_s:.6}"),
+        format!("\"strat_rows\":{strat_rows}"),
+        format!("\"adv_rows\":{adv_rows}"),
+        format!("\"eval_rollouts\":{}", cfg.eval_rollouts),
+        format!("\"eval_games\":{}", cfg.eval_games),
+        format!("\"winshare_mean\":{winshare_mean:.6}"),
+        format!("\"best_winshare\":{best_winshare:.6}"),
+        format!("\"is_best\":{improved}"),
+        format!("\"checkpoint\":\"{}\"", json_escape(checkpoint)),
+    ];
+    for (name, share) in per_config {
+        fields.push(format!("\"winshare_{}\":{share:.6}", json_key(name)));
+    }
+    writeln!(metrics, "{{{}}}", fields.join(","))
+}
+
+fn json_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn json_key(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// Run Deep CFR on a single fixed 2-player round (heuristic continuation) and
@@ -514,6 +729,29 @@ mod tests {
         assert!(high_d as f64 / n as f64 > 0.65, "dice-per mostly 5..=8");
         assert!(full_open > 0, "some full game openings");
     }
+
+    #[test]
+    fn target_sampler_stays_on_requested_config() {
+        let mut rng = Rng::new(98765);
+        let n = 2000;
+        let mut full_open = 0;
+        for _ in 0..n {
+            let c = sample_target_round_config(&mut rng, 5, 5, 6);
+            assert_eq!(c.players, 5);
+            assert_eq!(c.dice_per, 5);
+            assert_eq!(c.faces, 6);
+            assert!((0..5).filter(|&i| c.dice[i] > 0).count() >= 2);
+            assert!(c.dice[..5].iter().all(|&d| d <= 5));
+            if c.first_round && c.dice[..5].iter().all(|&d| d == 5) {
+                full_open += 1;
+            }
+        }
+        assert!(
+            full_open as f64 / n as f64 > 0.50,
+            "target sampler should emphasize full openings"
+        );
+    }
+
     use solvers::{Cfr, nash_conv};
 
     #[test]

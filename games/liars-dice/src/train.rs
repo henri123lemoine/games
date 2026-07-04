@@ -125,6 +125,13 @@ pub struct TrainConfig {
     pub momentum: f32,
     pub l2: f32,
     pub val_every: usize,
+    /// Final win-rate panel against the rollout bot. Set `eval_games=0` to skip
+    /// it for plumbing-only smoke runs.
+    pub eval_rollouts: u32,
+    pub eval_games: u32,
+    /// Keep durable `ckpt_<iter>.bin` snapshots in addition to the rolling
+    /// `ckpt.bin`, so tournament sweeps can measure a learning curve.
+    pub keep_checkpoints: bool,
     pub threads: usize,
     pub outdir: String,
     pub seed: u64,
@@ -148,6 +155,9 @@ impl Default for TrainConfig {
             momentum: 0.9,
             l2: 1e-4,
             val_every: 5,
+            eval_rollouts: 50,
+            eval_games: 200,
+            keep_checkpoints: true,
             threads: 4,
             outdir: "runs/ld_net".into(),
             seed: 0xD1CE,
@@ -379,10 +389,10 @@ fn validate_exploitability(net: &Mlp) -> f64 {
 
 /// Win rate of `net` against the deployed determinized-rollout bot at a couple
 /// of configs (a coarse strength signal; 2-player seat-swapped).
-fn validate_winrate(net: &Mlp, games: u32, seed: u64) -> Vec<(String, f64)> {
+fn validate_winrate(net: &Mlp, rollouts: u32, games: u32, seed: u64) -> Vec<(String, f64)> {
     let agent = NetAgent::new(clone_net(net));
     let bot = Rollout::new(
-        50,
+        rollouts,
         ProbabilisticAgent::default_agent(),
         BidConditioned::default(),
     );
@@ -410,6 +420,9 @@ pub fn train(cfg: &TrainConfig) -> std::io::Result<Mlp> {
     std::fs::create_dir_all(&cfg.outdir)?;
     let log_path = format!("{}/train.log", cfg.outdir);
     let mut log = std::fs::File::create(&log_path)?;
+    let metrics_path = format!("{}/metrics.jsonl", cfg.outdir);
+    let mut metrics = std::fs::File::create(&metrics_path)?;
+    write_distill_config(&mut metrics, cfg)?;
 
     let mut net = Mlp::new(feature_len(), cfg.hidden, policy_len(), cfg.seed);
     let mut opt = SgdMomentum::new(cfg.lr, cfg.momentum, cfg.l2);
@@ -417,6 +430,8 @@ pub fn train(cfg: &TrainConfig) -> std::io::Result<Mlp> {
     let mut rng = Rng::new(cfg.seed ^ 0x9E37_79B9);
     let mut grad = Vec::new();
     let mut best = f64::INFINITY;
+    let mut total_samples = 0u64;
+    let run_start = Instant::now();
 
     for iter in 0..cfg.iters {
         let t = Instant::now();
@@ -442,6 +457,7 @@ pub fn train(cfg: &TrainConfig) -> std::io::Result<Mlp> {
             .collect();
         let gen_s = t_gen.elapsed().as_secs_f64();
         let n_fresh = fresh.len();
+        total_samples += n_fresh as u64;
         buffer.extend(fresh);
         if buffer.len() > cfg.buffer_cap {
             let drop = buffer.len() - cfg.buffer_cap;
@@ -463,7 +479,15 @@ pub fn train(cfg: &TrainConfig) -> std::io::Result<Mlp> {
         }
         let train_s = t_train.elapsed().as_secs_f64();
         let nb = nb.max(1) as f32;
-        net.save(Path::new(&format!("{}/ckpt.bin", cfg.outdir)))?;
+        let iter_done = iter + 1;
+        let ckpt_path = format!("{}/ckpt.bin", cfg.outdir);
+        net.save(Path::new(&ckpt_path))?;
+        let durable_ckpt = cfg
+            .keep_checkpoints
+            .then(|| format!("{}/ckpt_{iter_done}.bin", cfg.outdir));
+        if let Some(path) = durable_ckpt.as_deref() {
+            net.save(Path::new(path))?;
+        }
 
         let secs = t.elapsed().as_secs_f64();
         let phase = if warm { "warm" } else { "fvi " };
@@ -473,20 +497,30 @@ pub fn train(cfg: &TrainConfig) -> std::io::Result<Mlp> {
             ce / nb,
             mse / nb,
         );
+        let mut exploitability = None;
+        let mut is_best = false;
+        let mut winrates = Vec::new();
         if iter % cfg.val_every == 0 || iter == cfg.iters - 1 {
             let expl = validate_exploitability(&net);
+            exploitability = Some(expl);
             line.push_str(&format!("  expl {expl:.4}"));
             if expl < best {
                 best = expl;
+                is_best = true;
                 net.save(Path::new(&format!("{}/best.bin", cfg.outdir)))?;
                 line.push_str(" *best");
             }
             // Win-rate vs the rollout bot is expensive (nested rollouts per
             // decision), so only at the very end; per-round exploitability is
             // the cheap, principled keep-best metric during the run.
-            if iter + 1 == cfg.iters {
-                let wr = validate_winrate(&net, 200, cfg.seed ^ iter as u64);
-                for (name, w) in &wr {
+            if iter + 1 == cfg.iters && cfg.eval_games > 0 {
+                winrates = validate_winrate(
+                    &net,
+                    cfg.eval_rollouts,
+                    cfg.eval_games,
+                    cfg.seed ^ iter as u64,
+                );
+                for (name, w) in &winrates {
                     line.push_str(&format!("  {name} {w:.3}"));
                 }
             }
@@ -494,8 +528,141 @@ pub fn train(cfg: &TrainConfig) -> std::io::Result<Mlp> {
         println!("{line}");
         writeln!(log, "{line}")?;
         log.flush()?;
+        write_distill_iter_metric(
+            &mut metrics,
+            cfg,
+            iter_done,
+            warm,
+            n_fresh,
+            total_samples,
+            buffer.len(),
+            ce / nb,
+            mse / nb,
+            gen_s,
+            train_s,
+            secs,
+            run_start.elapsed().as_secs_f64(),
+            exploitability,
+            best,
+            is_best,
+            durable_ckpt.as_deref().unwrap_or(&ckpt_path),
+            &winrates,
+        )?;
+        metrics.flush()?;
     }
     Ok(net)
+}
+
+fn write_distill_config(metrics: &mut std::fs::File, cfg: &TrainConfig) -> std::io::Result<()> {
+    writeln!(
+        metrics,
+        "{{\"event\":\"distill_config\",\"iters\":{},\"warmup_iters\":{},\
+         \"rounds_per_iter\":{},\"playouts\":{},\"hidden\":{},\"cfr_iters\":{},\
+         \"es_iters\":{},\"small_total\":{},\"batch\":{},\"epochs\":{},\
+         \"buffer_cap\":{},\"lr\":{:.8},\"momentum\":{:.6},\"l2\":{:.8},\
+         \"val_every\":{},\"eval_rollouts\":{},\"eval_games\":{},\
+         \"threads\":{},\"seed\":{},\"keep_checkpoints\":{},\
+         \"outdir\":\"{}\"}}",
+        cfg.iters,
+        cfg.warmup_iters,
+        cfg.rounds_per_iter,
+        cfg.playouts,
+        cfg.hidden,
+        cfg.cfr_iters,
+        cfg.es_iters,
+        cfg.small_total,
+        cfg.batch,
+        cfg.epochs,
+        cfg.buffer_cap,
+        cfg.lr,
+        cfg.momentum,
+        cfg.l2,
+        cfg.val_every,
+        cfg.eval_rollouts,
+        cfg.eval_games,
+        cfg.threads,
+        cfg.seed,
+        cfg.keep_checkpoints,
+        json_escape(&cfg.outdir),
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "flat JSONL schema is easier for downstream curve tooling"
+)]
+fn write_distill_iter_metric(
+    metrics: &mut std::fs::File,
+    cfg: &TrainConfig,
+    iters_done: usize,
+    warm: bool,
+    fresh_samples: usize,
+    total_samples: u64,
+    buffer_rows: usize,
+    policy_ce: f32,
+    value_mse: f32,
+    gen_wall_s: f64,
+    train_wall_s: f64,
+    iter_wall_s: f64,
+    total_wall_s: f64,
+    exploitability: Option<f64>,
+    best_exploitability: f64,
+    is_best: bool,
+    checkpoint: &str,
+    winrates: &[(String, f64)],
+) -> std::io::Result<()> {
+    let mut fields = vec![
+        "\"event\":\"distill_iter\"".to_string(),
+        format!("\"iters_done\":{iters_done}"),
+        format!("\"phase\":\"{}\"", if warm { "warm" } else { "fvi" }),
+        format!("\"rounds_per_iter\":{}", cfg.rounds_per_iter),
+        format!("\"playouts\":{}", cfg.playouts),
+        format!("\"eval_rollouts\":{}", cfg.eval_rollouts),
+        format!("\"eval_games\":{}", cfg.eval_games),
+        format!("\"fresh_samples\":{fresh_samples}"),
+        format!("\"samples\":{total_samples}"),
+        format!("\"buffer_rows\":{buffer_rows}"),
+        format!("\"policy_ce\":{policy_ce:.6}"),
+        format!("\"value_mse\":{value_mse:.6}"),
+        format!("\"gen_wall_s\":{gen_wall_s:.6}"),
+        format!("\"train_wall_s\":{train_wall_s:.6}"),
+        format!("\"iter_wall_s\":{iter_wall_s:.6}"),
+        format!("\"total_wall_s\":{total_wall_s:.6}"),
+        format!("\"is_best\":{is_best}"),
+        format!("\"checkpoint\":\"{}\"", json_escape(checkpoint)),
+        format!(
+            "\"latest_checkpoint\":\"{}\"",
+            json_escape(&format!("{}/ckpt.bin", cfg.outdir))
+        ),
+        format!(
+            "\"best_checkpoint\":\"{}\"",
+            json_escape(&format!("{}/best.bin", cfg.outdir))
+        ),
+    ];
+    if let Some(expl) = exploitability {
+        fields.push(format!("\"exploitability\":{expl:.6}"));
+    }
+    if best_exploitability.is_finite() {
+        fields.push(format!("\"best_exploitability\":{best_exploitability:.6}"));
+    }
+    if !winrates.is_empty() {
+        let mean = winrates.iter().map(|(_, v)| *v).sum::<f64>() / winrates.len() as f64;
+        fields.push(format!("\"winrate_mean\":{mean:.6}"));
+        for (name, share) in winrates {
+            fields.push(format!("\"winrate_{}\":{share:.6}", json_key(name)));
+        }
+    }
+    writeln!(metrics, "{{{}}}", fields.join(","))
+}
+
+fn json_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn json_key(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 /// Mean absolute error of `net`'s value-head continuation against the exact

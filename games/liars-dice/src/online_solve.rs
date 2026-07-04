@@ -134,6 +134,40 @@ impl Default for OnlineSolveConfig {
     }
 }
 
+impl OnlineSolveConfig {
+    /// Size-scaled per-move solve budget as `(iters_per_restart, restarts)`.
+    ///
+    /// This is public so tournament/benchmark harnesses can report the same
+    /// compute budget the agent will actually use on the target table.
+    pub fn budget_for_total_dice(&self, total_dice: u32) -> (u64, usize) {
+        // Diagnostic override: a flat per-round budget, no size scaling.
+        if let Some(it) = self.flat_iters {
+            return (it.max(1), self.restarts.max(1));
+        }
+        // Enough iterations for the wide opening to leave the uniform prior even
+        // at a single restart; below this the agent opens absurd bids.
+        const MIN_ITERS: u64 = 1_000;
+        // Per-move ceiling in `iters × total_dice²` units, tuned so 2p5d6f lands
+        // ~0.6 s and 6p8d6f ~0.8 s — i.e. under the ~1 s target across the board.
+        const WORK_CEILING: u64 = 700_000;
+        let td = u64::from(total_dice.max(1));
+        let max_iters = self.max_iters.max(1);
+        let min_iters = MIN_ITERS.min(max_iters);
+        let full_restarts = self.restarts.max(1);
+        // Total iterations across all restarts the ceiling affords, never above
+        // the requested `iters × restarts`, never below one floor-budget solve.
+        let affordable_total = WORK_CEILING / (td * td);
+        let total = affordable_total
+            .min(self.iters.max(1) * full_restarts as u64)
+            .max(min_iters);
+        // Split into restarts of >= MIN_ITERS each (each solve must converge the
+        // opening); drop restarts before going below the floor.
+        let restarts = ((total / min_iters).max(1) as usize).min(full_restarts);
+        let iters = (total / restarts as u64).clamp(min_iters, max_iters);
+        (iters, restarts)
+    }
+}
+
 impl<V, F> OnlineSolveAgent<V, F>
 where
     V: ContinuationValue,
@@ -171,30 +205,7 @@ where
     /// report's documented caveat). Calibrated against the speed table in
     /// `examples/online_eval.rs`.
     fn budget(&self, total_dice: u32) -> (u64, usize) {
-        // Diagnostic override: a flat per-round budget, no size scaling.
-        if let Some(it) = self.cfg.flat_iters {
-            return (it.max(1), self.cfg.restarts.max(1));
-        }
-        // Enough iterations for the wide opening to leave the uniform prior even
-        // at a single restart; below this the agent opens absurd bids.
-        const MIN_ITERS: u64 = 1_000;
-        // Per-move ceiling in `iters × total_dice²` units, tuned so 2p5d6f lands
-        // ~0.6 s and 6p8d6f ~0.8 s — i.e. under the ~1 s target across the board.
-        const WORK_CEILING: u64 = 700_000;
-        let td = u64::from(total_dice.max(1));
-        let min_iters = MIN_ITERS.min(self.cfg.max_iters);
-        let full_restarts = self.cfg.restarts.max(1);
-        // Total iterations across all restarts the ceiling affords, never above
-        // the requested `iters × restarts`, never below one floor-budget solve.
-        let affordable_total = WORK_CEILING / (td * td);
-        let total = affordable_total
-            .min(self.cfg.iters * full_restarts as u64)
-            .max(min_iters);
-        // Split into restarts of >= MIN_ITERS each (each solve must converge the
-        // opening); drop restarts before going below the floor.
-        let restarts = ((total / min_iters).max(1) as usize).min(full_restarts);
-        let iters = (total / restarts as u64).clamp(min_iters, self.cfg.max_iters);
-        (iters, restarts)
+        self.cfg.budget_for_total_dice(total_dice)
     }
 
     /// Build the round subgame for the live state, matching the conventions of
@@ -345,6 +356,11 @@ impl NetOnlineSolveAgent {
     /// Load the value net from a serialized [`Mlp`] checkpoint.
     pub fn from_bytes(data: &[u8]) -> std::io::Result<Self> {
         Ok(Self::new(Mlp::from_bytes(data)?))
+    }
+
+    /// Load the value net with an explicit online-solve configuration.
+    pub fn from_bytes_with_config(data: &[u8], cfg: OnlineSolveConfig) -> std::io::Result<Self> {
+        Ok(Self::with_config(Mlp::from_bytes(data)?, cfg))
     }
 }
 

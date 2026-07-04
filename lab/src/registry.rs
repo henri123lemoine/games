@@ -8,7 +8,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use game_core::{Agent, Game, NoSpec, hash};
-use liars_dice::{BidConditioned, LiarsDice, NetOnlineSolveAgent, ProbabilisticAgent};
+use liars_dice::rebel::{PbsNet, RebelAgent};
+use liars_dice::{
+    AbstractedMccfrAgent, AbstractedQAgent, AbstractedRolloutAgent, ActionAbstractionConfig,
+    BidConditioned, DeterminizedMctsAgent, DiceShareValue, HistoryNetAgent, LiarsDice, NetAgent,
+    NetOnlineSolveAgent, NetTruncRollout, OnlineSolveAgent, OnlineSolveConfig, ProbConfig,
+    ProbabilisticAgent,
+};
 use nn_infer::Net;
 use poker::{HoleSampler, Poker, PokerBot};
 use solvers::azero::{Gather, PuctConfig, Search};
@@ -368,14 +374,95 @@ const LIARS_DICE_OPTS: &[OptSpec] = &[
     opt("players", "5", ""),
     opt("dice", "5", ""),
     opt("faces", "6", ""),
-    opt("bot", "rollout|belief|solve|random", ""),
-    bot_opt("rollouts", "400", "", &["rollout"]),
+    opt(
+        "bot",
+        "rollout|abstract-rollout|is-mcts|mccfr|qlearn|belief|honest-bayes|aggressive-bluffer|conservative-caller|online-solve|net|rnad|ppo|history|net-search|solve|rebel|random",
+        "",
+    ),
+    bot_opt("rollouts", "768", "", &["rollout", "abstract-rollout"]),
+    bot_opt("mccfr_iters", "256", "", &["mccfr", "abstract-mccfr"]),
+    bot_opt("mccfr_seed", "...", "", &["mccfr", "abstract-mccfr"]),
+    bot_opt("q_episodes", "1000", "", &["qlearn", "q-learning", "q"]),
+    bot_opt("q_seed", "...", "", &["qlearn", "q-learning", "q"]),
+    bot_opt("mcts_worlds", "8", "", &["is-mcts"]),
+    bot_opt("mcts_sims", "32", "", &["is-mcts"]),
+    bot_opt(
+        "net_search_rollouts",
+        "48",
+        "",
+        &["net-search", "trunc-net", "net-trunc-rollout"],
+    ),
+    bot_opt(
+        "net_search_plies",
+        "3",
+        "",
+        &["net-search", "trunc-net", "net-trunc-rollout"],
+    ),
+    bot_opt(
+        "solve_iters",
+        "8000",
+        "",
+        &["online-solve", "dice-share-solve", "pluribus", "solve"],
+    ),
+    bot_opt(
+        "solve_max_iters",
+        "8000",
+        "",
+        &["online-solve", "dice-share-solve", "pluribus", "solve"],
+    ),
+    bot_opt(
+        "solve_restarts",
+        "3",
+        "",
+        &["online-solve", "dice-share-solve", "pluribus", "solve"],
+    ),
+    bot_opt(
+        "solve_seed",
+        "...",
+        "",
+        &["online-solve", "dice-share-solve", "pluribus", "solve"],
+    ),
+    bot_opt(
+        "solve_flat_iters",
+        "none",
+        "",
+        &["online-solve", "dice-share-solve", "pluribus", "solve"],
+    ),
     bot_opt(
         "net",
-        "runs/ld_value/best.bin",
-        "(solve value net)",
-        &["solve"],
+        "runs/ld_value/best.bin|runs/ld_deepcfr/best.bin",
+        "(solve value net or policy checkpoint)",
+        &[
+            "solve",
+            "net",
+            "deepcfr-net",
+            "distill-net",
+            "net-search",
+            "trunc-net",
+            "net-trunc-rollout",
+        ],
     ),
+    bot_opt(
+        "rnad_net",
+        "runs/ld_rnad/best.bin",
+        "(R-NaD/NeuRD policy checkpoint)",
+        &["rnad", "rnad-net", "neurd"],
+    ),
+    bot_opt(
+        "ppo_net",
+        "runs/ld_ppo/best.bin",
+        "(PPO policy checkpoint)",
+        &["ppo", "ppo-net"],
+    ),
+    bot_opt(
+        "history_net",
+        "runs/ld_history/best.bin",
+        "(history-attention policy checkpoint)",
+        &["history", "history-net", "history-rnad", "transformer"],
+    ),
+    bot_opt("rebel_net", "runs/ld_rebel/best.bin", "", &["rebel"]),
+    bot_opt("rebel_iters", "1024", "", &["rebel"]),
+    bot_opt("rebel_depth", "2", "", &["rebel"]),
     opt("seat", "0|..|watch", ""),
     opt("seed", "...", ""),
 ];
@@ -517,7 +604,15 @@ pub fn entries() -> Vec<Entry> {
             opts: LIARS_DICE_OPTS,
             make: Box::new(|o| make_versus(o, liars_dice_game(o)?, "rollout", liars_dice_bot)),
             eval: Some(eval_entry(
-                "rollout[:rollouts=400] | belief | solve[:net=runs/ld_value/best.bin] | random",
+                "rollout[:rollouts=768] | abstract-rollout[:rollouts=768] | \
+                 is-mcts[:mcts_worlds=8,mcts_sims=32] | mccfr[:mccfr_iters=256] | \
+                 qlearn[:q_episodes=1000] | belief | honest-bayes | aggressive-bluffer | \
+                 conservative-caller | online-solve[:solve_iters=8000,solve_restarts=3] | \
+                 net[:net=runs/ld_deepcfr/best.bin] | rnad[:rnad_net=runs/ld_rnad/best.bin] | \
+                 ppo[:ppo_net=runs/ld_ppo/best.bin] | \
+                 history[:history_net=runs/ld_history/best.bin] | \
+                 net-search[:net=runs/ld_deepcfr/best.bin] | \
+                 solve[:net=runs/ld_value/best.bin] | rebel[:rebel_net=runs/ld_rebel/best.bin] | random",
                 0,
                 true,
                 liars_dice_game,
@@ -1086,10 +1181,10 @@ fn pente_bot(spec: &BotSpec, o: &Opts) -> Result<BotBuilder<pente::Pente>, Strin
     })
 }
 
-fn liars_dice_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<LiarsDice>, String> {
+fn liars_dice_bot(spec: &BotSpec, o: &Opts) -> Result<BotBuilder<LiarsDice>, String> {
     Ok(match spec.name.as_str() {
         "rollout" => {
-            let rollouts: u32 = spec.opts.get("rollouts", 400)?;
+            let rollouts: u32 = spec.opts.get("rollouts", 768)?;
             Box::new(move |_| {
                 Box::new(Rollout::new(
                     rollouts,
@@ -1098,9 +1193,72 @@ fn liars_dice_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<LiarsDice>, St
                 )) as BoxedAgent<LiarsDice>
             })
         }
+        "abstract-rollout" | "ab-rollout" => {
+            let rollouts: u32 = spec.opts.get("rollouts", 768)?;
+            Box::new(move |_| {
+                Box::new(AbstractedRolloutAgent::with_config(
+                    rollouts,
+                    ProbabilisticAgent::default_agent(),
+                    BidConditioned::default(),
+                    ActionAbstractionConfig::default(),
+                )) as BoxedAgent<LiarsDice>
+            })
+        }
+        "is-mcts" | "det-mcts" => {
+            let worlds: u32 = spec.opts.get("mcts_worlds", 8)?;
+            let sims: u32 = spec.opts.get("mcts_sims", 32)?;
+            Box::new(move |_| {
+                Box::new(DeterminizedMctsAgent::with_config(
+                    worlds,
+                    sims,
+                    BidConditioned::default(),
+                    ActionAbstractionConfig::default(),
+                )) as BoxedAgent<LiarsDice>
+            })
+        }
+        "mccfr" | "abstract-mccfr" => {
+            let iters: u64 = spec.opts.get("mccfr_iters", 256)?;
+            let seed: u64 = spec.opts.get("mccfr_seed", 0xC0F5_D1CE)?;
+            let players: u8 = o.get("players", 5)?;
+            let dice: u8 = o.get("dice", 5)?;
+            let faces: u8 = o.get("faces", 6)?;
+            Box::new(move |_| {
+                let game = LiarsDice::new(players, dice, faces);
+                Box::new(AbstractedMccfrAgent::train(game, iters, seed)) as BoxedAgent<LiarsDice>
+            })
+        }
+        "qlearn" | "q-learning" | "q" => {
+            let episodes: u64 = spec.opts.get("q_episodes", 1000)?;
+            let seed: u64 = spec.opts.get("q_seed", 0xA11C_E5E5)?;
+            let players: u8 = o.get("players", 5)?;
+            let dice: u8 = o.get("dice", 5)?;
+            let faces: u8 = o.get("faces", 6)?;
+            Box::new(move |_| {
+                let game = LiarsDice::new(players, dice, faces);
+                Box::new(AbstractedQAgent::train(game, episodes, seed)) as BoxedAgent<LiarsDice>
+            })
+        }
+        "online-solve" | "dice-share-solve" | "pluribus" => {
+            let cfg = liars_dice_solve_config(spec)?;
+            Box::new(move |_| {
+                Box::new(OnlineSolveAgent::with_config(|| DiceShareValue, cfg))
+                    as BoxedAgent<LiarsDice>
+            })
+        }
         "belief" => {
             Box::new(|_| Box::new(ProbabilisticAgent::default_agent()) as BoxedAgent<LiarsDice>)
         }
+        "honest" | "honest-bayes" => Box::new(|_| {
+            Box::new(ProbabilisticAgent::new(ProbConfig::honest_bayes())) as BoxedAgent<LiarsDice>
+        }),
+        "aggressive" | "aggressive-bluffer" => Box::new(|_| {
+            Box::new(ProbabilisticAgent::new(ProbConfig::aggressive_bluffer()))
+                as BoxedAgent<LiarsDice>
+        }),
+        "conservative" | "conservative-caller" => Box::new(|_| {
+            Box::new(ProbabilisticAgent::new(ProbConfig::conservative_caller()))
+                as BoxedAgent<LiarsDice>
+        }),
         "solve" => {
             // DeepStack-style online subgame solving against the trained value
             // head. Load the net bytes once; each bot seat gets its own agent
@@ -1108,24 +1266,133 @@ fn liars_dice_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<LiarsDice>, St
             // continuation is rebuilt for the live game's (players, faces) on
             // every move, so one bot plays any config.
             let path = spec.opts.str("net", "runs/ld_value/best.bin");
+            let cfg = liars_dice_solve_config(spec)?;
             let bytes = crate::artifacts::read(&path)?;
             // Fail loudly at build time if the checkpoint is unreadable, rather
             // than per-seat at the first move.
-            NetOnlineSolveAgent::from_bytes(&bytes)
+            NetOnlineSolveAgent::from_bytes_with_config(&bytes, cfg)
                 .map_err(|e| format!("failed to load liars-dice value net '{path}': {e}"))?;
             Box::new(move |_| {
                 Box::new(
-                    NetOnlineSolveAgent::from_bytes(&bytes)
+                    NetOnlineSolveAgent::from_bytes_with_config(&bytes, cfg)
                         .expect("value net bytes already validated at build time"),
                 ) as BoxedAgent<LiarsDice>
             })
         }
-        "random" => Box::new(|_| Box::new(game_core::RandomAgent) as BoxedAgent<LiarsDice>),
+        "net" | "deepcfr-net" | "distill-net" => {
+            // A single-forward policy checkpoint produced by the distillation
+            // or Deep CFR trainers. Validate once, then give each seat its own
+            // inference cache from the shared checkpoint bytes.
+            let path = spec.opts.str("net", "runs/ld_deepcfr/best.bin");
+            let bytes = crate::artifacts::read(&path)?;
+            NetAgent::from_bytes(&bytes)
+                .map_err(|e| format!("failed to load liars-dice policy net '{path}': {e}"))?;
+            Box::new(move |_| {
+                Box::new(
+                    NetAgent::from_bytes(&bytes)
+                        .expect("policy net bytes already validated at build time"),
+                ) as BoxedAgent<LiarsDice>
+            })
+        }
+        "rnad" | "rnad-net" | "neurd" => {
+            // The R-NaD/NeuRD-family trainer emits the same MLP policy/value
+            // artifact as the distillation and Deep CFR trainers, but keep it
+            // named separately so bake-off reports don't collapse methods.
+            let path = spec.opts.str("rnad_net", "runs/ld_rnad/best.bin");
+            let bytes = crate::artifacts::read(&path)?;
+            NetAgent::from_bytes(&bytes)
+                .map_err(|e| format!("failed to load liars-dice R-NaD net '{path}': {e}"))?;
+            Box::new(move |_| {
+                Box::new(
+                    NetAgent::from_bytes(&bytes)
+                        .expect("R-NaD net bytes already validated at build time"),
+                ) as BoxedAgent<LiarsDice>
+            })
+        }
+        "ppo" | "ppo-net" => {
+            // The PPO trainer exports the same MLP policy/value artifact as the
+            // other learned policy nets; keep a named alias for bake-off reports.
+            let path = spec.opts.str("ppo_net", "runs/ld_ppo/best.bin");
+            let bytes = crate::artifacts::read(&path)?;
+            NetAgent::from_bytes(&bytes)
+                .map_err(|e| format!("failed to load liars-dice PPO net '{path}': {e}"))?;
+            Box::new(move |_| {
+                Box::new(
+                    NetAgent::from_bytes(&bytes)
+                        .expect("PPO net bytes already validated at build time"),
+                ) as BoxedAgent<LiarsDice>
+            })
+        }
+        "history" | "history-net" | "history-rnad" | "transformer" => {
+            // C13 architecture variant: same policy vocabulary, but a wider
+            // input with the compact public bid-history attention encoder.
+            let path = spec.opts.str("history_net", "runs/ld_history/best.bin");
+            let bytes = crate::artifacts::read(&path)?;
+            HistoryNetAgent::from_bytes(&bytes)
+                .map_err(|e| format!("failed to load liars-dice history net '{path}': {e}"))?;
+            Box::new(move |_| {
+                Box::new(
+                    HistoryNetAgent::from_bytes(&bytes)
+                        .expect("history net bytes already validated at build time"),
+                ) as BoxedAgent<LiarsDice>
+            })
+        }
+        "net-search" | "trunc-net" | "net-trunc-rollout" => {
+            let path = spec.opts.str("net", "runs/ld_deepcfr/best.bin");
+            let rollouts: u32 = spec.opts.get("net_search_rollouts", 48)?;
+            let plies: u32 = spec.opts.get("net_search_plies", 3)?;
+            let bytes = crate::artifacts::read(&path)?;
+            NetTruncRollout::from_bytes(&bytes, rollouts, plies).map_err(|e| {
+                format!("failed to load liars-dice net-search checkpoint '{path}': {e}")
+            })?;
+            Box::new(move |_| {
+                Box::new(
+                    NetTruncRollout::from_bytes(&bytes, rollouts, plies)
+                        .expect("net-search checkpoint already validated at build time"),
+                ) as BoxedAgent<LiarsDice>
+            })
+        }
+        "rebel" => {
+            let path = spec.opts.str("rebel_net", "runs/ld_rebel/best.bin");
+            let iters: usize = spec.opts.get("rebel_iters", 1024)?;
+            let depth: u32 = spec.opts.get("rebel_depth", 2)?;
+            PbsNet::load(std::path::Path::new(&path))
+                .map_err(|e| format!("failed to load liars-dice ReBeL checkpoint '{path}': {e}"))?;
+            Box::new(move |_| {
+                let net = PbsNet::load(std::path::Path::new(&path))
+                    .expect("ReBeL checkpoint already validated at build time");
+                Box::new(RebelAgent::with_config(net, iters, depth)) as BoxedAgent<LiarsDice>
+            })
+        }
+        "random" | "random-legal" => {
+            Box::new(|_| Box::new(game_core::RandomAgent) as BoxedAgent<LiarsDice>)
+        }
         other => {
             return Err(format!(
-                "unknown liars-dice bot '{other}' (rollout|belief|solve|random)"
+                "unknown liars-dice bot '{other}' (rollout|abstract-rollout|is-mcts|mccfr|\
+                 qlearn|belief|honest-bayes|aggressive-bluffer|conservative-caller|\
+                 online-solve|net|deepcfr-net|distill-net|rnad|ppo|history|net-search|solve|rebel|random)"
             ));
         }
+    })
+}
+
+fn liars_dice_solve_config(spec: &BotSpec) -> Result<OnlineSolveConfig, String> {
+    let flat = spec.opts.str("solve_flat_iters", "none");
+    let flat_iters = if flat.eq_ignore_ascii_case("none") {
+        None
+    } else {
+        Some(
+            flat.parse()
+                .map_err(|_| format!("could not parse option solve_flat_iters={flat}"))?,
+        )
+    };
+    Ok(OnlineSolveConfig {
+        iters: spec.opts.get("solve_iters", 8_000)?,
+        max_iters: spec.opts.get("solve_max_iters", 8_000)?,
+        restarts: spec.opts.get("solve_restarts", 3)?,
+        seed: spec.opts.get("solve_seed", 0xA5_0117_0E50_17E5)?,
+        flat_iters,
     })
 }
 

@@ -61,10 +61,9 @@ impl<G: Game> Mccfr<G> {
         }
         match self.game.turn(state) {
             Turn::Chance => {
-                let outs = self.game.chance_outcomes(state);
-                let i = game_core::rand::sample_outcome(&outs, &mut self.rng);
                 let mut child = state.clone();
-                self.game.apply(&mut child, outs[i].0);
+                let action = self.game.sample_chance_action(state, &mut self.rng);
+                self.game.apply(&mut child, action);
                 self.traverse(&child, traverser)
             }
             Turn::Player(p) => {

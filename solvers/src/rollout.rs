@@ -68,13 +68,13 @@ impl<G: Game, A: Agent<G> + Sync, D: Determinizer<G>> Agent<G> for Rollout<G, A,
                 let mut world = state.clone();
                 det.determinize(game, &mut world, player, &mut rng);
                 let rollout_rng = rng.clone();
-                for k in 0..n_actions {
+                for (k, sum) in sums.iter_mut().enumerate() {
                     let mut sim = world.clone();
                     let mut rng = rollout_rng.clone();
                     let action = game.action_at(state, k);
                     game.apply(&mut sim, action);
                     let terminal = playout_from(game, sim, &seats, &mut rng);
-                    sums[k] += game.returns(&terminal, player);
+                    *sum += game.returns(&terminal, player);
                 }
             }
             sums

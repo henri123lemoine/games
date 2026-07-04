@@ -64,3 +64,25 @@ fn manifest_fields_cover_every_entry() {
         );
     }
 }
+
+#[test]
+fn liars_dice_publishes_empirical_rollout_default() {
+    let entry = entries()
+        .into_iter()
+        .find(|e| e.id == "liars-dice")
+        .expect("liars-dice is registered");
+    let rollouts = entry
+        .opts
+        .iter()
+        .find(|o| o.key == "rollouts")
+        .expect("liars-dice exposes rollout budget");
+    assert_eq!(rollouts.value, "768");
+    assert!(rollouts.bots.contains(&"rollout"));
+    assert!(
+        entry
+            .eval
+            .expect("liars-dice has bot evaluation")
+            .bots_help
+            .contains("rollout[:rollouts=768]")
+    );
+}
