@@ -1,0 +1,17 @@
+[package]
+name = "ld-rnad"
+version = "0.1.0"
+edition = "2024"
+description = "Standalone Liar's Dice regularized actor-critic trainer wrapper"
+
+# Standalone on purpose: keep the root games workspace free of extra ML trainer
+# binaries while still making this contender checkable under ml/.
+[workspace]
+
+[dependencies]
+liars-dice = { path = "../../games/liars-dice" }
+
+[profile.release-dbg]
+inherits = "release"
+debug-assertions = true
+debug = true
