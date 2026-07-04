@@ -3,15 +3,114 @@
 //! across the whole panel so it doesn't merely overfit one opponent.
 //!
 //!     cargo run --release -p liars-dice --example league [players] [dice] [faces] [steps] [games]
+//!     cargo run --release -p liars-dice --example league -- players=5 dice=5 faces=6 steps=150 games=1200
+//!
+//! Every run also writes structured metrics to
+//! `metrics=runs/ld_league_metrics.jsonl` (`metrics=none` disables). The final
+//! `league_final` row records the champion config and validation win-shares so
+//! the tuned heuristic baseline can be reproduced in tournament comparisons.
+
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write};
+use std::path::Path;
+use std::time::Instant;
 
 use game_core::{RandomAgent, winrate_vs_field};
 use liars_dice::{LiarsDice, ProbConfig, ProbabilisticAgent};
 
-fn arg<T: std::str::FromStr>(i: usize, d: T) -> T {
-    std::env::args()
-        .nth(i)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(d)
+#[derive(Debug)]
+struct Args {
+    players: u8,
+    dice: u8,
+    faces: u8,
+    steps: u32,
+    games: u32,
+    seed: u64,
+    metrics: Option<String>,
+    append: bool,
+}
+
+impl Args {
+    fn parse() -> Self {
+        let mut positional = Vec::new();
+        let mut keyed = HashMap::new();
+        for raw in std::env::args().skip(1) {
+            if let Some((key, value)) = raw.split_once('=') {
+                keyed.insert(key.to_string(), value.to_string());
+            } else {
+                positional.push(raw);
+            }
+        }
+        let metrics = keyed
+            .get("metrics")
+            .map(|s| (s != "none").then_some(s.clone()))
+            .unwrap_or_else(|| Some("runs/ld_league_metrics.jsonl".to_string()));
+        Self {
+            players: get_arg(&keyed, "players")
+                .or_else(|| pos_arg(&positional, 0))
+                .unwrap_or(5),
+            dice: get_arg(&keyed, "dice")
+                .or_else(|| pos_arg(&positional, 1))
+                .unwrap_or(5),
+            faces: get_arg(&keyed, "faces")
+                .or_else(|| pos_arg(&positional, 2))
+                .unwrap_or(6),
+            steps: get_arg(&keyed, "steps")
+                .or_else(|| pos_arg(&positional, 3))
+                .unwrap_or(150),
+            games: get_arg(&keyed, "games")
+                .or_else(|| pos_arg(&positional, 4))
+                .unwrap_or(1200),
+            seed: get_arg(&keyed, "seed").unwrap_or(0xA11CE),
+            append: parse_bool(keyed.get("append").map(String::as_str).unwrap_or("0")),
+            metrics,
+        }
+    }
+}
+
+fn get_arg<T: std::str::FromStr>(args: &HashMap<String, String>, key: &str) -> Option<T> {
+    args.get(key).and_then(|s| s.parse().ok())
+}
+
+fn pos_arg<T: std::str::FromStr>(args: &[String], idx: usize) -> Option<T> {
+    args.get(idx).and_then(|s| s.parse().ok())
+}
+
+fn parse_bool(s: &str) -> bool {
+    matches!(s, "1" | "true" | "yes" | "on")
+}
+
+struct Metrics {
+    file: Option<File>,
+}
+
+impl Metrics {
+    fn open(path: Option<&str>, append: bool) -> io::Result<Self> {
+        let Some(path) = path else {
+            return Ok(Self { file: None });
+        };
+        if let Some(parent) = Path::new(path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(append)
+            .truncate(!append)
+            .open(path)?;
+        Ok(Self { file: Some(file) })
+    }
+
+    fn write(&mut self, fields: Vec<String>) -> io::Result<()> {
+        if let Some(file) = &mut self.file {
+            writeln!(file, "{{{}}}", fields.join(","))?;
+            file.flush()?;
+        }
+        Ok(())
+    }
 }
 
 struct Rng(u64);
@@ -58,11 +157,23 @@ fn cfg(liar: f64, exact: f64, safe: f64, bluff: f64, bias: f64, open: f64, mix: 
 }
 
 fn main() {
-    let players: u8 = arg(1, 5);
-    let dice: u8 = arg(2, 5);
-    let faces: u8 = arg(3, 6);
-    let steps: u32 = arg(4, 150);
-    let games: u32 = arg(5, 1200);
+    let args = Args::parse();
+    let players = args.players;
+    let dice = args.dice;
+    let faces = args.faces;
+    let steps = args.steps;
+    let games = args.games;
+    let run_start = Instant::now();
+    let mut metrics = Metrics::open(args.metrics.as_deref(), args.append).unwrap_or_else(|e| {
+        eprintln!("failed to open metrics file: {e}");
+        std::process::exit(1);
+    });
+    if let Some(path) = args.metrics.as_deref() {
+        println!(
+            "metrics: {path}{}",
+            if args.append { " (append)" } else { "" }
+        );
+    }
 
     let game = LiarsDice::new(players, dice, faces);
 
@@ -90,9 +201,24 @@ fn main() {
     let fair = 1.0 / players as f64;
     let mut champion = ProbConfig::default();
     let mut champ_score = score(champion, &league);
-    let mut rng = Rng(0xA11CE);
+    let mut rng = Rng(args.seed);
     println!("League tuning {players}p{dice}d{faces}f — {steps} steps × {games} games");
     println!("start score {champ_score:.3} (fair {fair:.3})  cfg {champion:?}");
+    write_metric(
+        &mut metrics,
+        "league_config",
+        vec![
+            format!("\"players\":{players}"),
+            format!("\"dice\":{dice}"),
+            format!("\"faces\":{faces}"),
+            format!("\"steps\":{steps}"),
+            format!("\"games\":{games}"),
+            format!("\"fair\":{fair:.6}"),
+            format!("\"seed\":{}", args.seed),
+            format!("\"league_size\":{}", league.len()),
+            format!("\"start_score\":{champ_score:.6}"),
+        ],
+    );
 
     let mut promotions = 0u32;
     for step in 0..steps {
@@ -109,6 +235,21 @@ fn main() {
                 champion.safety,
                 champion.bluff,
                 champion.bidder_bias
+            );
+            write_metric(
+                &mut metrics,
+                "league_promotion",
+                with_config_fields(
+                    vec![
+                        format!("\"step\":{step}"),
+                        format!("\"score\":{sc:.6}"),
+                        format!("\"fair\":{fair:.6}"),
+                        format!("\"promotions\":{promotions}"),
+                        format!("\"league_size\":{}", league.len()),
+                        format!("\"wall_s\":{:.6}", run_start.elapsed().as_secs_f64()),
+                    ],
+                    champion,
+                ),
             );
             // Fictitious play: periodically add the champion to the league.
             if promotions.is_multiple_of(4) {
@@ -127,4 +268,47 @@ fn main() {
     println!("champion vs-random : {vs_random:.3}");
     println!("champion vs-default: {vs_default:.3}  (fair {fair:.3})");
     println!("champion cfg: {champion:?}");
+    write_metric(
+        &mut metrics,
+        "league_final",
+        with_config_fields(
+            vec![
+                format!("\"players\":{players}"),
+                format!("\"dice\":{dice}"),
+                format!("\"faces\":{faces}"),
+                format!("\"steps\":{steps}"),
+                format!("\"games\":{games}"),
+                format!("\"promotions\":{promotions}"),
+                format!("\"league_size\":{}", league.len()),
+                format!("\"champion_score\":{champ_score:.6}"),
+                format!("\"vs_random\":{vs_random:.6}"),
+                format!("\"vs_default\":{vs_default:.6}"),
+                format!("\"fair\":{fair:.6}"),
+                format!("\"wall_s\":{:.6}", run_start.elapsed().as_secs_f64()),
+                format!("\"seed\":{}", args.seed),
+            ],
+            champion,
+        ),
+    );
+}
+
+fn write_metric(metrics: &mut Metrics, event: &str, mut fields: Vec<String>) {
+    fields.insert(0, format!("\"event\":\"{event}\""));
+    metrics.write(fields).unwrap_or_else(|e| {
+        eprintln!("failed to write metrics: {e}");
+        std::process::exit(1);
+    });
+}
+
+fn with_config_fields(mut fields: Vec<String>, c: ProbConfig) -> Vec<String> {
+    fields.extend([
+        format!("\"liar_cut\":{:.12}", c.liar_cut),
+        format!("\"exact_cut\":{:.12}", c.exact_cut),
+        format!("\"safety\":{:.12}", c.safety),
+        format!("\"bluff\":{:.12}", c.bluff),
+        format!("\"bidder_bias\":{:.12}", c.bidder_bias),
+        format!("\"open_frac\":{:.12}", c.open_frac),
+        format!("\"mix\":{:.12}", c.mix),
+    ]);
+    fields
 }
