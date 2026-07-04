@@ -53,6 +53,7 @@ impl PpoConfig {
                 count: self.minibatches,
             },
             bc_anchor: None,
+            aux_coef: 0.0,
         }
     }
 }

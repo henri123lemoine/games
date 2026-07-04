@@ -33,4 +33,15 @@ pub trait Policy {
     fn bc_term(&self, _idx: &Tensor) -> Option<Tensor> {
         None
     }
+
+    /// Optional auxiliary supervised term for the minibatch at `idx`: a scalar
+    /// tensor (with graph) to be added, scaled by [`crate::PpoConfig::aux_coef`],
+    /// to the loss. Default `None`. Distinct from [`Self::bc_term`] (which anchors
+    /// the policy to a reference net's action distribution): this is for a policy
+    /// that trains an unrelated supervised head off the trunk — e.g. Liar's Dice's
+    /// opponent-hand belief head, trained against ground-truth hands the collector
+    /// has access to during self-play but the deployed policy never sees.
+    fn aux_term(&self, _idx: &Tensor) -> Option<Tensor> {
+        None
+    }
 }

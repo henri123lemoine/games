@@ -23,6 +23,9 @@ pub struct UpdateStats {
     pub approx_kl: f32,
     pub clip_frac: f32,
     pub explained_variance: f32,
+    /// Mean [`crate::Policy::aux_term`] value across updates; `0.0` when the
+    /// policy never returns one (e.g. `aux_coef == 0.0`).
+    pub aux_loss: f32,
 }
 
 /// Run the PPO update over one rollout. Mutates the policy via `opt`. Returns
@@ -61,6 +64,7 @@ pub fn update<P: Policy>(
 
     let mut stats = UpdateStats::default();
     let mut updates = 0u32;
+    let mut aux_updates = 0u32;
 
     for _ in 0..cfg.epochs {
         for idx in minibatch_indices(cfg, batch, device) {
@@ -109,6 +113,12 @@ pub fn update<P: Policy>(
             {
                 loss += anchor.coef * bc;
             }
+            let aux = (cfg.aux_coef != 0.0)
+                .then(|| policy.aux_term(&idx))
+                .flatten();
+            if let Some(aux) = &aux {
+                loss += cfg.aux_coef * aux;
+            }
 
             opt.zero_grad();
             loss.backward();
@@ -120,6 +130,10 @@ pub fn update<P: Policy>(
                 stats.policy_loss += f32::try_from(&policy_loss).unwrap();
                 stats.value_loss += f32::try_from(&value_loss).unwrap();
                 stats.entropy += f32::try_from(&entropy).unwrap();
+                if let Some(aux) = &aux {
+                    stats.aux_loss += f32::try_from(aux).unwrap();
+                    aux_updates += 1;
+                }
                 let kl = f32::try_from((&old_logp - &ev.log_prob).mean(Kind::Float)).unwrap();
                 stats.approx_kl += kl;
                 let clipped = ratio
@@ -139,6 +153,7 @@ pub fn update<P: Policy>(
     stats.entropy /= u;
     stats.approx_kl /= u;
     stats.clip_frac /= u;
+    stats.aux_loss /= aux_updates.max(1) as f32;
     stats.explained_variance = explained_variance(&old_value_all, &returns_all);
     stats
 }

@@ -60,6 +60,10 @@ pub struct PpoConfig {
     pub minibatch: Minibatch,
     /// Optional behavior-cloning anchor; `None` to disable.
     pub bc_anchor: Option<BcAnchor>,
+    /// Coefficient for [`crate::Policy::aux_term`]; `0.0` disables it (the default
+    /// `None` return is never called for, but a nonzero coef with a policy that
+    /// still returns `None` is silently inert too).
+    pub aux_coef: f64,
 }
 
 impl PpoConfig {
@@ -80,6 +84,7 @@ impl PpoConfig {
             adv_norm: AdvNorm::PerMinibatch,
             minibatch: Minibatch::Shuffled { count: minibatches },
             bc_anchor: None,
+            aux_coef: 0.0,
         }
     }
 }
