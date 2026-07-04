@@ -22,18 +22,22 @@ CATS = np.array(S.spec.CATEGORICAL_AGGREGATION, dtype=np.float32)  # [-1,0,1]
 
 
 def _net_logits(move_net, setup_net, obs, legal, kind, temperature=1.0):
-    """Return (logits, scalar_values) for a batch of rows of one phase.
+    """Return (logits, scalar_values, value_probs) for a batch of rows of one phase.
 
     The sim softmax-samples the returned logits, so `temperature < 1` sharpens the
     sampled play toward the policy's preferred moves. A learned policy still
     carries high entropy early (the magnet keeps exploration alive), so a low eval
     temperature surfaces what it actually prefers rather than its exploration
     noise — the standard "is it learning" measurement (illegal slots are -inf, so
-    scaling preserves the mask)."""
+    scaling preserves the mask). `value_probs` (B,3) is the raw softmax(W/L/D) the
+    sim's commit() now requires (the replay buffer's categorical bootstrap target);
+    eval never drains the buffer, so it's only there to satisfy the contract."""
     if obs.shape[0] == 0:
         if kind == "move":
-            return np.zeros((0, sim.N_ACTION), np.float32), np.zeros(0, np.float32)
-        return np.zeros((0, sim.DEPLOY_WIDTH), np.float32), np.zeros(0, np.float32)
+            return (np.zeros((0, sim.N_ACTION), np.float32), np.zeros(0, np.float32),
+                    np.zeros((0, 3), np.float32))
+        return (np.zeros((0, sim.DEPLOY_WIDTH), np.float32), np.zeros(0, np.float32),
+                np.zeros((0, 3), np.float32))
     obs_mx = mx.array(obs)
     inv_t = 1.0 / max(temperature, 1e-6)
     # Illegal slots are filled with finfo.min; scaling that by inv_t overflows to
@@ -45,8 +49,9 @@ def _net_logits(move_net, setup_net, obs, legal, kind, temperature=1.0):
         out = move_net(obs_mx, legal_mask=mx.array(legal))
         logits = np.clip(np.array(out["move_logits"].astype(mx.float32)), floor, None) * inv_t
         vlogp = np.array(out["value_logp"])
-        vals = (np.exp(vlogp) * CATS).sum(-1)
-        return logits, vals.astype(np.float32)
+        probs = np.exp(vlogp)
+        vals = (probs * CATS).sum(-1)
+        return logits, vals.astype(np.float32), probs.astype(np.float32)
     else:
         pc = mx.array(list(S.spec.CLASSIC_PIECE_COUNTS), dtype=mx.float32)
         # Build the running placement prefix for each row from the deploy obs
@@ -60,14 +65,15 @@ def _net_logits(move_net, setup_net, obs, legal, kind, temperature=1.0):
         logits = all_logits[np.arange(obs.shape[0]), slot] * inv_t  # (B,14)
         vlogp = np.array(out["value"].astype(mx.float32))
         vlogp = vlogp - np.log(np.exp(vlogp).sum(-1, keepdims=True))
-        vals = (np.exp(vlogp[np.arange(obs.shape[0]), slot]) * CATS).sum(-1)
-        return logits, vals.astype(np.float32)
+        probs = np.exp(vlogp[np.arange(obs.shape[0]), slot])
+        vals = (probs * CATS).sum(-1)
+        return logits, vals.astype(np.float32), probs.astype(np.float32)
 
 
 def _uniform_logits(obs, kind):
     n = obs.shape[0]
     w = sim.N_ACTION if kind == "move" else sim.DEPLOY_WIDTH
-    return np.zeros((n, w), np.float32), np.zeros(n, np.float32)
+    return np.zeros((n, w), np.float32), np.zeros(n, np.float32), np.full((n, 3), 1.0 / 3.0, np.float32)
 
 
 # A near-one-hot logit on the heuristic's chosen action: the sim gathers logits
@@ -83,11 +89,11 @@ def _heuristic_move_logits(s, env_ids):
     n = int(env_ids.shape[0])
     logits = np.zeros((n, sim.N_ACTION), np.float32)
     if n == 0:
-        return logits, np.zeros(0, np.float32)
+        return logits, np.zeros(0, np.float32), np.zeros((0, 3), np.float32)
     acts = np.asarray(s.heuristic_move_actions([int(e) for e in env_ids]), dtype=np.int64)
     rows = np.nonzero(acts >= 0)[0]
     logits[rows, acts[rows]] = _HEURISTIC_LOGIT
-    return logits, np.zeros(n, np.float32)
+    return logits, np.zeros(n, np.float32), np.full((n, 3), 1.0 / 3.0, np.float32)
 
 
 def play_matches(hero_move, hero_setup, opp_move, opp_setup, hero_seat,
@@ -115,8 +121,10 @@ def play_matches(hero_move, hero_setup, opp_move, opp_setup, hero_seat,
 
         m_logits = np.zeros((m_obs.shape[0], sim.N_ACTION), np.float32)
         m_vals = np.zeros(m_obs.shape[0], np.float32)
+        m_probs = np.full((m_obs.shape[0], 3), 1.0 / 3.0, np.float32)
         d_logits = np.zeros((d_obs.shape[0], sim.DEPLOY_WIDTH), np.float32)
         d_vals = np.zeros(d_obs.shape[0], np.float32)
+        d_probs = np.full((d_obs.shape[0], 3), 1.0 / 3.0, np.float32)
 
         for seat in (0, 1):
             is_hero = seat == hero_seat
@@ -125,28 +133,30 @@ def play_matches(hero_move, hero_setup, opp_move, opp_setup, hero_seat,
             temp = hero_temperature if is_hero else 1.0
             if mm.any():
                 if is_hero:
-                    lg, vl = _net_logits(hero_move, hero_setup, m_obs[mm], m_legal[mm], "move", temp)
+                    lg, vl, vp = _net_logits(hero_move, hero_setup, m_obs[mm], m_legal[mm], "move", temp)
                 elif heuristic:
-                    lg, vl = _heuristic_move_logits(s, m_env[mm])
+                    lg, vl, vp = _heuristic_move_logits(s, m_env[mm])
                 elif opp_move is not None:
-                    lg, vl = _net_logits(opp_move, opp_setup, m_obs[mm], m_legal[mm], "move")
+                    lg, vl, vp = _net_logits(opp_move, opp_setup, m_obs[mm], m_legal[mm], "move")
                 else:
-                    lg, vl = _uniform_logits(m_obs[mm], "move")
+                    lg, vl, vp = _uniform_logits(m_obs[mm], "move")
                 m_logits[mm] = lg
                 m_vals[mm] = vl
+                m_probs[mm] = vp
             if dd.any():
                 if is_hero:
-                    lg, vl = _net_logits(hero_move, hero_setup, d_obs[dd], d_legal[dd], "deploy", temp)
+                    lg, vl, vp = _net_logits(hero_move, hero_setup, d_obs[dd], d_legal[dd], "deploy", temp)
                 elif heuristic:
-                    lg, vl = _uniform_logits(d_obs[dd], "deploy")
+                    lg, vl, vp = _uniform_logits(d_obs[dd], "deploy")
                 elif opp_move is not None:
-                    lg, vl = _net_logits(opp_move, opp_setup, d_obs[dd], d_legal[dd], "deploy")
+                    lg, vl, vp = _net_logits(opp_move, opp_setup, d_obs[dd], d_legal[dd], "deploy")
                 else:
-                    lg, vl = _uniform_logits(d_obs[dd], "deploy")
+                    lg, vl, vp = _uniform_logits(d_obs[dd], "deploy")
                 d_logits[dd] = lg
                 d_vals[dd] = vl
+                d_probs[dd] = vp
 
-        out = s.commit(m_logits, m_vals, d_logits, d_vals)
+        out = s.commit(m_logits, m_vals, m_probs, d_logits, d_vals, d_probs)
         # The net forwards above already materialized to numpy (np.array), so no
         # MLX graph is retained across steps; flush the Metal cache periodically
         # so a long eval cannot accumulate allocator pressure.

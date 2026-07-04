@@ -73,7 +73,10 @@ fn process_data_over_sim_trajectory_is_finite_and_well_formed() {
     for env in 0..buffer.num_envs() {
         let targets = buffer.process_data(env, 0.8, 0.5);
         for (slot, t) in &targets {
-            assert!(t.ret.is_finite(), "return must be finite");
+            assert!(
+                t.ret.iter().all(|v| v.is_finite()),
+                "categorical return must be finite"
+            );
             assert!(t.advantage.is_finite(), "advantage must be finite");
             assert!(
                 buffer.get(env, *slot).is_some(),

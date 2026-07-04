@@ -32,18 +32,21 @@ _FORCE_LO = -1e30
 
 def _move_logits(move_net, obs, legal, temperature=1.0):
     if obs.shape[0] == 0:
-        return np.zeros((0, sim.N_ACTION), np.float32), np.zeros(0, np.float32)
+        return (np.zeros((0, sim.N_ACTION), np.float32), np.zeros(0, np.float32),
+                np.zeros((0, 3), np.float32))
     out = move_net(mx.array(obs), legal_mask=mx.array(legal))
     inv_t = 1.0 / max(temperature, 1e-6)
     logits = np.clip(np.array(out["move_logits"].astype(mx.float32)), -1e30, None) * inv_t
     vlogp = np.array(out["value_logp"])
-    vals = (np.exp(vlogp) * CATS).sum(-1).astype(np.float32)
-    return logits, vals
+    probs = np.exp(vlogp)
+    vals = (probs * CATS).sum(-1).astype(np.float32)
+    return logits, vals, probs.astype(np.float32)
 
 
 def _setup_logits(setup_net, obs, temperature=1.0):
     if obs.shape[0] == 0:
-        return np.zeros((0, sim.DEPLOY_WIDTH), np.float32), np.zeros(0, np.float32)
+        return (np.zeros((0, sim.DEPLOY_WIDTH), np.float32), np.zeros(0, np.float32),
+                np.zeros((0, 3), np.float32))
     pc = mx.array(list(S.spec.CLASSIC_PIECE_COUNTS), dtype=mx.float32)
     out = setup_net(mx.array(obs), pc)
     n_placed = obs.reshape(obs.shape[0], 40, 14).sum(axis=(1, 2)).astype(int)
@@ -53,8 +56,9 @@ def _setup_logits(setup_net, obs, temperature=1.0):
     logits = all_logits[np.arange(obs.shape[0]), slot] * inv_t
     vlogp = np.array(out["value"].astype(mx.float32))
     vlogp = vlogp - np.log(np.exp(vlogp).sum(-1, keepdims=True))
-    vals = (np.exp(vlogp[np.arange(obs.shape[0]), slot]) * CATS).sum(-1).astype(np.float32)
-    return logits, vals
+    probs = np.exp(vlogp[np.arange(obs.shape[0]), slot])
+    vals = (probs * CATS).sum(-1).astype(np.float32)
+    return logits, vals, probs.astype(np.float32)
 
 
 def _play_matches(move_net, setup_net, hero_seat, num_envs, games, move_cap, seed,
@@ -77,19 +81,22 @@ def _play_matches(move_net, setup_net, hero_seat, num_envs, games, move_cap, see
 
         m_logits = np.zeros((m_obs.shape[0], sim.N_ACTION), np.float32)
         m_vals = np.zeros(m_obs.shape[0], np.float32)
+        m_probs = np.full((m_obs.shape[0], 3), 1.0 / 3.0, np.float32)
         d_logits = np.zeros((d_obs.shape[0], sim.DEPLOY_WIDTH), np.float32)
         d_vals = np.zeros(d_obs.shape[0], np.float32)
+        d_probs = np.full((d_obs.shape[0], 3), 1.0 / 3.0, np.float32)
 
         # Deploy: both seats use the setup net.
         if d_obs.shape[0] > 0:
-            d_logits, d_vals = _setup_logits(setup_net, d_obs)
+            d_logits, d_vals, d_probs = _setup_logits(setup_net, d_obs)
 
         # Opponent move rows: raw policy (sampled).
         opp_rows = np.nonzero(m_pl != hero_seat)[0]
         if opp_rows.size > 0:
-            lg, vl = _move_logits(move_net, m_obs[opp_rows], m_legal[opp_rows], opp_temperature)
+            lg, vl, vp = _move_logits(move_net, m_obs[opp_rows], m_legal[opp_rows], opp_temperature)
             m_logits[opp_rows] = lg
             m_vals[opp_rows] = vl
+            m_probs[opp_rows] = vp
 
         # Hero move rows: resolve by search, one env at a time, forcing the action.
         hero_rows = np.nonzero(m_pl == hero_seat)[0]
@@ -104,8 +111,9 @@ def _play_matches(move_net, setup_net, hero_seat, num_envs, games, move_cap, see
             forced[res.action] = _FORCE_HI
             m_logits[row] = forced
             m_vals[row] = 0.0
+            m_probs[row] = (0.0, 1.0, 0.0)
 
-        out = s.commit(m_logits, m_vals, d_logits, d_vals)
+        out = s.commit(m_logits, m_vals, m_probs, d_logits, d_vals, d_probs)
         mx.clear_cache()
         term = out["terminal"]
         if term.any():

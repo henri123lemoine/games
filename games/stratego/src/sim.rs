@@ -420,11 +420,13 @@ fn sample_apply(
         old_log_probs: log_probs,
         chosen,
         value: evaluation.value,
+        value_probs: evaluation.value_probs,
         is_terminated_position: false,
         is_terminating_action,
         terminal_reward,
         truncated: capped && !rules_terminal,
         target_value: None,
+        target_value_probs: None,
     };
 
     EnvOutcome {
@@ -553,7 +555,10 @@ mod tests {
                     "cap must break replay bootstrapping"
                 );
                 assert_eq!(t.terminal_reward, 0.0, "cap carries no game reward");
-                assert!(t.truncated, "cap is a truncation (value-bootstrapped target)");
+                assert!(
+                    t.truncated,
+                    "cap is a truncation (value-bootstrapped target)"
+                );
                 return;
             }
         }

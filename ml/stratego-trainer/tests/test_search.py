@@ -28,16 +28,19 @@ from stratego_trainer.search import (  # noqa: E402
 def _drive_to_move_phase(num_envs=128, seed=3, steps=120):
     """Drive a uniform self-play sim into the move phase; return (sim, move env)."""
     s = sim.BatchSim(num_envs=num_envs, move_cap=400, seed=seed)
-    for _ in range(steps):
-        b = s.collect()
+
+    def _commit(b):
         nm, nd = b["move_obs"].shape[0], b["deploy_obs"].shape[0]
         s.commit(np.zeros((nm, sim.N_ACTION), np.float32), np.zeros(nm, np.float32),
-                 np.zeros((nd, sim.DEPLOY_WIDTH), np.float32), np.zeros(nd, np.float32))
+                 np.full((nm, 3), 1.0 / 3.0, np.float32),
+                 np.zeros((nd, sim.DEPLOY_WIDTH), np.float32), np.zeros(nd, np.float32),
+                 np.full((nd, 3), 1.0 / 3.0, np.float32))
+
+    for _ in range(steps):
+        _commit(s.collect())
     b = s.collect()
     env = int(b["move_env"][0])
-    nm, nd = b["move_obs"].shape[0], b["deploy_obs"].shape[0]
-    s.commit(np.zeros((nm, sim.N_ACTION), np.float32), np.zeros(nm, np.float32),
-             np.zeros((nd, sim.DEPLOY_WIDTH), np.float32), np.zeros(nd, np.float32))
+    _commit(b)
     return s, env
 
 
@@ -165,7 +168,9 @@ def test_one_mmd_step_improves_the_policy():
         env = int(b["move_env"][trial % len(b["move_env"])])
         nm, nd = b["move_obs"].shape[0], b["deploy_obs"].shape[0]
         s.commit(np.zeros((nm, sim.N_ACTION), np.float32), np.zeros(nm, np.float32),
-                 np.zeros((nd, sim.DEPLOY_WIDTH), np.float32), np.zeros(nd, np.float32))
+                 np.full((nm, 3), 1.0 / 3.0, np.float32),
+                 np.zeros((nd, sim.DEPLOY_WIDTH), np.float32), np.zeros(nd, np.float32),
+                 np.full((nd, 3), 1.0 / 3.0, np.float32))
         srch = s.search_root(env)
         r = search(net, srch, depth=6, stepsize=10.0, temperature=1e-3,
                    max_samples=40, num_envs=256, belief=MarginalizedBelief(), seed=trial)

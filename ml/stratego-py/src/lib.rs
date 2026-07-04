@@ -344,18 +344,27 @@ impl BatchSim {
     ///   slots are ignored (the legal mask selects).
     /// * `move_values` `(n_move,) f32` — scalar value in `[-1, 1]` (the net's
     ///   `softmax(W/L/D) @ [-1, 0, 1]`), acting-player POV.
-    /// * `deploy_logits` `(n_deploy, 14) f32`, `deploy_values` `(n_deploy,) f32`.
+    /// * `move_value_probs` `(n_move, 3) f32` — the move net's raw `softmax(W/L/D)`
+    ///   the scalar above aggregates (`[P(loss), P(tie), P(win)]`); feeds the
+    ///   replay buffer's categorical λ-return (ATARAXOS_SPEC §4.1).
+    /// * `deploy_logits` `(n_deploy, 14) f32`, `deploy_values` `(n_deploy,) f32`,
+    ///   `deploy_value_probs` `(n_deploy, 3) f32` — same contract for the setup
+    ///   net (its distribution can still be the bootstrap target for a move
+    ///   transition two plies before a deploy-phase boundary).
     ///
     /// Returns a dict: `terminal` `(num_envs,)` bool (env completed a game this
     /// step) and `reward_pl0` `(num_envs,) f32` (player-0 terminal reward, 0 if
     /// not terminal).
+    #[allow(clippy::too_many_arguments)]
     fn commit<'py>(
         &mut self,
         py: Python<'py>,
         move_logits: PyReadonlyArray2<'py, f32>,
         move_values: PyReadonlyArray1<'py, f32>,
+        move_value_probs: PyReadonlyArray2<'py, f32>,
         deploy_logits: PyReadonlyArray2<'py, f32>,
         deploy_values: PyReadonlyArray1<'py, f32>,
+        deploy_value_probs: PyReadonlyArray2<'py, f32>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let pending = self
             .pending
@@ -364,17 +373,29 @@ impl BatchSim {
 
         let mlogits = move_logits.as_array();
         let mvalues = move_values.as_array();
+        let mvalue_probs = move_value_probs.as_array();
         let dlogits = deploy_logits.as_array();
         let dvalues = deploy_values.as_array();
+        let dvalue_probs = deploy_value_probs.as_array();
 
         check_shape("move_logits", mlogits.shape(), &[pending.n_move, N_ACTION])?;
         check_len("move_values", mvalues.len(), pending.n_move)?;
+        check_shape(
+            "move_value_probs",
+            mvalue_probs.shape(),
+            &[pending.n_move, 3],
+        )?;
         check_shape(
             "deploy_logits",
             dlogits.shape(),
             &[pending.n_deploy, DEPLOY_WIDTH],
         )?;
         check_len("deploy_values", dvalues.len(), pending.n_deploy)?;
+        check_shape(
+            "deploy_value_probs",
+            dvalue_probs.shape(),
+            &[pending.n_deploy, 3],
+        )?;
 
         // Gather the dense net logits down to each env's ragged legal set, in env
         // order, building exactly the `Evaluation` the Rust sampler consumes.
@@ -382,19 +403,25 @@ impl BatchSim {
             .envs
             .iter()
             .map(|e| {
-                let (logits, value) = match e.phase {
+                let (logits, value, value_probs) = match e.phase {
                     Phase::Move => {
                         let row = mlogits.row(e.row);
                         let logits = e.legal.iter().map(|&a| row[a as usize]).collect();
-                        (logits, mvalues[e.row])
+                        let vp = mvalue_probs.row(e.row);
+                        (logits, mvalues[e.row], [vp[0], vp[1], vp[2]])
                     }
                     Phase::Deploy => {
                         let row = dlogits.row(e.row);
                         let logits = e.legal.iter().map(|&t| row[t as usize]).collect();
-                        (logits, dvalues[e.row])
+                        let vp = dvalue_probs.row(e.row);
+                        (logits, dvalues[e.row], [vp[0], vp[1], vp[2]])
                     }
                 };
-                Evaluation { logits, value }
+                Evaluation {
+                    logits,
+                    value,
+                    value_probs,
+                }
             })
             .collect();
 
@@ -456,7 +483,9 @@ impl BatchSim {
     /// * `data_log_prob` `(N, 1800) f32` — data-policy log-probs on legal slots,
     ///   `-inf` off-legal (the rev-KL-to-data target distribution).
     /// * `value` `(N,) f32`, `target_value` `(N,) f32`, `advantage` `(N,) f32`,
-    ///   `ret` `(N,) f32` (the λ-return value target).
+    ///   `ret` `(N, 3) f32` (the categorical λ-return value-CE target,
+    ///   `[P(loss), P(tie), P(win)]` — ATARAXOS_SPEC §4.1's `use_cat_vf` path,
+    ///   NOT a two-hot projection of a scalar return).
     /// * `player` `(N,) i64`, `num_moves` `(N,) i64`, `is_terminating` `(N,)` bool.
     fn drain_training_batch<'py>(
         &self,
@@ -486,7 +515,7 @@ impl BatchSim {
         let mut value = Array1::<f32>::zeros(n);
         let mut target_value = Array1::<f32>::zeros(n);
         let mut advantage = Array1::<f32>::zeros(n);
-        let mut ret = Array1::<f32>::zeros(n);
+        let mut ret = Array2::<f32>::zeros((n, 3));
         let mut player = Array1::<i64>::zeros(n);
         let mut num_moves = Array1::<i64>::zeros(n);
         let mut is_terminating = Array1::<bool>::default(n);
@@ -504,7 +533,9 @@ impl BatchSim {
             value[i] = t.value;
             target_value[i] = t.target_value.unwrap_or(t.value);
             advantage[i] = targets.advantage;
-            ret[i] = targets.ret;
+            ret[(i, 0)] = targets.ret[0];
+            ret[(i, 1)] = targets.ret[1];
+            ret[(i, 2)] = targets.ret[2];
             player[i] = t.player as i64;
             num_moves[i] = t.num_moves as i64;
             is_terminating[i] = t.is_terminating_action;
@@ -926,6 +957,11 @@ impl Searcher {
                 Evaluation {
                     logits,
                     value: vals[row],
+                    // Search rollouts only ever read `value` (the scalar leaf
+                    // bootstrap); `value_probs` is unused here, so a two-hot
+                    // stand-in keeps the struct's invariant (`value ==
+                    // value_probs @ VALUE_CATEGORIES`) without a real forward.
+                    value_probs: stratego::evaluator::two_hot(vals[row]),
                 }
             })
             .collect();

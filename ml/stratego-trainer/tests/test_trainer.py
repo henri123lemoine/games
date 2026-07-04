@@ -75,7 +75,9 @@ def _drive(s, steps):
         nd = b["deploy_obs"].shape[0]
         s.commit(
             np.zeros((nm, sim.N_ACTION), np.float32), np.zeros(nm, np.float32),
+            np.full((nm, 3), 1.0 / 3.0, np.float32),
             np.zeros((nd, sim.DEPLOY_WIDTH), np.float32), np.zeros(nd, np.float32),
+            np.full((nd, 3), 1.0 / 3.0, np.float32),
         )
 
 
@@ -111,8 +113,9 @@ def test_move_loss_reduces_on_real_data():
     if idx.size < 8:
         pytest.skip("too few filtered transitions in this short drive")
     idx = idx[:256]
+    obs = s.encode_move_obs(d["env"][idx], d["slot"][idx])
     batch = {
-        "obs": mx.array(d["obs"][idx]),
+        "obs": mx.array(obs),
         "legal": mx.array(d["legal_mask"][idx]),
         "action": mx.array(d["action"][idx].astype(np.int32)),
         "old_log_prob": mx.array(d["old_log_prob"][idx]),

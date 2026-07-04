@@ -182,16 +182,29 @@ def _move_forward_raw(net, obs_np, legal_np):
     return (out["move_logits"].astype(mx.float32), out["value_logp"].astype(mx.float32))
 
 
+def _sanitize_probs(raw_probs):
+    """Repair a categorical distribution against non-finite corruption: fill
+    NaN/inf with a uniform fallback, then renormalize so it stays a valid
+    distribution for the sim's stored transitions (the buffer's categorical
+    λ-return bootstraps directly from this per §4.1)."""
+    probs = np.nan_to_num(raw_probs, nan=1.0 / 3.0, posinf=1.0, neginf=0.0)
+    probs = probs / np.clip(probs.sum(axis=-1, keepdims=True), 1e-6, None)
+    return probs.astype(np.float32)
+
+
 def _move_forward_finish(raw, obs_np):
     if raw is None:
-        return (np.zeros((0, sim.N_ACTION), np.float32), np.zeros(0, np.float32), 0)
+        return (np.zeros((0, sim.N_ACTION), np.float32), np.zeros(0, np.float32),
+                np.zeros((0, 3), np.float32), 0)
     raw_logits = np.array(raw[0])  # already float32 + evaluated
     vlogp = np.array(raw[1])
-    raw_vals = (np.exp(vlogp) * CATS).sum(-1)
-    scrub = _nonfinite(raw_logits) + _nonfinite(raw_vals)
+    raw_probs = np.exp(vlogp)
+    raw_vals = (raw_probs * CATS).sum(-1)
+    scrub = _nonfinite(raw_logits) + _nonfinite(raw_vals) + _nonfinite(raw_probs)
     logits = _sanitize_logits(raw_logits)
     vals = np.clip(np.nan_to_num(raw_vals, nan=0.0, posinf=1.0, neginf=-1.0), -1.0, 1.0).astype(np.float32)
-    return logits, vals, scrub
+    probs = _sanitize_probs(raw_probs)
+    return logits, vals, probs, scrub
 
 
 def _setup_forward_raw(net, obs_np):
@@ -205,7 +218,8 @@ def _setup_forward_raw(net, obs_np):
 
 def _setup_forward_finish(raw, obs_np):
     if raw is None:
-        return (np.zeros((0, sim.DEPLOY_WIDTH), np.float32), np.zeros(0, np.float32), 0)
+        return (np.zeros((0, sim.DEPLOY_WIDTH), np.float32), np.zeros(0, np.float32),
+                np.zeros((0, 3), np.float32), 0)
     n_placed = obs_np.reshape(obs_np.shape[0], 40, 14).sum(axis=(1, 2)).astype(int)
     slot = np.clip(n_placed, 0, 39)
     raw_logits = np.array(raw[0])  # (B,40,14), float32 + evaluated
@@ -213,8 +227,11 @@ def _setup_forward_finish(raw, obs_np):
     all_logits = _sanitize_logits(raw_logits)
     logits = all_logits[np.arange(obs_np.shape[0]), slot]
     vlogp = _stable_log_softmax(np.array(raw[1]), axis=-1)
-    vals = np.clip((np.exp(vlogp[np.arange(obs_np.shape[0]), slot]) * CATS).sum(-1), -1.0, 1.0)
-    return logits, vals.astype(np.float32), scrub
+    slot_probs = np.exp(vlogp[np.arange(obs_np.shape[0]), slot])
+    scrub += _nonfinite(slot_probs)
+    vals = np.clip((slot_probs * CATS).sum(-1), -1.0, 1.0)
+    probs = _sanitize_probs(slot_probs)
+    return logits, vals.astype(np.float32), probs, scrub
 
 
 def collect_iter(s, move_net, setup_net, steps):
@@ -239,11 +256,13 @@ def collect_iter(s, move_net, setup_net, steps):
             ev += list(s_raw)
         if ev:
             mx.eval(*ev)
-        m_logits, m_vals, m_scrub = _move_forward_finish(m_raw, b["move_obs"])
-        d_logits, d_vals, d_scrub = _setup_forward_finish(s_raw, b["deploy_obs"])
+        m_logits, m_vals, m_probs, m_scrub = _move_forward_finish(m_raw, b["move_obs"])
+        d_logits, d_vals, d_probs, d_scrub = _setup_forward_finish(s_raw, b["deploy_obs"])
         t_fwd += time.time() - a
         scrub += m_scrub + d_scrub
-        a = time.time(); out = s.commit(m_logits, m_vals, d_logits, d_vals); t_comm += time.time() - a
+        a = time.time()
+        out = s.commit(m_logits, m_vals, m_probs, d_logits, d_vals, d_probs)
+        t_comm += time.time() - a
         n_term += int(out["terminal"].sum())
         rsum += float(out["reward_pl0"].sum())
     return steps * s.num_envs, n_term, rsum, scrub, t_coll, t_fwd, t_comm
@@ -319,7 +338,7 @@ def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg, bf16_n
                 "old_log_prob": mx.array(fin(data["old_log_prob"][mb], neg=-100.0, pos=0.0)),
                 "data_log_prob": mx.array(fin(data["data_log_prob"][mb], neg=-100.0, pos=0.0)),
                 "advantage": mx.array(fin(data["advantage"][mb])),
-                "ret": mx.array(np.clip(fin(data["ret"][mb]), -1.0, 1.0)),
+                "ret": mx.array(fin(data["ret"][mb])),  # (bs, 3) categorical value target
             }
 
             def loss_fn(net):

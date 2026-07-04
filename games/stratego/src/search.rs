@@ -532,6 +532,7 @@ mod tests {
                 .map(|d| Evaluation {
                     logits: vec![0.0; d.legal.len()],
                     value: self.0,
+                    value_probs: crate::evaluator::two_hot(self.0),
                 })
                 .collect()
         }

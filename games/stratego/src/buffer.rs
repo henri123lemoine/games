@@ -27,7 +27,7 @@
 use crate::arrangement::DeploymentState;
 use crate::board::Board;
 use crate::encode::EncoderConfig;
-use crate::evaluator::Phase;
+use crate::evaluator::{Phase, two_hot};
 
 /// The minimal state needed to re-encode a transition's observation on demand.
 #[derive(Debug, Clone)]
@@ -63,8 +63,14 @@ pub struct Transition {
     pub old_log_probs: Vec<f32>,
     /// Index into `legal` of the chosen `action`.
     pub chosen: usize,
-    /// Categorical/scalar value the evaluator gave this position (acting POV).
+    /// Scalar value the evaluator gave this position (acting POV): `value_probs
+    /// @ VALUE_CATEGORIES`.
     pub value: f32,
+    /// The evaluator's categorical distribution over `VALUE_CATEGORIES` for this
+    /// position (acting POV) — the move value head's raw softmax(W/L/D). Feeds
+    /// the categorical λ-return in [`ReplayBuffer::process_data`]; `value` is
+    /// only its aggregate.
+    pub value_probs: [f32; 3],
     /// True if this position is itself terminal (no action was taken from it in
     /// the live game — a dummy reset transition).
     pub is_terminated_position: bool,
@@ -83,15 +89,25 @@ pub struct Transition {
     /// the same player's next position is known, or the one-hot terminal reward.
     /// `None` until resolved.
     pub target_value: Option<f32>,
+    /// Categorical counterpart of `target_value`: the two-ply-later position's
+    /// `value_probs`, or the terminal reward's one-hot, matching the reference
+    /// `buffer.py`'s `target_values` (`softmax(values[next])`, not a two-hot
+    /// projection of the scalar `target_value`). `None` until resolved.
+    pub target_value_probs: Option<[f32; 3]>,
 }
 
 /// The processed per-transition learning targets, produced by
 /// [`ReplayBuffer::process_data`] over each per-env trajectory.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Targets {
-    /// λ-return (value target), `td_lambda` discounted (move default 0.8).
-    pub ret: f32,
-    /// GAE advantage, `gae_lambda` discounted (move default 0.5).
+    /// Categorical λ-return (the value-CE target), `td_lambda` discounted (move
+    /// default 0.8): the vector cumsum of `target_value_probs - value_probs`
+    /// (reference `rl.py`'s `returns`, not a two-hot projection of a scalar
+    /// return — the two differ whenever a bootstrapped value isn't a bare
+    /// category anchor).
+    pub ret: [f32; 3],
+    /// GAE advantage, `gae_lambda` discounted (move default 0.5); scalar, from
+    /// the aggregated (`value` / `target_value`) deltas.
     pub advantage: f32,
 }
 
@@ -201,6 +217,7 @@ impl ReplayBuffer {
         let boundary = terminating && !transition.is_terminated_position;
         let terminal_reward = transition.terminal_reward;
         let value = transition.value;
+        let value_probs = transition.value_probs;
         let truncated = transition.truncated;
 
         self.rings[env][slot] = Some(transition);
@@ -227,6 +244,15 @@ impl ReplayBuffer {
                     }
                 } else {
                     value
+                });
+                pp.target_value_probs = Some(if pp.is_terminating_action {
+                    if pp.truncated {
+                        pp.value_probs
+                    } else {
+                        two_hot(pp.terminal_reward)
+                    }
+                } else {
+                    value_probs
                 });
             }
         }
@@ -273,12 +299,15 @@ impl ReplayBuffer {
         })
     }
 
-    /// Computes λ-returns and GAE advantages over the resident trajectory of one
-    /// env, returning per-resident-slot [`Targets`] keyed by ring slot. Mirrors
-    /// `buffer.py:process_data`: `delta = target_value - value`;
-    /// `returns = segmented_discounted_cumsum(delta, td_lambda * ~terminal) + value`;
-    /// `advantages = segmented_discounted_cumsum(delta, gae_lambda * ~terminal)`.
-    /// Implemented by the buffer milestone.
+    /// Computes the categorical λ-return and GAE advantage over the resident
+    /// trajectory of one env, returning per-resident-slot [`Targets`] keyed by
+    /// ring slot. Mirrors `buffer.py:process_data`'s `use_cat_vf` path:
+    /// `delta = target_value_probs - value_probs` (per-category vectors);
+    /// `returns = segmented_discounted_cumsum(delta, td_lambda * ~terminal) + value_probs`
+    /// (vector); `scalar_delta = target_value - value`;
+    /// `advantages = segmented_discounted_cumsum(scalar_delta, gae_lambda * ~terminal)`
+    /// (scalar — advantages stay the aggregated form regardless of value-function
+    /// flavor).
     pub fn process_data(
         &self,
         env: usize,
@@ -293,8 +322,9 @@ impl ReplayBuffer {
         let start = self.heads[env] - resident;
 
         let mut slots = Vec::with_capacity(resident);
-        let mut value = Vec::with_capacity(resident);
+        let mut value_probs = Vec::with_capacity(resident);
         let mut delta = Vec::with_capacity(resident);
+        let mut delta_probs = Vec::with_capacity(resident);
         let mut td_disc = Vec::with_capacity(resident);
         let mut gae_disc = Vec::with_capacity(resident);
         for i in 0..resident {
@@ -303,29 +333,59 @@ impl ReplayBuffer {
                 continue;
             };
             let v = t.value;
+            let vp = t.value_probs;
             let target = t.target_value.unwrap_or(v);
+            let target_p = t.target_value_probs.unwrap_or(vp);
             slots.push(slot);
-            value.push(v);
+            value_probs.push(vp);
             delta.push(target - v);
+            delta_probs.push(sub3(target_p, vp));
             let cont = if t.is_terminating_action { 0.0 } else { 1.0 };
             td_disc.push(td_lambda * cont);
             gae_disc.push(gae_lambda * cont);
         }
 
-        let ret_cumsum = segmented_discounted_cumsum(&delta, &td_disc);
         let adv = segmented_discounted_cumsum(&delta, &gae_disc);
+        let ret_cumsum = segmented_discounted_cumsum_vec(&delta_probs, &td_disc);
         (0..slots.len())
             .map(|i| {
                 (
                     slots[i],
                     Targets {
-                        ret: ret_cumsum[i] + value[i],
+                        ret: add3(ret_cumsum[i], value_probs[i]),
                         advantage: adv[i],
                     },
                 )
             })
             .collect()
     }
+}
+
+fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+/// Vector counterpart of [`segmented_discounted_cumsum`]: the same recurrence
+/// applied independently per category (the discount at each step is a shared
+/// scalar, so the 3-category recursion decomposes exactly into three scalar
+/// recursions).
+fn segmented_discounted_cumsum_vec(x: &[[f32; 3]], disc: &[f32]) -> Vec<[f32; 3]> {
+    let mut y = vec![[0.0f32; 3]; x.len()];
+    if x.is_empty() {
+        return y;
+    }
+    let last = x.len() - 1;
+    y[last] = x[last];
+    for t in (0..last).rev() {
+        for c in 0..3 {
+            y[t][c] = x[t][c] + disc[t] * y[t + 1][c];
+        }
+    }
+    y
 }
 
 /// Reverse scan matching `buffer.py:segmented_discounted_cumsum`: `y[last] =
@@ -389,16 +449,21 @@ mod tests {
             old_log_probs: Vec::new(),
             chosen: 0,
             value: 0.0,
+            value_probs: two_hot(0.0),
             is_terminated_position: false,
             is_terminating_action: false,
             terminal_reward: 0.0,
             truncated: false,
             target_value: None,
+            target_value_probs: None,
         }
     }
 
     /// A bare move-phase transition carrying just the value/terminal fields the
     /// record/process logic reads, snapshotting a fixed board for completeness.
+    /// `value_probs` is `two_hot(value)` — a stand-in categorical distribution
+    /// whose expectation is the given scalar (exact whenever `value` is itself a
+    /// bare category anchor, e.g. a terminal reward).
     fn synth(
         player: usize,
         value: f32,
@@ -420,11 +485,13 @@ mod tests {
             old_log_probs: Vec::new(),
             chosen: 0,
             value,
+            value_probs: two_hot(value),
             is_terminated_position,
             is_terminating_action,
             terminal_reward,
             truncated: false,
             target_value: None,
+            target_value_probs: None,
         }
     }
 
@@ -512,11 +579,13 @@ mod tests {
                 old_log_probs: Vec::new(),
                 chosen: 0,
                 value: 0.0,
+                value_probs: two_hot(0.0),
                 is_terminated_position: false,
                 is_terminating_action: false,
                 terminal_reward: 0.0,
                 truncated: false,
                 target_value: None,
+                target_value_probs: None,
             },
         );
 
@@ -592,16 +661,8 @@ mod tests {
 
         let delta: Vec<f32> = (0..3).map(|i| target[i] - value[i]).collect();
         let cont = |t: bool| if t { 0.0 } else { 1.0 };
-        let td_disc: Vec<f32> = term.iter().map(|&t| td * cont(t)).collect();
         let gae_disc: Vec<f32> = term.iter().map(|&t| gae * cont(t)).collect();
 
-        let ret_cs = {
-            let mut y = vec![0.0f32; 3];
-            y[2] = delta[2];
-            y[1] = delta[1] + td_disc[1] * y[2];
-            y[0] = delta[0] + td_disc[0] * y[1];
-            y
-        };
         let adv_cs = {
             let mut y = vec![0.0f32; 3];
             y[2] = delta[2];
@@ -609,24 +670,81 @@ mod tests {
             y[0] = delta[0] + gae_disc[0] * y[1];
             y
         };
-        let want_ret: Vec<f32> = (0..3).map(|i| ret_cs[i] + value[i]).collect();
 
         let out = buf.process_data(0, td, gae);
         assert_eq!(out.len(), 3);
         for (i, (slot, targets)) in out.iter().enumerate() {
             assert_eq!(*slot, i, "slot order");
             assert!(
-                (targets.ret - want_ret[i]).abs() < 1e-6,
-                "ret[{i}] got {} want {}",
-                targets.ret,
-                want_ret[i]
-            );
-            assert!(
                 (targets.advantage - adv_cs[i]).abs() < 1e-6,
                 "adv[{i}] got {} want {}",
                 targets.advantage,
                 adv_cs[i]
             );
+        }
+    }
+
+    /// The categorical value-CE target (`Targets::ret`): a genuine per-category
+    /// vector cumsum of `two_hot(target) - two_hot(value)` (reference
+    /// `buffer.py`'s `use_cat_vf` path), NOT a two-hot projection of the
+    /// aggregated scalar return. The two differ whenever a bootstrapped value
+    /// isn't a bare category anchor — this test's values (0.2/0.4/0.6) are
+    /// deliberately off-anchor to exercise that.
+    #[test]
+    fn process_data_categorical_return_is_a_vector_cumsum_not_a_scalar_two_hot() {
+        let td = 0.8f32;
+        let gae = 0.5f32;
+        let mut buf = ReplayBuffer::new(1, 16, EncoderConfig::default());
+
+        buf.record(0, synth(0, 0.2, false, false, 0.0));
+        buf.record(0, synth(1, 0.4, false, false, 0.0));
+        buf.record(0, synth(0, 0.6, true, false, 1.0));
+
+        let value = [0.2f32, 0.4, 0.6];
+        let value_probs: Vec<[f32; 3]> = value.iter().map(|&v| two_hot(v)).collect();
+        // Same bootstrap structure as the scalar test: only t0 resolves (to
+        // value_probs[2]); t1/t2 fall back to their own distribution.
+        let target_probs = [value_probs[2], value_probs[1], value_probs[2]];
+        let term = [false, false, true];
+
+        let delta_probs: Vec<[f32; 3]> = (0..3)
+            .map(|i| sub3(target_probs[i], value_probs[i]))
+            .collect();
+        let cont = |t: bool| if t { 0.0 } else { 1.0 };
+        let td_disc: Vec<f32> = term.iter().map(|&t| td * cont(t)).collect();
+
+        let mut y = [[0.0f32; 3]; 3];
+        y[2] = delta_probs[2];
+        for t in [1usize, 0] {
+            for c in 0..3 {
+                y[t][c] = delta_probs[t][c] + td_disc[t] * y[t + 1][c];
+            }
+        }
+        let want_ret: Vec<[f32; 3]> = (0..3).map(|i| add3(y[i], value_probs[i])).collect();
+
+        // Sanity: the vector return's expectation must still match the old
+        // scalar-only cumsum (0.6, 0.4, 0.6) — proves the two formulations agree
+        // in aggregate even though the distributions differ.
+        const CATS: [f32; 3] = crate::evaluator::VALUE_CATEGORIES;
+        let want_scalar = [0.6f32, 0.4, 0.6];
+        for (i, r) in want_ret.iter().enumerate() {
+            let agg = r[0] * CATS[0] + r[1] * CATS[1] + r[2] * CATS[2];
+            assert!(
+                (agg - want_scalar[i]).abs() < 1e-6,
+                "ret[{i}] aggregate got {agg} want {}",
+                want_scalar[i]
+            );
+        }
+
+        let out = buf.process_data(0, td, gae);
+        assert_eq!(out.len(), 3);
+        for (i, (_, targets)) in out.iter().enumerate() {
+            for (c, (&got, &want)) in targets.ret.iter().zip(want_ret[i].iter()).enumerate() {
+                assert!(
+                    (got - want).abs() < 1e-6,
+                    "ret[{i}][{c}] got {got} want {want}"
+                );
+            }
         }
     }
 

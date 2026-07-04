@@ -1,10 +1,13 @@
 """The move-RL loss (ATARAXOS_SPEC §4.1, reference `rl.py:547-579`).
 
 PPO-clip policy + temperature(t)*magnet-KL + categorical value-CE + 0.1*rev-KL-to-data.
-Advantage filtering keeps `|adv| >= max(quantile(|adv|, 0.75), 0.01)`. The scalar
-λ-return `ret` is two-hot encoded over the value categories [-1, 0, 1] to form the
-categorical value target (the reference carries the full 3-cat return; the bridge
-hands us the scalar, which two-hot reproduces exactly for a value in [-1, 1]).
+Advantage filtering keeps `|adv| >= max(quantile(|adv|, 0.75), 0.01)`. The value-CE
+target `ret` is the genuine categorical λ-return the Rust buffer computes
+(`buffer.rs::process_data`'s `use_cat_vf` path: a per-category vector cumsum of
+`target_value_probs - value_probs`, bootstrapped from the next position's actual
+softmax(W/L/D) distribution) — NOT a two-hot projection of a scalar return, which
+the reference's categorical bootstrap is not equivalent to whenever a bootstrapped
+value isn't a bare category anchor.
 """
 
 import mlx.core as mx
@@ -69,7 +72,7 @@ def move_loss_and_stats(net, batch, magnet_coef, cfg):
 
     `batch` holds MLX arrays already restricted to the kept (filtered) rows:
       obs (B,92,F), legal (B,1800) bool, action (B,) int, old_log_prob (B,),
-      data_log_prob (B,1800), advantage (B,), ret (B,), value_scalar (B,).
+      data_log_prob (B,1800), advantage (B,), ret (B,3) categorical value target.
     """
     obs = batch["obs"]
     legal = batch["legal"]
@@ -101,9 +104,8 @@ def move_loss_and_stats(net, batch, magnet_coef, cfg):
     data_lp = mx.where(legal, data_log_prob.astype(mx.float32), 0.0)
     kl_loss = (probs * mx.where(legal, log_probs - data_lp, 0.0)).sum(-1).mean()
 
-    # Categorical value-CE: two-hot(ret) over [-1,0,1] vs log_softmax(value).
-    returns = two_hot(ret)
-    value_loss = -(returns * value_logp).sum(-1).mean()
+    # Categorical value-CE: the buffer's categorical λ-return vs log_softmax(value).
+    value_loss = -(ret * value_logp).sum(-1).mean()
 
     # Magnet reverse-KL to the flat-uniform legal magnet.
     entropy = -(probs * mx.where(legal, log_probs, 0.0)).sum(-1)
