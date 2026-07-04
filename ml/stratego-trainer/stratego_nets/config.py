@@ -42,4 +42,19 @@ BELIEF_REF = BeliefConfig(
     n_encoder_layer=6, n_decoder_block=6, embed_dim=512, n_head=8
 )
 
+# An intermediate point between the default (smoke-scale) and ref (paper-scale)
+# presets, used by the throughput calibration sweep (README/BENCHMARK.md).
+MOVE_MID = MoveConfig(depth=8, embed_dim=320, n_head=8)
+SETUP_MID = SetupConfig(depth=4, embed_dim=384, n_head=8)
+
+# The named move/setup size presets a run can select (`TrainConfig.net_size` /
+# `--net-size`), and the single source of truth for resolving a size name back
+# to configs — both the trainer and the standalone eval/play tooling key off
+# this so a checkpoint's declared size always reconstructs the matching net.
+NET_SIZES = {
+    "default": (MoveConfig(), SetupConfig()),
+    "mid": (MOVE_MID, SETUP_MID),
+    "ref": (MOVE_REF, SETUP_REF),
+}
+
 DEFAULT_BATCH = 1024
