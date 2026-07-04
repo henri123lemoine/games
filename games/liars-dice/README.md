@@ -44,8 +44,29 @@ cargo run --release -p lab -- play liars-dice players=5 dice=5
 # evaluate / tune / search
 cargo run --release -p liars-dice --example evaluate          # vs random, all configs
 cargo run --release -p liars-dice --example league 5 5 6      # robust self-play tuning
+cargo run --release -p liars-dice --example tournament        # field matrix + Elo
+cargo run --release -p liars-dice --example bakeoff_plan -- outdir=runs/ld_bakeoff_5p5d6f script=runs/ld_bakeoff_5p5d6f/run.sh
+cargo run --release -p liars-dice --example tournament -- nets=a:runs/ld_deepcfr/a.bin,b:runs/ld_deepcfr/b.bin
+cargo run --release -p liars-dice --example tournament -- agents=rollout,nets nets=a:runs/ld_deepcfr/a.bin cells=net-a:rollout-48 resume=1
+cargo run --release -p liars-dice --example tournament -- agents=rollout,blueprint-search solve_iters=4000 solve_restarts=2
+cargo run --release -p liars-dice --example tournament -- agents=rollout,net-search net=runs/ld_deepcfr/best.bin net_search_rollouts=48 net_search_plies=3
+cargo run --release -p liars-dice --example tournament -- agents=rollout,rnads rnads=rnad:runs/ld_rnad/best.bin
+cargo run --release -p liars-dice --example tournament -- agents=rollout,ppo ppo=runs/ld_ppo/best.bin
+cargo run --release -p liars-dice --example tournament -- agents=rollout,history history=runs/ld_history/best.bin
+cargo run --release -p liars-dice --example tournament -- cells=0:3,1:3 metrics=runs/ld_tournament_metrics.jsonl
+cargo run --release --manifest-path ml/ld-rnad/Cargo.toml -- mixed=1 max_players=5 max_dice=8 iters=400 episodes_per_iter=512 outdir=runs/ld_rnad
+cargo run --release --manifest-path ml/ld-ppo/Cargo.toml -- mixed=1 max_players=5 max_dice=8 iters=400 actors=64 steps=64 outdir=runs/ld_ppo
+cargo run --release --manifest-path ml/ld-rnad/Cargo.toml -- architecture=history mixed=1 max_players=5 max_dice=8 iters=400 episodes_per_iter=512 outdir=runs/ld_history
+cargo run --release -p liars-dice --example search_teacher -- base=runs/ld_rnad/best.bin outdir=runs/ld_teacher
+cargo run --release -p liars-dice --example population -- rnads=rnad:runs/ld_rnad/best.bin ppos=ppo:runs/ld_ppo/best.bin histories=hist:runs/ld_history/best.bin
+cargo run --release -p liars-dice --example curve_report -- train=runs/ld_bakeoff_5p5d6f/population.jsonl tournament=runs/ld_bakeoff_5p5d6f/tournament_x1.jsonl
 cargo run --release -p liars-dice --example rollout_eval 5 5 6 # does lookahead help?
 ```
+
+The R-NaD trainer writes a default-on tiny exact exploitability diagnostic into
+`metrics.jsonl` (`eval_exploitability=0` disables it for plumbing-only smokes).
+Use that only as a collapse canary; tournament win-share and Elo are the
+bake-off signals.
 
 ## Honest limits
 
