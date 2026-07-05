@@ -69,6 +69,7 @@ const ARTIFACTS: Record<string, string> = {
   "data/azero/chess.bin": "artifacts/azero-chess.bin",
   "data/twentyone/solver-h3.bin": "artifacts/t21-solver-h3.bin",
   "data/twentyone/solver-h6.bin": "artifacts/t21-solver-h6.bin",
+  "runs/ld_history/best.bin": "artifacts/ld-history-champion.bin",
 };
 
 /** The shipped artifacts a match with these opts will ask the registry for.
@@ -85,6 +86,12 @@ function artifactsFor(gameId: string, opts: Record<string, string>): string[] {
   }
   if (gameId === "twentyone")
     wanted.push(`data/twentyone/solver-h${opts.hearts ?? "6"}.bin`);
+  if (gameId === "liars-dice") {
+    const usesHistory =
+      opts.bot === "history" ||
+      (opts.bots ?? "").split(",").some((s) => s.split(":")[0] === "history");
+    if (usesHistory) wanted.push("runs/ld_history/best.bin");
+  }
   return wanted.filter((w) => w in ARTIFACTS);
 }
 
@@ -162,7 +169,7 @@ interface RosterBot {
  * choice; the superseded `azero` net is never listed.) */
 const SHOWN_BOTS: Record<string, readonly string[]> = {
   chess: ["azero-gpu"],
-  "liars-dice": ["rollout"],
+  "liars-dice": ["rollout", "history"],
   poker: ["equity"],
   othello: ["alphabeta"],
   connect4: ["alphabeta"],

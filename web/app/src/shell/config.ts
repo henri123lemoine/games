@@ -15,6 +15,7 @@ export const BOT_LABELS: Record<string, string> = {
   "mcts-eval": "MCTS (eval)",
   "mcts-spec": "MCTS (spec)",
   rollout: "Rollout",
+  history: "Neural",
   belief: "Belief",
   random: "Random",
 };
