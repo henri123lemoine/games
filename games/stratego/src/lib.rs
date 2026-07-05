@@ -28,9 +28,12 @@
 //! * [`game`] — the `Stratego` `Game`/`GameUi` impl, `State`, `Move`,
 //!   `random_play_state`/`random_arrangement` (the move-phase start).
 //! * [`bots`] — `HeuristicBot`, the competent material+belief baseline agent.
+//! * [`bc`] — `generate_bc_games`, HeuristicBot-vs-HeuristicBot move-phase
+//!   behavior-cloning data for the RL move-RL warm start.
 
 pub mod action;
 pub mod arrangement;
+pub mod bc;
 pub mod board;
 pub mod bots;
 pub mod buffer;
@@ -45,6 +48,7 @@ pub mod twosquare;
 
 pub use action::{Action, NUM_ACTIONS};
 pub use arrangement::{Arrangement, DeploymentState};
+pub use bc::{BcRow, generate_games as generate_bc_games};
 pub use board::{Board, Color, DeathReason, DeathStatus, Piece, PieceType};
 pub use bots::HeuristicBot;
 pub use buffer::{EncodedView, ReplayBuffer, SetupGame, Snapshot, Targets, Transition};
