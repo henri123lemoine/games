@@ -40,7 +40,7 @@ const PENTE_AZ_SIZE = "19";
 
 const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   chess: { bot: "azero-gpu", sims: "256" },
-  "liars-dice": { players: "5", dice: "5", faces: "6", rollouts: "400" },
+  "liars-dice": { players: "5", dice: "5", faces: "6", rollouts: "400", bot: "history" },
   twentyone: { hearts: "3" },
   othello: { depth: "5" },
   connect4: { depth: "7" },
@@ -169,7 +169,7 @@ interface RosterBot {
  * choice; the superseded `azero` net is never listed.) */
 const SHOWN_BOTS: Record<string, readonly string[]> = {
   chess: ["azero-gpu"],
-  "liars-dice": ["rollout", "history"],
+  "liars-dice": ["history", "rollout"],
   poker: ["equity"],
   othello: ["alphabeta"],
   connect4: ["alphabeta"],

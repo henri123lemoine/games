@@ -186,7 +186,10 @@ class LiarsDiceFrontend implements GameFrontend {
           [{ transform: 'scale(0.8)' }, { transform: 'scale(1.12)' }, { transform: 'scale(1)' }],
           { duration: 300 * scale, easing: 'ease-out' },
         );
-      await sleep(150 * scale);
+      // A bot's bid lingers so a human can read it before the next one lands;
+      // the human's own bid stays snappy (no need to slow your own move).
+      const botPace = event.seat !== this.ctx.humanSeat ? 2 : 1;
+      await sleep(150 * botPace * scale);
     }
   }
 
