@@ -281,20 +281,33 @@ fn twosquare_scout_range_variant() {
     }
 }
 
-// --- Continuous chase rule (continuous_chase.py StateMachine) ---------------
+// --- Continuous chase rule (chase_state.cu kernel port) --------------------
+//
+// The reference ships a Python test-generation oracle (`continuous_chase.py`
+// / `continuous_chase_new.py`) that is *not* faithful to the real kernel
+// (`chase_state.cu`) — see `chase.rs`'s module docs. The saved reference game
+// logs below are still ground truth (validated against the real env's
+// `current_legal_action_mask`), so they're what drives our confidence in the
+// port; see `chase_replay.rs` for the full vendored-file suite. The unit
+// tests here are lightweight, hand-constructed sanity checks against
+// `crate::chase::ChaseState`'s own module tests plus one end-to-end check
+// through `rules::apply`/`legal_mask`.
 
 #[test]
-fn chase_oracle_matches_would_violate_probe() {
-    use crate::chase::ChaseOracle;
-    let mut sm = ChaseOracle::default();
-    sm.update(34, 44, false, true);
-    sm.update(45, 46, false, false);
-    sm.update(44, 45, false, true);
-    sm.update(46, 47, false, false);
-    sm.update(45, 46, false, true);
-    let predicted = sm.would_violate(47, 46);
-    let actual = sm.clone().update(47, 46, false, false);
-    assert_eq!(predicted, actual, "would_violate must predict update");
+fn chase_state_requires_two_threatening_plies_before_any_violation() {
+    use crate::chase::ChaseState;
+    let mut board = Board::blank();
+    board.pieces[20] = crate::board::Piece::new(PieceType::Scout, Color::Red, 0);
+    board.pieces[22] = crate::board::Piece::new(PieceType::Scout, Color::Blue, 0);
+    let mut sm = ChaseState::new_from_board(&board);
+
+    // A single threatening move only brings chase_length to 1 — no move can
+    // be a violation yet, matching the kernel's `delta >= chase_length` guard
+    // (needs chase_length >= 2 for delta=1 to ever be checked).
+    board.pieces[21] = board.pieces[20];
+    board.pieces[20] = crate::board::Piece::EMPTY;
+    sm.commit(&board, 0, 20, 21, false);
+    assert!(!sm.would_violate(&board, 0, 21, 20));
 }
 
 /// Parses a 100-char absolute board string (`BoardString` stripped of `@.`
@@ -324,6 +337,10 @@ fn board_from_abs_string(s: &str) -> Board {
     }
     board.num_hidden = num_hidden;
     board.num_hidden_unmoved = unmoved;
+    // Board::blank() seeds `chase` from the pieces-less blank board; this
+    // helper places pieces directly (bypassing board_from_arrangements's own
+    // reseed), so redo it here with the real starting position.
+    board.chase = crate::chase::ChaseState::new_from_board(&board);
     board
 }
 
@@ -399,13 +416,13 @@ const CHASE_GAMES: &[(&str, &[u16])] = &[
 
 #[test]
 fn chase_saved_reference_games_mask_the_violating_action() {
-    for &(board_str, actions) in CHASE_GAMES {
+    for (game_idx, &(board_str, actions)) in CHASE_GAMES.iter().enumerate() {
         let mut board = board_from_abs_string(board_str);
         let mut player = 0usize;
-        for &a in &actions[..actions.len() - 1] {
+        for (ply, &a) in actions[..actions.len() - 1].iter().enumerate() {
             assert!(
                 rules::legal_mask(&board, player)[a as usize],
-                "replay action {a} illegal for player {player}"
+                "game {game_idx} ply {ply}: replay action {a} illegal for player {player}"
             );
             rules::apply(&mut board, Action(a), player);
             player = 1 - player;
@@ -423,25 +440,32 @@ fn chase_saved_reference_games_mask_the_violating_action() {
 }
 
 #[test]
-fn chase_non_threatening_move_never_violates() {
-    use crate::chase::ChaseOracle;
-    let mut sm = ChaseOracle::default();
-    assert!(!sm.update(11, 12, false, false));
-    assert!(!sm.would_violate(12, 13));
+fn chase_move_not_adjacent_to_any_opponent_never_violates() {
+    use crate::chase::ChaseState;
+    let board = Board::blank();
+    let sm = ChaseState::new_from_board(&board);
+    // No pieces on the board at all, so no move can ever be "a threat";
+    // would_violate must short-circuit false regardless of chase_length.
+    assert!(!sm.would_violate(&board, 0, 11, 12));
 }
 
 #[test]
-fn chase_carve_out_revert_last_move_allowed() {
-    // A pure two-square oscillation by the evader, with no recorded threat
-    // pairing, must never be flagged as a chase violation.
-    use crate::chase::ChaseOracle;
-    let mut sm = ChaseOracle::default();
-    sm.update(50, 51, false, false);
-    sm.update(51, 50, false, false);
-    sm.update(50, 51, false, false);
+fn chase_revert_own_last_move_allowed_end_to_end() {
+    // End-to-end through rules::apply/legal_mask (not the isolated
+    // ChaseState unit, which chase.rs's own tests already cover): a player
+    // oscillating back to the square they just vacated must never be masked,
+    // regardless of how active the chase is.
+    let mut board = Board::blank();
+    board.pieces[20] = crate::board::Piece::new(PieceType::Scout, Color::Red, 0);
+    board.pieces[22] = crate::board::Piece::new(PieceType::Scout, Color::Blue, 0);
+    board.num_hidden[0][PieceType::Scout as usize] = 1;
+    board.num_hidden[1][PieceType::Scout as usize] = 1;
+    board.num_hidden_unmoved = [1, 1];
+
+    rules::apply(&mut board, Action::from_abs(20, 21, 0).unwrap(), 0);
     assert!(
-        !sm.would_violate(51, 50),
-        "no threat recorded, no violation"
+        rules::legal_mask(&board, 0)[Action::from_abs(21, 20, 0).unwrap().0 as usize],
+        "undoing your own immediately-previous move must always be legal"
     );
 }
 

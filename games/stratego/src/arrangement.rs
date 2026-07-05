@@ -241,5 +241,9 @@ pub fn board_from_arrangements(red: &Arrangement, blue: &Arrangement) -> Board {
 
     board.num_hidden = num_hidden;
     board.num_hidden_unmoved = unmoved;
+    // Board::blank() seeded `chase` from the (pieces-less) blank board; reseed
+    // now that both home rows are actually placed, so its history's first
+    // entry is the true starting position, not an empty stand-in.
+    board.chase = crate::chase::ChaseState::new_from_board(&board);
     board
 }

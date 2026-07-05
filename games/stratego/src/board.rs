@@ -254,9 +254,11 @@ pub struct Board {
     pub num_moves_since_last_attack: u32,
     /// Two-square substate, per player.
     pub twosquare: [crate::twosquare::TwosquareState; 2],
-    /// History of each piece's recent positions for the chase rule's
-    /// position-reproduction check (per player, abstract oracle form).
-    pub chase_oracle: [crate::chase::ChaseOracle; 2],
+    /// The continuous-chase counters/history (`chase_length`, last own
+    /// move, and a bounded board-snapshot window), a faithful port of the
+    /// reference `chase_state.cu` kernel. Re-seeded from the fully-placed
+    /// board once deployment finishes (`board_from_arrangements`).
+    pub chase: crate::chase::ChaseState,
     /// The starting type at each `piece_id` slot, per player, or `0xff` for an
     /// empty home cell. This is `d_zero_boards` in the reference: the cemetery
     /// channels read the dead piece's type from the initial arrangement, not the
@@ -312,7 +314,7 @@ impl Board {
             num_moves: 0,
             num_moves_since_last_attack: 0,
             twosquare: [crate::twosquare::TwosquareState::default(); 2],
-            chase_oracle: Default::default(),
+            chase: crate::chase::ChaseState::new_from_board_pieces(&pieces),
             zero_types: [[0xff; HOME_CELLS]; 2],
             action_history: Vec::new(),
         }

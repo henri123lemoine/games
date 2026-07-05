@@ -158,10 +158,9 @@ pub fn legal_mask(board: &Board, player: usize) -> Box<[bool; NUM_ACTIONS]> {
 }
 
 /// Subtracts chase-rule violations from `mask` for the active player. For each
-/// currently-legal non-attack move, asks the oracle whether it reproduces an
-/// earlier threatening position.
+/// currently-legal non-attack move, asks the chase state whether it would
+/// reproduce an earlier threatening position.
 fn remove_chase_moves(board: &Board, player: usize, mask: &mut [bool; NUM_ACTIONS]) {
-    let oracle = &board.chase_oracle[player];
     for (idx, legal) in mask.iter_mut().enumerate() {
         if !*legal {
             continue;
@@ -170,7 +169,7 @@ fn remove_chase_moves(board: &Board, player: usize, mask: &mut [bool; NUM_ACTION
         if board.pieces[dst].color != Color::Empty {
             continue; // attacks reset the chase; never illegal on this account
         }
-        if oracle.would_violate(src, dst) {
+        if board.chase.would_violate(board, player, src, dst) {
             *legal = false;
         }
     }
@@ -380,9 +379,12 @@ pub fn apply(board: &mut Board, action: Action, player: usize) -> Applied {
         board.twosquare[1].update_death(blue_death);
     }
 
-    for p in 0..2 {
-        board.chase_oracle[p].update(from_abs, to_abs, was_attack, p != player);
-    }
+    // `commit` needs `&self` access to the board it's a field of, so take
+    // it out for the duration of the call rather than fighting the borrow
+    // checker over `&mut board.chase` + `&board` simultaneously.
+    let mut chase = std::mem::take(&mut board.chase);
+    chase.commit(board, player, from_abs, to_abs, was_attack);
+    board.chase = chase;
 
     board.last_moved_piece_type = match outcome {
         Battle::DefenderWins | Battle::Tie => 0xff,
