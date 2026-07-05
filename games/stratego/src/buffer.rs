@@ -24,6 +24,8 @@
 //! reward. [`ReplayBuffer::record`] performs this fix-up across the per-env
 //! linked transitions.
 
+use std::collections::BTreeMap;
+
 use crate::arrangement::DeploymentState;
 use crate::board::Board;
 use crate::encode::EncoderConfig;
@@ -141,6 +143,19 @@ pub struct EncodedView {
     pub legal: Vec<u16>,
     pub phase: Phase,
     pub player: usize,
+}
+
+/// One player's resident transitions for [`ReplayBuffer::process_data`], in
+/// ring order — the unit the λ-return/GAE recurrence actually scans over (see
+/// that function's doc comment for why this must be per-player).
+#[derive(Default)]
+struct PlayerStream {
+    slots: Vec<usize>,
+    value_probs: Vec<[f32; 3]>,
+    delta: Vec<f32>,
+    delta_probs: Vec<[f32; 3]>,
+    td_disc: Vec<f32>,
+    gae_disc: Vec<f32>,
 }
 
 /// The circular replay buffer: a per-env ring of [`Transition`]s. `capacity` is
@@ -308,6 +323,16 @@ impl ReplayBuffer {
     /// `advantages = segmented_discounted_cumsum(scalar_delta, gae_lambda * ~terminal)`
     /// (scalar — advantages stay the aggregated form regardless of value-function
     /// flavor).
+    ///
+    /// The recurrence runs PER PLAYER, not over the raw ring order: the
+    /// reference `buffer.py` reshapes its trajectory to `.view(traj_len, -1)`
+    /// before the scan, which separates the two players into their own columns
+    /// (each player's turns are `N_PLAYER` ring slots apart, not adjacent) — one
+    /// λ-decay per own turn, never chaining through the interleaved opponent's
+    /// transition in between. Scanning the raw adjacent ring order instead would
+    /// mix both players' deltas into a single decayed sequence, which is a
+    /// different (and wrong) recurrence; confirmed by differential test against
+    /// a CPU transcription of `buffer.py`.
     pub fn process_data(
         &self,
         env: usize,
@@ -321,12 +346,13 @@ impl ReplayBuffer {
         }
         let start = self.heads[env] - resident;
 
-        let mut slots = Vec::with_capacity(resident);
-        let mut value_probs = Vec::with_capacity(resident);
-        let mut delta = Vec::with_capacity(resident);
-        let mut delta_probs = Vec::with_capacity(resident);
-        let mut td_disc = Vec::with_capacity(resident);
-        let mut gae_disc = Vec::with_capacity(resident);
+        // Bucket resident transitions by acting player, preserving ring order
+        // within each bucket, so the cumsum below only ever chains a single
+        // player's own consecutive turns (see the doc comment above). A
+        // BTreeMap keeps player-ascending iteration order below, so the output
+        // order is deterministic (not an API contract — callers key by slot —
+        // but it keeps this function's own tests simple to write).
+        let mut by_player: BTreeMap<usize, PlayerStream> = BTreeMap::new();
         for i in 0..resident {
             let slot = (start + i) % cap;
             let Some(t) = self.rings[env][slot].as_ref() else {
@@ -336,28 +362,32 @@ impl ReplayBuffer {
             let vp = t.value_probs;
             let target = t.target_value.unwrap_or(v);
             let target_p = t.target_value_probs.unwrap_or(vp);
-            slots.push(slot);
-            value_probs.push(vp);
-            delta.push(target - v);
-            delta_probs.push(sub3(target_p, vp));
             let cont = if t.is_terminating_action { 0.0 } else { 1.0 };
-            td_disc.push(td_lambda * cont);
-            gae_disc.push(gae_lambda * cont);
+
+            let stream = by_player.entry(t.player).or_default();
+            stream.slots.push(slot);
+            stream.value_probs.push(vp);
+            stream.delta.push(target - v);
+            stream.delta_probs.push(sub3(target_p, vp));
+            stream.td_disc.push(td_lambda * cont);
+            stream.gae_disc.push(gae_lambda * cont);
         }
 
-        let adv = segmented_discounted_cumsum(&delta, &gae_disc);
-        let ret_cumsum = segmented_discounted_cumsum_vec(&delta_probs, &td_disc);
-        (0..slots.len())
-            .map(|i| {
-                (
-                    slots[i],
+        let mut out = Vec::with_capacity(resident);
+        for stream in by_player.into_values() {
+            let adv = segmented_discounted_cumsum(&stream.delta, &stream.gae_disc);
+            let ret_cumsum = segmented_discounted_cumsum_vec(&stream.delta_probs, &stream.td_disc);
+            for i in 0..stream.slots.len() {
+                out.push((
+                    stream.slots[i],
                     Targets {
-                        ret: add3(ret_cumsum[i], value_probs[i]),
+                        ret: add3(ret_cumsum[i], stream.value_probs[i]),
                         advantage: adv[i],
                     },
-                )
-            })
-            .collect()
+                ));
+            }
+        }
+        out
     }
 }
 
@@ -643,43 +673,54 @@ mod tests {
         let gae = 0.5f32;
         let mut buf = ReplayBuffer::new(1, 16, EncoderConfig::default());
 
-        // Three-step trajectory; the last move terminates (reward +1).
+        // Three-step trajectory, players 0,1,0; the last move terminates
+        // (reward +1). t0 and t2 are the SAME player (player 0), two ring slots
+        // apart with the opponent's t1 in between; t1 (player 1) has no other
+        // resident player-1 transition at all.
         buf.record(0, synth(0, 0.2, false, false, 0.0));
         buf.record(0, synth(1, 0.4, false, false, 0.0));
         buf.record(0, synth(0, 0.6, true, false, 1.0));
 
-        // Resolve the two-ply targets the live recorder leaves for the tail:
-        // t0 bootstraps to v[t2]=0.6, t1 has no t+2 so stays None -> own value.
-        // Replicate the reference: unresolved tail bootstraps to its own value.
+        // Read the ACTUAL per-transition state back from the buffer instead of
+        // re-deriving it by hand: `record`'s solipsistic terminal fix-up
+        // rewrites t1 (the previous, opponent transition) to also be
+        // terminating with a sign-flipped reward once t2 objectively ends the
+        // game (see `solipsistic_terminal_fixup_rewrites_previous`) — hardcoding
+        // `is_terminating_action` here would silently re-encode that logic
+        // instead of testing against it.
         let value = [0.2f32, 0.4, 0.6];
-        let target = [
-            buf.get(0, 0).unwrap().target_value.unwrap_or(value[0]),
-            buf.get(0, 1).unwrap().target_value.unwrap_or(value[1]),
-            buf.get(0, 2).unwrap().target_value.unwrap_or(value[2]),
-        ];
-        let term = [false, false, true];
-
+        let term: Vec<bool> = (0..3)
+            .map(|i| buf.get(0, i).unwrap().is_terminating_action)
+            .collect();
+        let target: Vec<f32> = (0..3)
+            .map(|i| buf.get(0, i).unwrap().target_value.unwrap_or(value[i]))
+            .collect();
         let delta: Vec<f32> = (0..3).map(|i| target[i] - value[i]).collect();
         let cont = |t: bool| if t { 0.0 } else { 1.0 };
         let gae_disc: Vec<f32> = term.iter().map(|&t| gae * cont(t)).collect();
 
-        let adv_cs = {
-            let mut y = vec![0.0f32; 3];
-            y[2] = delta[2];
-            y[1] = delta[1] + gae_disc[1] * y[2];
-            y[0] = delta[0] + gae_disc[0] * y[1];
-            y
-        };
+        // The recurrence chains PER PLAYER (see `process_data`'s doc comment),
+        // not over raw ring order: player 0's stream is [t0, t2] (t2 is the
+        // more-recent of the two, so it anchors the chain); player 1's stream
+        // is just [t1] alone, so its "chain" is trivially its own delta with no
+        // decay in or out.
+        let adv_t2 = delta[2];
+        let adv_t0 = delta[0] + gae_disc[0] * adv_t2;
+        let adv_t1 = delta[1];
+        let want = [adv_t0, adv_t1, adv_t2];
 
         let out = buf.process_data(0, td, gae);
         assert_eq!(out.len(), 3);
-        for (i, (slot, targets)) in out.iter().enumerate() {
-            assert_eq!(*slot, i, "slot order");
+        let mut got = [0.0f32; 3];
+        for (slot, targets) in &out {
+            got[*slot] = targets.advantage;
+        }
+        for i in 0..3 {
             assert!(
-                (targets.advantage - adv_cs[i]).abs() < 1e-6,
+                (got[i] - want[i]).abs() < 1e-6,
                 "adv[{i}] got {} want {}",
-                targets.advantage,
-                adv_cs[i]
+                got[i],
+                want[i]
             );
         }
     }
@@ -696,53 +737,89 @@ mod tests {
         let gae = 0.5f32;
         let mut buf = ReplayBuffer::new(1, 16, EncoderConfig::default());
 
+        // Same trajectory/topology as `process_data_matches_hand_computation`:
+        // players 0,1,0; player 0's stream is [t0, t2], player 1's is [t1] alone.
         buf.record(0, synth(0, 0.2, false, false, 0.0));
         buf.record(0, synth(1, 0.4, false, false, 0.0));
         buf.record(0, synth(0, 0.6, true, false, 1.0));
 
         let value = [0.2f32, 0.4, 0.6];
         let value_probs: Vec<[f32; 3]> = value.iter().map(|&v| two_hot(v)).collect();
-        // Same bootstrap structure as the scalar test: only t0 resolves (to
-        // value_probs[2]); t1/t2 fall back to their own distribution.
-        let target_probs = [value_probs[2], value_probs[1], value_probs[2]];
-        let term = [false, false, true];
-
+        // Read the ACTUAL per-transition state back from the buffer (see the
+        // scalar test's comment on why: the solipsistic fix-up rewrites t1).
+        let term: Vec<bool> = (0..3)
+            .map(|i| buf.get(0, i).unwrap().is_terminating_action)
+            .collect();
+        let target_probs: Vec<[f32; 3]> = (0..3)
+            .map(|i| {
+                buf.get(0, i)
+                    .unwrap()
+                    .target_value_probs
+                    .unwrap_or(value_probs[i])
+            })
+            .collect();
         let delta_probs: Vec<[f32; 3]> = (0..3)
             .map(|i| sub3(target_probs[i], value_probs[i]))
             .collect();
         let cont = |t: bool| if t { 0.0 } else { 1.0 };
         let td_disc: Vec<f32> = term.iter().map(|&t| td * cont(t)).collect();
 
-        let mut y = [[0.0f32; 3]; 3];
-        y[2] = delta_probs[2];
-        for t in [1usize, 0] {
+        // PER-PLAYER chain, not raw ring order (see the scalar test).
+        let y_t2 = delta_probs[2];
+        let y_t0 = {
+            let mut y = [0.0f32; 3];
             for c in 0..3 {
-                y[t][c] = delta_probs[t][c] + td_disc[t] * y[t + 1][c];
+                y[c] = delta_probs[0][c] + td_disc[0] * y_t2[c];
             }
-        }
-        let want_ret: Vec<[f32; 3]> = (0..3).map(|i| add3(y[i], value_probs[i])).collect();
+            y
+        };
+        let y_t1 = delta_probs[1]; // sole player-1 transition: no chaining
+        let want_ret = [
+            add3(y_t0, value_probs[0]),
+            add3(y_t1, value_probs[1]),
+            add3(y_t2, value_probs[2]),
+        ];
 
-        // Sanity: the vector return's expectation must still match the old
-        // scalar-only cumsum (0.6, 0.4, 0.6) — proves the two formulations agree
-        // in aggregate even though the distributions differ.
+        // Sanity: the vector return's expectation must still match the
+        // equivalent scalar-only cumsum (computed the same per-player way) —
+        // proves the two formulations agree in aggregate even though the
+        // distributions differ.
         const CATS: [f32; 3] = crate::evaluator::VALUE_CATEGORIES;
-        let want_scalar = [0.6f32, 0.4, 0.6];
+        let scalar_target: Vec<f32> = (0..3)
+            .map(|i| buf.get(0, i).unwrap().target_value.unwrap_or(value[i]))
+            .collect();
+        let scalar_delta: Vec<f32> = (0..3).map(|i| scalar_target[i] - value[i]).collect();
+        let gae_disc: Vec<f32> = term.iter().map(|&t| gae * cont(t)).collect();
+        let scalar_adv_t2 = scalar_delta[2];
+        let scalar_adv_t0 = scalar_delta[0] + gae_disc[0] * scalar_adv_t2;
+        let scalar_adv_t1 = scalar_delta[1];
+        let want_scalar_ret = [
+            scalar_adv_t0 + value[0],
+            scalar_adv_t1 + value[1],
+            scalar_adv_t2 + value[2],
+        ];
         for (i, r) in want_ret.iter().enumerate() {
             let agg = r[0] * CATS[0] + r[1] * CATS[1] + r[2] * CATS[2];
             assert!(
-                (agg - want_scalar[i]).abs() < 1e-6,
+                (agg - want_scalar_ret[i]).abs() < 1e-6,
                 "ret[{i}] aggregate got {agg} want {}",
-                want_scalar[i]
+                want_scalar_ret[i]
             );
         }
 
         let out = buf.process_data(0, td, gae);
         assert_eq!(out.len(), 3);
-        for (i, (_, targets)) in out.iter().enumerate() {
-            for (c, (&got, &want)) in targets.ret.iter().zip(want_ret[i].iter()).enumerate() {
+        let mut got = [[0.0f32; 3]; 3];
+        for (slot, targets) in &out {
+            got[*slot] = targets.ret;
+        }
+        for i in 0..3 {
+            for c in 0..3 {
                 assert!(
-                    (got - want).abs() < 1e-6,
-                    "ret[{i}][{c}] got {got} want {want}"
+                    (got[i][c] - want_ret[i][c]).abs() < 1e-6,
+                    "ret[{i}][{c}] got {} want {}",
+                    got[i][c],
+                    want_ret[i][c]
                 );
             }
         }
@@ -754,16 +831,126 @@ mod tests {
         for i in 0..7 {
             buf.record(0, synth(i % 2, i as f32, false, false, 0.0));
         }
-        // capacity 3, 7 recorded: residents are records 4,5,6 (values 4,5,6).
+        // capacity 3, 7 recorded: residents are records 4,5,6 (values 4,5,6),
+        // at ring slots 4%3=1, 5%3=2, 6%3=0. `process_data` now groups its
+        // output by player (see its doc comment), so the returned order is no
+        // longer plain ring-scan order — check the (slot, value) SET instead of
+        // an exact sequence, which was never part of the function's contract
+        // (callers key by slot, e.g. `ml/stratego-py`'s `drain_training_batch`).
         let out = buf.process_data(0, 0.8, 0.5);
         assert_eq!(out.len(), 3);
-        let slots: Vec<usize> = out.iter().map(|(s, _)| *s).collect();
-        // Oldest resident is head-3 = 4 -> slot 1, then slot 2, then slot 0.
-        assert_eq!(slots, vec![1, 2, 0]);
-        let values: Vec<f32> = out
+        let mut got: Vec<(usize, f32)> = out
             .iter()
-            .map(|(s, _)| buf.get(0, *s).unwrap().value)
+            .map(|(s, _)| (*s, buf.get(0, *s).unwrap().value))
             .collect();
-        assert_eq!(values, vec![4.0, 5.0, 6.0]);
+        got.sort_by_key(|&(s, _)| s);
+        assert_eq!(got, vec![(0, 6.0), (1, 4.0), (2, 5.0)]);
+    }
+
+    /// Pins the per-player recurrence topology against an independent oracle:
+    /// a real run of the reference `pyengine/core/buffer.py::CircularBuffer`
+    /// (pure-torch, CPU, no CUDA needed) on the identical 8-step no-terminal
+    /// trajectory (values 0.1..0.8 step 0.1, players alternating 0,1,0,1,...,
+    /// gae_lambda=td_lambda=0.5) gave advantages
+    /// `[0.35, 0.35, 0.30, 0.30, 0.20, 0.20, 0, 0]`. The prior (buggy) adjacent
+    /// -ring-order implementation gave `[0.394, 0.388, 0.375, 0.350, 0.300,
+    /// 0.200, 0, 0]` on this same input — measurably different — which is what
+    /// motivated this fix. This test locks the topology to the oracle forever.
+    #[test]
+    fn differential_8step_no_terminal_matches_reference_oracle() {
+        let mut buf = ReplayBuffer::new(1, 16, EncoderConfig::default());
+        for i in 0..8 {
+            let player = i % 2;
+            let value = 0.1 * (i as f32 + 1.0);
+            buf.record(0, synth(player, value, false, false, 0.0));
+        }
+        let out = buf.process_data(0, 0.5, 0.5);
+        assert_eq!(out.len(), 8);
+        let mut got = [0.0f32; 8];
+        for (slot, targets) in &out {
+            got[*slot] = targets.advantage;
+        }
+        let want = [0.35f32, 0.35, 0.30, 0.30, 0.20, 0.20, 0.0, 0.0];
+        for i in 0..8 {
+            assert!(
+                (got[i] - want[i]).abs() < 1e-5,
+                "adv[{i}] got {} want {}",
+                got[i],
+                want[i]
+            );
+        }
+    }
+
+    /// A terminal in the middle of a player's own stream must sever that
+    /// player's recurrence there (gae_disc=0 at the terminating slot), not just
+    /// end the whole trajectory — otherwise a completed game's advantage could
+    /// leak in a later game's value from the same env's ring. Players 0,1,0,1;
+    /// idx1 (player 1) objectively ends the game, which also rewrites idx0
+    /// (player 0, the previous ply) into a terminating transition via the
+    /// solipsistic fix-up (see `solipsistic_terminal_fixup_rewrites_previous`).
+    /// idx2/idx3 are a fresh, unrelated game's opening moves in the same ring.
+    #[test]
+    fn differential_mid_stream_terminal_severs_chain() {
+        let mut buf = ReplayBuffer::new(1, 16, EncoderConfig::default());
+        buf.record(0, synth(0, 0.1, false, false, 0.0)); // idx0, player 0
+        buf.record(0, synth(1, 0.5, true, false, 1.0)); // idx1, player 1, ends the game
+        buf.record(0, synth(0, 0.15, false, false, 0.0)); // idx2, player 0, new game
+        buf.record(0, synth(1, 0.25, false, false, 0.0)); // idx3, player 1, new game
+
+        // idx0 rewritten by the solipsistic fix-up: terminating, reward -1.0.
+        assert!(buf.get(0, 0).unwrap().is_terminating_action);
+        assert_eq!(buf.get(0, 0).unwrap().terminal_reward, -1.0);
+
+        let out = buf.process_data(0, 0.8, 0.5);
+        assert_eq!(out.len(), 4);
+        let mut got = [0.0f32; 4];
+        for (slot, targets) in &out {
+            got[*slot] = targets.advantage;
+        }
+        // idx0: delta = target_value(-1.0, its own terminal reward) - value(0.1)
+        // = -1.1; its own gae_disc is 0 (it's terminating), so the chain to
+        // idx2 (the NEXT game's player-0 entry) never enters.
+        // idx1: delta = target_value(1.0) - value(0.5) = 0.5; same severing.
+        // idx2/idx3: unresolved tail, target falls back to own value, delta=0.
+        let want = [-1.1f32, 0.5, 0.0, 0.0];
+        for i in 0..4 {
+            assert!(
+                (got[i] - want[i]).abs() < 1e-5,
+                "adv[{i}] got {} want {}",
+                got[i],
+                want[i]
+            );
+        }
+    }
+
+    /// Players' chains needn't be the same length — a 5-step trajectory splits
+    /// 3 (player 0: idx0,2,4) vs 2 (player 1: idx1,3). Confirms the shorter
+    /// stream's recurrence is unaffected by the longer one's extra tail entry.
+    #[test]
+    fn differential_uneven_player_chain_lengths() {
+        let mut buf = ReplayBuffer::new(1, 16, EncoderConfig::default());
+        for i in 0..5 {
+            let player = i % 2;
+            let value = 0.1 * (i as f32 + 1.0);
+            buf.record(0, synth(player, value, false, false, 0.0));
+        }
+        let out = buf.process_data(0, 0.8, 0.5);
+        assert_eq!(out.len(), 5);
+        let mut got = [0.0f32; 5];
+        for (slot, targets) in &out {
+            got[*slot] = targets.advantage;
+        }
+        // Player 0 (idx0,2,4): delta = [0.2, 0.2, 0] -> y4=0, y2=0.2+0.5*0=0.2,
+        // y0=0.2+0.5*0.2=0.3. Player 1 (idx1,3): delta = [0.2, 0] -> y3=0,
+        // y1=0.2+0.5*0=0.2.
+        let want = [0.3f32, 0.2, 0.2, 0.0, 0.0];
+        for i in 0..5 {
+            assert!(
+                (got[i] - want[i]).abs() < 1e-5,
+                "adv[{i}] got {} want {}",
+                got[i],
+                want[i]
+            );
+        }
     }
 }
