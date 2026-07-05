@@ -171,11 +171,36 @@ class TrainConfig:
     clock_end: int = 100
     clock_anneal_iters: int = 1
 
+    # ---- BC-anchor trust region ----
+    # A decaying reverse-KL penalty from the current move policy to a FROZEN copy
+    # of the warm-start (BC) checkpoint's policy — a trust region around the known-
+    # good attacking behavior, not a pull toward exact teacher play. Only active
+    # when `resume_from` is set (no teacher, no anchor). Motivated by valrun3
+    # (2026-07-04): BC-init RL hit ws_heur=0.780 by iter100 (already past the BC
+    # checkpoint's own 0.549) then collapsed to 0.121 by iter400 as draw_frac
+    # climbed 0->0.94 — the policy drifted far enough from the attacking prior to
+    # re-enter the passivity basin with no anchor pulling it back. Same
+    # power-schedule shape as the magnet (`temperature_*`): coefficient is largest
+    # early (when a KL-to-data term of similar scale, 0.1, already regularizes
+    # every iter per valrun3's own metrics) and decays toward `anchor_floor` so
+    # late training is unconstrained RL — the policy must be free to blow past the
+    # teacher (iter100 already did, at 0.780 vs 0.549) not just match it.
+    anchor_coef: float = 0.1
+    anchor_decay: float = 0.3
+    anchor_ceil: float = 0.1
+    anchor_floor: float = 0.0
+
     def attack_clock(self, step: int) -> int:
         if self.clock_anneal_iters <= 0:
             return self.clock_end
         frac = min(1.0, step / self.clock_anneal_iters)
         return round(self.clock_start + frac * (self.clock_end - self.clock_start))
+
+    def anchor_coef_at(self, step: int) -> float:
+        if not self.resume_from:
+            return 0.0
+        return power_schedule(self.anchor_coef, step, self.anchor_decay,
+                              self.anchor_ceil, self.anchor_floor)
 
     def move_net_config(self) -> S.MoveConfig:
         return S.NET_SIZES[self.net_size][0]

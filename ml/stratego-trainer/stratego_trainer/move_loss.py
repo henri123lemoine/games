@@ -67,12 +67,21 @@ def two_hot(scalar, cats=CATS):
     return onehot_lo * (1.0 - w)[:, None] + onehot_hi * w[:, None]
 
 
-def move_loss_and_stats(net, batch, magnet_coef, cfg):
+def move_loss_and_stats(net, batch, magnet_coef, cfg, anchor_log_probs=None, anchor_coef=0.0):
     """Compute the scalar move loss (and a stats dict) over a filtered minibatch.
 
     `batch` holds MLX arrays already restricted to the kept (filtered) rows:
       obs (B,92,F), legal (B,1800) bool, action (B,) int, old_log_prob (B,),
       data_log_prob (B,1800), advantage (B,), ret (B,3) categorical value target.
+
+    `anchor_log_probs` (B,1800), if given, is a FROZEN reference policy's
+    log-probs on this same minibatch's obs (the BC warm-start checkpoint, held
+    fixed all run) — a trust-region term, same reverse-KL shape as the existing
+    data-KL, distinct from it (data-KL anchors to the ROLLING behavior policy
+    that generated the batch; this anchors to the FIXED BC init, resisting
+    long-horizon drift the rolling term can't see). `anchor_coef` decays over
+    training (`TrainConfig.anchor_coef_at`) so it constrains early exploration
+    without capping how far RL can ultimately surpass the teacher.
     """
     obs = batch["obs"]
     legal = batch["legal"]
@@ -104,6 +113,15 @@ def move_loss_and_stats(net, batch, magnet_coef, cfg):
     data_lp = mx.where(legal, data_log_prob.astype(mx.float32), 0.0)
     kl_loss = (probs * mx.where(legal, log_probs - data_lp, 0.0)).sum(-1).mean()
 
+    # Reverse-KL to the frozen BC-anchor policy, same shape as the data-KL above.
+    # Zero (not skipped) when there's no anchor, so `stats["anchor_kl"]` is always
+    # a real, loggable number.
+    if anchor_log_probs is not None:
+        anchor_lp = mx.where(legal, anchor_log_probs.astype(mx.float32), 0.0)
+        anchor_kl = (probs * mx.where(legal, log_probs - anchor_lp, 0.0)).sum(-1).mean()
+    else:
+        anchor_kl = mx.array(0.0)
+
     # Categorical value-CE: the buffer's categorical λ-return vs log_softmax(value).
     value_loss = -(ret * value_logp).sum(-1).mean()
 
@@ -118,12 +136,14 @@ def move_loss_and_stats(net, batch, magnet_coef, cfg):
         + magnet_coef * magnet_kl
         + cfg.vf_coef * value_loss
         + cfg.kl_coef * kl_loss
+        + anchor_coef * anchor_kl
     )
     stats = {
         "policy_loss": policy_loss,
         "value_loss": value_loss,
         "kl_loss": kl_loss,
         "magnet_kl": magnet_kl,
+        "anchor_kl": anchor_kl,
         "entropy": entropy.mean(),
         "loss": loss,
     }

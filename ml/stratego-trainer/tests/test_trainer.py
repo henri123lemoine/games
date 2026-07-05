@@ -30,6 +30,22 @@ def test_power_schedule_matches_reference():
     assert all(b <= a + 1e-12 for a, b in zip(coefs, coefs[1:]))
 
 
+def test_anchor_coef_schedule_decays_and_requires_resume():
+    # No warm start -> no anchor, regardless of step or the configured coefficient.
+    cfg = TrainConfig(resume_from="")
+    assert cfg.anchor_coef_at(0) == 0.0
+    assert cfg.anchor_coef_at(1000) == 0.0
+
+    # With a warm start: starts at anchor_coef, decays monotonically, floors out.
+    cfg2 = TrainConfig(resume_from="dummy.safetensors", anchor_floor=0.01)
+    c0 = cfg2.anchor_coef_at(0)
+    c_mid = cfg2.anchor_coef_at(300)
+    c_far = cfg2.anchor_coef_at(10**6)
+    assert c0 == pytest.approx(cfg2.anchor_coef)
+    assert c0 > c_mid > cfg2.anchor_floor
+    assert c_far == pytest.approx(cfg2.anchor_floor)
+
+
 def test_two_hot_reconstructs_scalar():
     cats = mx.array([-1.0, 0.0, 1.0])
     v = mx.array([-1.0, -0.3, 0.0, 0.7, 1.0])
@@ -138,6 +154,66 @@ def test_move_loss_reduces_on_real_data():
         losses.append(float(loss))
     assert np.isfinite(losses).all()
     assert losses[-1] < losses[0]
+
+
+def test_anchor_kl_zero_when_identical_positive_when_diverged_respects_mask():
+    s = sim.BatchSim(num_envs=64, move_cap=200, seed=13)
+    _drive(s, 400)
+    d = s.drain_training_batch(0.8, 0.5)
+    keep, _ = advantage_filter_mask(d["advantage"], 0.75, 0.01)
+    idx = np.nonzero(keep)[0]
+    if idx.size < 8:
+        pytest.skip("too few filtered transitions in this short drive")
+    idx = idx[:64]
+    legal = d["legal_mask"][idx]
+    obs = s.encode_move_obs(d["env"][idx], d["slot"][idx])
+    batch = {
+        "obs": mx.array(obs),
+        "legal": mx.array(legal),
+        "action": mx.array(d["action"][idx].astype(np.int32)),
+        "old_log_prob": mx.array(d["old_log_prob"][idx]),
+        "data_log_prob": mx.array(np.where(np.isfinite(d["data_log_prob"][idx]),
+                                           d["data_log_prob"][idx], -1e30).astype(np.float32)),
+        "advantage": mx.array(d["advantage"][idx]),
+        "ret": mx.array(d["ret"][idx]),
+    }
+    net = S.MoveTransformer.from_config(S.MoveConfig())
+    cfg = TrainConfig()
+
+    def log_probs_of(n):
+        out = n(batch["obs"], legal_mask=batch["legal"])
+        lg = out["move_logits"].astype(mx.float32)
+        return lg - mx.logsumexp(lg, axis=-1, keepdims=True)
+
+    # Anchored to itself -> the reverse-KL is exactly zero.
+    same_lp = log_probs_of(net)
+    _, stats_same = move_loss_and_stats(net, batch, cfg.magnet_coef(0), cfg,
+                                        anchor_log_probs=same_lp, anchor_coef=1.0)
+    assert float(stats_same["anchor_kl"]) == pytest.approx(0.0, abs=1e-5)
+
+    # Anchored to an independently-initialized net -> a real, positive divergence.
+    other = S.MoveTransformer.from_config(S.MoveConfig())
+    other_lp = log_probs_of(other)
+    _, stats_diff = move_loss_and_stats(net, batch, cfg.magnet_coef(0), cfg,
+                                        anchor_log_probs=other_lp, anchor_coef=1.0)
+    assert float(stats_diff["anchor_kl"]) > 1e-4
+
+    # A huge perturbation confined to an ILLEGAL action's anchor log-prob must not
+    # move the KL at all (both the current policy's prob and the masking zero it).
+    illegal_rows = np.nonzero(~legal[0])[0]
+    if illegal_rows.size:
+        perturbed = np.array(other_lp)
+        perturbed[0, illegal_rows[0]] += 50.0
+        _, stats_perturbed = move_loss_and_stats(
+            net, batch, cfg.magnet_coef(0), cfg,
+            anchor_log_probs=mx.array(perturbed), anchor_coef=1.0)
+        assert float(stats_perturbed["anchor_kl"]) == pytest.approx(
+            float(stats_diff["anchor_kl"]), abs=1e-4)
+
+    # No anchor supplied -> exactly zero regardless of the coefficient.
+    _, stats_none = move_loss_and_stats(net, batch, cfg.magnet_coef(0), cfg,
+                                        anchor_log_probs=None, anchor_coef=5.0)
+    assert float(stats_none["anchor_kl"]) == 0.0
 
 
 def test_setup_loss_reduces_and_stays_finite():

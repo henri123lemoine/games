@@ -68,7 +68,7 @@ def _move_nan_stage(net, batch, stats):
         ("in/data_log_prob", batch["data_log_prob"]), ("in/ret", batch["ret"]),
         ("loss/policy", stats["policy_loss"]), ("loss/value", stats["value_loss"]),
         ("loss/kl", stats["kl_loss"]), ("loss/magnet", stats["magnet_kl"]),
-        ("loss/entropy", stats["entropy"]),
+        ("loss/anchor", stats["anchor_kl"]), ("loss/entropy", stats["entropy"]),
     ])
 
 
@@ -283,8 +283,14 @@ def collect_iter(s, move_net, setup_net, steps):
             move_decisions, move_attacks, t_coll, t_fwd, t_comm)
 
 
-def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg, bf16_net=None):
+def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg, bf16_net=None,
+                    anchor_net=None, anchor_coef=0.0):
     """One advantage-filtered PPO pass over the drained move-RL transitions.
+
+    `anchor_net`, if given, is the FROZEN BC warm-start move net (never updated);
+    `anchor_coef` (`TrainConfig.anchor_coef_at(t)`) weights the reverse-KL trust
+    region toward it (see `move_loss.move_loss_and_stats`). `anchor_net is None`
+    (no `resume_from`) disables the term entirely regardless of `anchor_coef`.
 
     Returns `(stats, nan)`; `nan` is True iff the update was non-finite (skipped).
     """
@@ -357,7 +363,15 @@ def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg, bf16_n
             }
 
             def loss_fn(net):
-                loss, stats = move_loss_and_stats(net, batch, magnet_coef, cfg)
+                anchor_lp = None
+                if anchor_net is not None and anchor_coef > 0.0:
+                    a_out = anchor_net(batch["obs"], legal_mask=batch["legal"])
+                    a_logits = a_out["move_logits"].astype(mx.float32)
+                    anchor_lp = mx.stop_gradient(
+                        a_logits - mx.logsumexp(a_logits, axis=-1, keepdims=True))
+                loss, stats = move_loss_and_stats(net, batch, magnet_coef, cfg,
+                                                  anchor_log_probs=anchor_lp,
+                                                  anchor_coef=anchor_coef)
                 return loss, stats
 
             if bf16_net is not None:
@@ -386,6 +400,7 @@ def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg, bf16_n
                 "move/value_loss": float(stats["value_loss"]),
                 "move/kl_loss": float(stats["kl_loss"]),
                 "move/magnet_kl": float(stats["magnet_kl"]),
+                "move/anchor_kl": float(stats["anchor_kl"]),
                 "move/entropy": float(stats["entropy"]),
                 "move/loss": float(loss),
                 "move/grad_norm": float(gnorm),
@@ -399,6 +414,7 @@ def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg, bf16_n
         "move/n_skipped": n_skipped,
         "move/nan_stage": nan_stage,
         "move/t_encode": round(_encode_s, 3),
+        "move/anchor_coef": anchor_coef,
     })
     return last, n_applied == 0
 
@@ -489,6 +505,20 @@ def train_setup_pass(setup_net, opt, setup_data, reg_temp, lr, cfg, bf16_net=Non
                 "setup/grad_norm": float(gnorm),
             }
     last["setup/n_games"] = int(m)
+    # Investigated 2026-07-05 (valrun3's persistently-elevated setup/grad_norm,
+    # ~20-500 from iter~100 on, with healthy small losses and no NaN throughout):
+    # `setup/grad_norm` is the PRE-clip norm (`optim.clip_grad_norm` returns "the
+    # original gradient norm" per its own docstring) — the norm 20-500 is real but
+    # the APPLIED step is always rescaled to <= arr_max_grad_norm=0.5, so this
+    # never risked corrupting the net. `n_samples` (not just `n_games`) makes the
+    # mean-reduction's real denominator explicit: policy/value/entropy losses mean
+    # over (n_games, 40 slots), so grad-norm scale should be read against this, not
+    # `n_games` alone. Best explanation, not fully proven: once the BC-warm-started
+    # move net produces decisive (not clock-drawn) games, `grounded_adv = outcome -
+    # value_baseline` swings toward +/-1 instead of staying near 0 (a from-scratch
+    # run's mostly-draw regime) -- a legitimately larger, valid gradient for the
+    # clip to bound, not a sign of a broken update.
+    last["setup/n_samples"] = int(m) * S.spec.ARRANGEMENT_SIZE
     last["setup/n_skipped"] = n_skipped
     last["setup/n_applied"] = n_applied
     last["setup/scrub"] = setup_scrub
@@ -529,6 +559,14 @@ def train(cfg: TrainConfig):
         load_checkpoint(cfg.resume_from, move=move, setup=setup,
                         move_ema=move_ema, setup_ema=setup_ema)
         print(f"[resume] loaded {cfg.resume_from}")
+    # The frozen BC-anchor: a standalone move net loaded from the SAME checkpoint,
+    # then never updated again (not part of `move_opt`'s tree, no `.update()` call
+    # after this). `None` when there's no warm start — nothing to anchor to.
+    anchor_net = None
+    if cfg.resume_from:
+        anchor_net = S.MoveTransformer.from_config(cfg.move_net_config())
+        load_checkpoint(cfg.resume_from, move=anchor_net)
+        mx.eval(anchor_net.parameters())
     # bf16 inference copies for the collect (self-play) forward — the collect forward
     # is the per-iter bottleneck and runs ~1.75x faster in bf16. Self-play data is
     # precision-insensitive (argmax/value barely move); TRAINING stays fp32 (the
@@ -584,8 +622,10 @@ def train(cfg: TrainConfig):
         # overflow before the self-heal recovers -> early NaN cascade). Train them in
         # fp32, then switch to bf16. Collect stays bf16 throughout (sanitized inference).
         _bf16 = cfg.bf16_train and t >= 15
+        anchor_coef = cfg.anchor_coef_at(t)
         m_stats, m_nan = train_move_pass(move, move_opt, move_data, s.encode_move_obs, magnet_coef, move_lr, cfg,
-                                         bf16_net=move_bf16 if _bf16 else None)
+                                         bf16_net=move_bf16 if _bf16 else None,
+                                         anchor_net=anchor_net, anchor_coef=anchor_coef)
         move_applied = "move/skipped" not in m_stats
         move_snap, move_lr_scale, move_nan, move_stage = _self_heal(
             move, move_opt, move_ema, move_snap, m_nan, move_applied, move_lr, move_lr_scale, cfg)
@@ -772,6 +812,10 @@ def parse_args(argv=None):
     p.add_argument("--clock-start", type=int, default=TrainConfig.clock_start)
     p.add_argument("--clock-end", type=int, default=TrainConfig.clock_end)
     p.add_argument("--clock-anneal-iters", type=int, default=TrainConfig.clock_anneal_iters)
+    p.add_argument("--anchor-coef", type=float, default=TrainConfig.anchor_coef,
+                   help="BC-anchor trust-region start coefficient (0 disables even with --resume)")
+    p.add_argument("--anchor-decay", type=float, default=TrainConfig.anchor_decay)
+    p.add_argument("--anchor-floor", type=float, default=TrainConfig.anchor_floor)
     return p.parse_args(argv)
 
 
@@ -801,6 +845,9 @@ def main(argv=None):
         clock_start=a.clock_start,
         clock_end=a.clock_end,
         clock_anneal_iters=a.clock_anneal_iters,
+        anchor_coef=a.anchor_coef,
+        anchor_decay=a.anchor_decay,
+        anchor_floor=a.anchor_floor,
     )
     train(cfg)
 
