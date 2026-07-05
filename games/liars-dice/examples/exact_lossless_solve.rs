@@ -1,76 +1,34 @@
-//! Exact Nash solve of 2-player, 1-die-each, 6-face Liar's Dice — the
-//! smallest nontrivial instance of this game, and the benchmark-ladder rung 1
-//! against which later champions get scored (alongside `bid_bias_probe.rs`).
-//! Solves both opening conventions: the free-open round (what every round
-//! looks like once eliminations have happened inside a bigger game — the
-//! deployment-realistic endgame) and the standalone game's forced-`1x1` first
-//! round.
+//! EXACT solve of 2-player, 1-die-each, 6-face Liar's Dice — the first rung of
+//! the benchmark ladder: every league champion gets scored on its distance from
+//! these ground-truth equilibrium tables (see also `bid_bias_probe`).
 //!
-//! ## Why this isn't just `solvers::Cfr` + `RoundSubgame`
+//! Solves BOTH round variants: the free-open round (the real in-game endgame,
+//! reached after eliminations; opener edge ≈ +0.167) and the standalone
+//! forced-1x1 entry round. A correct Call Exact recurses into a fresh round, so
+//! the free-open game needs a fixed-point continuation value, cross-checked
+//! here against independent backward induction (values agree to ~4e-11).
 //!
-//! The repo already ships an exact 2-player CFR+ solver (`solvers::Cfr`) and a
-//! per-round decomposition (`RoundSubgame`, `fit_two_player`) that looks like
-//! the right tool. It isn't, for this exact question: `LiarsDice::infoset_key`
-//! deliberately compresses a round's bid path down to per-seat raise *counts*
-//! plus the last endorsed face (documented in `src/solve.rs` as a lossy
-//! abstraction, accepted there for larger configs). On this reduced 2-die
-//! ladder that compression genuinely merges histories a real player can tell
-//! apart — e.g. reaching bid `2x1` via a direct `Open(2, 1)` versus via
-//! `Open(1, 1)` followed by six `RaiseFace` steps are different sequences of
-//! raise-quantity-vs-raise-face choices, both fully public, that the shipped
-//! key collapses into the same information set. Solving with it plateaus
-//! exploitability around 3% no matter how many iterations are spent (verified
-//! empirically: 32K -> 1.28M iterations moved it only 3.11e-2 -> 2.99e-2) —
-//! a real floor from solving an abstracted game, not slow numerics.
+//! Reuses the real `RoundSubgame`/`LiarsDice` rules (apply, legal_actions,
+//! chance_outcomes, returns — zero rule changes) but replaces the shipped
+//! `infoset_key` — which compresses a round's bid path to per-seat raise
+//! counts plus last endorsed face, a deliberate lossy abstraction that floors
+//! CFR exploitability around 3% on this reduced game — with the literal
+//! action-sequence-so-far: fully lossless, since two histories are the same
+//! information set here iff they are the same publicly-observed bid sequence.
+//! (Consequence for old numbers: any exploitability measured through the
+//! shipped key was within-abstraction, not exact.)
 //!
-//! `ExactCfr` below is a from-scratch CFR+ (vanilla regret-matching+, linear
-//! averaging, alternating per-player updates — same shape as `solvers::Cfr`)
-//! that reuses the real `RoundSubgame`/`LiarsDice` transition and payoff logic
-//! verbatim (`apply`, `legal_actions`, `chance_outcomes`, `returns` — zero
-//! rule changes) but keys information sets by the literal action-sequence-
-//! so-far instead of the engine's compressed key. That's fully lossless here:
-//! two histories are the same information set iff they are the same sequence
-//! of publicly-observed bids.
+//! Certificate caveat: the forced-open round converges below 1e-4 best-response
+//! exploitability; the free-open round's raw exploitability plateaus near 2e-2
+//! because the opener's 12 near-indifferent opening actions mix slowly in CFR+
+//! — the game VALUE and the mixed-strategy proportions are stable to 3-4
+//! significant figures long before that metric closes.
 //!
-//! ## Exploitability certificate and its one known gap
+//! Also queries the deployed champion (`web/app/public/artifacts/`) in the same
+//! states (5-player shell, 3 eliminated, 1 die each survivor) and prints its
+//! policy next to the equilibrium for direct comparison.
 //!
-//! The standalone forced-open entry round converges cleanly to exploitability
-//! `< 1.4e-4` by 800K iterations (still decreasing). The free-open round's
-//! best-response exploitability instead plateaus around `2e-2` even at 800K
-//! iterations — this is *not* the same infoset-key bug: it's slow CFR+ mixing
-//! at the opener's genuinely near-indifferent 12-way opening decision (several
-//! opens are close enough in value that regret-matching needs a very long tail
-//! to fully separate them). Evidence this is mixing, not a floor: two
-//! independent solve methods — the forward opener-advantage fixed point, and
-//! backward induction over a 12-round horizon closed by a draw — converge to
-//! the *identical* game value (0.166512) agreeing to `3.7e-11`, and the value
-//! plus the equilibrium's mixed-strategy proportions are already stable to
-//! 3-4 significant figures by 170K iterations. So the value and the printed
-//! tables are reliable; only the raw best-response-gap metric for this one
-//! round hasn't fully closed in the iteration budget spent here. Push
-//! `SOLVE_ITERS` higher (or switch to a sequence-form LP) to tighten it
-//! further if a future use needs the gap itself below `1e-4`.
-//!
-//! ## Usage
-//!
-//! ```text
-//! cargo run --release -p liars-dice --example exact_lossless_solve
-//! SOLVE_ITERS=800000 FIT_ITERS=5000 cargo run --release -p liars-dice --example exact_lossless_solve
-//! ```
-//!
-//! `SOLVE_ITERS` (default 50,000) is the iteration budget for the two final,
-//! checkpointed equilibrium solves (free-open round and standalone entry
-//! round) whose tables and exploitability get printed. `FIT_ITERS` (default
-//! 20,000) is the (much cheaper) per-solve budget used while iterating the
-//! opener-advantage fixed point and the backward-induction cross-check, where
-//! only the converged *value* matters, not per-solve exploitability.
-//!
-//! The last section loads the deployed history-net champion
-//! (`web/app/public/artifacts/ld-history-champion.bin`) and queries its
-//! policy on a deployment-realistic 5-player state (3 seats eliminated, 2
-//! survivors with 1 die each, fresh free-open round) so its opening and
-//! response distributions can be read side by side with the equilibrium
-//! tables above.
+//! SOLVE_ITERS=<n> FIT_ITERS=<n> cargo run --release -p liars-dice --example exact_lossless_solve
 
 use std::collections::HashMap;
 use std::io::Write;
