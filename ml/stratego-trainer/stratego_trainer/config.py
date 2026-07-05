@@ -185,10 +185,20 @@ class TrainConfig:
     # every iter per valrun3's own metrics) and decays toward `anchor_floor` so
     # late training is unconstrained RL — the policy must be free to blow past the
     # teacher (iter100 already did, at 0.780 vs 0.549) not just match it.
+    #
+    # `anchor_floor` was 0.0 (fully unconstrained late-training) through valrun4;
+    # that run improved to ws_heur=0.788 by iter100 (coef 0.1->0.026 over that
+    # window) then eroded — a head-to-head confirmed genuine erosion, not just
+    # meta-drift: iter100 beat iter684 decisively (0.295 ws) and even tied the
+    # raw BC init (0.524 ws), i.e. 684 iters of RL bought nothing. Erosion was
+    # already locked in by iter400, where the schedule had decayed to ~0.017 —
+    # below the floor here. 0.025 sits at the bottom of the coefficient band
+    # that produced iter100's real gain, so the trust region never fully
+    # vanishes even arbitrarily late in training (valrun5).
     anchor_coef: float = 0.1
     anchor_decay: float = 0.3
     anchor_ceil: float = 0.1
-    anchor_floor: float = 0.0
+    anchor_floor: float = 0.025
 
     def attack_clock(self, step: int) -> int:
         if self.clock_anneal_iters <= 0:
