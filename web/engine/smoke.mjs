@@ -46,6 +46,21 @@ const ev = JSON.parse(m.apply_human('0'));
 assert(ev.text.startsWith('You:'), `apply_human narration: ${ev.text}`);
 console.log('liars-dice human move:', ev.text);
 
+// Liar's Dice history net: proves the trained champion actually loads through
+// load_artifact and plays — not just that the crate compiles for wasm.
+const ldHistoryWeights = await readFile(
+  new URL('../app/public/artifacts/ld-history-champion.bin', import.meta.url),
+);
+engine.load_artifact('runs/ld_history/best.bin', new Uint8Array(ldHistoryWeights));
+m = engine.create_match(
+  'liars-dice',
+  JSON.stringify({ players: 3, dice: 2, bot: 'history', seat: 'watch', seed: 13 }),
+);
+let ldHistorySteps = 0;
+while (m.step()) ldHistorySteps++;
+assert(m.is_over() && ldHistorySteps > 0, `liars-dice history watch ended after ${ldHistorySteps} steps`);
+console.log('liars-dice history watch:', ldHistorySteps, 'moves —', m.result_text());
+
 // Snake: the competitive 1v1 game. Watch a duel to a result, then a human
 // turn — the view JSON carries both snakes and the outcome.
 m = engine.create_match('snake', JSON.stringify({ seat: 'watch', sims: 60, depth: 12, seed: 5 }));
