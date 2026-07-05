@@ -11,7 +11,11 @@ Companion: `ATARAXOS_SPEC.md` (rules, nets, training, search). This file is the 
   `NUM_INFOSTATE_CHANNELS = 355 + move_memory*(4*enable_hidden_and_types + enable_src_dst + enable_dm)`.
   Training config (`stratego_conf.h:86-92`, confirmed by `pretrained/final_run/train.log`):
   `enable_src_dst_planes=true, enable_hidden_and_types_planes=false, enable_dm_planes=false,
-  move_memory=32` → **387 = 355 + 32·1**.
+  move_memory=86` (raw env history buffer), which `FeatureOrchestrator`
+  (`feature_orchestration.py`) trims to the most recent `plane_history_len=32`
+  planes before the move net → **387 = 355 + 32·1**. We compute the trimmed
+  layout directly (slice the last 32 of the action history) without ever
+  materializing the 86-wide raw buffer — identical network input.
 - **Move-net per-token input** (`feature_orchestration.py:48-50`):
   `in_channels = sum(plane_mask) + plane_history_len + (N_PIECE_ID if use_piece_ids else 0)`.
   Move net `use_planes=True` → all 355 kept, `plane_history_len=32`, `N_PIECE_ID=256` → **643**.
@@ -107,7 +111,9 @@ Three cases:
 36 `our_hidden`=(!visible & color==for_player); 37 `their_hidden`; 38 `empty`=(type==EMPTY);
 39 `our_moved`=(has_moved & ours); 40 `their_moved`; 41 `num_moves/max_num_moves` (constant plane);
 42 `num_moves_since_last_attack/max_num_moves_between_attacks`. Training `max_num_moves=4000` (default 2000);
-`max_num_moves_between_attacks` default **200** but not echoed in train.log — **confirm** (ch 42 denom).
+`max_num_moves_between_attacks`: `StrategoConf` default is 200, but the RL training
+entry (`scripts/train/rl_main.py:21,86`) overrides it to **100** — confirmed; our
+`rules.rs` constant and the ch-42 denominator already use 100.
 
 ### 3.4 Threat/Evade/Active-adj (43–108), `:414-444`
 Types `{SPY..MARSHAL, HIDDEN_PIECE}` (11; FLAG/BOMB never threatened). `we_*` written only if piece is
