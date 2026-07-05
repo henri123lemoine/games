@@ -185,11 +185,18 @@ class MoveTransformer(nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         self.embedder = nn.Linear(in_dim, embed_dim)
-        # 92 cell tokens + 1 value token prepended -> 93 positions.
+        # 92 cell tokens + 1 value slot prepended -> 93 positions. Reference
+        # parity (pyengine/networks/move_transformer.py): the value slot has
+        # NO learned content embedding, only F.pad's implicit zero row -- the
+        # positional encoding (added below, already trainable) is the only
+        # thing distinguishing it from a cell token. A prior version of this
+        # net used a separate learned `value_token` parameter here instead of
+        # a zero pad; audit-nets found this measurably perturbs move_logits
+        # too (not just the value head), since the slot lives in the same
+        # self-attention sequence as the 92 cell tokens. Removed for fidelity.
         self.positional_encoding = _trunc_normal(
             (1, N_OCCUPIABLE_CELL + 1, embed_dim), POS_EMB_STD
         )
-        self.value_token = _trunc_normal((1, 1, embed_dim), POS_EMB_STD)
         self.layers = [SelfAttentionLayer(embed_dim, n_head) for _ in range(depth)]
         self.norm_out = nn.LayerNorm(embed_dim, eps=LN_EPS)
         self.q_proj = nn.Linear(embed_dim, embed_dim)
@@ -200,8 +207,8 @@ class MoveTransformer(nn.Module):
     def trunk(self, obs):
         x = self.embedder(obs)  # (B, 92, d)
         b = x.shape[0]
-        vtok = mx.broadcast_to(self.value_token, (b, 1, self.embed_dim))
-        x = mx.concatenate([vtok, x], axis=1)  # value token at index 0
+        zeros = mx.zeros((b, 1, self.embed_dim), dtype=x.dtype)
+        x = mx.concatenate([zeros, x], axis=1)  # value slot at index 0, no learned content
         x = x + self.positional_encoding
         for layer in self.layers:
             x = layer(x)

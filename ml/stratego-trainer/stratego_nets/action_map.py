@@ -92,7 +92,13 @@ class ActionLogitMap:
 
         Non-representable (lake-touching) slots are filled with the smallest
         finite value of the dtype, so they read as -inf to the downstream softmax
-        even before a legal mask is applied.
+        even before a legal mask is applied. The reference's `LogitConverter`
+        fills these slots with 0 instead, relying entirely on legal_action_mask
+        to blank them -- behaviorally identical here because the real game
+        engine's legal mask never marks a lake-touching slot legal in the
+        first place; this would only diverge from the reference if this net
+        were ever called with a legal_mask that doesn't already exclude lake
+        slots (audit-nets, confirmed).
         """
         import mlx.core as mx
 
