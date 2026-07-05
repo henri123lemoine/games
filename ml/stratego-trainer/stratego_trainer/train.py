@@ -237,16 +237,20 @@ def _setup_forward_finish(raw, obs_np):
 def collect_iter(s, move_net, setup_net, steps):
     """Run `steps` self-play decision steps.
 
-    Returns (env_steps, n_terminals, reward_pl0_sum, n_decisive, n_capped, n_scrub)
-    where n_decisive counts terminals with a nonzero reward (a real win/loss —
-    the complement, among terminals, is a draw or a ply-cap timeout), n_capped
+    Returns (env_steps, n_terminals, reward_pl0_sum, n_decisive, n_capped,
+    n_scrub, move_decisions, move_attacks, t_coll, t_fwd, t_comm) where
+    n_decisive counts terminals with a nonzero reward (a real win/loss — the
+    complement, among terminals, is a draw or a ply-cap timeout), n_capped
     counts terminals that were force-reset by the ply cap rather than a genuine
-    rules-terminal, and n_scrub counts the non-finite net outputs scrubbed before
-    they could poison the sim's stored transitions.
+    rules-terminal, n_scrub counts the non-finite net outputs scrubbed before
+    they could poison the sim's stored transitions, and move_decisions/
+    move_attacks are the attack-rate telemetry (see `stratego::sim::RunStats`).
     """
     n_term = 0
     n_decisive = 0
     n_capped = 0
+    move_decisions = 0
+    move_attacks = 0
     rsum = 0.0
     scrub = 0
     t_coll = t_fwd = t_comm = 0.0
@@ -273,7 +277,10 @@ def collect_iter(s, move_net, setup_net, steps):
         rsum += float(out["reward_pl0"].sum())
         n_decisive += int((out["reward_pl0"] != 0.0).sum())
         n_capped += int(out["capped"].sum())
-    return steps * s.num_envs, n_term, rsum, n_decisive, n_capped, scrub, t_coll, t_fwd, t_comm
+        move_decisions += int(out["move_decisions"])
+        move_attacks += int(out["move_attacks"])
+    return (steps * s.num_envs, n_term, rsum, n_decisive, n_capped, scrub,
+            move_decisions, move_attacks, t_coll, t_fwd, t_comm)
 
 
 def train_move_pass(move_net, opt, data, encode_fn, magnet_coef, lr, cfg, bf16_net=None):
@@ -557,7 +564,8 @@ def train(cfg: TrainConfig):
         move_bf16.update(tree_map(lambda p: p.astype(mx.bfloat16), move.parameters()))
         setup_bf16.update(tree_map(lambda p: p.astype(mx.bfloat16), setup.parameters()))
         mx.eval(move_bf16.parameters(), setup_bf16.parameters())
-        env_steps, n_term, rsum, n_decisive, n_capped, collect_scrub, _tc, _tf, _tm = collect_iter(
+        (env_steps, n_term, rsum, n_decisive, n_capped, collect_scrub,
+         move_decisions, move_attacks, _tc, _tf, _tm) = collect_iter(
             s, move_bf16, setup_bf16, cfg.collect_steps)
         total_env_steps += env_steps
         _t_collect = time.time()
@@ -620,6 +628,12 @@ def train(cfg: TrainConfig):
             "draw_frac": ((n_term - n_decisive) / n_term) if n_term else 0.0,
             "capped_frac": (n_capped / n_term) if n_term else 0.0,
             "attack_clock": attack_clock,
+            # The direct signature of the passivity trap (2026-07-04): a
+            # from-scratch net's attack rate collapsing toward 0 starves the
+            # value head long before draw_frac itself climbs. HeuristicBot's
+            # own rate is ~24.5/100 plies; watch this trend, not just draw_frac.
+            "move_decisions": move_decisions,
+            "attacks_per_100_plies": (100.0 * move_attacks / move_decisions) if move_decisions else 0.0,
             "move/nan": move_nan,
             "setup/nan": setup_nan,
             "move/nan_where": (m_stats.get("move/nan_stage", "") or move_stage),
@@ -699,7 +713,8 @@ def train(cfg: TrainConfig):
                    f"setupL={rec.get('setup/loss', 0):.3f} "
                    f"nkept={m_stats.get('move/n_kept', 0)}(thr={move_threshold}) "
                    f"scrub={scrubbed} term={n_term} draw={rec['draw_frac']:.2f}"
-                   f"(cap={rec['capped_frac']:.2f}) {rec.get('iter_seconds', 0):.1f}s")
+                   f"(cap={rec['capped_frac']:.2f}) atk={rec['attacks_per_100_plies']:.1f}/100"
+                   f"(clock={attack_clock}) {rec.get('iter_seconds', 0):.1f}s")
             if iter_bad:
                 msg += (f"  [BAD move_nan={move_nan} setup_nan={setup_nan} thr={move_threshold} "
                         f"scrub={scrubbed} streak={bad_streak} mscale={move_lr_scale:.3g} "

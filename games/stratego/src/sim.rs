@@ -69,6 +69,15 @@ pub struct RunStats {
     /// Sum of player-0 terminal rewards over completed games (should hover near
     /// 0 for a symmetric uniform policy).
     pub reward_pl0_sum: f64,
+    /// Move-phase decisions (the denominator for an attack-rate measurement;
+    /// `decision_steps` also counts deployment placements, which can never be
+    /// attacks).
+    pub move_decisions: u64,
+    /// Of those, how many landed on an occupied (enemy) cell — the direct
+    /// signature of the passivity trap: a from-scratch policy's attack rate
+    /// collapsing toward 0 is what starves the value head under the no-attack
+    /// draw clock (see the 2026-07-04 measurement this counter exists for).
+    pub move_attacks: u64,
 }
 
 impl RunStats {
@@ -76,6 +85,8 @@ impl RunStats {
         self.decision_steps += other.decision_steps;
         self.games_completed += other.games_completed;
         self.reward_pl0_sum += other.reward_pl0_sum;
+        self.move_decisions += other.move_decisions;
+        self.move_attacks += other.move_attacks;
     }
 }
 
@@ -143,6 +154,8 @@ struct EnvOutcome {
     /// reset; the reset itself happens serially so seeds stay deterministic.
     completed: Option<f64>,
     capped: bool,
+    was_move: bool,
+    was_attack: bool,
 }
 
 impl Simulator {
@@ -309,8 +322,14 @@ impl Simulator {
             ..CommitResult::default()
         };
         for (env, outcome) in outcomes.into_iter().enumerate() {
-            buffer.record(env, outcome.transition);
             result.stats.decision_steps += 1;
+            if outcome.was_move {
+                result.stats.move_decisions += 1;
+                if outcome.was_attack {
+                    result.stats.move_attacks += 1;
+                }
+            }
+            buffer.record(env, outcome.transition);
             if let Some(reward_pl0) = outcome.completed {
                 result.stats.games_completed += 1;
                 result.stats.reward_pl0_sum += reward_pl0;
@@ -439,6 +458,22 @@ fn sample_apply(
     };
 
     let was_move = decision.phase == Phase::Move;
+    // Reads the PRE-move board: an attack is a move onto a cell occupied by an
+    // enemy piece, exactly `rules::apply`'s own `dst_code != NO_ATTACK_DST_CODE`
+    // (the Game trait's `apply` discards that `Applied` detail, so this
+    // re-derives it independently rather than re-plumbing the whole return
+    // value through the trait boundary).
+    let was_attack = was_move
+        && match &arena.state {
+            State::Play { board, .. } => {
+                let Move::Step(step_action) = game_action else {
+                    unreachable!("was_move implies Move::Step")
+                };
+                let (_from_abs, to_abs) = step_action.to_abs(decision.player);
+                board.pieces[to_abs].kind != PieceType::Empty
+            }
+            State::Deploy { .. } => false,
+        };
     let mut next_state = arena.state.clone();
     game.apply(&mut next_state, game_action);
     let plies = arena.plies + u32::from(was_move);
@@ -509,6 +544,8 @@ fn sample_apply(
         plies,
         completed,
         capped,
+        was_move,
+        was_attack,
     }
 }
 
@@ -603,6 +640,32 @@ mod tests {
             terminating > 0,
             "completed {} games but no terminating transition was recorded",
             stats.games_completed
+        );
+    }
+
+    #[test]
+    fn attack_telemetry_counts_only_move_decisions_that_land_on_an_occupied_cell() {
+        let num_envs = 8;
+        let mut sim = Simulator::new(num_envs, EncoderConfig::default(), 4242, 4000);
+        let mut buf = buffer(num_envs);
+        let stats = sim.run(&UniformEvaluator, &mut buf, 2000);
+
+        assert!(stats.move_decisions > 0, "no move-phase decisions recorded");
+        assert!(
+            stats.move_attacks <= stats.move_decisions,
+            "move_attacks {} exceeds move_decisions {}",
+            stats.move_attacks,
+            stats.move_decisions
+        );
+        // Uniform-random legal play attacks fairly often (both sides moving
+        // freely toward each other) — some nonzero count over 2000 steps is the
+        // sanity floor; the real discriminating rate comparison (HeuristicBot's
+        // measured ~24.5/100 plies vs a passive RL net's ~0.6-1.7/100) lives in
+        // train.py's `attacks_per_100_plies` metric, not this unit test.
+        assert!(
+            stats.move_attacks > 0,
+            "expected at least one attack in {} move decisions",
+            stats.move_decisions
         );
     }
 

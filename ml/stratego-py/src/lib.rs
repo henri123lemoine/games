@@ -490,6 +490,12 @@ impl BatchSim {
         // draw (rare, e.g. a chase/twosquare repetition ruling), so trainers can
         // tell "the game timed out" from "the game was actually drawn."
         out.set_item("capped", capped.into_pyarray(py))?;
+        // Attack-rate telemetry for this one commit() call (not per-env — a
+        // scalar count over however many move-phase decisions were in this
+        // batch). `move_decisions` is the denominator: `decision_steps` also
+        // counts deployment placements, which can never be attacks.
+        out.set_item("move_decisions", result.stats.move_decisions)?;
+        out.set_item("move_attacks", result.stats.move_attacks)?;
         Ok(out)
     }
 
