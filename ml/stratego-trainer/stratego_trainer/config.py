@@ -44,7 +44,9 @@ class TrainConfig:
     # advantage filtering then keeps zero rows (move training silently stops).
     # Sizing capacity near `collect_steps` rolls the ring forward ~one fresh
     # iteration per drain (≈ one pass per transition, matching the reference's
-    # collect-window-then-reset). It must still exceed a deploy phase (80
+    # collect-window-then-reset; at capacity 128 vs collect_steps 120 the
+    # overlap re-trains ~8/128 ≈ 6% of transitions a second time — small,
+    # known, accepted). It must still exceed a deploy phase (80
     # placements) so move-phase λ-returns within a game stay resident; setup
     # trajectories are accumulated independently of the ring.
     buffer_capacity: int = 128
@@ -76,6 +78,10 @@ class TrainConfig:
     temperature_floor: float = 0.001  # spec value. (raising to 0.003 over-regularized: entropy pinned ~2.46, weak policy; the adv_filt_thresh=0.001 relative filter is what actually prevents the iter-540 starvation halt, so the magnet floor can stay low and let the policy sharpen)
 
     # ---- optimizer (AdamW; betas/eps PyTorch defaults) ----
+    # MUST stay 0.0 until per-param groups exist: the reference
+    # (train_container.py:22-33) forces weight_decay=0 on BIAS params via a
+    # second param group; our single-group AdamW would decay biases too.
+    # Inert while 0.0; train.py asserts this so tuning it nonzero fails loudly.
     weight_decay: float = 0.0
     adam_b1: float = 0.9
     adam_b2: float = 0.999

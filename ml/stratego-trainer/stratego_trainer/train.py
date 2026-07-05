@@ -527,6 +527,9 @@ def train_setup_pass(setup_net, opt, setup_data, reg_temp, lr, cfg, bf16_net=Non
 
 
 def build(cfg):
+    # Bias params must not be weight-decayed (the reference splits param
+    # groups; we don't yet) — see the config.py note on weight_decay.
+    assert cfg.weight_decay == 0.0, "implement bias/non-bias param groups before enabling weight_decay"
     move = S.MoveTransformer.from_config(cfg.move_net_config())
     setup = S.ArrangementTransformer.from_config(cfg.setup_net_config())
     move_opt = optim.AdamW(learning_rate=cfg.lr(0), betas=[cfg.adam_b1, cfg.adam_b2],
