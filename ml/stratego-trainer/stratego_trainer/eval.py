@@ -44,10 +44,25 @@ def _net_logits(move_net, setup_net, obs, legal, kind, temperature=1.0):
     # -inf (a numpy warning). The sim only reads legal slots, so clamp to a finite
     # floor first — illegal stays maximally negative without overflowing.
     floor = -1e30
+    # Ceiling on the LEGAL side too (2026-07-05: a checkpoint deep in valrun3's
+    # mid-run collapse reproducibly crashed eval with a Metal GPU address fault,
+    # preceded by an "overflow in multiply" RuntimeWarning here). A deranged net's
+    # raw move_logits are an unbounded Linear output, so clamp BEFORE the `* inv_t`
+    # scale (`pre_ceil`, generous — no healthy legal logit is remotely this large)
+    # so the multiply itself can never overflow, then again AFTER scaling
+    # (`post_ceil`) in case a tiny eval_temperature makes `inv_t` itself huge. A
+    # 60-nat post-scale gap already makes softmax a de facto delta function, so
+    # clamping there changes no real sampling decision. This is a harness
+    # hardening (measure any checkpoint, including a broken one), not a fix for
+    # why the checkpoint got deranged in the first place (that's the BC-anchor
+    # trust region).
+    pre_ceil = 1e4
+    post_ceil = 60.0
 
     if kind == "move":
         out = move_net(obs_mx, legal_mask=mx.array(legal))
-        logits = np.clip(np.array(out["move_logits"].astype(mx.float32)), floor, None) * inv_t
+        logits = np.clip(np.array(out["move_logits"].astype(mx.float32)), floor, pre_ceil) * inv_t
+        logits = np.minimum(logits, post_ceil)
         vlogp = np.array(out["value_logp"])
         probs = np.exp(vlogp)
         vals = (probs * CATS).sum(-1)
@@ -60,9 +75,10 @@ def _net_logits(move_net, setup_net, obs, legal, kind, temperature=1.0):
         # The setup net emits per-slot logits; the decision is for the NEXT empty
         # slot = number of placed pieces so far (sum over the one-hot prefix).
         n_placed = np.array(obs).reshape(obs.shape[0], 40, 14).sum(axis=(1, 2)).astype(int)
-        all_logits = np.clip(np.array(out["logits"].astype(mx.float32)), floor, None)  # (B,40,14)
+        all_logits = np.clip(np.array(out["logits"].astype(mx.float32)), floor, pre_ceil)  # (B,40,14)
         slot = np.clip(n_placed, 0, 39)
         logits = all_logits[np.arange(obs.shape[0]), slot] * inv_t  # (B,14)
+        logits = np.minimum(logits, post_ceil)
         vlogp = np.array(out["value"].astype(mx.float32))
         vlogp = vlogp - np.log(np.exp(vlogp).sum(-1, keepdims=True))
         probs = np.exp(vlogp[np.arange(obs.shape[0]), slot])
