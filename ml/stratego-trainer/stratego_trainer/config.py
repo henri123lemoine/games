@@ -151,6 +151,31 @@ class TrainConfig:
     # Move/setup net size preset, one of `S.NET_SIZES` ("default" | "mid" | "ref";
     # see stratego_nets/config.py). Chosen once at run-start and never mixed mid-run.
     net_size: str = "default"
+    # Optional warm-start checkpoint (e.g. a BC run's output). Loads move+setup
+    # net params and EMA shadows only — optimizer state is always fresh, since a
+    # BC warm-start uses a different loss/optimizer regime than RL. "" -> from
+    # scratch (random init), the reference's own starting point.
+    resume_from: str = ""
+
+    # ---- attack-clock curriculum ----
+    # The no-attack draw clock the simulator enforces linearly anneals from
+    # `clock_start` at iter 0 to `clock_end` (reference parity, 100) by
+    # `clock_anneal_iters`, then holds at `clock_end`. A from-scratch net attacks
+    # so rarely (see the 2026-07-04 measurement: HeuristicBot 24.5 attacks/100
+    # plies vs an iter-100 net's 0.6) that the reference's tight 100-ply clock
+    # draws nearly every game before any exploratory attack can be rewarded or
+    # punished — a longer early clock gives inexperienced self-play more room to
+    # reach a decisive result while it's still learning to attack at all.
+    # `clock_start == clock_end` (the default) disables the curriculum outright.
+    clock_start: int = 100
+    clock_end: int = 100
+    clock_anneal_iters: int = 1
+
+    def attack_clock(self, step: int) -> int:
+        if self.clock_anneal_iters <= 0:
+            return self.clock_end
+        frac = min(1.0, step / self.clock_anneal_iters)
+        return round(self.clock_start + frac * (self.clock_end - self.clock_start))
 
     def move_net_config(self) -> S.MoveConfig:
         return S.NET_SIZES[self.net_size][0]

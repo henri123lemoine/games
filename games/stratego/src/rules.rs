@@ -773,20 +773,46 @@ fn player_can_move(board: &Board, player: usize, to_play: usize) -> bool {
 }
 
 /// Whether the position is terminal for a state about to be acted on by
-/// `to_play`, given the supplied `flag_captured` player index (or `None`).
-/// Mirrors `IncrementTerminationCounterKernel`'s predicate.
+/// `to_play`, given the supplied `flag_captured` player index (or `None`) and
+/// the reference-parity attack clock. Mirrors `IncrementTerminationCounterKernel`'s
+/// predicate.
 pub fn is_terminal(board: &Board, to_play: usize, flag_captured: Option<usize>) -> bool {
+    is_terminal_with_clock(board, to_play, flag_captured, MAX_NUM_MOVES_BETWEEN_ATTACKS)
+}
+
+/// [`is_terminal`] with an explicit no-attack draw clock instead of the
+/// reference-parity constant — the knob a training-only self-play loop anneals
+/// (e.g. the [`Simulator`](crate::sim::Simulator)'s configurable clock); every
+/// other caller (the `Game` trait, `lab`, tests) goes through [`is_terminal`]
+/// and stays reference-faithful.
+pub fn is_terminal_with_clock(
+    board: &Board,
+    to_play: usize,
+    flag_captured: Option<usize>,
+    attack_clock: u32,
+) -> bool {
     has_legal_movement(board, to_play) < 3
         || flag_captured.is_some()
         || board.num_moves > MAX_NUM_MOVES
-        || board.num_moves_since_last_attack > MAX_NUM_MOVES_BETWEEN_ATTACKS
+        || board.num_moves_since_last_attack > attack_clock
 }
 
 /// Reward to player 0 at a terminal state (`ComputeRewardPl0Kernel`): +1 / -1
 /// flag capture, +1 / -1 / 0 for stuck players, 0 on either timeout.
 pub fn reward_pl0(board: &Board, to_play: usize, flag_captured: Option<usize>) -> f64 {
-    let not_timeout = board.num_moves <= MAX_NUM_MOVES
-        && board.num_moves_since_last_attack <= MAX_NUM_MOVES_BETWEEN_ATTACKS;
+    reward_pl0_with_clock(board, to_play, flag_captured, MAX_NUM_MOVES_BETWEEN_ATTACKS)
+}
+
+/// [`reward_pl0`] with an explicit no-attack draw clock; see
+/// [`is_terminal_with_clock`].
+pub fn reward_pl0_with_clock(
+    board: &Board,
+    to_play: usize,
+    flag_captured: Option<usize>,
+    attack_clock: u32,
+) -> f64 {
+    let not_timeout =
+        board.num_moves <= MAX_NUM_MOVES && board.num_moves_since_last_attack <= attack_clock;
 
     if not_timeout && let Some(p) = flag_captured {
         // p captured the flag: red (0) capturing -> +1, blue (1) -> -1.

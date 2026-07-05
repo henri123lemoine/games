@@ -177,13 +177,14 @@ struct BatchSim {
 #[pymethods]
 impl BatchSim {
     #[new]
-    #[pyo3(signature = (num_envs, move_cap, seed, history_len = 32, buffer_capacity = 256))]
+    #[pyo3(signature = (num_envs, move_cap, seed, history_len = 32, buffer_capacity = 256, attack_clock = 100))]
     fn new(
         num_envs: usize,
         move_cap: u32,
         seed: u64,
         history_len: usize,
         buffer_capacity: usize,
+        attack_clock: u32,
     ) -> PyResult<Self> {
         if num_envs == 0 {
             return Err(PyValueError::new_err("num_envs must be > 0"));
@@ -193,9 +194,11 @@ impl BatchSim {
         }
         let cfg = EncoderConfig {
             history_len,
+            max_num_moves_between_attacks: attack_clock,
             ..EncoderConfig::default()
         };
-        let sim = Simulator::new(num_envs, cfg, seed, move_cap);
+        let mut sim = Simulator::new(num_envs, cfg, seed, move_cap);
+        sim.set_attack_clock(attack_clock);
         let buffer = ReplayBuffer::new(num_envs, buffer_capacity, cfg);
         Ok(BatchSim {
             sim,
@@ -205,6 +208,18 @@ impl BatchSim {
             setup: SetupAccumulator::new(num_envs),
             seed,
         })
+    }
+
+    /// Current no-attack draw clock (reference-parity default 100).
+    #[getter]
+    fn attack_clock(&self) -> u32 {
+        self.sim.attack_clock()
+    }
+
+    /// Anneals the no-attack draw clock for a curriculum — see
+    /// [`stratego::sim::Simulator::set_attack_clock`].
+    fn set_attack_clock(&mut self, attack_clock: u32) {
+        self.sim.set_attack_clock(attack_clock);
     }
 
     #[getter]
@@ -1092,6 +1107,59 @@ fn last_move_obs<'py>(
     encode_view_obs(py, sim, env, slot)
 }
 
+/// Generates `num_games` HeuristicBot-vs-HeuristicBot games (real engine,
+/// reference-parity clock) and returns every recorded move-phase decision —
+/// the behavior-cloning dataset for the move-RL warm start
+/// ([`stratego::generate_bc_games`]). `epsilon` is the eps-greedy jitter
+/// probability (either seat plays a uniformly random legal action instead of
+/// the heuristic's pick) so the data isn't one deterministic line per opening.
+///
+/// Returns a dict: `obs` `(n, 92, 643) f32`, `legal_mask` `(n, 1800) bool`,
+/// `action` `(n,) i64`, `outcome` `(n, 3) f32` (`[P(loss), P(tie), P(win)]`,
+/// the acting player's true final-game result — exact, not bootstrapped).
+/// Generation is cheap relative to training (a few hundred thousand
+/// decisions/sec) — call this per chunk from a streaming BC loop rather than
+/// materializing the whole dataset at once (`obs` alone is ~230 KiB/row).
+#[pyfunction]
+#[pyo3(signature = (num_games, seed, epsilon))]
+fn generate_bc_games<'py>(
+    py: Python<'py>,
+    num_games: usize,
+    seed: u64,
+    epsilon: f32,
+) -> PyResult<Bound<'py, PyDict>> {
+    let cfg = EncoderConfig::default();
+    let rows = stratego::generate_bc_games(num_games, seed, epsilon, &cfg);
+    let n = rows.len();
+    let feat = cfg.num_token_features();
+
+    let mut obs = Array3::<f32>::zeros((n, MOVE_TOKENS, feat));
+    let mut legal_mask = Array2::<bool>::default((n, N_ACTION));
+    let mut action = Array1::<i64>::zeros(n);
+    let mut outcome = Array2::<f32>::zeros((n, 3));
+
+    for (i, row) in rows.iter().enumerate() {
+        obs.slice_mut(numpy::ndarray::s![i, .., ..])
+            .as_slice_mut()
+            .expect("contiguous row")
+            .copy_from_slice(&row.obs);
+        for &a in &row.legal {
+            legal_mask[(i, a as usize)] = true;
+        }
+        action[i] = i64::from(row.action);
+        outcome[(i, 0)] = row.outcome[0];
+        outcome[(i, 1)] = row.outcome[1];
+        outcome[(i, 2)] = row.outcome[2];
+    }
+
+    let out = PyDict::new(py);
+    out.set_item("obs", obs.into_pyarray(py))?;
+    out.set_item("legal_mask", legal_mask.into_pyarray(py))?;
+    out.set_item("action", action.into_pyarray(py))?;
+    out.set_item("outcome", outcome.into_pyarray(py))?;
+    Ok(out)
+}
+
 #[pymodule]
 fn stratego_sim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BatchSim>()?;
@@ -1100,6 +1168,7 @@ fn stratego_sim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(last_move_obs, m)?)?;
     m.add_function(wrap_pyfunction!(action_to_srcdst, m)?)?;
     m.add_function(wrap_pyfunction!(srcdst_to_action, m)?)?;
+    m.add_function(wrap_pyfunction!(generate_bc_games, m)?)?;
     m.add("N_ACTION", N_ACTION)?;
     m.add("DEPLOY_SLOTS", DEPLOY_SLOTS)?;
     m.add("DEPLOY_WIDTH", DEPLOY_WIDTH)?;

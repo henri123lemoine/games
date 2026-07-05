@@ -68,6 +68,12 @@ class RunDir:
         mx.save_safetensors(path, flat, metadata={"step": str(step), "net_size": self.net_size})
         return path
 
+    def save_named(self, fname, *args, step):
+        """An arbitrarily-named checkpoint in the same combined move+setup
+        safetensors format — for one-off snapshots outside the
+        latest/periodic/best cadence (e.g. a BC warm-start's output)."""
+        return self._ckpt(fname, *args, step=step)
+
     def save_latest(self, *args, step):
         return self._ckpt("latest.safetensors", *args, step=step)
 

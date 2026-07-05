@@ -52,6 +52,11 @@ pub struct Simulator {
     /// Move cap before an env is force-reset (defensive; the rules' own
     /// termination should fire first via the k-move rule).
     move_cap: u32,
+    /// No-attack draw clock passed to [`rules::is_terminal_with_clock`] /
+    /// [`rules::reward_pl0_with_clock`] for this simulator's own termination
+    /// checks (reference-parity default 100; a training curriculum anneals it
+    /// via [`Simulator::set_attack_clock`]).
+    attack_clock: u32,
 }
 
 /// Aggregate counters from a [`Simulator::run`].
@@ -152,6 +157,7 @@ impl Simulator {
             rng: Rng::new(seed),
             seed_ctr: seed.wrapping_mul(0x9e3779b9).wrapping_add(1),
             move_cap,
+            attack_clock: crate::rules::MAX_NUM_MOVES_BETWEEN_ATTACKS,
         };
 
         let period = num_envs.max(1);
@@ -174,6 +180,24 @@ impl Simulator {
 
     pub fn config(&self) -> &EncoderConfig {
         &self.cfg
+    }
+
+    /// Current no-attack draw clock this simulator's own termination checks use
+    /// (see `attack_clock` on [`Simulator`]).
+    pub fn attack_clock(&self) -> u32 {
+        self.attack_clock
+    }
+
+    /// Sets the no-attack draw clock for subsequent [`commit`](Simulator::commit)
+    /// calls — a curriculum anneals this across training without reconstructing
+    /// the simulator (which would drop every live arena). Takes effect from the
+    /// next decision onward; in-flight games are unaffected mid-decision. Also
+    /// updates the encoder's `max_num_moves_between_attacks` denominator (the
+    /// obs's own "moves since last attack" plane) so what the net sees about
+    /// the clock never drifts from the clock actually governing termination.
+    pub fn set_attack_clock(&mut self, attack_clock: u32) {
+        self.attack_clock = attack_clock;
+        self.cfg.max_num_moves_between_attacks = attack_clock;
     }
 
     /// A clone of `env`'s current move-phase board and the player to act, or
@@ -221,9 +245,26 @@ impl Simulator {
     /// ordered. Pair with [`commit`](Simulator::commit), passing the evaluations
     /// in env order.
     pub fn collect(&mut self) -> Collected {
-        let game = Stratego;
+        // Uses the clocked check (not `Game::is_terminal`'s hardcoded constant)
+        // so a reset-worthy state is judged by the same `attack_clock` that
+        // `commit`/`sample_apply` used to produce it — otherwise an annealed
+        // clock other than the reference-parity 100 would let this reset check
+        // disagree with the one that actually ended the game.
         for env in 0..self.arenas.len() {
-            if game.is_terminal(&self.arenas[env].state) {
+            let terminal = match &self.arenas[env].state {
+                State::Play {
+                    board,
+                    to_play,
+                    flag_captured,
+                } => crate::rules::is_terminal_with_clock(
+                    board,
+                    *to_play,
+                    *flag_captured,
+                    self.attack_clock,
+                ),
+                State::Deploy { .. } => false,
+            };
+            if terminal {
                 self.reset_env(env);
             }
         }
@@ -251,13 +292,14 @@ impl Simulator {
         assert_eq!(evals.len(), self.arenas.len(), "one evaluation per env");
 
         let move_cap = self.move_cap;
+        let attack_clock = self.attack_clock;
         let outcomes: Vec<EnvOutcome> = self
             .arenas
             .par_iter()
             .zip(collected.decisions.par_iter())
             .zip(evals.par_iter())
             .map(|((arena, decision), evaluation)| {
-                sample_apply(&game, arena, decision, evaluation, move_cap)
+                sample_apply(&game, arena, decision, evaluation, move_cap, attack_clock)
             })
             .collect();
 
@@ -376,6 +418,7 @@ fn sample_apply(
     decision: &EnvDecision,
     evaluation: &Evaluation,
     move_cap: u32,
+    attack_clock: u32,
 ) -> EnvOutcome {
     let log_probs = log_softmax(&evaluation.logits);
     let weights: Vec<f64> = log_probs.iter().map(|&lp| f64::from(lp).exp()).collect();
@@ -400,19 +443,40 @@ fn sample_apply(
     game.apply(&mut next_state, game_action);
     let plies = arena.plies + u32::from(was_move);
 
-    let rules_terminal = game.is_terminal(&next_state);
+    // Bypasses `Game::is_terminal`/`Game::returns` (which hardcode the
+    // reference-parity clock) so this simulator's own `attack_clock` — possibly
+    // annealed by a curriculum — governs its termination, matching the same
+    // `rules::is_terminal`/`reward_pl0` logic those trait methods otherwise call.
+    let (rules_terminal, reward_pl0_at_next) = match &next_state {
+        State::Play {
+            board,
+            to_play,
+            flag_captured,
+        } => (
+            crate::rules::is_terminal_with_clock(board, *to_play, *flag_captured, attack_clock),
+            crate::rules::reward_pl0_with_clock(board, *to_play, *flag_captured, attack_clock),
+        ),
+        State::Deploy { .. } => (false, 0.0),
+    };
     let capped = was_move && plies >= move_cap;
 
     // A capped game is force-reset with zero reward. It still has to break the
     // replay segment so lambda returns never bootstrap across the fresh game.
     let is_terminating_action = rules_terminal || capped;
+    let returns_for = |player: usize| -> f64 {
+        if player == 0 {
+            reward_pl0_at_next
+        } else {
+            -reward_pl0_at_next
+        }
+    };
     let terminal_reward = if rules_terminal {
-        game.returns(&next_state, decision.player) as f32
+        returns_for(decision.player) as f32
     } else {
         0.0
     };
     let completed = if rules_terminal {
-        Some(game.returns(&next_state, 0))
+        Some(returns_for(0))
     } else if capped {
         Some(0.0)
     } else {

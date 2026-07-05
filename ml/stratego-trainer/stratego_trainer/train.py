@@ -32,7 +32,7 @@ import stratego_sim as sim
 
 from .config import TrainConfig
 from .move_loss import advantage_filter_mask, move_loss_and_stats
-from .rundir import RunDir
+from .rundir import RunDir, load_checkpoint
 from .setup_loss import PIECE_COUNTS as PIECE_COUNTS_T
 from .setup_loss import setup_baseline, setup_loss_and_stats
 
@@ -515,6 +515,13 @@ def train(cfg: TrainConfig):
         mx.set_cache_limit(int(cfg.mlx_cache_limit_gb * 1024**3))
     run = RunDir(cfg.runs_root, cfg.run_name, cfg.work_seconds, net_size=cfg.net_size)
     move, setup, move_opt, setup_opt, move_ema, setup_ema = build(cfg)
+    if cfg.resume_from:
+        # Params + EMA only (no opt/=None): a warm start (e.g. BC) uses a
+        # different loss/optimizer regime, so RL always begins with the fresh
+        # AdamW state `build(cfg)` just constructed.
+        load_checkpoint(cfg.resume_from, move=move, setup=setup,
+                        move_ema=move_ema, setup_ema=setup_ema)
+        print(f"[resume] loaded {cfg.resume_from}")
     # bf16 inference copies for the collect (self-play) forward — the collect forward
     # is the per-iter bottleneck and runs ~1.75x faster in bf16. Self-play data is
     # precision-insensitive (argmax/value barely move); TRAINING stays fp32 (the
@@ -523,7 +530,7 @@ def train(cfg: TrainConfig):
     setup_bf16 = S.ArrangementTransformer.from_config(cfg.setup_net_config())
 
     s = sim.BatchSim(num_envs=cfg.num_envs, move_cap=cfg.move_cap, seed=cfg.seed,
-                     buffer_capacity=cfg.buffer_capacity)
+                     buffer_capacity=cfg.buffer_capacity, attack_clock=cfg.attack_clock(0))
 
     total_env_steps = 0
     # Self-heal state: last-good in-memory snapshots, per-net LR scales, and the
@@ -541,6 +548,10 @@ def train(cfg: TrainConfig):
             print(f"[stop] STOP/work-budget at iter {t}")
             break
         it_start = time.time()
+
+        attack_clock = cfg.attack_clock(t)
+        if attack_clock != s.attack_clock:
+            s.set_attack_clock(attack_clock)
 
         # 1-2: self-play + drain
         move_bf16.update(tree_map(lambda p: p.astype(mx.bfloat16), move.parameters()))
@@ -608,6 +619,7 @@ def train(cfg: TrainConfig):
             # passivity stall this pair of fields exists to catch early.
             "draw_frac": ((n_term - n_decisive) / n_term) if n_term else 0.0,
             "capped_frac": (n_capped / n_term) if n_term else 0.0,
+            "attack_clock": attack_clock,
             "move/nan": move_nan,
             "setup/nan": setup_nan,
             "move/nan_where": (m_stats.get("move/nan_stage", "") or move_stage),
@@ -740,6 +752,11 @@ def parse_args(argv=None):
     p.add_argument("--mlx-memory-limit-gb", type=float, default=TrainConfig.mlx_memory_limit_gb)
     p.add_argument("--bf16-train", action="store_true", default=TrainConfig.bf16_train)
     p.add_argument("--net-size", choices=tuple(S.NET_SIZES), default=TrainConfig.net_size)
+    p.add_argument("--resume", type=str, default=TrainConfig.resume_from,
+                   help="warm-start checkpoint (e.g. a BC run's output); params+EMA only")
+    p.add_argument("--clock-start", type=int, default=TrainConfig.clock_start)
+    p.add_argument("--clock-end", type=int, default=TrainConfig.clock_end)
+    p.add_argument("--clock-anneal-iters", type=int, default=TrainConfig.clock_anneal_iters)
     return p.parse_args(argv)
 
 
@@ -765,6 +782,10 @@ def main(argv=None):
         mlx_memory_limit_gb=a.mlx_memory_limit_gb,
         bf16_train=a.bf16_train,
         net_size=a.net_size,
+        resume_from=a.resume,
+        clock_start=a.clock_start,
+        clock_end=a.clock_end,
+        clock_anneal_iters=a.clock_anneal_iters,
     )
     train(cfg)
 
