@@ -28,6 +28,23 @@
 #      vars continue an existing run dir from wherever it left off, rebuilding
 #      the exploiter pool from pool_state.jsonl. The run dir's own README.md
 #      (regenerated every round) documents the exact resume command.
+#   6. Warm-start: each round's champion training initializes from
+#      champion_best_overall.bin (the current best-by-yardstick checkpoint)
+#      when one exists, instead of a fresh random net every round. v2 without
+#      this trained every round from scratch against an ever-hardening pool —
+#      the task got harder each round while the learner kept restarting, and
+#      the yardstick oscillated instead of climbing. Read fresh from disk at
+#      the top of EVERY round loop iteration (not baked in at launch), same
+#      pattern as rayon_threads.txt, so it responds to whichever checkpoint is
+#      the running best at that moment — including one from a different
+#      process if this run was resumed. The init source used is recorded in
+#      manifest.jsonl and status.jsonl for every round (a round's champion
+#      might have trained from scratch if no best existed yet, e.g. round 1).
+#      NOTE: bash parses this script's `for` loop body once at process start;
+#      editing this file does not change an already-running process's
+#      behavior for its remaining rounds (verified empirically) — a change
+#      here only takes effect for a NEW invocation (fresh launch or a
+#      RESUME_RUN/START_ROUND continuation of a stopped run).
 #
 # Thread budget: this driver is CPU-only and may be sharing the machine with a
 # GPU training job that has priority. It never sets RAYON_NUM_THREADS itself —
@@ -184,11 +201,23 @@ for round in $(seq "$START_ROUND" "$ROUNDS"); do
   EXTRA=$((POOL_SIZE - INITIAL_POOL_SIZE))
   ITERS_PER_ROUND=$((BASE_ITERS + ITERS_PER_EXTRA_POOL_ENTRY * EXTRA))
 
+  # Warm-start from the current best-by-yardstick checkpoint, if one exists
+  # yet (round 1, or a resume before any round has completed, trains fresh).
+  # Read fresh every round — see the v2.1 note in the header doc.
+  BEST_OVERALL="$RUN/champion_best_overall.bin"
+  INIT_ARGS=()
+  INIT_SOURCE="fresh"
+  if [[ -f "$BEST_OVERALL" ]]; then
+    INIT_ARGS=("init=${BEST_OVERALL}")
+    INIT_SOURCE="$BEST_OVERALL"
+  fi
+
   CHAMP_DIR="$RUN/champion_round${round}"
-  echo "=== round $round: training champion (hidden=$HIDDEN pool_size=$POOL_SIZE iters=$ITERS_PER_ROUND rayon=${RAYON_NUM_THREADS:-default}) vs pool [$POOL] -> $CHAMP_DIR ==="
+  echo "=== round $round: training champion (hidden=$HIDDEN pool_size=$POOL_SIZE iters=$ITERS_PER_ROUND rayon=${RAYON_NUM_THREADS:-default} init=$INIT_SOURCE) vs pool [$POOL] -> $CHAMP_DIR ==="
   cargo run --release --manifest-path ml/ld-ppo/Cargo.toml -- \
     players="$PLAYERS" dice="$DICE" faces="$FACES" \
     iters="$ITERS_PER_ROUND" opponents="$POOL" input="$INPUT" hidden="$HIDDEN" \
+    "${INIT_ARGS[@]}" \
     outdir="$CHAMP_DIR" \
     2>&1 | tee "$RUN/train_round${round}.log"
   CHAMP="$CHAMP_DIR/best.bin"
@@ -227,8 +256,8 @@ for round in $(seq "$START_ROUND" "$ROUNDS"); do
     "metrics=${EXPLOITER_EVAL_METRICS}" \
     2>&1 | tee "$RUN/exploiter_eval_round${round}.log"
 
-  printf '{"round":%d,"champion":"%s","exploiter":"%s","pool":"%s","pool_size":%d,"iters":%d}\n' \
-    "$round" "$CHAMP" "$EXPLOITER" "$POOL" "$POOL_SIZE" "$ITERS_PER_ROUND" >>"$MANIFEST"
+  printf '{"round":%d,"champion":"%s","exploiter":"%s","pool":"%s","pool_size":%d,"iters":%d,"init_source":"%s"}\n' \
+    "$round" "$CHAMP" "$EXPLOITER" "$POOL" "$POOL_SIZE" "$ITERS_PER_ROUND" "$INIT_SOURCE" >>"$MANIFEST"
 
   # Parse this round's numbers straight from the structured metrics (not
   # screen-scraped tables): the internal field win-share (not comparable
@@ -278,10 +307,10 @@ for round in $(seq "$START_ROUND" "$ROUNDS"); do
     fi
   fi
 
-  printf '{"round":%d,"champion":"%s","pool_size":%d,"iters":%d,"field_win_share":%s,"fair_share":%s,"yardstick_win_share":%s,"yardstick_games":%d,"exploiter_win_share_vs_champion":%s,"exploiter_edge_over_fair":%s,"belief_loss_first":%s,"belief_loss_last":%s,"is_new_best":%s}\n' \
-    "$round" "$CHAMP" "$POOL_SIZE" "$ITERS_PER_ROUND" "$FIELD_WS" "$FAIR" "$YARDSTICK_WS" "$YARDSTICK_GAMES" "$EXPLOITER_WS" "$EXPLOITER_EDGE" "$BELIEF_FIRST" "$BELIEF_LAST" "$IS_NEW_BEST" >>"$STATUS_JSONL"
+  printf '{"round":%d,"champion":"%s","pool_size":%d,"iters":%d,"init_source":"%s","field_win_share":%s,"fair_share":%s,"yardstick_win_share":%s,"yardstick_games":%d,"exploiter_win_share_vs_champion":%s,"exploiter_edge_over_fair":%s,"belief_loss_first":%s,"belief_loss_last":%s,"is_new_best":%s}\n' \
+    "$round" "$CHAMP" "$POOL_SIZE" "$ITERS_PER_ROUND" "$INIT_SOURCE" "$FIELD_WS" "$FAIR" "$YARDSTICK_WS" "$YARDSTICK_GAMES" "$EXPLOITER_WS" "$EXPLOITER_EDGE" "$BELIEF_FIRST" "$BELIEF_LAST" "$IS_NEW_BEST" >>"$STATUS_JSONL"
   {
-    echo "round $round  ($(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown))  pool_size=$POOL_SIZE iters=$ITERS_PER_ROUND"
+    echo "round $round  ($(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown))  pool_size=$POOL_SIZE iters=$ITERS_PER_ROUND init=$INIT_SOURCE"
     echo "  internal field win-share: ${FIELD_WS} (fair=${FAIR}, NOT comparable across rounds)"
     echo "  yardstick vs rollout-768: ${YARDSTICK_WS}  (n=${YARDSTICK_GAMES})$( [[ "$IS_NEW_BEST" == "true" ]] && echo '  *** NEW BEST ***' )"
     echo "  exploiter vs champion:    ${EXPLOITER_WS} (edge over fair: ${EXPLOITER_EDGE})"

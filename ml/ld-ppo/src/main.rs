@@ -68,6 +68,12 @@ struct Args {
     /// Starts as pure self-play (matching `opponents` empty); [`main`] replaces
     /// it with [`build_pool`]'s output once `opponents` is parsed.
     pool: Rc<Vec<PoolEntry>>,
+    /// Warm-start checkpoint for the trunk/policy/value heads (the belief head
+    /// is always freshly initialized — it isn't part of the `Mlp` container).
+    /// `None` (default) trains from a fresh random net, matching the historical
+    /// behavior. Must match this run's `input` mode and `hidden` width exactly;
+    /// a mismatch is a config error, not a silent width/mode coercion.
+    init: Option<PathBuf>,
 }
 
 /// Which feature encoding — and therefore which net input width — a run uses.
@@ -200,6 +206,7 @@ impl Default for Args {
             opponents: Vec::new(),
             belief_coef: 0.1,
             pool: Rc::new(self_play_pool()),
+            init: None,
         }
     }
 }
@@ -568,6 +575,51 @@ fn main() -> io::Result<()> {
     train(&cfg)
 }
 
+/// The starting net for `train()`: a fresh random `Mlp` (the historical
+/// default), or a warm-start checkpoint from `cfg.init` — validated to match
+/// this run's input width, hidden width, and policy width exactly (a
+/// mismatched warm-start is a config error, not something to silently coerce
+/// or fall back from). The belief head is never part of the `Mlp` container,
+/// so a warm-started run still gets a fresh belief head either way.
+fn load_or_init_mlp(cfg: &Args) -> io::Result<Mlp> {
+    let Some(path) = &cfg.init else {
+        return Ok(Mlp::new(input_len(cfg), cfg.hidden, policy_len(), cfg.seed));
+    };
+    let loaded = Mlp::load(path).map_err(|e| {
+        invalid_input(format!(
+            "failed to load init checkpoint '{}': {e}",
+            path.display()
+        ))
+    })?;
+    let expected_input = input_len(cfg);
+    if loaded.input_len() != expected_input {
+        return Err(invalid_input(format!(
+            "init checkpoint '{}' has input width {} but this run's input={:?} expects {}",
+            path.display(),
+            loaded.input_len(),
+            cfg.input,
+            expected_input
+        )));
+    }
+    if loaded.hidden_len() != cfg.hidden {
+        return Err(invalid_input(format!(
+            "init checkpoint '{}' has hidden width {} but hidden={} was requested",
+            path.display(),
+            loaded.hidden_len(),
+            cfg.hidden
+        )));
+    }
+    if loaded.policy_len() != policy_len() {
+        return Err(invalid_input(format!(
+            "init checkpoint '{}' has policy width {} but expected {}",
+            path.display(),
+            loaded.policy_len(),
+            policy_len()
+        )));
+    }
+    Ok(loaded)
+}
+
 fn train(cfg: &Args) -> io::Result<()> {
     tch::manual_seed(cfg.seed as i64);
     std::fs::create_dir_all(&cfg.outdir)?;
@@ -576,7 +628,7 @@ fn train(cfg: &Args) -> io::Result<()> {
     write_ppo_config(&mut metrics, cfg)?;
 
     let vs = nn::VarStore::new(cfg.device);
-    let init = Mlp::new(input_len(cfg), cfg.hidden, policy_len(), cfg.seed);
+    let init = load_or_init_mlp(cfg)?;
     let policy = PolicyNet::from_mlp(&vs.root(), &init, cfg.device);
     let mut opt = nn::Adam::default().build(&vs, cfg.lr).expect("optimizer");
     let mut rng = Rng::new(cfg.seed ^ 0x5050_5050);
@@ -760,6 +812,13 @@ impl Args {
                 "outdir" | "out" => cfg.outdir = PathBuf::from(value),
                 "seed" => cfg.seed = parse_num(value, key)?,
                 "input" => cfg.input = parse_input_mode(value)?,
+                "init" => {
+                    cfg.init = if value == "none" {
+                        None
+                    } else {
+                        Some(PathBuf::from(value))
+                    }
+                }
                 "opponents" => cfg.opponents = parse_opponents(value)?,
                 "belief_coef" => cfg.belief_coef = parse_num(value, key)?,
                 other => return Err(invalid_input(format!("unknown argument '{other}'"))),
@@ -1600,6 +1659,63 @@ mod tests {
         let net = Mlp::new(feature_len(), 8, policy_len(), 9);
         let expl = validate_exploitability_configs(&net, &Args::default(), &[(1, 2)]);
         assert!(expl.is_finite());
+    }
+
+    #[test]
+    fn load_or_init_mlp_defaults_to_fresh_random_net() {
+        let cfg = Args {
+            hidden: 8,
+            ..Args::default()
+        };
+        let net = load_or_init_mlp(&cfg).unwrap();
+        assert_eq!(net.input_len(), feature_len());
+        assert_eq!(net.hidden_len(), 8);
+        assert_eq!(net.policy_len(), policy_len());
+    }
+
+    #[test]
+    fn load_or_init_mlp_warm_starts_from_a_matching_checkpoint() {
+        let dir = std::env::temp_dir().join(format!("ld_ppo_init_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ckpt_path = dir.join("warm.bin");
+        let seed_net = Mlp::new(feature_len(), 8, policy_len(), 42);
+        seed_net.save(&ckpt_path).unwrap();
+
+        let cfg = Args {
+            hidden: 8,
+            init: Some(ckpt_path.clone()),
+            ..Args::default()
+        };
+        let loaded = load_or_init_mlp(&cfg).unwrap();
+        for (&a, &b) in seed_net.params().iter().zip(loaded.params()) {
+            assert!(
+                (a - b).abs() < 1e-6,
+                "warm-started params should match the checkpoint exactly"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_or_init_mlp_rejects_a_hidden_width_mismatch() {
+        let dir =
+            std::env::temp_dir().join(format!("ld_ppo_init_test_mismatch_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ckpt_path = dir.join("wrong_hidden.bin");
+        Mlp::new(feature_len(), 8, policy_len(), 42)
+            .save(&ckpt_path)
+            .unwrap();
+
+        let cfg = Args {
+            hidden: 16, // does not match the checkpoint's hidden=8
+            init: Some(ckpt_path.clone()),
+            ..Args::default()
+        };
+        let Err(err) = load_or_init_mlp(&cfg) else {
+            panic!("expected a hidden-width mismatch error")
+        };
+        assert!(err.to_string().contains("hidden width"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
