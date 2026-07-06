@@ -19,6 +19,12 @@ CATS = mx.array(S.spec.CATEGORICAL_AGGREGATION, dtype=mx.float32)  # [-1, 0, 1]
 NEG_INF = -1e30
 
 
+def _sanitize(x):
+    """NaN -> 0 (a genuine bf16-overflow NaN carries no salvageable value; the
+    subsequent clip bounds the result), +-inf preserved for clip to bound next."""
+    return mx.where(mx.isnan(x), mx.zeros_like(x), x)
+
+
 def advantage_filter_mask(advantage_np, rate=0.75, thresh=0.01, min_keep=0):
     """Spec filter `|adv| >= max(quantile(|adv|, rate), thresh)` (`buffer.py:233-241`).
 
@@ -92,9 +98,14 @@ def move_loss_and_stats(net, batch, magnet_coef, cfg, anchor_log_probs=None, anc
     ret = batch["ret"]
 
     out = net(obs, legal_mask=legal)
-    move_logits = out["move_logits"].astype(mx.float32)
+    # bf16 forward hardening: an entropy-collapsed policy occasionally drives the
+    # bf16 net's raw logits to +/-inf (marathon1 iter159: H 2.2->0.01 in one step,
+    # then 5 straight NaN'd bf16 forwards). NaN->0 + clip bounds it to a range
+    # log_softmax/exp can't overflow, without touching a healthy forward's math
+    # (legal logits stay far inside +/-60; only already-broken values move).
+    move_logits = mx.clip(_sanitize(out["move_logits"].astype(mx.float32)), -60.0, 60.0)
     log_probs = move_logits - mx.logsumexp(move_logits, axis=-1, keepdims=True)  # (B,1800)
-    value_logp = out["value_logp"].astype(mx.float32)  # (B,3) log-softmax
+    value_logp = mx.clip(_sanitize(out["value_logp"].astype(mx.float32)), -60.0, 0.0)  # (B,3) log-softmax
 
     # PPO-clip policy loss on the chosen action. Clamp the log-ratio before exp so
     # a policy that drifts far from the data policy can't overflow exp() to inf
