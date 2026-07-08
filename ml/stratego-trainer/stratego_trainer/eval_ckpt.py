@@ -16,7 +16,11 @@ physically cannot touch the trainer's. Usage:
 prints one JSON line. With ``--opponent random`` (default) it is
 ``{"ws_rand": float, "ema_ws_rand": float}``; with ``--opponent heuristic`` it
 is ``{"ws_heur": float, "ema_ws_heur": float}`` (win share of the working and
-EMA nets vs the codebase `HeuristicBot` baseline). The net size is read back
+EMA nets vs the codebase `HeuristicBot` baseline); with ``--opponent
+<path.safetensors>`` it is ``{"ws_ckpt": ..., "ema_ws_ckpt": ...,
+"opponent_ckpt": ...}`` (direct net-vs-net vs that checkpoint's EMA weights —
+the only measurement that shows self-play improvement when win share against
+fixed scripted baselines has saturated or drifted). The net size is read back
 from the checkpoint's own metadata (`RunDir` stamps `net_size` at save time),
 so evaluating a `mid`/`ref`-size run needs no extra flag.
 
@@ -62,34 +66,52 @@ def main() -> None:
                      help="Comma-separated seed list; overrides --seed and averages "
                           "win share across all of them, reporting the stdev too.")
     ap.add_argument("--temperature", type=float, default=0.25)
-    ap.add_argument("--opponent", choices=("random", "heuristic"), default="random")
+    ap.add_argument("--opponent", default="random",
+                     help="random | heuristic | path to an opponent checkpoint "
+                          "(.safetensors, EMA weights preferred) for a direct "
+                          "net-vs-net win share.")
     args = ap.parse_args()
 
     heuristic = args.opponent == "heuristic"
+    opp_ckpt = None if args.opponent in ("random", "heuristic") else args.opponent
     move_cfg, setup_cfg = S.NET_SIZES[_net_size_of(args.ckpt)]
 
-    def load(prefer_ema: bool):
-        move = S.MoveTransformer.from_config(move_cfg)
-        setup = S.ArrangementTransformer.from_config(setup_cfg)
-        load_checkpoint(args.ckpt, move=move, setup=setup, prefer_ema=prefer_ema)
+    def load(ckpt, cfgs, prefer_ema: bool):
+        move = S.MoveTransformer.from_config(cfgs[0])
+        setup = S.ArrangementTransformer.from_config(cfgs[1])
+        load_checkpoint(ckpt, move=move, setup=setup, prefer_ema=prefer_ema)
         return move, setup
+
+    opp_move, opp_setup = None, None
+    if opp_ckpt is not None:
+        opp_cfgs = S.NET_SIZES[_net_size_of(opp_ckpt)]
+        opp_move, opp_setup = load(opp_ckpt, opp_cfgs, prefer_ema=True)
 
     def winrate(move, setup, seed):
         return win_share(
-            move, setup, None, None,
+            move, setup, opp_move, opp_setup,
             num_envs=args.num_envs, games=args.games, move_cap=args.move_cap,
             seed=seed, hero_temperature=args.temperature, heuristic=heuristic,
         )
 
     seeds = [int(s) for s in args.seeds.split(",")] if args.seeds else [args.seed]
-    working_net, ema_net = load(prefer_ema=False), load(prefer_ema=True)
+    hero_cfgs = (move_cfg, setup_cfg)
+    working_net = load(args.ckpt, hero_cfgs, prefer_ema=False)
+    ema_net = load(args.ckpt, hero_cfgs, prefer_ema=True)
     ws_per_seed = [winrate(*working_net, seed) for seed in seeds]
     ema_ws_per_seed = [winrate(*ema_net, seed) for seed in seeds]
     ws = statistics.fmean(ws_per_seed)
     ema_ws = statistics.fmean(ema_ws_per_seed)
 
-    key, ema_key = ("ws_heur", "ema_ws_heur") if heuristic else ("ws_rand", "ema_ws_rand")
+    if heuristic:
+        key, ema_key = "ws_heur", "ema_ws_heur"
+    elif opp_ckpt is not None:
+        key, ema_key = "ws_ckpt", "ema_ws_ckpt"
+    else:
+        key, ema_key = "ws_rand", "ema_ws_rand"
     out = {key: ws, ema_key: ema_ws}
+    if opp_ckpt is not None:
+        out["opponent_ckpt"] = opp_ckpt
     if len(seeds) > 1:
         out[f"{key}_stdev"] = statistics.pstdev(ws_per_seed)
         out[f"{ema_key}_stdev"] = statistics.pstdev(ema_ws_per_seed)
