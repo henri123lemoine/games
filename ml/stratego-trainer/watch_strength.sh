@@ -15,10 +15,8 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-RUN="${1:-runs/marathon_r1}"
+RUN_GLOB="${1:-runs/marathon_r*}"
 ANCHOR="${2:-runs/marathon1c/ckpt_100.safetensors}"
-OUT="$RUN/strength.jsonl"
-MD="$RUN/STRENGTH.md"
 SLEEP="${SLEEP:-900}"
 GAMES="${GAMES:-200}"
 
@@ -40,6 +38,10 @@ write_md() {
 }
 
 while true; do
+  for RUN in $RUN_GLOB; do
+    [[ -d "$RUN" ]] || continue
+    OUT="$RUN/strength.jsonl"
+    MD="$RUN/STRENGTH.md"
   for ck in $(ls "$RUN"/ckpt_*.safetensors 2>/dev/null | sort -t_ -k2 -n); do
     name=$(basename "$ck" .safetensors)
     grep -q "\"ckpt\": \"$name\"" "$OUT" 2>/dev/null && continue
@@ -59,6 +61,7 @@ d["ts"] = ts
 print(json.dumps(d))
 PY
     write_md
+  done
   done
   sleep "$SLEEP"
 done
