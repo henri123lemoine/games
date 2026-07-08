@@ -46,6 +46,24 @@
 #      here only takes effect for a NEW invocation (fresh launch or a
 #      RESUME_RUN/START_ROUND continuation of a stopped run).
 #
+# v3 changes (2026-07-08, motivated by 9 rounds of yardstick oscillation and a
+# round-robin that contradicted the yardstick ranking):
+#   7. Keep-best is now gated on a HEAD-TO-HEAD against the incumbent
+#      champion_best_overall.bin (H2H_GAMES per cell, both hero/field
+#      directions), not the rollout-768 yardstick. Measured 2026-07-08: the
+#      round-11 champion lost the yardstick to round 3 (0.410 vs 0.455, within
+#      n=200 noise) yet beat it decisively head-to-head (0.220 vs 0.133) and
+#      was the least exploitable round ever (edge 0.030) — the scripted
+#      yardstick and direct play DISAGREE on ranking, and direct play is the
+#      goal. Promotion requires h2h_candidate - h2h_incumbent >= H2H_MARGIN
+#      AND exploiter edge <= incumbent's recorded edge + EDGE_SLACK (an
+#      unexploitability guard; incumbent edge is persisted in
+#      champion_best_overall_edge.txt). The yardstick eval still runs and is
+#      logged as a cross-run reference metric.
+#   8. Pool is capped at the POOL_MAX_EXPLOITERS most recent exploiters
+#      (older ones age out) so round wall-time stops growing without bound —
+#      rounds had reached ~8h at pool_size 15 with no yardstick gain to show.
+#
 # Thread budget: this driver is CPU-only and may be sharing the machine with a
 # GPU training job that has priority. It never sets RAYON_NUM_THREADS itself —
 # set it in the environment before launching (and see rayon_threads.txt below
@@ -54,6 +72,7 @@
 # Usage: ml/ld-ppo/scripts/league.sh [players] [dice] [faces] [rounds] [base_iters] [exploiter_iters] [input]
 #   input: flat | history (default history)
 # Tunable via environment: HIDDEN, ITERS_PER_EXTRA_POOL_ENTRY, YARDSTICK_GAMES,
+#   H2H_GAMES, H2H_MARGIN, EDGE_SLACK, POOL_MAX_EXPLOITERS,
 #   RECENT_EXPLOITER_WEIGHT, RECENT_EXPLOITER_COUNT, OLD_EXPLOITER_WEIGHT,
 #   START_ROUND, RESUME_RUN, START_POOL, RAYON_NUM_THREADS.
 set -euo pipefail
@@ -77,6 +96,10 @@ fi
 HIDDEN="${HIDDEN:-1024}"
 ITERS_PER_EXTRA_POOL_ENTRY="${ITERS_PER_EXTRA_POOL_ENTRY:-150}"
 YARDSTICK_GAMES="${YARDSTICK_GAMES:-200}"
+H2H_GAMES="${H2H_GAMES:-400}"
+H2H_MARGIN="${H2H_MARGIN:-0.05}"
+EDGE_SLACK="${EDGE_SLACK:-0.05}"
+POOL_MAX_EXPLOITERS="${POOL_MAX_EXPLOITERS:-10}"
 RECENT_EXPLOITER_WEIGHT="${RECENT_EXPLOITER_WEIGHT:-2}"
 RECENT_EXPLOITER_COUNT="${RECENT_EXPLOITER_COUNT:-2}"
 OLD_EXPLOITER_WEIGHT="${OLD_EXPLOITER_WEIGHT:-1}"
@@ -144,6 +167,7 @@ rebuild_pool() {
   local i ago w
   for i in "${!EXPLOITERS[@]}"; do
     ago=$((n - 1 - i))
+    if ((ago >= POOL_MAX_EXPLOITERS)); then continue; fi
     w="$OLD_EXPLOITER_WEIGHT"
     if ((ago < RECENT_EXPLOITER_COUNT)); then
       w="$RECENT_EXPLOITER_WEIGHT"
@@ -175,10 +199,10 @@ Resume from the last completed round:
 launch if you re-export them; the pool and round count resume from
 pool_state.jsonl and manifest.jsonl automatically.)
 
-Best-by-fixed-rollout-768-yardstick so far: round ${best_round}
+Best champion (head-to-head gate, v3) so far: round ${best_round}
   -> champion_best_overall.bin
 
-Current pool (${#EXPLOITERS[@]} exploiters folded in, $((INITIAL_POOL_SIZE + ${#EXPLOITERS[@]})) entries total):
+Current pool (${#EXPLOITERS[@]} exploiters total, most recent ${POOL_MAX_EXPLOITERS} active):
   ${POOL}
 
 Thread budget: edit rayon_threads.txt to change RAYON_NUM_THREADS for rounds
@@ -197,7 +221,9 @@ for round in $(seq "$START_ROUND" "$ROUNDS"); do
     RAYON_NUM_THREADS="$(cat "$THREADS_FILE")"
   fi
 
-  POOL_SIZE=$((INITIAL_POOL_SIZE + ${#EXPLOITERS[@]}))
+  ACTIVE_EXPLOITERS=${#EXPLOITERS[@]}
+  if ((ACTIVE_EXPLOITERS > POOL_MAX_EXPLOITERS)); then ACTIVE_EXPLOITERS=$POOL_MAX_EXPLOITERS; fi
+  POOL_SIZE=$((INITIAL_POOL_SIZE + ACTIVE_EXPLOITERS))
   EXTRA=$((POOL_SIZE - INITIAL_POOL_SIZE))
   ITERS_PER_ROUND=$((BASE_ITERS + ITERS_PER_EXTRA_POOL_ENTRY * EXTRA))
 
@@ -256,6 +282,18 @@ for round in $(seq "$START_ROUND" "$ROUNDS"); do
     "metrics=${EXPLOITER_EVAL_METRICS}" \
     2>&1 | tee "$RUN/exploiter_eval_round${round}.log"
 
+  echo "=== round $round: head-to-head vs incumbent best (the keep-best gate, ${H2H_GAMES} games/cell) ==="
+  H2H_METRICS="$RUN/h2h_round${round}.jsonl"
+  if [[ -f "$BEST_OVERALL" ]]; then
+    cargo run --release -p liars-dice --example tournament -- \
+      players="$PLAYERS" dice="$DICE" faces="$FACES" games="$H2H_GAMES" \
+      "agents=${MULTI_AGENTS}" "${MULTI_FLAG}=candidate:${CHAMP},incumbent:${BEST_OVERALL}" \
+      "metrics=${H2H_METRICS}" \
+      2>&1 | tee "$RUN/h2h_round${round}.log"
+  else
+    rm -f "$H2H_METRICS"
+  fi
+
   printf '{"round":%d,"champion":"%s","exploiter":"%s","pool":"%s","pool_size":%d,"iters":%d,"init_source":"%s"}\n' \
     "$round" "$CHAMP" "$EXPLOITER" "$POOL" "$POOL_SIZE" "$ITERS_PER_ROUND" "$INIT_SOURCE" >>"$MANIFEST"
 
@@ -292,27 +330,45 @@ for round in $(seq "$START_ROUND" "$ROUNDS"); do
     EXPLOITER_EDGE=$(awk "BEGIN{printf \"%.6f\", ${EXPLOITER_WS} - ${FAIR}}")
   fi
 
-  # Keep-best on the FIXED yardstick, not the internal field number (v1's bug).
+  # Keep-best (v3): promote only if the candidate beats the incumbent
+  # head-to-head by H2H_MARGIN AND is not meaningfully more exploitable.
+  H2H_CANDIDATE="null"
+  H2H_INCUMBENT="null"
+  if [[ -f "$H2H_METRICS" && "$HAVE_JQ" == "1" ]]; then
+    H2H_CANDIDATE=$(jq -s --arg h "${NET_AGENTS}-candidate" --arg f "${NET_AGENTS}-incumbent" \
+      '[.[] | select(.event=="tournament_cell" and .hero==$h and .field==$f) | .win_share] | if length>0 then .[0] else null end' \
+      "$H2H_METRICS" 2>/dev/null || echo null)
+    H2H_INCUMBENT=$(jq -s --arg h "${NET_AGENTS}-incumbent" --arg f "${NET_AGENTS}-candidate" \
+      '[.[] | select(.event=="tournament_cell" and .hero==$h and .field==$f) | .win_share] | if length>0 then .[0] else null end' \
+      "$H2H_METRICS" 2>/dev/null || echo null)
+  fi
+  EDGE_FILE="$RUN/champion_best_overall_edge.txt"
   IS_NEW_BEST="false"
-  if [[ "$YARDSTICK_WS" != "null" && "$HAVE_JQ" == "1" ]]; then
-    PREV_BEST=null
-    if [[ -f "$STATUS_JSONL" ]]; then
-      PREV_BEST=$(jq -s '[.[] | select(.yardstick_win_share != null) | .yardstick_win_share] | if length>0 then max else null end' \
-        "$STATUS_JSONL" 2>/dev/null || echo null)
+  if [[ ! -f "$BEST_OVERALL" ]]; then
+    IS_NEW_BEST="true"
+  elif [[ "$H2H_CANDIDATE" != "null" && "$H2H_INCUMBENT" != "null" ]]; then
+    INCUMBENT_EDGE=$(cat "$EDGE_FILE" 2>/dev/null || echo 1.0)
+    EDGE_OK=1
+    if [[ "$EXPLOITER_EDGE" != "null" ]]; then
+      awk "BEGIN{exit !(${EXPLOITER_EDGE} <= ${INCUMBENT_EDGE} + ${EDGE_SLACK})}" || EDGE_OK=0
     fi
-    if [[ "$PREV_BEST" == "null" ]] || awk "BEGIN{exit !(${YARDSTICK_WS} > ${PREV_BEST})}"; then
+    if awk "BEGIN{exit !(${H2H_CANDIDATE} - ${H2H_INCUMBENT} >= ${H2H_MARGIN})}" && ((EDGE_OK)); then
       IS_NEW_BEST="true"
-      cp "$CHAMP" "$RUN/champion_best_overall.bin"
-      echo "$round" >"$RUN/champion_best_overall_round.txt"
     fi
   fi
+  if [[ "$IS_NEW_BEST" == "true" ]]; then
+    cp "$CHAMP" "$RUN/champion_best_overall.bin"
+    echo "$round" >"$RUN/champion_best_overall_round.txt"
+    [[ "$EXPLOITER_EDGE" != "null" ]] && echo "$EXPLOITER_EDGE" >"$EDGE_FILE"
+  fi
 
-  printf '{"round":%d,"champion":"%s","pool_size":%d,"iters":%d,"init_source":"%s","field_win_share":%s,"fair_share":%s,"yardstick_win_share":%s,"yardstick_games":%d,"exploiter_win_share_vs_champion":%s,"exploiter_edge_over_fair":%s,"belief_loss_first":%s,"belief_loss_last":%s,"is_new_best":%s}\n' \
-    "$round" "$CHAMP" "$POOL_SIZE" "$ITERS_PER_ROUND" "$INIT_SOURCE" "$FIELD_WS" "$FAIR" "$YARDSTICK_WS" "$YARDSTICK_GAMES" "$EXPLOITER_WS" "$EXPLOITER_EDGE" "$BELIEF_FIRST" "$BELIEF_LAST" "$IS_NEW_BEST" >>"$STATUS_JSONL"
+  printf '{"round":%d,"champion":"%s","pool_size":%d,"iters":%d,"init_source":"%s","field_win_share":%s,"fair_share":%s,"yardstick_win_share":%s,"yardstick_games":%d,"h2h_candidate":%s,"h2h_incumbent":%s,"h2h_games":%d,"exploiter_win_share_vs_champion":%s,"exploiter_edge_over_fair":%s,"belief_loss_first":%s,"belief_loss_last":%s,"is_new_best":%s}\n' \
+    "$round" "$CHAMP" "$POOL_SIZE" "$ITERS_PER_ROUND" "$INIT_SOURCE" "$FIELD_WS" "$FAIR" "$YARDSTICK_WS" "$YARDSTICK_GAMES" "$H2H_CANDIDATE" "$H2H_INCUMBENT" "$H2H_GAMES" "$EXPLOITER_WS" "$EXPLOITER_EDGE" "$BELIEF_FIRST" "$BELIEF_LAST" "$IS_NEW_BEST" >>"$STATUS_JSONL"
   {
     echo "round $round  ($(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown))  pool_size=$POOL_SIZE iters=$ITERS_PER_ROUND init=$INIT_SOURCE"
     echo "  internal field win-share: ${FIELD_WS} (fair=${FAIR}, NOT comparable across rounds)"
-    echo "  yardstick vs rollout-768: ${YARDSTICK_WS}  (n=${YARDSTICK_GAMES})$( [[ "$IS_NEW_BEST" == "true" ]] && echo '  *** NEW BEST ***' )"
+    echo "  yardstick vs rollout-768: ${YARDSTICK_WS}  (n=${YARDSTICK_GAMES}, reference only)"
+    echo "  h2h vs incumbent best:    candidate ${H2H_CANDIDATE} / incumbent ${H2H_INCUMBENT}  (gate: diff >= ${H2H_MARGIN}, n=${H2H_GAMES})$( [[ "$IS_NEW_BEST" == "true" ]] && echo '  *** NEW BEST ***' )"
     echo "  exploiter vs champion:    ${EXPLOITER_WS} (edge over fair: ${EXPLOITER_EDGE})"
     echo "  belief loss:              ${BELIEF_FIRST} -> ${BELIEF_LAST}"
   } | tee -a "$STATUS_LOG"
