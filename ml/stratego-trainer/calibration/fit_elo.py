@@ -55,6 +55,11 @@ def load_matches(path: Path) -> list[tuple[str, str, float, float]]:
             b = entity_name("doi", rec["doi_level"])
             wa = rec["wins"] + 0.5 * rec["draws"]
             wb = rec["losses"] + 0.5 * rec["draws"]
+        elif "ckpt_a" in rec and "ckpt_b" in rec:
+            a = rec["ckpt_a"]
+            b = rec["ckpt_b"]
+            wa = rec["wins_a"]
+            wb = rec["wins_b"]
         else:
             raise RuntimeError(f"unrecognised ladder_results.jsonl record shape: {rec!r}")
         matches.append((a, b, wa, wb))

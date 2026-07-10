@@ -114,15 +114,20 @@ def _heuristic_move_logits(s, env_ids):
 
 def play_matches(hero_move, hero_setup, opp_move, opp_setup, hero_seat,
                  num_envs, games, move_cap, seed, hero_temperature=1.0,
-                 heuristic=False):
+                 heuristic=False, opp_temperature=1.0):
     """Play until `games` complete; hero acts on rows whose player == hero_seat.
 
     The opponent (non-hero) rows are filled by, in priority order:
     `heuristic=True` -> the Rust `HeuristicBot` on move rows (uniform deploy, as
     the bot itself deploys uniformly); else `opp_move`/`opp_setup` net if given;
-    else uniform-random. `hero_temperature` sharpens only the hero's sampling
-    (the opponent net, if any, plays at temperature 1.0). Returns
-    (hero_wins, hero_draws, hero_losses)."""
+    else uniform-random. `hero_temperature` sharpens only the hero's sampling;
+    `opp_temperature` does the same for the opponent net. The 1.0 defaults
+    keep telemetry probes ("is the policy learning") on raw sampling, but a
+    SYMMETRIC match (checkpoint vs checkpoint for a rating) must pass the same
+    value for both, or the sharpened side wins ~80% on temperature alone —
+    measured 2026-07-10: A-as-hero and B-as-hero both "won" their pairing at
+    0.8 with asymmetric temperatures. Returns (hero_wins, hero_draws,
+    hero_losses)."""
     s = sim.BatchSim(num_envs=num_envs, move_cap=move_cap, seed=seed)
     wins = draws = losses = 0
     completed = 0
@@ -146,14 +151,14 @@ def play_matches(hero_move, hero_setup, opp_move, opp_setup, hero_seat,
             is_hero = seat == hero_seat
             mm = m_pl == seat
             dd = d_pl == seat
-            temp = hero_temperature if is_hero else 1.0
+            temp = hero_temperature if is_hero else opp_temperature
             if mm.any():
                 if is_hero:
                     lg, vl, vp = _net_logits(hero_move, hero_setup, m_obs[mm], m_legal[mm], "move", temp)
                 elif heuristic:
                     lg, vl, vp = _heuristic_move_logits(s, m_env[mm])
                 elif opp_move is not None:
-                    lg, vl, vp = _net_logits(opp_move, opp_setup, m_obs[mm], m_legal[mm], "move")
+                    lg, vl, vp = _net_logits(opp_move, opp_setup, m_obs[mm], m_legal[mm], "move", temp)
                 else:
                     lg, vl, vp = _uniform_logits(m_obs[mm], "move")
                 m_logits[mm] = lg
@@ -165,7 +170,7 @@ def play_matches(hero_move, hero_setup, opp_move, opp_setup, hero_seat,
                 elif heuristic:
                     lg, vl, vp = _uniform_logits(d_obs[dd], "deploy")
                 elif opp_move is not None:
-                    lg, vl, vp = _net_logits(opp_move, opp_setup, d_obs[dd], d_legal[dd], "deploy")
+                    lg, vl, vp = _net_logits(opp_move, opp_setup, d_obs[dd], d_legal[dd], "deploy", temp)
                 else:
                     lg, vl, vp = _uniform_logits(d_obs[dd], "deploy")
                 d_logits[dd] = lg
@@ -198,7 +203,8 @@ def play_matches(hero_move, hero_setup, opp_move, opp_setup, hero_seat,
 
 
 def win_share(hero_move, hero_setup, opp_move, opp_setup, num_envs, games,
-              move_cap, seed, hero_temperature=1.0, heuristic=False):
+              move_cap, seed, hero_temperature=1.0, heuristic=False,
+              opp_temperature=1.0):
     """Hero win share vs opponent, hero rotated through both seats.
 
     `heuristic=True` pits the hero against the Rust `HeuristicBot` baseline
@@ -206,10 +212,10 @@ def win_share(hero_move, hero_setup, opp_move, opp_setup, num_envs, games,
     half = max(1, games // 2)
     w0, dr0, l0 = play_matches(hero_move, hero_setup, opp_move, opp_setup, 0,
                                num_envs, half, move_cap, seed, hero_temperature,
-                               heuristic)
+                               heuristic, opp_temperature)
     w1, dr1, l1 = play_matches(hero_move, hero_setup, opp_move, opp_setup, 1,
                                num_envs, half, move_cap, seed + 12345, hero_temperature,
-                               heuristic)
+                               heuristic, opp_temperature)
     w, dr, ll = w0 + w1, dr0 + dr1, l0 + l1
     total = w + dr + ll
     if total == 0:

@@ -92,6 +92,7 @@ def main() -> None:
             move, setup, opp_move, opp_setup,
             num_envs=args.num_envs, games=args.games, move_cap=args.move_cap,
             seed=seed, hero_temperature=args.temperature, heuristic=heuristic,
+            opp_temperature=args.temperature if opp_ckpt is not None else 1.0,
         )
 
     seeds = [int(s) for s in args.seeds.split(",")] if args.seeds else [args.seed]
