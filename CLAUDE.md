@@ -27,3 +27,24 @@ cd ml/aztrainer && cargo test --release && cargo clippy --release --all-targets 
 ```
 
 Keep `cargo fmt` + `cargo clippy --release --all-targets` clean before committing. Evaluation convention: win share against a *field* of opponents, hero rotated through every seat; "fair" is `1/players`. Measure one change at a time (`liars-dice/examples/ab`) — single eval runs can be ~2σ lucky draws.
+
+## Where training runs live
+
+`.claude/worktrees/<session>/` is session-managed and can be deleted by the
+harness (or lost to a filesystem/TCC hiccup across a reboot) without warning
+— even a worktree with real commits on its branch is not safe there, and
+anything gitignored (checkpoints, `runs/`) that only ever existed inside one
+of these worktrees is gone the moment the worktree is. This has already
+happened once (2026-07-10, ~40 stratego checkpoints, a week of training).
+
+- Never point a long-running training job's `outdir`/`--run-name` at a path
+  under `.claude/worktrees/`. If a training run needs its own branch/worktree,
+  make it a durable sibling directory instead (e.g. `twentyone-stratego/`,
+  a plain `git worktree add ../twentyone-<name>`), not a `.claude/worktrees/`
+  session sandbox.
+- All `runs/` directories (root `runs/`, any `ml/*/runs/`) are mirrored
+  every 30 minutes by the `com.henrilemoine.trainingmirror` launchd agent to
+  `~/TrainingMirror/` — see `tools/mirror_training_runs.sh` and
+  `tools/com.henrilemoine.trainingmirror.plist` for the mechanism and the
+  one-line install command. That mirror is a safety net, not a substitute
+  for keeping the run itself out of a cleanable directory.
