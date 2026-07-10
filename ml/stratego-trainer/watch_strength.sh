@@ -28,11 +28,12 @@ write_md() {
     echo "(fixed scripted baseline, 2 seeds). ws_anchor: net-vs-net vs"
     echo "$ANCHOR (EMA) — the self-play improvement signal."
     echo
-    echo "| ckpt | ws_heur | ema_ws_heur | ws_anchor | ema_ws_anchor | measured |"
-    echo "|---|---|---|---|---|---|"
+    echo "| ckpt | ws_heur | ema_ws_heur | ws_anchor | ema_ws_anchor | ws_doi_l5 | measured |"
+    echo "|---|---|---|---|---|---|---|"
     jq -r '[.ckpt, (.ws_heur*1000|round/1000), (.ema_ws_heur*1000|round/1000),
-            (.ws_ckpt*1000|round/1000), (.ema_ws_ckpt*1000|round/1000), .ts]
-           | "| \(.[0]) | \(.[1]) | \(.[2]) | \(.[3]) | \(.[4]) | \(.[5]) |"' "$OUT" \
+            (.ws_ckpt*1000|round/1000), (.ema_ws_ckpt*1000|round/1000),
+            (if .ws_doi then (.ws_doi*1000|round/1000) else "-" end), .ts]
+           | "| \(.[0]) | \(.[1]) | \(.[2]) | \(.[3]) | \(.[4]) | \(.[5]) | \(.[6]) |"' "$OUT" \
       | sort -t_ -k2 -n
   } >"$MD"
 }
@@ -49,14 +50,20 @@ while true; do
       --opponent heuristic --seeds 0,1 --games "$GAMES" 2>/dev/null | tail -1) || continue
     anchor=$(.venv/bin/python -m stratego_trainer.eval_ckpt --ckpt "$ck" \
       --opponent "$ANCHOR" --seed 0 --games "$GAMES" 2>/dev/null | tail -1) || continue
+    doi=$(.venv/bin/python calibration/eval_vs_doi.py --ckpt "$ck" \
+      --games 20 --doi-level 5 2>/dev/null | tail -1) || doi='{}'
     [[ -z "$heur" || -z "$anchor" ]] && continue
     ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    python3 - "$name" "$heur" "$anchor" "$ts" <<'PY' >>"$OUT" || continue
+    python3 - "$name" "$heur" "$anchor" "$doi" "$ts" <<'PY' >>"$OUT" || continue
 import json, sys
-name, heur, anchor, ts = sys.argv[1:5]
+name, heur, anchor, doi, ts = sys.argv[1:6]
 d = {"ckpt": name}
 d.update(json.loads(heur))
 d.update(json.loads(anchor))
+try:
+    d.update(json.loads(doi))
+except json.JSONDecodeError:
+    pass
 d["ts"] = ts
 print(json.dumps(d))
 PY
