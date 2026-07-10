@@ -1,0 +1,23 @@
+{"ckpt": "runs/marathon_r2/ckpt_1300.safetensors", "doi_level": 0, "wins": 19, "draws": 0, "losses": 1, "note": "measured 2026-07-10 at -l0"}
+{"ckpt": "runs/marathon_r2/ckpt_1300.safetensors", "doi_level": 0, "wins": 8, "draws": 1, "losses": 1, "note": "measured at -l5; level knob proven no-op, folded into doi_l0"}
+{"ckpt": "runs/marathon1c/ckpt_100.safetensors", "doi_level": 0, "wins": 12, "draws": 1, "losses": 7, "note": "measured 2026-07-10 at -l0"}
+{"ckpt": "runs/marathon1c/ckpt_100.safetensors", "doi_level": 0, "wins": 12, "draws": 2, "losses": 6, "note": "measured at -l12; level knob proven no-op, folded into doi_l0"}
+{"ckpt_a": "runs/marathon1c/ckpt_100.safetensors", "ckpt_b": "runs/marathon_r1/ckpt_300.safetensors", "wins_a": 119.0, "wins_b": 81.0, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r1/ckpt_300.safetensors", "ckpt_b": "runs/marathon_r1/ckpt_600.safetensors", "wins_a": 101.0, "wins_b": 99.0, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r1/ckpt_600.safetensors", "ckpt_b": "runs/marathon_r1/ckpt_900.safetensors", "wins_a": 94.5, "wins_b": 105.5, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r1/ckpt_900.safetensors", "ckpt_b": "runs/marathon_r1/ckpt_1200.safetensors", "wins_a": 93.5, "wins_b": 106.5, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r1/ckpt_1200.safetensors", "ckpt_b": "runs/marathon_r1/ckpt_1500.safetensors", "wins_a": 102.0, "wins_b": 98.0, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r1/ckpt_1500.safetensors", "ckpt_b": "runs/marathon_r1/ckpt_1800.safetensors", "wins_a": 78.5, "wins_b": 121.5, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r1/ckpt_1800.safetensors", "ckpt_b": "runs/marathon_r1/ckpt_2100.safetensors", "wins_a": 61.0, "wins_b": 139.0, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r2/ckpt_600.safetensors", "ckpt_b": "runs/marathon_r2/ckpt_900.safetensors", "wins_a": 97.0, "wins_b": 103.0, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r2/ckpt_900.safetensors", "ckpt_b": "runs/marathon_r2/ckpt_1200.safetensors", "wins_a": 99.5, "wins_b": 100.5, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon1c/ckpt_100.safetensors", "ckpt_b": "runs/marathon_r1/ckpt_900.safetensors", "wins_a": 133.5, "wins_b": 66.5, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r1/ckpt_300.safetensors", "ckpt_b": "runs/marathon_r1/ckpt_1200.safetensors", "wins_a": 97.0, "wins_b": 103.0, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r1/ckpt_600.safetensors", "ckpt_b": "runs/marathon_r1/ckpt_1500.safetensors", "wins_a": 84.0, "wins_b": 116.0, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r1/ckpt_900.safetensors", "ckpt_b": "runs/marathon_r1/ckpt_1800.safetensors", "wins_a": 81.0, "wins_b": 119.0, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r1/ckpt_1200.safetensors", "ckpt_b": "runs/marathon_r1/ckpt_2100.safetensors", "wins_a": 90.5, "wins_b": 109.5, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r1/ckpt_1500.safetensors", "ckpt_b": "runs/marathon_r2/ckpt_300.safetensors", "wins_a": 55.5, "wins_b": 144.5, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r1/ckpt_1800.safetensors", "ckpt_b": "runs/marathon_r2/ckpt_600.safetensors", "wins_a": 73.5, "wins_b": 126.5, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r1/ckpt_2100.safetensors", "ckpt_b": "runs/marathon_r2/ckpt_900.safetensors", "wins_a": 75.0, "wins_b": 125.0, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r2/ckpt_300.safetensors", "ckpt_b": "runs/marathon_r2/ckpt_1200.safetensors", "wins_a": 64.5, "wins_b": 135.5, "games": 200, "ema": true}
+{"ckpt_a": "runs/marathon_r1/ckpt_2100.safetensors", "ckpt_b": "runs/marathon_r2/ckpt_300.safetensors", "wins_a": 85.0, "wins_b": 115.0, "games": 200, "ema": true}

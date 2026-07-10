@@ -1,0 +1,72 @@
+{
+  "doi_l0": {
+    "rating": 0.0,
+    "stderr": 0.0,
+    "n_games": 70.0
+  },
+  "runs/marathon1c/ckpt_100.safetensors": {
+    "rating": 80.3721487736445,
+    "stderr": 20.94427651712941,
+    "n_games": 440.0
+  },
+  "runs/marathon_r1/ckpt_1200.safetensors": {
+    "rating": 55.16203263023102,
+    "stderr": 20.539021229100463,
+    "n_games": 800.0
+  },
+  "runs/marathon_r1/ckpt_1500.safetensors": {
+    "rating": 48.05277140078227,
+    "stderr": 21.03635059122383,
+    "n_games": 800.0
+  },
+  "runs/marathon_r1/ckpt_1800.safetensors": {
+    "rating": 48.76064438815446,
+    "stderr": 20.87910812737729,
+    "n_games": 800.0
+  },
+  "runs/marathon_r1/ckpt_2100.safetensors": {
+    "rating": 68.44232749284382,
+    "stderr": 20.77632034402627,
+    "n_games": 800.0
+  },
+  "runs/marathon_r1/ckpt_300.safetensors": {
+    "rating": 57.4275456966021,
+    "stderr": 21.211692059556878,
+    "n_games": 600.0
+  },
+  "runs/marathon_r1/ckpt_600.safetensors": {
+    "rating": 43.838461688287886,
+    "stderr": 20.628867886851854,
+    "n_games": 600.0
+  },
+  "runs/marathon_r1/ckpt_900.safetensors": {
+    "rating": 48.57937551437441,
+    "stderr": 20.826847358724535,
+    "n_games": 800.0
+  },
+  "runs/marathon_r2/ckpt_1200.safetensors": {
+    "rating": 87.8611662543243,
+    "stderr": 21.208079374436483,
+    "n_games": 400.0
+  },
+  "runs/marathon_r2/ckpt_1300.safetensors": {
+    "rating": 113.70361546700703,
+    "stderr": 17.553934544821143,
+    "n_games": 30.0
+  },
+  "runs/marathon_r2/ckpt_300.safetensors": {
+    "rating": 68.00152954215518,
+    "stderr": 20.21852728746863,
+    "n_games": 600.0
+  },
+  "runs/marathon_r2/ckpt_600.safetensors": {
+    "rating": 78.59790361445448,
+    "stderr": 21.382126814415056,
+    "n_games": 400.0
+  },
+  "runs/marathon_r2/ckpt_900.safetensors": {
+    "rating": 72.77355524894928,
+    "stderr": 20.149884254329457,
+    "n_games": 600.0
+  }
+}
