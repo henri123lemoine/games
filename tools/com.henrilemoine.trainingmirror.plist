@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/henrilemoine/Documents/Programming/PersonalProjects/games/twentyone/tools/mirror_training_runs.sh</string>
+        <string>/Users/henrilemoine/Documents/Programming/PersonalProjects/games/games/tools/mirror_training_runs.sh</string>
     </array>
 
     <key>StartInterval</key>
