@@ -28,6 +28,8 @@
 //! * [`game`] — the `Stratego` `Game`/`GameUi` impl, `State`, `Move`,
 //!   `random_play_state`/`random_arrangement` (the move-phase start).
 //! * [`bots`] — `HeuristicBot`, the competent material+belief baseline agent.
+//! * [`netbot`] — `NetBot`, the trained move/setup transformer pair (ataraxios)
+//!   played through `nn_infer`'s `ATRX1` forward.
 //! * [`bc`] — `generate_bc_games`, HeuristicBot-vs-HeuristicBot move-phase
 //!   behavior-cloning data for the RL move-RL warm start.
 
@@ -41,6 +43,7 @@ pub mod chase;
 pub mod encode;
 pub mod evaluator;
 pub mod game;
+pub mod netbot;
 pub mod rules;
 pub mod search;
 pub mod sim;
@@ -58,6 +61,7 @@ pub use encode::{
 };
 pub use evaluator::{Decision, Evaluation, Evaluator, Phase, UniformEvaluator};
 pub use game::{Move, State, Stratego};
+pub use netbot::NetBot;
 pub use search::{RolloutBatch, RolloutDecision, RootInfo, assign_hidden, marginal_posterior};
 pub use sim::{Arena, Collected, CommitResult, EnvDecision, RunStats, Simulator};
 

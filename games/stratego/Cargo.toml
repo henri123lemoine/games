@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 game-core = { workspace = true }
+nn-infer = { path = "../../ml/nn-infer" }
 rayon = { workspace = true }
 
 [dev-dependencies]

@@ -22,7 +22,7 @@ use solvers::azero::{Mlp, Puct, PuctAgent};
 use solvers::mcts::Mcts;
 use solvers::{AlphaBeta, Rollout};
 use stratego::game::Stratego;
-use stratego::{HeuristicBot, State as StrategoState};
+use stratego::{HeuristicBot, NetBot as StrategoNetBot, State as StrategoState};
 use twentyone::game::{Action as T21Action, T21State, TwentyOne};
 
 use crate::compare::{
@@ -583,7 +583,18 @@ const STRATEGO_OPTS: &[OptSpec] = &[
         "(random: pre-deployed; manual: place your 40 pieces)",
     ),
     opt("seat", "0|1|watch", "(0=red, moves first)"),
-    opt("bot", "heuristic|random", ""),
+    opt(
+        "bot",
+        "ataraxios|heuristic|random",
+        "(ataraxios: the trained transformer)",
+    ),
+    bot_opt(
+        "net_path",
+        "runs/stratego/ataraxios.bin",
+        "(ATRX1 move+setup export)",
+        &["ataraxios"],
+    ),
+    bot_opt("temp", "0.25", "(sampling temperature)", &["ataraxios"]),
     opt("seed", "...", ""),
 ];
 
@@ -771,11 +782,11 @@ pub fn entries() -> Vec<Entry> {
             name: "Stratego",
             solo: false,
             watch_bot: "",
-            summary: "Classic Stratego (hidden ranks) vs a material+belief heuristic",
+            summary: "Classic Stratego (hidden ranks) vs ataraxios, the trained net",
             opts: STRATEGO_OPTS,
             make: Box::new(make_stratego),
             eval: Some(eval_entry(
-                "heuristic | random",
+                "ataraxios[:net_path=runs/stratego/ataraxios.bin] | heuristic | random",
                 0,
                 false,
                 |_| Ok(Stratego),
@@ -1484,10 +1495,26 @@ fn poker_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<Poker>, String> {
 
 fn stratego_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<Stratego>, String> {
     Ok(match spec.name.as_str() {
+        "ataraxios" => {
+            let path = spec.opts.str("net_path", "runs/stratego/ataraxios.bin");
+            let temp: f64 = spec.opts.get("temp", 0.25)?;
+            let bytes = crate::artifacts::read(&path)?;
+            StrategoNetBot::from_bytes(&bytes)
+                .map_err(|e| format!("failed to load stratego net '{path}': {e}"))?;
+            Box::new(move |_| {
+                Box::new(
+                    StrategoNetBot::from_bytes(&bytes)
+                        .expect("stratego net bytes already validated at build time")
+                        .with_temperature(temp as f32),
+                ) as BoxedAgent<Stratego>
+            })
+        }
         "heuristic" => Box::new(|_| Box::new(HeuristicBot) as BoxedAgent<Stratego>),
         "random" => Box::new(|_| Box::new(game_core::RandomAgent) as BoxedAgent<Stratego>),
         other => {
-            return Err(format!("unknown stratego bot '{other}' (heuristic|random)"));
+            return Err(format!(
+                "unknown stratego bot '{other}' (ataraxios|heuristic|random)"
+            ));
         }
     })
 }

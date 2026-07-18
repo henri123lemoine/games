@@ -16,6 +16,7 @@ export const BOT_LABELS: Record<string, string> = {
   "mcts-spec": "MCTS (spec)",
   rollout: "Rollout",
   history: "Neural",
+  ataraxios: "Ataraxios",
   belief: "Belief",
   random: "Random",
 };
@@ -87,9 +88,10 @@ export function optChoicesFor(gameId: string, key: string): string[] | undefined
   return OPT_CHOICES_BY_GAME[gameId]?.[key] ?? OPT_CHOICES[key];
 }
 
-/** Bots that can't run in the tournament: they need a GPU or a trained
- * artifact the tournament pool doesn't load. */
-const TOURNEY_EXCLUDE = new Set(["azero", "azero-gpu"]);
+/** Bots that can't run in the tournament (they need a GPU or a trained
+ * artifact the tournament pool doesn't load) — plus stratego's heuristic,
+ * which the site never publishes anywhere by policy. */
+const TOURNEY_EXCLUDE = new Set(["azero", "azero-gpu", "ataraxios", "heuristic"]);
 
 /** Bot ids a game can field in the tournament — its play bots minus the ones
  * that need a GPU/artifact. Empty for games without bot-vs-bot evaluation. */

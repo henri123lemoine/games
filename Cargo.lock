@@ -747,6 +747,7 @@ name = "stratego"
 version = "0.1.0"
 dependencies = [
  "game-core",
+ "nn-infer",
  "rayon",
  "solvers",
 ]

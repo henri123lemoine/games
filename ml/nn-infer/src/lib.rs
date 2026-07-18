@@ -11,11 +11,17 @@
 //! global-pool heads are board-size-agnostic — the same conv weights run at any
 //! `size`. slither's strided non-resnet CNN is a different architecture and is
 //! not parsed here; it shares only the low-level conv/linear primitives.
+//!
+//! [`stratego`] is the second architecture family: the `ATRX1` transformer-pair
+//! format and forward for the stratego move/setup nets, sharing the dense
+//! [`Linear`] primitive with the conv-resnet path.
 
 pub mod format;
 pub mod math;
+pub mod stratego;
 
 pub use format::{Arch, Conv, HeadFlags, HeadKind, Linear, Reader};
+pub use stratego::{MoveOutput, StrategoNet};
 
 use math::{POOL_SIZE_REF, conv_fwd, conv_fwd_vec, global_pool, linear_fwd};
 

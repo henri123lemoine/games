@@ -50,6 +50,8 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   pente: { size: PENTE_AZ_SIZE, bot: "azero-gpu", sims: "400" },
   go: { size: "19", bot: "azero-gpu", sims: "1500" },
   snake: { bot: "azero-gpu", sims: "128" },
+  // The site ships only the trained net (ataraxios) — never the heuristic.
+  stratego: { bot: "ataraxios" },
 };
 
 /** Games registered in the lab but not surfaced on the site. */
@@ -70,6 +72,7 @@ const ARTIFACTS: Record<string, string> = {
   "data/twentyone/solver-h3.bin": "artifacts/t21-solver-h3.bin",
   "data/twentyone/solver-h6.bin": "artifacts/t21-solver-h6.bin",
   "runs/ld_history/best.bin": "artifacts/ld-history-champion.bin",
+  "runs/stratego/ataraxios.bin": "artifacts/ataraxios.bin",
 };
 
 /** The shipped artifacts a match with these opts will ask the registry for.
@@ -91,6 +94,12 @@ function artifactsFor(gameId: string, opts: Record<string, string>): string[] {
       opts.bot === "history" ||
       (opts.bots ?? "").split(",").some((s) => s.split(":")[0] === "history");
     if (usesHistory) wanted.push("runs/ld_history/best.bin");
+  }
+  if (gameId === "stratego") {
+    const usesNet =
+      opts.bot === "ataraxios" ||
+      (opts.bots ?? "").split(",").some((s) => s.split(":")[0] === "ataraxios");
+    if (usesNet) wanted.push("runs/stratego/ataraxios.bin");
   }
   return wanted.filter((w) => w in ARTIFACTS);
 }
@@ -176,6 +185,9 @@ const SHOWN_BOTS: Record<string, readonly string[]> = {
   go: ["azero-gpu"],
   pente: ["azero-gpu", "alphabeta"],
   snake: ["azero-gpu"],
+  // Only the trained net is published — the heuristic and random baselines
+  // stay lab-only by policy.
+  stratego: ["ataraxios"],
 };
 
 /** Opponents a seat can be filled with: the game's published [`SHOWN_BOTS`]
