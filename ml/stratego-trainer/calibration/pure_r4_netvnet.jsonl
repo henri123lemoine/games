@@ -1,0 +1,2 @@
+{"ws_ckpt": 0.465, "ema_ws_ckpt": 0.42, "opponent_ckpt": "ckpt_6500", "hero": "ckpt_7600"}
+{"ws_ckpt": 0.505, "ema_ws_ckpt": 0.425, "opponent_ckpt": "ckpt_7000", "hero": "ckpt_7600"}

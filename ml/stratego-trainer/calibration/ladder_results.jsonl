@@ -21,3 +21,24 @@
 {"ckpt_a": "runs/marathon_r1/ckpt_2100.safetensors", "ckpt_b": "runs/marathon_r2/ckpt_900.safetensors", "wins_a": 75.0, "wins_b": 125.0, "games": 200, "ema": true}
 {"ckpt_a": "runs/marathon_r2/ckpt_300.safetensors", "ckpt_b": "runs/marathon_r2/ckpt_1200.safetensors", "wins_a": 64.5, "wins_b": 135.5, "games": 200, "ema": true}
 {"ckpt_a": "runs/marathon_r1/ckpt_2100.safetensors", "ckpt_b": "runs/marathon_r2/ckpt_300.safetensors", "wins_a": 85.0, "wins_b": 115.0, "games": 200, "ema": true}
+{"ws_doi": 0.075, "games": 20, "wins": 0, "draws": 3, "losses": 17, "ckpt": "runs/pure_r1/ckpt_104.safetensors", "doi_level": 0}
+{"ws_doi": 0.1, "games": 20, "wins": 2, "draws": 0, "losses": 18, "ckpt": "runs/pure_r2/ckpt_209.safetensors", "doi_level": 0}
+{"ws_doi": 0.225, "games": 20, "wins": 4, "draws": 1, "losses": 15, "ckpt": "runs/pure_r3/ckpt_261.safetensors", "doi_level": 0}
+{"ws_doi": 0.15, "games": 20, "wins": 3, "draws": 0, "losses": 17, "ckpt": "runs/pure_r4/ckpt_100.safetensors", "doi_level": 0}
+{"ws_doi": 0.4, "games": 20, "wins": 8, "draws": 0, "losses": 12, "ckpt": "runs/pure_r4/ckpt_200.safetensors", "doi_level": 0}
+{"ws_doi": 0.45, "games": 20, "wins": 9, "draws": 0, "losses": 11, "ckpt": "runs/pure_r4/ckpt_500.safetensors", "doi_level": 0}
+{"ws_doi": 1.0, "games": 20, "wins": 20, "draws": 0, "losses": 0, "ckpt": "runs/pure_r4/ckpt_1000.safetensors", "doi_level": 0}
+{"ws_doi": 1.0, "games": 20, "wins": 20, "draws": 0, "losses": 0, "ckpt": "runs/pure_r4/ckpt_1500.safetensors", "doi_level": 0}
+{"ws_doi": 1.0, "games": 20, "wins": 20, "draws": 0, "losses": 0, "ckpt": "runs/pure_r4/ckpt_2000.safetensors", "doi_level": 0}
+{"ws_doi": 1.0, "games": 20, "wins": 20, "draws": 0, "losses": 0, "ckpt": "runs/pure_r4/ckpt_2500.safetensors", "doi_level": 0}
+{"ws_doi": 1.0, "games": 20, "wins": 20, "draws": 0, "losses": 0, "ckpt": "runs/pure_r4/ckpt_3000.safetensors", "doi_level": 0}
+{"ws_doi": 1.0, "games": 20, "wins": 20, "draws": 0, "losses": 0, "ckpt": "runs/pure_r4/ckpt_3500.safetensors", "doi_level": 0}
+{"ws_doi": 1.0, "games": 20, "wins": 20, "draws": 0, "losses": 0, "ckpt": "runs/pure_r4/ckpt_4000.safetensors", "doi_level": 0}
+{"ws_doi": 1.0, "games": 20, "wins": 20, "draws": 0, "losses": 0, "ckpt": "runs/pure_r4/ckpt_4500.safetensors", "doi_level": 0}
+{"ws_doi": 1.0, "games": 20, "wins": 20, "draws": 0, "losses": 0, "ckpt": "runs/pure_r4/ckpt_5000.safetensors", "doi_level": 0}
+{"ws_doi": 0.95, "games": 20, "wins": 18, "draws": 2, "losses": 0, "ckpt": "runs/pure_r4/ckpt_5500.safetensors", "doi_level": 0}
+{"ws_doi": 1.0, "games": 20, "wins": 20, "draws": 0, "losses": 0, "ckpt": "runs/pure_r4/ckpt_6000.safetensors", "doi_level": 0}
+{"ws_doi": 0.975, "games": 20, "wins": 19, "draws": 1, "losses": 0, "ckpt": "runs/pure_r4/ckpt_6500.safetensors", "doi_level": 0}
+{"ws_doi": 0.925, "games": 20, "wins": 18, "draws": 1, "losses": 1, "ckpt": "runs/pure_r4/ckpt_7000.safetensors", "doi_level": 0}
+{"ws_doi": 0.975, "games": 20, "wins": 19, "draws": 1, "losses": 0, "ckpt": "runs/pure_r4/ckpt_7500.safetensors", "doi_level": 0, "seed": 1}
+{"ws_doi": 1.0, "games": 20, "wins": 20, "draws": 0, "losses": 0, "ckpt": "runs/pure_r4/ckpt_7600.safetensors", "doi_level": 0, "seed": 2}
