@@ -24,6 +24,19 @@ pub trait GameUi: Game {
         None
     }
 
+    /// [`GameUi::action_label`] as `viewer` may see it — the label that goes
+    /// into another seat's event log. Defaults to the full label; a game whose
+    /// actions are themselves hidden information (stratego's deployment
+    /// placements) overrides this to redact them.
+    fn action_label_for(
+        &self,
+        state: &Self::State,
+        action: Self::Action,
+        _viewer: usize,
+    ) -> String {
+        self.action_label(state, action)
+    }
+
     /// Describe a just-played transition for `viewer` — used to narrate events
     /// the post-state no longer shows (e.g. a Liar's Dice call revealing all
     /// hands before the next round is rolled). Default: nothing extra.

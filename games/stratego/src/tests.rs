@@ -809,3 +809,51 @@ fn arena_play_n_runs_a_full_game() {
     assert!(game.is_terminal(&terminal));
     assert!(!game.result_text(&terminal, 0).is_empty());
 }
+
+// --- Hidden-information discipline of the web view/event surface ------------
+
+#[test]
+fn view_data_and_event_labels_never_leak_hidden_ranks() {
+    let game = Stratego;
+
+    // Red deploys a Marshal; blue must see neither the label nor the rank.
+    let mut state = game.initial_state();
+    game.apply(&mut state, Move::Place(PieceType::Marshal));
+    assert_eq!(
+        game.action_label_for(&game.initial_state(), Move::Place(PieceType::Marshal), 1),
+        "places a hidden piece"
+    );
+    assert!(
+        game.action_label_for(&game.initial_state(), Move::Place(PieceType::Marshal), 0)
+            .contains("Marshal"),
+        "the deployer still sees its own placement"
+    );
+    let blue_view = game.view_data(&state, 1).unwrap();
+    assert!(
+        !blue_view.contains("\"r\":\"10\"") && blue_view.contains("\"r\":null"),
+        "blue's deploy view hides red's placed rank: {blue_view}"
+    );
+    assert!(
+        blue_view.contains("\"supply\":null"),
+        "blue never sees red's remaining supply"
+    );
+
+    // Move phase: from a fresh board, each viewer sees exactly the enemy's 40
+    // pieces as rank-null (its own 40 carry ranks, nothing is revealed yet).
+    let mut rng = Rng::new(7);
+    let play = Stratego::random_play_state(&mut rng);
+    for viewer in 0..2 {
+        let view = game.view_data(&play, viewer).unwrap();
+        assert_eq!(
+            view.matches("\"r\":null").count(),
+            40,
+            "viewer {viewer} sees exactly the enemy side hidden"
+        );
+    }
+    let spectator = game.view_data(&play, 2).unwrap();
+    assert_eq!(
+        spectator.matches("\"r\":null").count(),
+        0,
+        "a spectator sees every rank"
+    );
+}

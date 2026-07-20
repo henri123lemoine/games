@@ -325,6 +325,85 @@ impl GameUi for Stratego {
         combat_narration(board, act, *to_play, viewer)
     }
 
+    /// View schema (game-private contract with `web/app/src/frontends/stratego`;
+    /// hidden information is scoped to `viewer` — a seat sees its own ranks and
+    /// only the revealed enemy ranks, a spectator sees everything):
+    ///
+    /// ```json
+    /// {"phase": "deploy" | "play", "viewer": 0, "toAct": 0,
+    ///  "cells": [null | "~" | {"o": 0|1, "r": "10".."2"|"S"|"B"|"F"|null,
+    ///                          "v": bool, "m": bool}, ... 100, cell 0 first],
+    ///  "nextSquare": 17 | null,       // deploy: the viewer's next home square
+    ///  "supply": [12 ints] | null,    // deploy: the viewer's remaining types
+    ///  "deployed": [40, 12] | null,   // deploy: pieces placed per seat
+    ///  "lastMove": {"from": 30, "to": 40} | null,   // play only
+    ///  "captured": [["4","B"], ["10"]] | null}      // play: ranks lost per seat
+    /// ```
+    fn view_data(&self, state: &State, viewer: usize) -> Option<String> {
+        Some(match state {
+            State::Deploy { red, current } => deploy_view_json(red.as_ref(), current, viewer),
+            State::Play { board, to_play, .. } => play_view_json(board, *to_play, viewer),
+        })
+    }
+
+    /// Transition schema (same contract; a battle's ranks are public — combat
+    /// reveals both sides — while a quiet mover's rank stays viewer-scoped):
+    ///
+    /// ```json
+    /// {"from": 30, "to": 40, "mover": {"o": 0, "r": "7" | null},
+    ///  "battle": null | {"attacker": "7", "defender": "B",
+    ///                    "outcome": "win" | "loss" | "tie", "flag": bool}}
+    /// ```
+    fn transition_data(
+        &self,
+        before: &State,
+        action: Move,
+        _after: &State,
+        viewer: usize,
+    ) -> Option<String> {
+        let (State::Play { board, to_play, .. }, Move::Step(act)) = (before, action) else {
+            return None;
+        };
+        let (from, to) = act.to_abs(*to_play);
+        let mover = board.pieces[from];
+        let target = board.pieces[to];
+        let battle = if target.color == Color::of_player(1 - *to_play) {
+            let outcome = match crate::rules::resolve(mover.kind, target.kind) {
+                crate::rules::Battle::AttackerWins => "win",
+                crate::rules::Battle::DefenderWins => "loss",
+                crate::rules::Battle::Tie => "tie",
+            };
+            format!(
+                r#"{{"attacker":"{}","defender":"{}","outcome":"{outcome}","flag":{}}}"#,
+                piece_glyph(mover.kind),
+                piece_glyph(target.kind),
+                target.kind == PieceType::Flag,
+            )
+        } else {
+            "null".to_string()
+        };
+        let spectator = viewer >= 2;
+        let mover_rank =
+            (spectator || viewer == *to_play || mover.visible).then(|| piece_glyph(mover.kind));
+        Some(format!(
+            r#"{{"from":{from},"to":{to},"mover":{{"o":{to_play},"r":{}}},"battle":{battle}}}"#,
+            game_core::json::string_or_null(mover_rank),
+        ))
+    }
+
+    /// A deployment placement is itself hidden information: any other seat's
+    /// log sees only that a piece was placed, never which.
+    fn action_label_for(&self, state: &State, action: Move, viewer: usize) -> String {
+        match (state, action) {
+            (State::Deploy { current, .. }, Move::Place(_))
+                if viewer < 2 && viewer != current.player =>
+            {
+                "places a hidden piece".to_string()
+            }
+            _ => self.action_label(state, action),
+        }
+    }
+
     fn action_label(&self, state: &State, action: Move) -> String {
         match (state, action) {
             (_, Move::Place(t)) => format!("{} ({})", type_to_char(t), type_label(t)),
@@ -353,6 +432,110 @@ impl GameUi for Stratego {
             }
         }
     }
+}
+
+/// One `cells` entry: `null`, `"~"`, or the piece object with its rank scoped
+/// to what `viewer` may know.
+fn cell_json(p: &crate::board::Piece, viewer: usize, spectator: bool) -> String {
+    match p.color {
+        Color::Empty => "null".to_string(),
+        Color::Lake => "\"~\"".to_string(),
+        color => {
+            let owner = usize::from(color == Color::Blue);
+            let known = spectator || viewer == owner || p.visible;
+            format!(
+                r#"{{"o":{owner},"r":{},"v":{},"m":{}}}"#,
+                game_core::json::string_or_null(known.then(|| piece_glyph(p.kind))),
+                p.visible,
+                p.has_moved,
+            )
+        }
+    }
+}
+
+fn deploy_view_json(red: Option<&Arrangement>, current: &DeploymentState, viewer: usize) -> String {
+    let spectator = viewer >= 2;
+    let mut cells: Vec<String> = vec!["null".to_string(); 100];
+    for cell in crate::board::LAKES {
+        cells[cell] = "\"~\"".to_string();
+    }
+    let mut place = |cell: usize, kind: PieceType, owner: usize| {
+        let known = spectator || viewer == owner;
+        cells[cell] = format!(
+            r#"{{"o":{owner},"r":{},"v":false,"m":false}}"#,
+            game_core::json::string_or_null(known.then(|| piece_glyph(kind))),
+        );
+    };
+    if let Some(red) = red {
+        for (slot, &kind) in red.0.iter().enumerate() {
+            place(slot, kind, 0);
+        }
+    }
+    for (slot, &kind) in current.placed.iter().enumerate() {
+        let cell = if current.player == 0 { slot } else { 99 - slot };
+        place(cell, kind, current.player);
+    }
+
+    let own_view = spectator || viewer == current.player;
+    let next_square = own_view.then(|| {
+        let slot = current.next_square();
+        if current.player == 0 { slot } else { 99 - slot }
+    });
+    let supply = own_view.then(|| {
+        let counts: Vec<String> = current.remaining[..12].iter().map(u8::to_string).collect();
+        format!("[{}]", counts.join(","))
+    });
+    let deployed = [
+        if current.player == 0 {
+            current.placed.len()
+        } else {
+            HOME_CELLS
+        },
+        if current.player == 1 {
+            current.placed.len()
+        } else {
+            0
+        },
+    ];
+    format!(
+        r#"{{"phase":"deploy","viewer":{viewer},"toAct":{},"cells":[{}],"nextSquare":{},"supply":{},"deployed":[{},{}],"lastMove":null,"captured":null}}"#,
+        current.player,
+        cells.join(","),
+        next_square.map_or("null".to_string(), |s| s.to_string()),
+        supply.unwrap_or_else(|| "null".to_string()),
+        deployed[0],
+        deployed[1],
+    )
+}
+
+fn play_view_json(board: &Board, to_play: usize, viewer: usize) -> String {
+    let spectator = viewer >= 2;
+    let cells: Vec<String> = board
+        .pieces
+        .iter()
+        .map(|p| cell_json(p, viewer, spectator))
+        .collect();
+    let last_move = board.action_history.last().map(|&a| {
+        let mover = (board.action_history.len() - 1) % 2;
+        let (from, to) = Action(a).to_abs(mover);
+        format!(r#"{{"from":{from},"to":{to}}}"#)
+    });
+    let captured: Vec<String> = (0..2)
+        .map(|side| {
+            let ranks: Vec<String> = board.death_status[side]
+                .iter()
+                .filter(|d| d.is_dead)
+                .map(|d| format!("\"{}\"", piece_glyph(PieceType::from_u8(d.piece_type))))
+                .collect();
+            format!("[{}]", ranks.join(","))
+        })
+        .collect();
+    format!(
+        r#"{{"phase":"play","viewer":{viewer},"toAct":{to_play},"cells":[{}],"nextSquare":null,"supply":null,"deployed":null,"lastMove":{},"captured":[{}]}}"#,
+        cells.join(","),
+        last_move.unwrap_or_else(|| "null".to_string()),
+        captured.join(","),
+    )
 }
 
 fn render_board(board: &Board, player: usize, to_play: usize) -> String {

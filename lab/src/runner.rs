@@ -117,7 +117,7 @@ impl<G: GameUi + 'static> TypedMatch<G> {
         let action = self.game.action_at(&self.state, index);
         let before = self.state.clone();
         self.game.apply(&mut self.state, action);
-        let label = self.game.action_label(&before, action);
+        let label = self.game.action_label_for(&before, action, viewer);
         let who = if Some(actor) == self.human {
             "You".to_string()
         } else {

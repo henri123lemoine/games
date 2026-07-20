@@ -76,9 +76,11 @@ export const OPT_CHOICES: Record<string, string[]> = {
 };
 
 /** Per-game narrowings of [`OPT_CHOICES`]: a game that should expose fewer
- * values than the generic list. Pente is 19×19 only. */
+ * values than the generic list (pente is 19×19 only), or a game-specific
+ * option that deserves a dropdown (stratego's setup mode). */
 const OPT_CHOICES_BY_GAME: Record<string, Record<string, string[]>> = {
   pente: { size: ["19"] },
+  stratego: { setup: ["random", "manual"] },
 };
 
 /** The choices a game offers for an option — its own narrowing, else the

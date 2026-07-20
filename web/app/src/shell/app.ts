@@ -389,6 +389,40 @@ function miniFor(id: string): string {
           <circle cx="206" cy="56" r="5" fill="#fff" stroke="#0a1230" stroke-width="0.8"/><circle cx="208.4" cy="56" r="2.6" fill="#0a1230"/><circle cx="206.6" cy="54.4" r="1" fill="#fff"/>
         </svg>
       </div>`;
+    case "stratego":
+      return `<div class="mini mini-stratego">
+        <svg viewBox="0 0 220 110" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+          <defs>
+            <linearGradient id="sgm-red" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#c9524b"/><stop offset="1" stop-color="#8f2a24"/>
+            </linearGradient>
+            <linearGradient id="sgm-blue" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#4a6fb5"/><stop offset="1" stop-color="#27447e"/>
+            </linearGradient>
+            <pattern id="sgm-hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+              <rect width="7" height="7" fill="#33589e"/>
+              <line x1="0" y1="0" x2="0" y2="7" stroke="#1e3a72" stroke-width="2"/>
+            </pattern>
+          </defs>
+          <rect width="220" height="110" fill="#d5e0c4"/>
+          <g stroke="#b3c39c" stroke-width="1">
+            ${Array.from({ length: 9 }, (_, i) => `<line x1="${(i + 1) * 22}" y1="0" x2="${(i + 1) * 22}" y2="110"/>`).join("")}
+            <line x1="0" y1="33" x2="220" y2="33"/><line x1="0" y1="77" x2="220" y2="77"/>
+          </g>
+          <rect x="44" y="33" width="44" height="44" rx="9" fill="#9fc4dc"/>
+          <path d="M55 51 q5 -5 10 0 t10 0 M60 63 q5 -5 10 0" fill="none" stroke="#6d9cbc" stroke-width="2.4" stroke-linecap="round"/>
+          <g transform="rotate(-4 130 62)">
+            <rect x="106" y="26" width="48" height="72" rx="9" fill="#7e211d"/>
+            <rect x="110" y="31" width="40" height="62" rx="6" fill="url(#sgm-red)"/>
+            <text x="130" y="73" text-anchor="middle" font-family="ui-monospace,monospace" font-weight="700" font-size="30" fill="#f5efdd" stroke="rgba(0,0,0,0.25)" stroke-width="1" paint-order="stroke">10</text>
+          </g>
+          <g transform="rotate(5 182 66)">
+            <rect x="158" y="30" width="48" height="72" rx="9" fill="#1e3a72"/>
+            <rect x="162" y="35" width="40" height="62" rx="6" fill="url(#sgm-hatch)"/>
+            <path d="M182 47 l4.5 9.2 10.2 1.4 -7.4 7.2 1.8 10.1 -9.1 -4.8 -9.1 4.8 1.8 -10.1 -7.4 -7.2 10.2 -1.4 z" fill="#e8e2d0" opacity="0.92"/>
+          </g>
+        </svg>
+      </div>`;
     case "dood":
       return `<div class="mini mini-doom"><span class="mini-doom-word">DOOD</span></div>`;
     default:

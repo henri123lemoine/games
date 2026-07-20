@@ -87,41 +87,49 @@ async function main() {
       if (r.url().includes('artifacts/ataraxios.bin')) artifactStatus = r.status();
     });
 
+    // Home screen: the stratego card should carry its mini-board art.
+    await page.goto(base + '/#/', { waitUntil: 'load', timeout: 30000 });
+    await page.waitForSelector('.card[data-game="stratego"] .mini-stratego svg', {
+      timeout: 30000,
+    });
+    await page.screenshot({ path: join(OUT_DIR, 'stratego-home.png') });
+
     await page.goto(base + '/#/g/stratego', { waitUntil: 'load', timeout: 30000 });
 
-    // The human is seat 0 (red, moves first) on a random pre-deployed board,
-    // so the generic frontend shows the board and the legal-move buttons once
+    // The human is seat 0 (red, moves first) on a random pre-deployed board.
+    // The board frontend shows all 80 pieces; movable squares light up once
     // the engine and artifact are up.
-    await page.waitForSelector('.generic-view', { timeout: 60000 });
-    await page.waitForSelector('.action-btn', { timeout: 120000 });
+    await page.waitForSelector('.sg-board', { timeout: 60000 });
+    await page.waitForFunction(
+      () => document.querySelectorAll('.sg-piece').length === 80,
+      { timeout: 60000 },
+    );
+    await page.waitForSelector('.sg-sq-movable', { timeout: 120000 });
 
     const rosterLabels = await page.evaluate(() =>
       [...document.querySelectorAll('.seat-select')].map(
         (sel) => sel.selectedOptions[0]?.textContent ?? null,
       ),
     );
-    const viewBefore = await page.evaluate(
-      () => document.querySelector('.generic-view').textContent,
-    );
     await page.screenshot({ path: join(OUT_DIR, 'stratego-before.png') });
 
-    // Play the first legal move, then wait for ataraxios to answer: the turn
-    // comes back to the human (buttons reappear) with a changed board.
+    // Click-select a movable piece, click a highlighted destination, then wait
+    // for ataraxios to answer: the turn comes back (movable squares reappear)
+    // with the bot's move marked as the last move.
     const t0 = Date.now();
-    await page.click('.action-btn');
+    await page.click('.sg-sq-movable');
+    await page.waitForSelector('.sg-sq-target, .sg-sq-capture', { timeout: 10000 });
+    await page.click('.sg-sq-target, .sg-sq-capture');
     await page.waitForFunction(
-      (before) => {
-        const view = document.querySelector('.generic-view')?.textContent ?? '';
-        const buttons = document.querySelectorAll('.action-btn').length;
-        return view !== before && buttons > 0 && view.includes('Player 0 to move');
-      },
-      viewBefore,
+      () =>
+        document.querySelectorAll('.sg-sq-movable').length > 0 &&
+        document.querySelectorAll('.sg-sq-last-to').length === 1,
       { timeout: 180000, polling: 500 },
     );
     const botReplyMs = Date.now() - t0;
 
-    const viewAfter = await page.evaluate(
-      () => document.querySelector('.generic-view').textContent,
+    const pieceCount = await page.evaluate(
+      () => document.querySelectorAll('.sg-piece').length,
     );
     await page.screenshot({ path: join(OUT_DIR, 'stratego-after.png') });
     await page.close();
@@ -132,12 +140,12 @@ async function main() {
     result.rosterLabels = rosterLabels;
     result.artifactStatus = artifactStatus;
     result.botReplyMs = botReplyMs;
-    result.boardChanged = viewAfter !== viewBefore;
+    result.pieceCount = pieceCount;
     result.consoleErrors = errors;
     result.ok =
       opponentIsAtaraxios &&
       artifactStatus === 200 &&
-      result.boardChanged &&
+      pieceCount >= 78 &&
       errors.length === 0;
   } catch (e) {
     result.error = String(e);

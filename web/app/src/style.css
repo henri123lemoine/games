@@ -500,6 +500,17 @@ button {
   background: #16335f;
 }
 
+.mini-stratego {
+  background: #d5e0c4;
+}
+
+.mini-stratego svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
 .mini-c4-svg {
   position: absolute;
   inset: 0;

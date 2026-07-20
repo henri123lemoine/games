@@ -10,6 +10,7 @@ import { createOthelloFrontend } from './othello';
 import { createPenteFrontend } from './pente';
 import { createPokerFrontend } from './poker';
 import { createSnakeFrontend } from './snake';
+import { createStrategoFrontend } from './stratego';
 import { createTwentyOneFrontend } from './twentyone';
 import type { FrontendFactory, GameFrontend } from './types';
 
@@ -22,6 +23,7 @@ const registry: Record<string, FrontendFactory> = {
   pente: createPenteFrontend,
   poker: createPokerFrontend,
   snake: createSnakeFrontend,
+  stratego: createStrategoFrontend,
   twentyone: createTwentyOneFrontend,
 };
 
