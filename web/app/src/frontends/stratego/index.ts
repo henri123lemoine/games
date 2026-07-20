@@ -10,6 +10,7 @@
 import type { MatchEventData, ViewState } from '../../engine/protocol';
 import type { FrontendCtx, GameFrontend } from '../types';
 import { sleep } from '../types';
+import { RANK_ICONS } from './sprites';
 
 interface CellPiece {
   o: 0 | 1;
@@ -122,6 +123,7 @@ class StrategoFrontend implements GameFrontend {
     this.piecesEl = host.querySelector('.sg-pieces')!;
     this.trayEl = host.querySelector('.sg-supply')!;
     this.fallbackEl = host.querySelector('.sg-fallback')!;
+    host.querySelector('.sg-board')!.insertAdjacentHTML('afterbegin', TERRAIN_SVG);
     this.buildSquares();
 
     const board = host.querySelector<HTMLElement>('.sg-board')!;
@@ -139,10 +141,7 @@ class StrategoFrontend implements GameFrontend {
         const sq = document.createElement('div');
         sq.className = 'sg-sq';
         sq.dataset.cell = String(cell);
-        if (LAKES.has(cell)) {
-          sq.classList.add('sg-lake');
-          sq.innerHTML = WAVES_SVG;
-        }
+        if (LAKES.has(cell)) sq.classList.add('sg-lake');
         frag.append(sq);
       }
     }
@@ -500,62 +499,105 @@ function parseTransition(data: unknown): Transition | null {
 
 const LAKES = new Set([42, 43, 46, 47, 52, 53, 56, 57]);
 
-const WAVES_SVG = `<svg class="sg-wave" viewBox="0 0 40 40" aria-hidden="true">
-  <path d="M6 16 q4 -4 8 0 t8 0 t8 0" />
-  <path d="M10 26 q4 -4 8 0 t8 0" />
+/** The board terrain, painted once beneath the interaction grid: a grass
+ * field built from two turbulence passes (fine blade speckle over broad
+ * patchiness), the thin drill grid, and the two banked ponds with rippled
+ * water. Colors ride the same CSS variables as the pieces, so the terrain
+ * follows the light/dark theme. */
+const TERRAIN_SVG = `<svg class="sg-terrain" viewBox="0 0 600 600" preserveAspectRatio="none" aria-hidden="true">
+  <defs>
+    <filter id="sg-grass-fine" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.55" numOctaves="2" seed="11" result="n" />
+      <feColorMatrix in="n" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.6 0.6 0 0 0" />
+      <feComposite operator="in" in2="SourceGraphic" />
+    </filter>
+    <filter id="sg-grass-patch" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.012 0.016" numOctaves="3" seed="4" result="n" />
+      <feColorMatrix in="n" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.9 0 0 0 0" />
+      <feComposite operator="in" in2="SourceGraphic" />
+    </filter>
+    <filter id="sg-water-ripple" x="-10%" y="-10%" width="120%" height="120%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.02 0.09" numOctaves="2" seed="7" result="n" />
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="7" />
+    </filter>
+  </defs>
+  <rect width="600" height="600" class="sg-t-field" />
+  <rect width="600" height="600" class="sg-t-patch" filter="url(#sg-grass-patch)" />
+  <rect width="600" height="600" class="sg-t-speckle" filter="url(#sg-grass-fine)" />
+  <path class="sg-t-grid" d="${Array.from({ length: 9 }, (_, i) => {
+    const p = (i + 1) * 60;
+    return `M${p} 0V600M0 ${p}H600`;
+  }).join('')}" />
+  ${[123, 363]
+    .map(
+      (x) => `
+  <g>
+    <rect x="${x - 4}" y="238" width="122" height="124" rx="20" class="sg-t-bank" />
+    <rect x="${x}" y="242" width="114" height="116" rx="16" class="sg-t-water" />
+    <g filter="url(#sg-water-ripple)">
+      <path class="sg-t-wave" d="M${x + 12} 272 h90 M${x + 12} 300 h90 M${x + 12} 328 h90" />
+    </g>
+  </g>`,
+    )
+    .join('')}
+  <rect x="1" y="1" width="598" height="598" class="sg-t-edge" />
 </svg>`;
 
 // ---------- piece sprites ----------
 
-/** A classic standing piece: the colored stand, an inner face, and the rank —
- * a numeral roundel, or the special's own emblem (flag, bomb, spy). A `null`
- * rank draws the hidden back: crosshatch and a star. */
+/** A molded piece token: beveled rim, lacquered face, the rank's gold figure
+ * (game-icons.net silhouettes, see sprites.ts and ATTRIBUTION.md), and the
+ * corner rank numeral. A `null` rank draws the hidden back: ribbed field,
+ * double border, and the crossed-swords crest. */
 function badgeSvg(rank: string | null, owner: 0 | 1): string {
   const side = owner === 0 ? 'r' : 'b';
-  const face =
-    rank === null ? hiddenFace(side) : FACE_BUILDERS[rank]?.(side) ?? textFace(rank);
   return `<svg class="sg-badge" viewBox="0 0 100 100" aria-hidden="true">
-    <rect class="sg-stand" x="8" y="6" width="84" height="88" rx="14" />
-    <rect class="sg-stand-lip" x="8" y="6" width="84" height="88" rx="14" />
-    ${face}
+    <defs>
+      <linearGradient id="sg-rim-${side}" x1="0" y1="0" x2="0.6" y2="1">
+        <stop offset="0" class="sg-rim-hi" /><stop offset="1" class="sg-rim-lo" />
+      </linearGradient>
+      <linearGradient id="sg-face-${side}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" class="sg-face-hi" /><stop offset="1" class="sg-face-lo" />
+      </linearGradient>
+      <pattern id="sg-rib-${side}" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+        <rect width="8" height="8" fill="url(#sg-face-${side})" />
+        <line x1="0" y1="0" x2="0" y2="8" class="sg-rib-line" />
+      </pattern>
+    </defs>
+    <rect x="5" y="3" width="90" height="94" rx="12" fill="url(#sg-rim-${side})" />
+    <rect x="5" y="3" width="90" height="94" rx="12" class="sg-rim-edge" />
+    ${rank === null ? backFace(side) : rankFace(rank, side)}
   </svg>`;
 }
 
-function hiddenFace(side: 'r' | 'b'): string {
-  return `<g clip-path="url(#sg-clip)">
-    <pattern id="sg-hatch-${side}" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-      <rect width="9" height="9" class="sg-hatch-bg" />
-      <line x1="0" y1="0" x2="0" y2="9" class="sg-hatch-line" />
-    </pattern>
-    <rect x="14" y="12" width="72" height="76" rx="9" fill="url(#sg-hatch-${side})" />
-  </g>
-  <path class="sg-star" d="M50 30 l5.9 12 13.2 1.9 -9.5 9.3 2.2 13.1 -11.8 -6.2 -11.8 6.2 2.2 -13.1 -9.5 -9.3 13.2 -1.9 z" />
-  <clipPath id="sg-clip"><rect x="14" y="12" width="72" height="76" rx="9" /></clipPath>`;
+function rankFace(rank: string, side: 'r' | 'b'): string {
+  const icon = RANK_ICONS[rank] ?? '';
+  const numeral = /^\d+$/.test(rank) || rank === 'S' ? rank : '';
+  const corner = numeral
+    ? `<circle cx="23" cy="20" r="13.5" class="sg-corner" />
+       <text x="23" y="${rank === '10' ? 25 : 27}" text-anchor="middle" class="sg-num${rank === '10' ? ' sg-num-10' : ''}">${numeral}</text>`
+    : '';
+  // 512-grid figure scaled into the token face, seated under the numeral.
+  const scale = numeral ? 0.128 : 0.148;
+  const tx = 50 - 256 * scale;
+  const ty = (numeral ? 92 : 88) - 512 * scale;
+  return `<rect x="11" y="9" width="78" height="82" rx="8" fill="url(#sg-face-${side})" />
+    <rect x="11" y="9" width="78" height="82" rx="8" class="sg-face-line" />
+    <g transform="translate(${tx} ${ty}) scale(${scale})">
+      <path d="${icon}" class="sg-figure-shadow" transform="translate(10 10)" />
+      <path d="${icon}" class="sg-figure" />
+    </g>
+    ${corner}`;
 }
 
-function textFace(rank: string): string {
-  return `<rect class="sg-face" x="14" y="12" width="72" height="76" rx="9" />
-    <text class="sg-rank" x="50" y="64" text-anchor="middle">${rank}</text>`;
+function backFace(side: 'r' | 'b'): string {
+  return `<rect x="11" y="9" width="78" height="82" rx="8" fill="url(#sg-rib-${side})" />
+    <rect x="11" y="9" width="78" height="82" rx="8" class="sg-face-line" />
+    <rect x="17" y="15" width="66" height="70" rx="5" class="sg-back-border" />
+    <g transform="translate(${50 - 256 * 0.1} ${50 - 256 * 0.1}) scale(0.1)">
+      <path d="${RANK_ICONS.back}" class="sg-crest" />
+    </g>`;
 }
-
-const FACE_BUILDERS: Record<string, (side: 'r' | 'b') => string> = {
-  F: () => `<rect class="sg-face" x="14" y="12" width="72" height="76" rx="9" />
-    <line class="sg-pole" x1="38" y1="24" x2="38" y2="78" />
-    <path class="sg-flag" d="M40 26 h26 l-7 9 7 9 h-26 z" />`,
-  B: () => `<rect class="sg-face" x="14" y="12" width="72" height="76" rx="9" />
-    <circle class="sg-bomb" cx="50" cy="58" r="18" />
-    <path class="sg-fuse" d="M58 44 q4 -12 14 -14" />
-    <path class="sg-spark" d="M72 30 l3 -6 M72 30 l6 -2 M72 30 l6 4" />`,
-  S: () => `<rect class="sg-face" x="14" y="12" width="72" height="76" rx="9" />
-    <ellipse class="sg-eye" cx="50" cy="50" rx="22" ry="13" />
-    <circle class="sg-pupil" cx="50" cy="50" r="6.5" />`,
-  '2': () => `<rect class="sg-face" x="14" y="12" width="72" height="76" rx="9" />
-    <text class="sg-rank" x="50" y="62" text-anchor="middle">2</text>
-    <path class="sg-arrow" d="M26 78 h48 m-8 -6 8 6 -8 6" />`,
-  '3': () => `<rect class="sg-face" x="14" y="12" width="72" height="76" rx="9" />
-    <text class="sg-rank" x="50" y="62" text-anchor="middle">3</text>
-    <path class="sg-pick" d="M28 80 l14 -8 m-14 8 l8 -14" />`,
-};
 
 // ---------- styles ----------
 
@@ -576,30 +618,50 @@ const CSS_TEXT = `
   gap: 8px;
   width: min(100%, var(--board-fit));
   margin: 0 auto;
-  --sg-field: #dbe4cf;
-  --sg-grid: #b7c6a4;
-  --sg-lake: #9fc4dc;
-  --sg-lake-wave: #6d9cbc;
   --sg-red: #b23a34;
-  --sg-red-deep: #7e211d;
-  --sg-red-face: #c9524b;
+  --sg-red-rim-hi: #d8655c;
+  --sg-red-rim-lo: #6e1b16;
+  --sg-red-face-hi: #c24a42;
+  --sg-red-face-lo: #932e27;
+  --sg-red-corner: #5e150f;
   --sg-blue: #33589e;
-  --sg-blue-deep: #1e3a72;
-  --sg-blue-face: #4a6fb5;
-  --sg-cream: #f5efdd;
+  --sg-blue-rim-hi: #5d7fc0;
+  --sg-blue-rim-lo: #16294f;
+  --sg-blue-face-hi: #47689f;
+  --sg-blue-face-lo: #2b4778;
+  --sg-blue-corner: #12274d;
+  --sg-gold: #e9c97e;
+  --sg-gold-deep: #caa552;
+  --sg-t-field: #b3c68c;
+  --sg-t-patch: #6f8b4f;
+  --sg-t-speckle: #3f5a2b;
+  --sg-t-grid: #55673c;
+  --sg-t-bank: #cfc191;
+  --sg-t-water: #8db8d8;
+  --sg-t-wave: #eaf3f9;
+  --sg-t-edge: #4c5a38;
 }
 .dark .sg-root {
-  --sg-field: #2c3529;
-  --sg-grid: #414f3b;
-  --sg-lake: #24405a;
-  --sg-lake-wave: #45719a;
-  --sg-red: #a03a35;
-  --sg-red-deep: #571713;
-  --sg-red-face: #b44e47;
-  --sg-blue: #3a5da0;
-  --sg-blue-deep: #16294f;
-  --sg-blue-face: #4a6fb5;
-  --sg-cream: #e8e2d0;
+  --sg-red-rim-hi: #b04840;
+  --sg-red-rim-lo: #45100c;
+  --sg-red-face-hi: #9c3831;
+  --sg-red-face-lo: #6d211b;
+  --sg-red-corner: #3c0d09;
+  --sg-blue-rim-hi: #4a6aa8;
+  --sg-blue-rim-lo: #0d1a35;
+  --sg-blue-face-hi: #3a5588;
+  --sg-blue-face-lo: #223a64;
+  --sg-blue-corner: #0b1b3a;
+  --sg-gold: #d9b96c;
+  --sg-gold-deep: #a8843c;
+  --sg-t-field: #35422a;
+  --sg-t-patch: #1f2b16;
+  --sg-t-speckle: #0b1107;
+  --sg-t-grid: #141b0e;
+  --sg-t-bank: #4d4834;
+  --sg-t-water: #2c4d6e;
+  --sg-t-wave: #6f97b8;
+  --sg-t-edge: #10150b;
 }
 
 .sg-bar {
@@ -616,9 +678,9 @@ const CSS_TEXT = `
   max-width: 70%;
 }
 .sg-tray-piece {
-  width: 20px;
-  height: 20px;
-  opacity: 0.85;
+  width: 22px;
+  height: 22px;
+  opacity: 0.9;
 }
 .sg-tray-piece svg { display: block; width: 100%; height: 100%; }
 
@@ -635,36 +697,35 @@ const CSS_TEXT = `
   user-select: none;
   -webkit-user-select: none;
 }
+
+/* --- terrain --- */
+.sg-terrain { position: absolute; inset: 0; width: 100%; height: 100%; }
+.sg-t-field { fill: var(--sg-t-field); }
+.sg-t-patch { fill: var(--sg-t-patch); opacity: 0.34; }
+.sg-t-speckle { fill: var(--sg-t-speckle); opacity: 0.2; }
+.sg-t-grid { stroke: var(--sg-t-grid); stroke-width: 1.1; opacity: 0.45; fill: none; }
+.sg-t-bank { fill: var(--sg-t-bank); }
+.sg-t-water { fill: var(--sg-t-water); }
+.sg-t-wave { stroke: var(--sg-t-wave); stroke-width: 2.2; opacity: 0.5; fill: none; stroke-linecap: round; }
+.sg-t-edge { fill: none; stroke: var(--sg-t-edge); stroke-width: 2; opacity: 0.55; }
+
 .sg-squares {
   position: absolute;
   inset: 0;
   display: grid;
   grid-template: repeat(10, 1fr) / repeat(10, 1fr);
 }
-.sg-sq {
-  background: var(--sg-field);
-  box-shadow: inset 0 0 0 0.5px var(--sg-grid);
-  position: relative;
-}
-.sg-lake { background: var(--sg-lake); }
-.sg-wave {
-  position: absolute;
-  inset: 12%;
-  width: 76%;
-  height: 76%;
-}
-.sg-wave path {
-  fill: none;
-  stroke: var(--sg-lake-wave);
-  stroke-width: 2.4;
-  stroke-linecap: round;
-}
+.sg-sq { position: relative; }
 
 /* --- square states --- */
-.sg-sq-last-from, .sg-sq-last-to { background: color-mix(in srgb, var(--accent) 22%, var(--sg-field)); }
+.sg-sq-last-from, .sg-sq-last-to {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+}
 .sg-sq-next {
   animation: sg-pulse 1.2s ease-in-out infinite;
   box-shadow: inset 0 0 0 3px var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 @keyframes sg-pulse {
   50% { box-shadow: inset 0 0 0 5px var(--accent); }
@@ -675,13 +736,14 @@ const CSS_TEXT = `
   content: '';
   position: absolute;
   inset: 50%;
-  width: 26%;
-  height: 26%;
+  width: 30%;
+  height: 30%;
   translate: -50% -50%;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 60%, transparent);
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.35);
 }
-.sg-sq-capture { box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--bad, #d33) 75%, var(--accent)); }
+.sg-sq-capture { box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--bad, #d33) 80%, var(--accent)); }
 .sg-sq-drop { box-shadow: inset 0 0 0 4px var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   .sg-sq-next { animation: none; }
@@ -694,13 +756,18 @@ const CSS_TEXT = `
   width: 10%;
   height: 10%;
   /* Percent padding resolves against the pieces layer (the whole board), so
-   * 0.7% of the board is 7% of this square. */
-  padding: 0.7%;
+   * 0.55% of the board is 5.5% of this square. */
+  padding: 0.55%;
   box-sizing: border-box;
   transition: transform 0.24s cubic-bezier(0.2, 0.8, 0.3, 1);
   will-change: transform;
 }
-.sg-piece svg { display: block; width: 100%; height: 100%; filter: drop-shadow(0 1px 1.5px rgba(0,0,0,0.35)); }
+.sg-piece svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 1.5px 2px rgba(0,0,0,0.45));
+}
 .sg-piece.sg-revealing svg { animation: sg-flip 0.5s ease; }
 @keyframes sg-flip {
   0% { transform: rotateY(90deg); }
@@ -717,43 +784,41 @@ const CSS_TEXT = `
 .sg-has-moved::after {
   content: '';
   position: absolute;
-  right: 12%;
-  bottom: 10%;
-  width: 12%;
-  height: 12%;
+  right: 10%;
+  bottom: 8%;
+  width: 13%;
+  height: 13%;
   border-radius: 50%;
-  background: var(--sg-cream);
-  outline: 1px solid rgba(0,0,0,0.4);
+  background: var(--sg-gold);
+  outline: 1.5px solid rgba(0,0,0,0.45);
 }
-.sg-known .sg-stand-lip { stroke: var(--accent-2, #d4a72c); stroke-width: 5; }
+.sg-known .sg-rim-edge { stroke: var(--sg-gold); stroke-width: 3.5; }
 
-/* --- badge colors --- */
-.sg-red .sg-stand { fill: var(--sg-red-deep); }
-.sg-red .sg-face, .sg-red .sg-hatch-bg { fill: var(--sg-red); }
-.sg-red .sg-hatch-line { stroke: var(--sg-red-deep); stroke-width: 2.4; }
-.sg-blue .sg-stand { fill: var(--sg-blue-deep); }
-.sg-blue .sg-face, .sg-blue .sg-hatch-bg { fill: var(--sg-blue); }
-.sg-blue .sg-hatch-line { stroke: var(--sg-blue-deep); stroke-width: 2.4; }
-.sg-stand-lip { fill: none; stroke: rgba(255,255,255,0.18); stroke-width: 2.5; }
-.sg-red .sg-face { fill: var(--sg-red-face); }
-.sg-blue .sg-face { fill: var(--sg-blue-face); }
-.sg-rank {
-  font: 700 44px var(--mono, ui-monospace, monospace);
-  fill: var(--sg-cream);
-  paint-order: stroke;
-  stroke: rgba(0,0,0,0.25);
-  stroke-width: 2;
+/* --- token materials --- */
+.sg-red .sg-rim-hi { stop-color: var(--sg-red-rim-hi); }
+.sg-red .sg-rim-lo { stop-color: var(--sg-red-rim-lo); }
+.sg-red .sg-face-hi { stop-color: var(--sg-red-face-hi); }
+.sg-red .sg-face-lo { stop-color: var(--sg-red-face-lo); }
+.sg-red .sg-corner { fill: var(--sg-red-corner); }
+.sg-red .sg-rib-line { stroke: var(--sg-red-rim-lo); stroke-width: 2.6; }
+.sg-blue .sg-rim-hi { stop-color: var(--sg-blue-rim-hi); }
+.sg-blue .sg-rim-lo { stop-color: var(--sg-blue-rim-lo); }
+.sg-blue .sg-face-hi { stop-color: var(--sg-blue-face-hi); }
+.sg-blue .sg-face-lo { stop-color: var(--sg-blue-face-lo); }
+.sg-blue .sg-corner { fill: var(--sg-blue-corner); }
+.sg-blue .sg-rib-line { stroke: var(--sg-blue-rim-lo); stroke-width: 2.6; }
+.sg-rim-edge { fill: none; stroke: rgba(255,255,255,0.22); stroke-width: 1.6; }
+.sg-face-line { fill: none; stroke: rgba(0,0,0,0.28); stroke-width: 1.2; }
+.sg-figure { fill: var(--sg-gold); }
+.sg-figure-shadow { fill: rgba(0,0,0,0.3); }
+.sg-corner { stroke: var(--sg-gold-deep); stroke-width: 1.6; }
+.sg-num {
+  font: 800 21px var(--mono, ui-monospace, monospace);
+  fill: var(--sg-gold);
 }
-.sg-star { fill: var(--sg-cream); opacity: 0.9; }
-.sg-pole { stroke: var(--sg-cream); stroke-width: 5; stroke-linecap: round; }
-.sg-flag { fill: var(--sg-cream); }
-.sg-bomb { fill: #1c1c1e; stroke: var(--sg-cream); stroke-width: 2.5; }
-.sg-fuse, .sg-spark { fill: none; stroke: var(--sg-cream); stroke-width: 4; stroke-linecap: round; }
-.sg-spark { stroke: #f2b03d; stroke-width: 3; }
-.sg-eye { fill: var(--sg-cream); }
-.sg-pupil { fill: #1c1c1e; }
-.sg-arrow, .sg-pick { fill: none; stroke: var(--sg-cream); stroke-width: 4.5; stroke-linecap: round; stroke-linejoin: round; }
-.sg-arrow { stroke-width: 3.5; }
+.sg-num-10 { font-size: 16px; letter-spacing: -1px; }
+.sg-back-border { fill: none; stroke: var(--sg-gold); stroke-width: 1.6; opacity: 0.65; }
+.sg-crest { fill: var(--sg-gold); opacity: 0.7; }
 
 /* --- supply tray (deployment) --- */
 .sg-supply[hidden] { display: none; }
@@ -765,7 +830,7 @@ const CSS_TEXT = `
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  width: 128px;
+  width: 132px;
   flex-shrink: 0;
 }
 .sg-supply-btn {
@@ -775,7 +840,7 @@ const CSS_TEXT = `
   border-radius: 8px;
   background: var(--bg-inset);
   cursor: pointer;
-  padding: 6px;
+  padding: 5px;
 }
 .sg-supply-btn:hover:not(:disabled) { border-color: var(--accent); }
 .sg-supply-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

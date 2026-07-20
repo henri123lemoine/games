@@ -15,6 +15,7 @@ import type {
 } from "../engine/protocol";
 import { frontendFor, hasFrontend } from "../frontends";
 import type { SlitherScreen } from "../frontends/slither";
+import { RANK_ICONS } from "../frontends/stratego/sprites";
 import type { RealtimeBoard } from "./snake-realtime";
 import { SnakeRealtime } from "./snake-realtime";
 import type { FrontendCtx, GameFrontend } from "../frontends/types";
@@ -394,32 +395,42 @@ function miniFor(id: string): string {
         <svg viewBox="0 0 220 110" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
           <defs>
             <linearGradient id="sgm-red" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="#c9524b"/><stop offset="1" stop-color="#8f2a24"/>
+              <stop offset="0" stop-color="#c24a42"/><stop offset="1" stop-color="#932e27"/>
             </linearGradient>
             <linearGradient id="sgm-blue" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="#4a6fb5"/><stop offset="1" stop-color="#27447e"/>
+              <stop offset="0" stop-color="#47689f"/><stop offset="1" stop-color="#2b4778"/>
             </linearGradient>
-            <pattern id="sgm-hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <pattern id="sgm-rib" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
               <rect width="7" height="7" fill="#33589e"/>
-              <line x1="0" y1="0" x2="0" y2="7" stroke="#1e3a72" stroke-width="2"/>
+              <line x1="0" y1="0" x2="0" y2="7" stroke="#16294f" stroke-width="2.2"/>
             </pattern>
+            <filter id="sgm-grain" x="0" y="0" width="100%" height="100%">
+              <feTurbulence type="fractalNoise" baseFrequency="0.5" numOctaves="2" seed="3" result="n"/>
+              <feColorMatrix in="n" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.7 0.7 0 0 0"/>
+              <feComposite operator="in" in2="SourceGraphic"/>
+            </filter>
           </defs>
-          <rect width="220" height="110" fill="#d5e0c4"/>
-          <g stroke="#b3c39c" stroke-width="1">
+          <rect width="220" height="110" fill="#b3c68c"/>
+          <rect width="220" height="110" fill="#3f5a2b" opacity="0.16" filter="url(#sgm-grain)"/>
+          <g stroke="#55673c" stroke-width="1" opacity="0.4">
             ${Array.from({ length: 9 }, (_, i) => `<line x1="${(i + 1) * 22}" y1="0" x2="${(i + 1) * 22}" y2="110"/>`).join("")}
             <line x1="0" y1="33" x2="220" y2="33"/><line x1="0" y1="77" x2="220" y2="77"/>
           </g>
-          <rect x="44" y="33" width="44" height="44" rx="9" fill="#9fc4dc"/>
-          <path d="M55 51 q5 -5 10 0 t10 0 M60 63 q5 -5 10 0" fill="none" stroke="#6d9cbc" stroke-width="2.4" stroke-linecap="round"/>
-          <g transform="rotate(-4 130 62)">
-            <rect x="106" y="26" width="48" height="72" rx="9" fill="#7e211d"/>
-            <rect x="110" y="31" width="40" height="62" rx="6" fill="url(#sgm-red)"/>
-            <text x="130" y="73" text-anchor="middle" font-family="ui-monospace,monospace" font-weight="700" font-size="30" fill="#f5efdd" stroke="rgba(0,0,0,0.25)" stroke-width="1" paint-order="stroke">10</text>
+          <rect x="40" y="30" width="52" height="52" rx="12" fill="#cfc191"/>
+          <rect x="43" y="33" width="46" height="46" rx="9" fill="#8db8d8"/>
+          <path d="M50 48 h32 M54 60 h24 M50 70 h32" fill="none" stroke="#eaf3f9" stroke-width="2" opacity="0.55" stroke-linecap="round"/>
+          <g transform="rotate(-4 132 62)">
+            <rect x="106" y="20" width="52" height="84" rx="10" fill="#6e1b16"/>
+            <rect x="110" y="25" width="44" height="74" rx="7" fill="url(#sgm-red)"/>
+            <g transform="translate(111 40) scale(0.122)"><path d="${RANK_ICONS["10"]}" fill="#e9c97e"/></g>
+            <circle cx="121" cy="34" r="8.5" fill="#5e150f" stroke="#caa552" stroke-width="1.2"/>
+            <text x="121" y="38" text-anchor="middle" font-family="ui-monospace,monospace" font-weight="800" font-size="11" letter-spacing="-1" fill="#e9c97e">10</text>
           </g>
-          <g transform="rotate(5 182 66)">
-            <rect x="158" y="30" width="48" height="72" rx="9" fill="#1e3a72"/>
-            <rect x="162" y="35" width="40" height="62" rx="6" fill="url(#sgm-hatch)"/>
-            <path d="M182 47 l4.5 9.2 10.2 1.4 -7.4 7.2 1.8 10.1 -9.1 -4.8 -9.1 4.8 1.8 -10.1 -7.4 -7.2 10.2 -1.4 z" fill="#e8e2d0" opacity="0.92"/>
+          <g transform="rotate(5 184 66)">
+            <rect x="160" y="24" width="52" height="84" rx="10" fill="#16294f"/>
+            <rect x="164" y="29" width="44" height="74" rx="7" fill="url(#sgm-rib)"/>
+            <rect x="168" y="33" width="36" height="66" rx="5" fill="none" stroke="#e9c97e" stroke-width="1.4" opacity="0.65"/>
+            <g transform="translate(163 43) scale(0.09)"><path d="${RANK_ICONS.back}" fill="#e9c97e" opacity="0.75"/></g>
           </g>
         </svg>
       </div>`;
