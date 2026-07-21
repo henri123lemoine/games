@@ -68,6 +68,7 @@ export type EngineRequest =
   | { id: number; op: 'manifest' }
   | { id: number; op: 'create'; game: string; opts: Record<string, string | number> }
   | { id: number; op: 'step' }
+  | { id: number; op: 'prepare' }
   | { id: number; op: 'state' }
   | { id: number; op: 'apply'; input: string }
   | { id: number; op: 'artifact'; key: string; bytes: ArrayBuffer }
@@ -123,20 +124,7 @@ export type EngineRequest =
   | { id: number; op: 'azBest' }
   | { id: number; op: 'goEval' }
   | { id: number; op: 'penteEval' }
-  | { id: number; op: 'chessEval' }
-  | {
-      id: number;
-      op: 'snakeNew';
-      sims: number;
-      leaves: number;
-      seed: number;
-      weights?: ArrayBuffer;
-    }
-  | { id: number; op: 'snakePlayCpu'; view: string }
-  | { id: number; op: 'snakeSetState'; view: string }
-  | { id: number; op: 'snakeAdvance'; priors: Float32Array; values: Float32Array }
-  | { id: number; op: 'snakeBest' }
-  | { id: number; op: 'snakePolicyMove'; view: string };
+  | { id: number; op: 'chessEval' };
 
 /** One gathered leaf batch from the wasm AZ search (empty when done). */
 export interface AzBatch {

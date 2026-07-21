@@ -18,6 +18,7 @@ export const BOT_LABELS: Record<string, string> = {
   history: "Neural",
   ataraxios: "Ataraxios",
   belief: "Belief",
+  bns: "Best-node search",
   random: "Random",
 };
 
@@ -43,8 +44,8 @@ export const BOT_INFO: Record<string, string> = {
   "pente/azero-gpu":
     "An AlphaZero-style self-play net for 19×19 pente — trained in next to no time; pente falls quickly to self-play. " +
     "It drives the same VCF-hybrid search as the native bot.",
-  "snake/azero-gpu":
-    "An AlphaZero-style self-play duel net, roughly a few hours of training on a MacBook; MCTS at play time.",
+  "snake/bns":
+    "A simultaneous best-node search with bitboard territory, collision-aware quiescence, transpositions, and a phase-aware Battlesnake evaluation. No current move is revealed before the joint turn resolves.",
   "liars-dice/history":
     "PPO over a history-attention encoder with a belief head, trained in a multi-round self-play league " +
     "with an exploiter pool across about ten days. The shipped net is the league's round-21 head-to-head champion.",
@@ -97,9 +98,7 @@ export const DIFFICULTY: Record<string, Difficulty> = {
   "liars-dice/rollout": { key: "rollouts", levels: [["Easy", "100"], ["Medium", "400"], ["Hard", "1000"]] },
   "poker/equity": { key: "samples", levels: [["Easy", "300"], ["Medium", "1200"], ["Hard", "3000"]] },
   "poker/rollout": { key: "rollouts", levels: [["Easy", "60"], ["Medium", "150"], ["Hard", "400"]] },
-  "snake/mcts": { key: "sims", levels: [["Easy", "60"], ["Medium", "150"], ["Hard", "400"]] },
-  "snake/mcts-eval": { key: "sims", levels: [["Easy", "60"], ["Medium", "150"], ["Hard", "400"]] },
-  "snake/azero-gpu": { key: "sims", levels: [["Easy", "16"], ["Medium", "64"], ["Hard", "128"]] },
+  "snake/bns": { key: "millis", levels: [["Easy", "25"], ["Medium", "120"], ["Hard", "440"]] },
 };
 
 export function difficultyFor(gameId: string, bot: string): Difficulty | undefined {
@@ -121,6 +120,12 @@ export const OPT_CHOICES: Record<string, string[]> = {
  * option that deserves a dropdown (stratego's setup mode). */
 const OPT_CHOICES_BY_GAME: Record<string, Record<string, string[]>> = {
   pente: { size: ["19"] },
+  snake: {
+    players: ["2", "3", "4"],
+    mode: ["standard", "royale", "constrictor", "wrapped", "wrapped-constrictor"],
+    food: ["standard", "one"],
+    model: ["mcs", "brs+", "full"],
+  },
   stratego: { setup: ["random", "manual"] },
 };
 

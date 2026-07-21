@@ -104,28 +104,6 @@ fn go_net_loads_well_formed_size_agnostic_with_ownership() {
 }
 
 #[test]
-fn snake_net_loads_well_formed_size_agnostic() {
-    let Some(bytes) = read("web/app/public/azero/azero-snake.azweb") else {
-        eprintln!("skip: snake net not committed");
-        return;
-    };
-    assert_aznet1_round_trip(&bytes);
-    let net = Net::parse(&bytes).expect("parse");
-    assert_eq!(net.arch().head, HeadKind::GlobalPoolDense);
-    let planes = net.arch().planes;
-    let size = net.arch().size;
-
-    let mut rng = Rng(0x5EED5);
-    for &s in &[size, 11] {
-        for _ in 0..8 {
-            let out = net.forward_at(&rng.fill(planes * s * s), &[], s);
-            well_formed(&out, 4);
-            assert!(out.ownership.is_none(), "snake has no ownership head");
-        }
-    }
-}
-
-#[test]
 fn forward_support_is_a_distribution_over_the_legal_subset() {
     let Some(bytes) = read("web/app/public/azero/azero-go.azweb") else {
         eprintln!("skip: go net not committed");

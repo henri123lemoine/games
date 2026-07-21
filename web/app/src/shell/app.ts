@@ -4,7 +4,6 @@
 // and narration, frontends own the board.
 
 import { type ClientBot, clientBotFor } from "../bots";
-import { createSnakeBot, type SnakeBot } from "../bots/snake-search";
 import { EngineHost } from "../engine/host";
 import type {
   GameInfo,
@@ -16,8 +15,6 @@ import type {
 import { frontendFor, hasFrontend } from "../frontends";
 import type { SlitherScreen } from "../frontends/slither";
 import { RANK_ICONS } from "../frontends/stratego/sprites";
-import type { RealtimeBoard } from "./snake-realtime";
-import { SnakeRealtime } from "./snake-realtime";
 import type { FrontendCtx, GameFrontend } from "../frontends/types";
 import { CPU_LEVELS, isCpuFallback, TRIVIAL_SIMS } from "./azero";
 import {
@@ -51,7 +48,7 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   // VCF hybrid the native bot does.
   pente: { size: PENTE_AZ_SIZE, bot: "azero-gpu", sims: "400" },
   go: { size: "19", bot: "azero-gpu", sims: "1500" },
-  snake: { bot: "azero-gpu", sims: "128" },
+  snake: { players: "2", food: "one", bot: "bns", millis: "25" },
   // The site ships only the trained net (ataraxios) — never the heuristic.
   stratego: { bot: "ataraxios", setup: "manual" },
 };
@@ -186,7 +183,7 @@ const SHOWN_BOTS: Record<string, readonly string[]> = {
   connect4: ["alphabeta"],
   go: ["azero-gpu"],
   pente: ["azero-gpu", "alphabeta"],
-  snake: ["azero-gpu"],
+  snake: ["bns"],
   // Only the trained net is published — the heuristic and random baselines
   // stay lab-only by policy.
   stratego: ["ataraxios"],
@@ -460,10 +457,6 @@ export class App {
   private readoutEl: HTMLElement | null = null;
   private debugOn = localStorage.getItem("arcadeDebug") === "1";
   private debugSubs = new Set<(on: boolean) => void>();
-  /** Snake play runs on a dedicated real-time driver (fixed clock, bot's policy
-   * floor + search off the critical path) instead of the serial match loop. */
-  private snakeRealtime: SnakeRealtime | null = null;
-  private snakeBot: SnakeBot | null = null;
 
   constructor(private root: HTMLElement) {
     window.addEventListener("hashchange", () => this.route());
@@ -740,7 +733,6 @@ export class App {
     this.renderMatchSkeleton(game, mode, opts);
     // An AlphaZero seat (single bot, or one seat of a heterogeneous board) is
     // driven page-side: WebGPU when present, otherwise the in-wasm CPU forward.
-    // Snake's `azero` is CPU-only (`azero-gpu` is the GPU-capable id).
     const isAzeroSpec = (b: string) => b === "azero-gpu" || b === "azero";
     const azeroSeat =
       isAzeroSpec(opts.bot ?? "") ||
@@ -749,12 +741,6 @@ export class App {
       opts.bot === "azero-gpu" ||
       splitSpecs(opts.bots ?? "").some((s) => s.split(":")[0] === "azero-gpu");
     if (azeroSeat && isCpuFallback()) this.showCpuNote();
-    // Snake PLAY (human seated, AlphaZero opponent) runs real-time: a dedicated
-    // fixed-clock driver with the bot's search off the critical path, so the
-    // player's snake is never gated by the bot's compute. Watch mode and the
-    // CPU/keyboard fallback keep the generic serial loop.
-    const snakePlay =
-      game.id === "snake" && usesAzeroGpu && opts.seat !== "watch";
     try {
       await this.loadArtifacts(game, opts);
       const st = await this.host.create(game.id, opts);
@@ -777,11 +763,6 @@ export class App {
       this.frontend.render(st);
       this.fillSeatSlots(game, opts);
 
-      if (snakePlay) {
-        await this.startSnakeRealtime(gen, opts, st);
-        return;
-      }
-
       const makeBot = clientBotFor(game.id, usesAzeroGpu ? "azero-gpu" : opts.bot);
       this.clientBot = makeBot ? await makeBot(this.host, opts) : null;
       if (gen !== this.gen) return;
@@ -798,44 +779,24 @@ export class App {
     }
   }
 
-  /** Wire snake's real-time driver: the bot (CPU policy floor + background
-   * search, each on its own worker) plus the fixed-clock driver that reads the
-   * player's input every tick without ever awaiting the heavy search. */
-  private async startSnakeRealtime(
-    gen: number,
-    opts: Record<string, string>,
-    initial: ViewState,
-  ): Promise<void> {
-    const bot = await createSnakeBot(opts);
-    if (gen !== this.gen) {
-      bot.stop();
-      return;
-    }
-    this.snakeBot = bot;
-    if (bot.cpuFallback) this.showCpuNote(bot.cpuFallback);
-    const board = this.frontend as unknown as RealtimeBoard;
-    this.snakeRealtime = new SnakeRealtime(
-      this.host,
-      bot,
-      board,
-      () => gen === this.gen,
-      () => {
-        /* the frontend draws its own game-over overlay */
-      },
-    );
-    this.snakeRealtime.start(initial);
-  }
-
   private renderMatchSkeleton(
     game: GameInfo,
     mode: Mode,
     opts: Record<string, string>,
   ): void {
-    // Pacing only matters while spectating; a human-vs-bot game has nothing to
-    // pace. Reset to normal each match and show the control only when watching.
+    // Normal is the default. Battlesnake humans may opt into a different visual
+    // pace, but input itself is never held behind an extra cadence timer.
     this.speedScale = 1;
     const speedControl =
-      mode === "watch"
+      game.id === "snake" && mode === "play"
+        ? `<label class="speed-label">pace
+            <select class="speed">
+              <option value="1.25">relaxed</option>
+              <option value="1" selected>normal</option>
+              <option value="0.7">fast</option>
+            </select>
+          </label>`
+        : mode === "watch"
         ? `<label class="speed-label">speed
             <select class="speed">
               <option value="2">slow</option>
@@ -1441,7 +1402,11 @@ export class App {
           await this.clientBot?.onMove(ev);
           const st = await this.host.state();
           if (gen !== this.gen) return;
+          const nextPreparation = st.isOver
+            ? Promise.resolve()
+            : this.host.prepare();
           await this.frontend!.animate(ev, st);
+          await nextPreparation;
         } catch (e) {
           fail(e);
           return;
@@ -1480,6 +1445,9 @@ export class App {
         continue;
       }
       this.setStatus("Your turn");
+      // In simultaneous games the opponents choose from this same immutable
+      // state, so their search can run now instead of starting after input.
+      const preparation = this.host.prepare();
       this.frontend!.promptAction(st.labels);
       const input = await new Promise<string>(
         (res) => (this.submitResolve = res),
@@ -1487,13 +1455,20 @@ export class App {
       if (gen !== this.gen) return;
       if (st.numSeats > 1) this.setStatus("Thinking…");
       try {
+        await preparation;
         const mev = await this.host.apply(input);
         if (gen !== this.gen) return;
         this.log(mev);
         await this.clientBot?.onMove(mev);
         const after = await this.host.state();
         if (gen !== this.gen) return;
+        // Begin the next simultaneous search while the current real move is
+        // gliding. By the next cell boundary it is normally already cached.
+        const nextPreparation = after.isOver
+          ? Promise.resolve()
+          : this.host.prepare();
         await this.frontend!.animate(mev, after);
+        await nextPreparation;
       } catch (e) {
         fail(e);
       }
@@ -1598,10 +1573,6 @@ export class App {
   private teardownMatch(): void {
     this.clientBot?.cancel();
     this.clientBot = null;
-    this.snakeRealtime?.stop();
-    this.snakeRealtime = null;
-    this.snakeBot?.stop();
-    this.snakeBot = null;
     this.frontend?.unmount();
     this.frontend = null;
     this.submitResolve = null;

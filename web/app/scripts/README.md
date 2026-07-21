@@ -1,14 +1,12 @@
 # Browser validation harness
 
-`browser-validate.mjs` launches a **real headless Chromium with WebGPU**, serves
-the built app over `http://localhost`, drives one game, and reports back the
-backend that actually ran (GPU vs CPU), real ms/move, every console log, the
-page's `navigator.gpu` adapter info, and a screenshot. It exists so browser /
-GPU / visual behavior can be validated without a human reloading localhost.
+`browser-validate.mjs` launches a real headless Chromium, serves the built app
+over `http://localhost`, drives one game, records console failures and a
+screenshot, and exercises Snake's input, start gate, death, and wrap regressions.
 
 ```bash
 npm run validate:browser            # builds dist/, validates snake (default)
-npm run validate:browser -- snake   # snake card, two AlphaZero bots (watch mode)
+npm run validate:browser -- snake   # canonical Battlesnake and human controls
 npm run validate:browser -- coil    # coil standalone
 
 # Without rebuilding (faster; uses the existing dist/):
@@ -57,9 +55,7 @@ Launch flags that make headless WebGPU work on this Mac:
 ## Adding a game
 
 Add an entry to the `GAMES` map in `browser-validate.mjs`: the hash `route` to
-load (use `?mode=watch` so both seats are bots and moves auto-flow with no human
-input), the `ready` selector to wait on, and — if the game has a debug HUD — the
-`overlaySelector` to read backend/ms/move from.
+load, the `ready` selector to wait on, and any game-specific functional checks.
 
 The snake route is `/?snakeDebug#/g/snake?mode=watch`: `?snakeDebug` lives in the
 URL **search** (read by `debugEnabled()`), while the game itself is reached via

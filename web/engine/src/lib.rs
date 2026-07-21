@@ -6,7 +6,6 @@
 mod az;
 mod azgo;
 mod azpente;
-mod azsnake;
 mod mcts;
 
 use lab::registry::{Opts, entries};
@@ -18,7 +17,6 @@ use wasm_bindgen::prelude::*;
 pub use az::AzChessBot;
 pub use azgo::AzGoBot;
 pub use azpente::AzPenteBot;
-pub use azsnake::AzSnakeBot;
 
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -266,18 +264,6 @@ pub fn pente_reference_forward(
     ref_forward(weights, features, n, size)
 }
 
-/// The snake reference forward over `n` positions (`features` flat, each
-/// `PLANES·size²`). Logit stride is 4 (the four absolute headings).
-#[wasm_bindgen]
-pub fn snake_reference_forward(
-    weights: &[u8],
-    features: &[f32],
-    n: usize,
-    size: usize,
-) -> Result<RefForward, JsError> {
-    ref_forward(weights, features, n, size)
-}
-
 /// The chess reference forward over `n` positions (`features` flat, each
 /// `PLANE_COUNT·64`). Logit stride is `AZ_POLICY_LEN` (`square·73+plane`).
 #[wasm_bindgen]
@@ -327,6 +313,12 @@ impl WebMatch {
             .step()
             .map(|e| event_json(&e).to_string())
             .unwrap_or_default()
+    }
+
+    /// Starts bot work that does not depend on the driven player's action.
+    /// Simultaneous games cache those choices; other games do nothing.
+    pub fn prepare(&mut self) {
+        self.inner.prepare();
     }
 
     pub fn is_over(&self) -> bool {

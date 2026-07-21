@@ -61,28 +61,36 @@ while (m.step()) ldHistorySteps++;
 assert(m.is_over() && ldHistorySteps > 0, `liars-dice history watch ended after ${ldHistorySteps} steps`);
 console.log('liars-dice history watch:', ldHistorySteps, 'moves —', m.result_text());
 
-// Snake: the competitive 1v1 game. Watch a duel to a result, then a human
-// turn — the view JSON carries both snakes and the outcome.
-m = engine.create_match('snake', JSON.stringify({ seat: 'watch', sims: 60, depth: 12, seed: 5 }));
+// Battlesnake: all current moves resolve atomically. Watch BNS to a result,
+// then verify the human submits one move while the opponent still acts from
+// the same pre-state.
+m = engine.create_match('snake', JSON.stringify({ seat: 'watch', bot: 'bns', millis: 2, depth: 3, qdepth: 1, 'tt-bits': 10, seed: 5 }));
 let snakeSteps = 0;
-while (m.step()) snakeSteps++;
-assert(m.is_over() && snakeSteps >= 3, `snake watch ended after ${snakeSteps} steps`);
+for (;;) {
+  m.prepare();
+  if (!m.step()) break;
+  snakeSteps++;
+}
+assert(m.is_over() && snakeSteps >= 1, `snake watch ended after ${snakeSteps} turns`);
 const snakeView = JSON.parse(m.view_data());
-assert(snakeView.side === 20 && snakeView.snakes.length === 2, 'snake view has two snakes on a 20-grid');
+assert(snakeView.side === 11 && snakeView.snakes.length === 2, 'snake view has two snakes on an 11-grid');
+assert(snakeView.simultaneous === true && !('pending' in snakeView), 'snake view is simultaneous');
+assert(Array.isArray(snakeView.food) && Array.isArray(snakeView.hazards), 'snake view carries canonical maps');
 assert(['win0', 'win1', 'draw'].includes(snakeView.outcome), `snake outcome: ${snakeView.outcome}`);
 assert(
   snakeView.snakes.every((s) => typeof s.health === 'number' && s.health >= 0 && s.health <= 100),
   `snake view carries per-snake health: ${JSON.stringify(snakeView.snakes.map((s) => s.health))}`,
 );
-console.log('snake watch:', snakeSteps, 'moves —', m.result_text());
+console.log('snake watch:', snakeSteps, 'joint turns —', m.result_text());
 
-m = engine.create_match('snake', JSON.stringify({ seat: 0, sims: 60, depth: 12, seed: 6 }));
+m = engine.create_match('snake', JSON.stringify({ seat: 0, bot: 'random', seed: 6 }));
 while (m.step());
 const snakeLabels = JSON.parse(m.legal_labels());
 assert(
   m.to_act() === m.human_seat() && snakeLabels.includes('right'),
   'snake human steers with absolute headings',
 );
+m.prepare();
 const snakeMove = JSON.parse(m.apply_human('right'));
 assert(snakeMove.text.startsWith('You:'), `snake human move: ${snakeMove.text}`);
 console.log('snake human move:', snakeMove.text);
@@ -177,36 +185,5 @@ while (!gm.is_over() && goPlies < 4) {
 }
 assert(goPlies >= 4, 'go CPU fallback advanced');
 console.log('azero CPU fallback:', goPlies, 'plies, ok');
-
-// The snake AlphaZero CPU path: an externally driven seat where the bot
-// reconstructs its search root from the engine's view JSON each move
-// (set_state) and runs the whole search in-wasm against the reference forward
-// (play_cpu) — the exact path the snake card hits. Snake stays hidden on the
-// live cards, but the engine path is validated here.
-const snakeWeights = await readFile(new URL('../app/public/azero/azero-snake.azweb', import.meta.url));
-const sm = engine.create_match('snake', JSON.stringify({ bot: 'azero-gpu', seat: 0, seed: 9 }));
-assert(sm.step() === '', 'no engine-side bot moves in an externally driven snake match');
-const snakeBot = new engine.AzSnakeBot(8, 8, 9);
-snakeBot.load_weights(new Uint8Array(snakeWeights));
-const HEADINGS = ['up', 'right', 'down', 'left'];
-let snakePlies = 0;
-while (!sm.is_over() && snakePlies < 12) {
-  const turn = sm.to_act();
-  const want = JSON.parse(sm.legal_labels());
-  let input;
-  if (turn === sm.human_seat()) {
-    input = want.find((l) => HEADINGS.includes(l)) ?? want[0];
-  } else {
-    snakeBot.set_state(sm.view_data());
-    input = snakeBot.play_cpu();
-    assert(want.includes(input), `snake cpu move '${input}' is legal`);
-    const stats = JSON.parse(snakeBot.stats());
-    assert(Number.isFinite(stats.value) && stats.sims > 0, 'snake bot stats parse');
-  }
-  JSON.parse(sm.apply_human(input));
-  snakePlies++;
-}
-assert(snakePlies >= 1, 'snake azero CPU path advanced');
-console.log('snake azero CPU path:', snakePlies, 'plies, ok');
 
 console.log('SMOKE OK');

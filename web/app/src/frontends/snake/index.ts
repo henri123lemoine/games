@@ -1,37 +1,24 @@
-// Snake frontend: two snakes race on a 20×20 board, rendered to read like a
-// polished arcade game — rounded capsule bodies with a gradient sheen and eyes,
-// a board with a soft vignette and inner glow, glowing food orbs, and eat/turn/
-// death flourishes.
+// Canonical Battlesnake frontend: two to four snakes choose simultaneously on
+// the official 11×11 board. Multiple food and royale hazard cells are rendered
+// directly from the game state; no partially committed move exists.
 //
-// View JSON (contract with games/snake/src/duel_ui.rs):
-//   { side: 20,
+// View JSON (contract with games/snake/src/battlesnake/ui.rs):
+//   { side: 11, coordinateSystem: "battlesnake", simultaneous: true,
 //     snakes: [ { cells: [[x,y], ... head first], dir: "n|e|s|w",
-//                 alive: bool, score: n, health: 0..=100 }, { ... } ],
-//     food: [x,y] | null,
-//     step: n, cap: n,
+//                 alive: bool, score: n, health: 0..=100 }, ... ],
+//     food: [[x,y], ...], hazards: [[x,y], ...], turn: n,
 //     outcome: "ongoing" | "win0" | "win1" | "draw" }
-// `x` grows rightward, `y` downward. snakes[0] is Snake A (seat 0), snakes[1]
-// Snake B (seat 1). `health` drains by one each tick and refills to 100 on a
-// meal; a snake that hits 0 starves, so the bar doubles as a "find food now"
-// pressure gauge.
-//
-// The Duel game is turn-based under the hood (seat 0 commits, then seat 1
-// commits seeing it, then both advance), but play is REAL-TIME here: on the
-// human's turn this frontend auto-submits the snake's current heading on a
-// fixed clock, so the snake never stalls. Arrow keys / WASD / swipe queue a
-// turn (180° reversals are dropped, as in classic snake); the queued turn is
-// consumed on the next tick. Watch mode just animates the bots' moves.
+// The wire coordinates use Battlesnake's y-up convention and are converted to
+// canvas y-down once at the boundary. Arrow keys / WASD / swipe choose the
+// human move; the engine collects every opponent choice from that same state.
 //
 // Smoothness: a single requestAnimationFrame loop draws the board every frame,
-// fully decoupled from the bot's move computation (which runs in the worker /
-// on the GPU). Between two discrete game states the snakes GLIDE — each segment
-// eases from its previous cell to its next over the real wall-clock interval
-// between ticks, so even when the bot's think runs long the snakes keep sliding
-// toward their target rather than freezing then snapping.
+// fully decoupled from bot computation in the worker. Between two consecutive
+// authoritative states every snake glides linearly for one fixed cell period.
+// Input changes the look direction immediately but never fabricates positions.
 
 import type { MatchEventData, ViewState } from '../../engine/protocol';
 import { sleep, type FrontendCtx, type GameFrontend } from '../types';
-import { lastMove, resetTelemetry } from './telemetry';
 
 type Abs = 'n' | 'e' | 's' | 'w';
 
@@ -45,13 +32,13 @@ interface SnakeInfo {
 
 const MAX_HEALTH = 100;
 
-interface DuelView {
+interface BattlesnakeView {
   side: number;
-  snakes: [SnakeInfo, SnakeInfo];
-  food: [number, number] | null;
-  step: number;
-  cap: number;
-  outcome: 'ongoing' | 'win0' | 'win1' | 'draw';
+  snakes: SnakeInfo[];
+  food: [number, number][];
+  hazards: [number, number][];
+  turn: number;
+  outcome: string;
 }
 
 const ABS_OF_KEY: Record<string, Abs> = {
@@ -77,32 +64,15 @@ const DELTA: Record<Abs, [number, number]> = {
   w: [-1, 0],
 };
 
-/** The action label the engine offers for each absolute heading
- * (games/snake/src/duel_ui.rs::action_label). */
+/** The canonical action label the engine offers for each absolute heading. */
 const LABEL_OF: Record<Abs, string> = { n: 'up', e: 'right', s: 'down', w: 'left' };
 
-/** Delay before the human's move auto-commits when it's their turn. Near a
- * frame, NOT a "beat to steer": the held/latest direction is sampled at the
- * commit and persists across ticks, so the player never loses an input by
- * committing fast — and committing fast keeps the human's near-zero think out
- * of the cell's supply interval, so the cadence stays steady on the bot's
- * search alone (a long human-tick gap was injecting jitter and stalls). */
-const TICK_MS = 16;
-/** Each cell glides LINEARLY over the time until the NEXT move actually arrives
- * — the measured interval between consecutive head-moving states — so the glide
- * always spans the real supply gap and the snake never reaches a cell early and
- * freezes. The bot time-budgets its search to a near-constant, so consecutive
- * intervals cluster tightly → a single near-constant velocity, smooth from the
- * very first move (the first uses CELL_MS_DEFAULT, then it tracks the true
- * supply — no stepped warmup, no lock). Clamped to a sane band. */
-const CELL_MS_DEFAULT = 200;
-const CELL_MS_MIN = 110;
-const CELL_MS_MAX = 480;
-/** How long `animate` blocks the shell before returning — short, so the bot's
- * search for the NEXT move overlaps this glide (its think is hidden under the
- * motion) WITHOUT the display ever running ahead: the next glide starts only
- * when this one ends, keeping exactly ONE move in flight (responsive input). */
-const PACE_MS = 30;
+/** Defer submission one task so the shell has installed its input resolver. */
+const SUBMIT_DELAY_MS = 0;
+/** One authoritative grid step. Inputs are buffered throughout this interval
+ * and sampled at its next boundary; render time and AI time never change it. */
+const CELL_MS = 170;
+const TURN_BUFFER_CAP = 2;
 
 interface Palette {
   body: string; // mid band
@@ -115,7 +85,7 @@ interface Palette {
 
 /** "You" runs emerald→mint, the bot electric blue→cyan — distinct hues with a
  * full rim/highlight/glow so each snake reads as a glossy 3D tube. */
-const SEAT_PALETTES: [Palette, Palette] = [
+const SEAT_PALETTES: Palette[] = [
   {
     body: '#21c46a',
     bodyHi: '#5cf0a0',
@@ -132,25 +102,70 @@ const SEAT_PALETTES: [Palette, Palette] = [
     rim: '#061634',
     glow: 'rgba(70, 150, 255, 0.55)',
   },
+  {
+    body: '#ef9f27',
+    bodyHi: '#ffd37a',
+    bodyLo: '#9a5510',
+    head: '#ffe6a8',
+    rim: '#3b2105',
+    glow: 'rgba(255, 174, 55, 0.55)',
+  },
+  {
+    body: '#b16cea',
+    bodyHi: '#d8a7ff',
+    bodyLo: '#67329b',
+    head: '#ecd2ff',
+    rim: '#26103a',
+    glow: 'rgba(190, 105, 255, 0.55)',
+  },
 ];
 
-const SEAT_COLORS = ['Green', 'Blue'];
+const SEAT_COLORS = ['Green', 'Blue', 'Amber', 'Violet'];
 
-function asView(data: unknown): DuelView | null {
+function asView(data: unknown): BattlesnakeView | null {
   if (!data || typeof data !== 'object') return null;
-  const v = data as Partial<DuelView>;
-  if (typeof v.side !== 'number' || !Array.isArray(v.snakes) || v.snakes.length !== 2) return null;
+  const v = data as Partial<BattlesnakeView> & {
+    coordinateSystem?: string;
+    simultaneous?: boolean;
+  };
+  if (
+    typeof v.side !== 'number' ||
+    v.coordinateSystem !== 'battlesnake' ||
+    v.simultaneous !== true ||
+    !Array.isArray(v.snakes) ||
+    v.snakes.length < 2 ||
+    v.snakes.length > 4 ||
+    !Array.isArray(v.food) ||
+    !Array.isArray(v.hazards)
+  ) return null;
   for (const s of v.snakes) {
-    if (!s || !Array.isArray(s.cells) || s.cells.length === 0) return null;
+    if (!s || !Array.isArray(s.cells) || (s.alive && s.cells.length === 0)) return null;
   }
-  return v as DuelView;
+  const flip = ([x, y]: [number, number]): [number, number] => [x, v.side! - 1 - y];
+  return {
+    side: v.side,
+    snakes: v.snakes.map((snake) => ({
+      ...snake,
+      // Out-of-bounds deaths use a sentinel head cell in the engine. Never
+      // feed it into interpolation, where it would yank the tube off screen.
+      cells: snake.cells
+        .filter(([x, y]) => x >= 0 && x < v.side! && y >= 0 && y < v.side!)
+        .map(flip),
+    })),
+    food: v.food.map(flip),
+    hazards: v.hazards.map(flip),
+    turn: v.turn ?? 0,
+    outcome: v.outcome ?? 'ongoing',
+  };
 }
 
-function headMoved(a: DuelView | null, b: DuelView): boolean {
+function headMoved(a: BattlesnakeView | null, b: BattlesnakeView): boolean {
   if (!a) return false;
-  for (let i = 0; i < 2; i++) {
-    const [ax, ay] = a.snakes[i].cells[0];
-    const [bx, by] = b.snakes[i].cells[0];
+  for (let i = 0; i < b.snakes.length; i++) {
+    if (a.snakes[i]?.alive !== b.snakes[i].alive) return true;
+    const [ax, ay] = a.snakes[i].cells[0] ?? [];
+    const [bx, by] = b.snakes[i].cells[0] ?? [];
+    if (ax === undefined || ay === undefined || bx === undefined || by === undefined) continue;
     if (ax !== bx || ay !== by) return true;
   }
   return false;
@@ -168,6 +183,7 @@ const CSS = `
 }
 .snk-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: stretch;
   gap: 10px;
 }
@@ -268,6 +284,9 @@ const CSS = `
 .snk-overlay.snk-show {
   opacity: 1;
 }
+.snk-overlay.snk-start-gate {
+  transition: none;
+}
 .snk-overlay b {
   font-size: 1.6rem;
   letter-spacing: 0.03em;
@@ -311,9 +330,8 @@ function injectStyle(): void {
   document.head.append(style);
 }
 
-/** The perf overlay is opt-in: `?snakeDebug` in the URL, or a sticky
- * `snakeDebug` localStorage flag, so it never clutters normal play but the
- * team can flip it on to read backend/ms/sims/trips/FPS in-browser. */
+/** The functional test seam is opt-in: `?snakeDebug` in the URL, or a sticky
+ * `snakeDebug` localStorage flag, so it never clutters normal play. */
 function debugEnabled(): boolean {
   try {
     if (new URLSearchParams(window.location.search).has('snakeDebug')) return true;
@@ -328,8 +346,10 @@ function debugEnabled(): boolean {
  * glide starts (from the live cadence), so a cadence drift never changes the
  * speed of a cell already in motion. */
 interface Glide {
-  from: DuelView;
-  to: DuelView;
+  from: BattlesnakeView;
+  to: BattlesnakeView;
+  /** Authoritative resting state when `to` is a death-only visual pose. */
+  commitTo?: BattlesnakeView;
   start: number;
   dur: number;
 }
@@ -366,62 +386,48 @@ class SnakeFrontend implements GameFrontend {
   private overlaySubEl!: HTMLElement;
   private hintEl!: HTMLElement;
 
-  private view: DuelView | null = null;
+  private view: BattlesnakeView | null = null;
   private glide: Glide | null = null;
-  /** Wall-clock time the current (or last-scheduled) glide ends. The next
-   * head-move glide is scheduled to start here, so exactly one move is ever in
-   * flight and the display never runs ahead of the engine. */
-  private glideEndsAt = 0;
-  /** When the last head-moving glide was scheduled to start, so the next glide's
-   * duration can match the measured supply interval. */
-  private lastGlideStart = 0;
-  private side = 20;
+  private side = 11;
   private cssSize = 0;
   private rafId = 0;
   private resizeObs: ResizeObserver | null = null;
 
   private pendingLabels: string[] | null = null;
-  /** The human's most recently pressed direction, sampled at the next commit so
-   * the snake turns immediately. `null` means keep going straight. Not a queue —
-   * a queue would let an old keypress land late; the LATEST press wins. */
-  private desired: Abs | null = null;
+  /** Preserve quick corner sequences, but never let a stale script build up. */
+  private turnBuffer: Abs[] = [];
   private tickTimer = 0;
+  private awaitingStart = false;
+  private acknowledgedDir: Abs | null = null;
   private mySeat = -1;
+  private wrapped = false;
 
-  private foodPop = { at: 0, x: -1, y: -1 };
+  private foodPops = new Map<string, number>();
   private flashes: Flash[] = [];
   private deathOrbs: DeathOrb[] = [];
   private deadSeats = new Set<number>();
-  private prevScores = [0, 0];
+  private prevScores: number[] = [];
 
-  // FPS instrumentation, surfaced to the console for the perf check.
-  private frameTimes: number[] = [];
-  private fpsLogAt = 0;
-
-  // Opt-in perf overlay: backend / ms-per-move / sims / GPU round-trips / FPS.
+  // Opt-in functional test overlay.
   private debugEl!: HTMLElement;
   private showDebug = false;
 
   mount(host: HTMLElement, ctx: FrontendCtx): void {
     this.ctx = ctx;
     this.mySeat = ctx.humanSeat;
+    this.awaitingStart = this.mySeat >= 0;
+    this.wrapped = ['wrapped', 'wrapped-constrictor'].includes(String(ctx.opts.mode ?? 'standard'));
     injectStyle();
+    const chips = Array.from({ length: ctx.numSeats }, (_, seat) => `
+          <div class="snk-chip snk-chip-${seat}">
+            <span class="snk-dot" style="background:${SEAT_PALETTES[seat].body}"></span>
+            <span class="seat-slot" data-seat="${seat}"></span>
+            <span class="snk-hp"><span class="snk-hp-fill" style="background:${SEAT_PALETTES[seat].body}"></span></span>
+            <span class="snk-len">3</span>
+          </div>`).join('');
     host.innerHTML = `
       <div class="snk-root">
-        <div class="snk-bar">
-          <div class="snk-chip snk-chip-0">
-            <span class="snk-dot"></span>
-            <span class="seat-slot" data-seat="0"></span>
-            <span class="snk-hp"><span class="snk-hp-fill"></span></span>
-            <span class="snk-len">3</span>
-          </div>
-          <div class="snk-chip snk-chip-1">
-            <span class="snk-dot"></span>
-            <span class="seat-slot" data-seat="1"></span>
-            <span class="snk-hp"><span class="snk-hp-fill"></span></span>
-            <span class="snk-len">3</span>
-          </div>
-        </div>
+        <div class="snk-bar">${chips}</div>
         <div class="snk-stage">
           <canvas class="snk-canvas"></canvas>
           <div class="snk-debug"></div>
@@ -431,16 +437,11 @@ class SnakeFrontend implements GameFrontend {
       </div>`;
     this.canvas = host.querySelector('.snk-canvas')!;
     this.c2d = this.canvas.getContext('2d')!;
-    this.chips = [host.querySelector('.snk-chip-0')!, host.querySelector('.snk-chip-1')!];
-    this.lenEls = [
-      this.chips[0].querySelector('.snk-len')!,
-      this.chips[1].querySelector('.snk-len')!,
-    ];
-    this.hpEls = [this.chips[0].querySelector('.snk-hp')!, this.chips[1].querySelector('.snk-hp')!];
-    this.hpFillEls = [
-      this.chips[0].querySelector('.snk-hp-fill')!,
-      this.chips[1].querySelector('.snk-hp-fill')!,
-    ];
+    this.chips = Array.from(host.querySelectorAll<HTMLElement>('.snk-chip'));
+    this.lenEls = this.chips.map((chip) => chip.querySelector<HTMLElement>('.snk-len')!);
+    this.hpEls = this.chips.map((chip) => chip.querySelector<HTMLElement>('.snk-hp')!);
+    this.hpFillEls = this.chips.map((chip) => chip.querySelector<HTMLElement>('.snk-hp-fill')!);
+    this.prevScores = Array(ctx.numSeats).fill(0);
     this.overlayEl = host.querySelector('.snk-overlay')!;
     this.overlayTitleEl = this.overlayEl.querySelector('b')!;
     this.overlaySubEl = this.overlayEl.querySelector('small')!;
@@ -451,11 +452,12 @@ class SnakeFrontend implements GameFrontend {
 
     const stage = host.querySelector<HTMLElement>('.snk-stage')!;
     if (this.mySeat >= 0) {
-      window.addEventListener('keydown', this.onKey);
+      // Capture before page scrolling or another shell handler can eat arrows.
+      window.addEventListener('keydown', this.onKey, true);
       stage.addEventListener('touchstart', this.onTouchStart, { passive: true });
       stage.addEventListener('touchmove', this.onTouchMove, { passive: false });
       stage.addEventListener('touchend', this.onTouchEnd);
-      this.hintEl.textContent = 'Arrow keys / WASD / swipe to steer';
+      this.hintEl.textContent = 'Choose a direction to start · arrow keys / WASD / swipe';
     } else {
       this.hintEl.textContent = 'Watching the bots play';
     }
@@ -478,52 +480,7 @@ class SnakeFrontend implements GameFrontend {
     this.updateOverlay(view, state);
   }
 
-  // ----- real-time driver interface (snake play) -----
-  // The real-time driver (shell/snake-realtime.ts) owns a FIXED game clock and
-  // drives the board through these two fire-and-forget methods, so the player's
-  // snake advances on the clock and is NEVER gated by the bot's search.
-
-  /** The player's heading for THIS tick: their latest pressed direction (legal
-   * vs the current heading), else straight on. Sampled instantly — no await, no
-   * bot — so the driver can apply it the moment the clock ticks. Clears the
-   * consumed press so a held key keeps turning only once. */
-  pollHeading(): string {
-    const cur = this.currentHeading();
-    const pressed = this.desired;
-    this.desired = null;
-    const want = pressed && pressed !== OPPOSITE[cur] ? pressed : cur;
-    return LABEL_OF[want];
-  }
-
-  /** Glide to a freshly-applied state over `durMs` (the fixed clock period).
-   * Fire-and-forget: starts the glide and returns immediately, so the driver's
-   * clock is never blocked. A non-head-moving update (pending commit / food)
-   * just merges in. */
-  pushState(state: ViewState, durMs: number): void {
-    const next = asView(state.viewData);
-    if (!next) return;
-    const prev = this.latestKnown();
-    this.syncJuice(next);
-    this.updateBar(next, state);
-    this.updateOverlay(next, state);
-    this.side = next.side;
-    const scale = this.ctx.animationScale();
-    if (scale <= 0) {
-      this.view = next;
-      this.glide = null;
-      return;
-    }
-    if (!prev || !headMoved(prev, next)) {
-      if (!this.glide) this.view = next;
-      return;
-    }
-    const now = performance.now();
-    const from = this.glide ? this.glide.to : (this.view ?? prev);
-    this.glide = { from, to: next, start: now, dur: durMs * scale };
-    this.glideEndsAt = now + durMs * scale;
-  }
-
-  async animate(_event: MatchEventData, after: ViewState): Promise<void> {
+  async animate(event: MatchEventData, after: ViewState): Promise<void> {
     const next = asView(after.viewData);
     if (!next) return;
     const prev = this.latestKnown();
@@ -537,54 +494,55 @@ class SnakeFrontend implements GameFrontend {
     if (scale <= 0) {
       this.view = next;
       this.glide = null;
+      this.acknowledgedDir = this.turnBuffer.at(-1) ?? null;
+      await sleep(CELL_MS);
       return;
     }
 
-    // No head movement (a seat-0 pending commit, or a food spawn): no motion of
-    // its own. A live glide owns the display; otherwise snap this state in.
+    // A chance-only food update has no motion of its own.
     if (!prev || !headMoved(prev, next)) {
-      if (!this.glide) this.view = next;
+      this.acknowledgedDir = this.turnBuffer.at(-1) ?? null;
+      this.view = next;
+      this.glide = null;
       return;
     }
 
-    // Glide for the time until the NEXT move is expected: the measured interval
-    // between consecutive head-moving arrivals (this is metronomic because the
-    // bot time-budgets its search). Using the real supply interval means the
-    // glide spans the actual gap, so the snake never reaches a cell early and
-    // freezes — and it tracks the gap whether one search (human play) or two
-    // (watch) feed each cell, with no stepped warmup. The first move has no prior
-    // interval, so it uses a sensible default.
-    const arrived = performance.now();
-    const dur =
-      (this.lastGlideStart > 0
-        ? clamp(arrived - this.lastGlideStart, CELL_MS_MIN, CELL_MS_MAX)
-        : CELL_MS_DEFAULT) * scale;
-
-    // Let the in-flight glide finish before starting the next, so EXACTLY ONE
-    // move is ever in flight and the display never runs ahead of the engine.
-    // That single-move-in-flight rule is what keeps input responsive: there is
-    // no buffer of future moves for a keypress to queue behind, so the steering
-    // sampled at the next commit always lands on the next visible move. While we
-    // wait here the bot's search for the move AFTER this one is already running
-    // in the shell loop, overlapping the glide — its think is hidden under the
-    // motion, not stacked ahead of the player.
-    const waitForPrev = this.glideEndsAt - performance.now();
-    if (this.glide && waitForPrev > 0) await sleep(waitForPrev);
-
+    // One clock owns movement. Every snake interpolates between the same two
+    // authoritative states for exactly one cell period; input may queue during
+    // this glide, but it never invents another position for the renderer.
     const start = performance.now();
-    const from = this.glide ? this.glide.to : (this.view ?? prev);
-    this.glide = { from, to: next, start, dur };
-    this.glideEndsAt = start + dur;
-    this.lastGlideStart = arrived;
-    // Return after only a short pace (the glide finishes in the rAF loop) so the
-    // shell loops on to compute the next move while this one is still gliding.
-    await sleep(PACE_MS * scale);
+    this.acknowledgedDir = this.turnBuffer.at(-1) ?? null;
+    let visualTo = next;
+    let commitTo: BattlesnakeView | undefined;
+    const moves = transitionDirections(event.data);
+    for (let seat = 0; seat < next.snakes.length; seat++) {
+      if (!prev.snakes[seat]?.alive || next.snakes[seat].alive) continue;
+      const direction = moves[seat] ?? next.snakes[seat].dir;
+      const deathPose = predictSnakeMove(prev, seat, direction, this.wrapped);
+      if (visualTo === next) visualTo = cloneView(next);
+      visualTo.snakes[seat] = {
+        ...visualTo.snakes[seat],
+        cells: deathPose.snakes[seat].cells,
+        dir: direction,
+      };
+      commitTo = next;
+      if (seat === this.mySeat) this.acknowledgedDir = null;
+    }
+    this.glide = {
+      from: prev,
+      to: visualTo,
+      commitTo,
+      start,
+      dur: CELL_MS * scale,
+    };
+    await sleep(this.glide.dur);
+    this.advanceGlide(performance.now());
   }
 
   /** The most recent discrete state the frontend knows about — the active
    * glide's target, or the committed view. New moves compare against this to
    * decide if the head actually moved. */
-  private latestKnown(): DuelView | null {
+  private latestKnown(): BattlesnakeView | null {
     if (this.glide) return this.glide.to;
     return this.view;
   }
@@ -592,42 +550,42 @@ class SnakeFrontend implements GameFrontend {
   promptAction(labels: string[]): void {
     this.pendingLabels = labels;
     if (this.mySeat < 0) return;
-    // Real-time: submit on the clock even with no input (the snake glides on).
-    // The tick fires after one TICK_MS so the human always has a beat to steer.
-    if (this.tickTimer) return;
-    const scale = this.ctx.animationScale();
-    const wait = TICK_MS * Math.max(scale, 0.001);
+    // Turn zero waits for an intentional direction. A random opening can never
+    // move before the player has found their snake and chosen where to go.
+    if (this.awaitingStart) return;
+    this.armTick();
+  }
+
+  private armTick(): void {
+    if (this.tickTimer || !this.pendingLabels || this.awaitingStart) return;
     this.tickTimer = window.setTimeout(() => {
       this.tickTimer = 0;
       this.fireTick();
-    }, wait);
+    }, SUBMIT_DELAY_MS);
   }
 
   unmount(): void {
     cancelAnimationFrame(this.rafId);
     if (this.tickTimer) clearTimeout(this.tickTimer);
     this.tickTimer = 0;
-    window.removeEventListener('keydown', this.onKey);
+    window.removeEventListener('keydown', this.onKey, true);
     this.resizeObs?.disconnect();
     this.resizeObs = null;
-    resetTelemetry();
   }
 
-  /** Submit the human's heading for this commit: the LATEST pressed direction
-   * (sampled now, so a turn the player just pressed lands on THIS move), else
-   * the snake's current heading (straight on). A 180° reversal of the current
-   * heading is dropped as illegal and the snake continues straight. */
+  /** Submit the next buffered turn, or continue straight. */
   private fireTick(): void {
     if (!this.pendingLabels || this.mySeat < 0) return;
     const cur = this.currentHeading();
-    const pressed = this.desired;
-    this.desired = null;
-    const want = pressed && pressed !== OPPOSITE[cur] ? pressed : cur;
+    const pressed = this.turnBuffer.shift() ?? null;
+    const want = pressed ?? cur;
+    this.acknowledgedDir = this.turnBuffer.at(-1) ?? (pressed ? want : null);
     const label = LABEL_OF[want];
     const i = this.pendingLabels.indexOf(label);
     const labels = this.pendingLabels;
     this.pendingLabels = null;
-    this.ctx.submit(String(i >= 0 ? i : labels.indexOf(LABEL_OF[cur])));
+    const fallback = labels.indexOf(LABEL_OF[cur]);
+    this.ctx.submit(String(i >= 0 ? i : fallback >= 0 ? fallback : 0));
   }
 
   /** The seat's CURRENT heading — read from the latest committed state (the
@@ -642,7 +600,14 @@ class SnakeFrontend implements GameFrontend {
   private onKey = (e: KeyboardEvent): void => {
     if (this.mySeat < 0 || e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target as HTMLElement | null;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (
+      t &&
+      (t.tagName === 'INPUT' ||
+        t.tagName === 'TEXTAREA' ||
+        t.tagName === 'SELECT' ||
+        t.tagName === 'BUTTON' ||
+        t.isContentEditable)
+    ) return;
     const abs = ABS_OF_KEY[e.key];
     if (!abs) return;
     e.preventDefault();
@@ -672,19 +637,48 @@ class SnakeFrontend implements GameFrontend {
     );
   };
 
-  /** Record the human's intended heading. The LATEST press wins (overwrites any
-   * earlier un-committed one), so the snake turns the way the player most
-   * recently pressed on the very next commit — no stale queued turn to lag
-   * behind. A 180° reversal of the current heading is dropped (it would fold the
-   * snake onto itself); the rest is sampled at `fireTick`. */
+  /** Buffer up to two legal turns. Validation follows the last queued turn, so
+   * Right→Down pressed between ticks survives as two crisp consecutive moves. */
   private steer(abs: Abs): void {
     if (this.mySeat < 0) return;
-    if (abs === OPPOSITE[this.currentHeading()]) return;
-    this.desired = abs;
+    const previous = this.turnBuffer.at(-1) ?? this.currentHeading();
+    if (abs === previous) {
+      // Pressing the already-facing direction is still an intentional start.
+      if (this.awaitingStart) {
+        this.turnBuffer.push(abs);
+        this.acknowledgeInput(abs);
+        this.beginHumanPlay();
+      }
+      return;
+    }
+    // A stacked opening body has no neck yet, so all four first directions are
+    // legal. After that, reject a 180° turn against the committed/queued neck.
+    const snake = this.latestKnown()?.snakes[this.mySeat];
+    const stacked =
+      !!snake &&
+      snake.cells.length > 0 &&
+      snake.cells.every(([x, y]) => x === snake.cells[0][0] && y === snake.cells[0][1]);
+    if (!(stacked && this.turnBuffer.length === 0) && abs === OPPOSITE[previous]) return;
+    if (this.turnBuffer.length >= TURN_BUFFER_CAP) return;
+    this.turnBuffer.push(abs);
+    this.acknowledgeInput(abs);
+    if (this.awaitingStart) this.beginHumanPlay();
+    this.armTick();
   }
 
-  private updateBar(view: DuelView, _state: ViewState): void {
-    for (let seat = 0; seat < 2; seat++) {
+  private beginHumanPlay(): void {
+    this.awaitingStart = false;
+    this.hintEl.textContent = 'Arrow keys / WASD / swipe to steer';
+    this.updateStartOverlay();
+    this.armTick();
+  }
+
+  private acknowledgeInput(dir: Abs): void {
+    this.acknowledgedDir = dir;
+  }
+
+  private updateBar(view: BattlesnakeView, _state: ViewState): void {
+    for (let seat = 0; seat < view.snakes.length; seat++) {
       const s = view.snakes[seat];
       this.lenEls[seat].textContent = String(s.score);
       const hp = Math.max(0, Math.min(MAX_HEALTH, s.health ?? MAX_HEALTH));
@@ -698,32 +692,49 @@ class SnakeFrontend implements GameFrontend {
     }
   }
 
-  private updateOverlay(view: DuelView, state: ViewState): void {
+  private updateOverlay(view: BattlesnakeView, state: ViewState): void {
     if (!state.isOver) {
-      this.overlayEl.classList.remove('snk-show');
+      this.updateStartOverlay();
       return;
     }
     let title = 'Draw';
-    if (view.outcome === 'win0') title = `${SEAT_COLORS[0]} wins`;
-    else if (view.outcome === 'win1') title = `${SEAT_COLORS[1]} wins`;
+    const winner = /^win(\d+)$/.exec(view.outcome)?.[1];
+    if (winner !== undefined) title = `${SEAT_COLORS[Number(winner)]} wins`;
     if (this.mySeat >= 0 && view.outcome !== 'draw') {
       const won = view.outcome === `win${this.mySeat}`;
       title = won ? 'You win!' : 'You lose';
     }
     this.overlayTitleEl.textContent = title;
-    this.overlaySubEl.textContent = `${SEAT_COLORS[0]} ${view.snakes[0].score} · ${SEAT_COLORS[1]} ${view.snakes[1].score} · ${view.step} ticks`;
+    this.overlaySubEl.textContent = `${view.snakes.map((snake, seat) => `${SEAT_COLORS[seat]} ${snake.score}`).join(' · ')} · turn ${view.turn}`;
+    this.overlayEl.classList.add('snk-show');
+  }
+
+  private updateStartOverlay(): void {
+    if (!this.awaitingStart || this.mySeat < 0) {
+      this.overlayEl.classList.remove('snk-show');
+      if (this.overlayEl.classList.contains('snk-start-gate')) {
+        requestAnimationFrame(() => this.overlayEl.classList.remove('snk-start-gate'));
+      }
+      return;
+    }
+    this.overlayTitleEl.textContent = 'Choose your first move';
+    this.overlaySubEl.textContent = 'Arrow keys, WASD, or swipe to start';
+    this.overlayEl.classList.add('snk-start-gate');
     this.overlayEl.classList.add('snk-show');
   }
 
   /** Fire the small flourishes off a fresh state: food respawn pop, an eat
    * ring when a score ticks up, and a death burst when a snake dies. */
-  private syncJuice(view: DuelView): void {
+  private syncJuice(view: BattlesnakeView): void {
     const now = performance.now();
-    const f = view.food;
-    if (f && (f[0] !== this.foodPop.x || f[1] !== this.foodPop.y)) {
-      this.foodPop = { at: now, x: f[0], y: f[1] };
+    const currentFood = new Set(view.food.map(([x, y]) => `${x},${y}`));
+    for (const key of currentFood) {
+      if (!this.foodPops.has(key)) this.foodPops.set(key, now);
     }
-    for (let seat = 0; seat < 2; seat++) {
+    for (const key of this.foodPops.keys()) {
+      if (!currentFood.has(key)) this.foodPops.delete(key);
+    }
+    for (let seat = 0; seat < view.snakes.length; seat++) {
       const s = view.snakes[seat];
       if (s.score > this.prevScores[seat]) {
         const [hx, hy] = s.cells[0];
@@ -775,41 +786,12 @@ class SnakeFrontend implements GameFrontend {
 
   private loop = (now: number): void => {
     this.draw(now);
-    this.recordFps(now);
-    if (this.showDebug) this.paintDebug(now);
+    if (this.showDebug) this.paintDebug();
     this.rafId = requestAnimationFrame(this.loop);
   };
 
-  private recordFps(now: number): void {
-    this.frameTimes.push(now);
-    while (this.frameTimes.length && now - this.frameTimes[0] > 1000) this.frameTimes.shift();
-    if (now - this.fpsLogAt > 3000) {
-      this.fpsLogAt = now;
-      // eslint-disable-next-line no-console
-      console.info(`[snake] ${this.frameTimes.length} FPS`);
-    }
-  }
-
-  /** Paint the opt-in perf HUD from the live FPS window and the bot driver's
-   * latest per-move telemetry. `frameTimes` is a 1 s sliding window, so its
-   * length is the current FPS. */
-  private paintDebug(now: number): void {
-    const fps = this.frameTimes.length;
-    const m = lastMove();
-    const lines = [`fps   ${fps}`];
-    if (m) {
-      lines.push(
-        `bot   ${m.backend.toUpperCase()}`,
-        `move  ${m.ms.toFixed(0)} ms`,
-        `sims  ${m.sims}`,
-      );
-      if (m.backend === 'gpu') lines.push(`trips ${m.trips}`);
-      const ageMs = now - m.at;
-      if (ageMs > 2000) lines.push(`(idle ${(ageMs / 1000).toFixed(0)}s)`);
-    } else {
-      lines.push('bot   —');
-    }
-    const text = lines.join('\n');
+  private paintDebug(): void {
+    const text = `turn  ${this.view?.turn ?? 0}`;
     if (this.debugEl.textContent !== text) this.debugEl.textContent = text;
   }
 
@@ -824,25 +806,25 @@ class SnakeFrontend implements GameFrontend {
     this.advanceGlide(now);
 
     const view = this.glide ? this.glide.to : this.view;
-    if (view?.food) this.drawFood(view.food, cell, now);
-
-    const t = this.glideProgress(now);
     if (view) {
-      for (let seat = 0; seat < 2; seat++) this.drawSnake(seat, t, cell);
+      this.drawHazards(view.hazards, cell);
+      for (const food of view.food) this.drawFood(food, cell, now);
+    }
+
+    if (view) {
+      for (let seat = 0; seat < view.snakes.length; seat++) {
+        this.drawSnake(seat, this.glideProgress(now), cell);
+      }
     }
 
     this.drawFlashes(cell, now);
     this.drawDeathOrbs(cell, now);
   }
 
-  /** Retire a finished glide: commit its target as the resting view so the next
-   * `animate` glides out of the right place (and `render`, the human's-turn
-   * redraw, can advance the view again). The NEXT glide is scheduled by
-   * `animate` to begin at this one's end, so the cadence stays a metronome with
-   * exactly one move in flight — no queue to drain here. */
+  /** Commit the authoritative target at the fixed cell boundary. */
   private advanceGlide(now: number): void {
     if (this.glide && now - this.glide.start >= this.glide.dur) {
-      this.view = this.glide.to;
+      this.view = this.glide.commitTo ?? this.glide.to;
       this.glide = null;
     }
   }
@@ -869,11 +851,44 @@ class SnakeFrontend implements GameFrontend {
     ctx.restore();
   }
 
+  /** Royale hazards read as a closing electric storm rather than another game
+   * piece: a translucent violet field with a directional hatch. */
+  private drawHazards(hazards: [number, number][], cell: number): void {
+    if (hazards.length === 0) return;
+    const ctx = this.c2d;
+    ctx.save();
+    for (const [x, y] of hazards) {
+      const left = x * cell;
+      const top = y * cell;
+      const grad = ctx.createRadialGradient(
+        left + cell * 0.5,
+        top + cell * 0.5,
+        0,
+        left + cell * 0.5,
+        top + cell * 0.5,
+        cell * 0.8,
+      );
+      grad.addColorStop(0, 'rgba(173, 100, 255, 0.26)');
+      grad.addColorStop(1, 'rgba(82, 27, 126, 0.42)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(left, top, cell, cell);
+      ctx.strokeStyle = 'rgba(225, 184, 255, 0.22)';
+      ctx.lineWidth = Math.max(1, cell * 0.04);
+      ctx.beginPath();
+      ctx.moveTo(left, top + cell * 0.72);
+      ctx.lineTo(left + cell * 0.72, top);
+      ctx.moveTo(left + cell * 0.28, top + cell);
+      ctx.lineTo(left + cell, top + cell * 0.28);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   private drawFood(food: [number, number], cell: number, now: number): void {
     const ctx = this.c2d;
     const cx = (food[0] + 0.5) * cell;
     const cy = (food[1] + 0.5) * cell;
-    const age = (now - this.foodPop.at) / 240;
+    const age = (now - (this.foodPops.get(`${food[0]},${food[1]}`) ?? now)) / 240;
     const pop = age < 1 ? 0.55 + 0.45 * easeOut(age) : 1;
     const breathe = 1 + 0.07 * Math.sin(now / 360);
     const r = cell * 0.32 * pop * breathe;
@@ -921,9 +936,16 @@ class SnakeFrontend implements GameFrontend {
     const pal = SEAT_PALETTES[seat];
     const to = (this.glide ? this.glide.to : this.view!).snakes[seat];
     const from = this.glide ? this.glide.from.snakes[seat] : to;
+    if (!to.alive && !this.glide) return;
+    const motionDir = to.dir;
+    const visibleDir =
+      seat === this.mySeat
+        ? (this.acknowledgedDir ?? motionDir)
+        : to.dir;
     // LINEAR in t (no easing): constant velocity within a cell, so combined with
     // the fixed cellMs-per-cell cadence the snake glides at a uniform speed.
-    const cells = interpBody(from.cells, to.cells, t);
+    const interpolated = interpBody(from.cells, to.cells, t, this.side, this.wrapped);
+    const cells = this.wrapped ? unwrapBody(interpolated, this.side) : interpolated;
     if (cells.length === 0) return;
 
     // Opt-in (?snakeDebug) test seam: publish each snake's interpolated head
@@ -933,28 +955,55 @@ class SnakeFrontend implements GameFrontend {
     // seat 1 verifies the bot actually plays (doesn't suicide).
     if (this.showDebug) {
       const key = seat === 0 ? '__snakeHead0' : '__snakeHead1';
-      (window as unknown as Record<string, unknown>)[key] = {
+      const debugWindow = window as unknown as Record<string, unknown>;
+      debugWindow[key] = {
         t: performance.now(),
-        x: cells[0][0],
-        y: cells[0][1],
-        dir: to.dir,
+        x: this.wrapped ? wrapCoordinate(cells[0][0], this.side) : cells[0][0],
+        y: this.wrapped ? wrapCoordinate(cells[0][1], this.side) : cells[0][1],
+        maxLink: cells.slice(1).reduce((largest, cell, i) => {
+          const previous = cells[i];
+          return Math.max(largest, Math.hypot(cell[0] - previous[0], cell[1] - previous[1]));
+        }, 0),
+        dir: motionDir,
+        lookDir: visibleDir,
         alive: to.alive,
         len: to.cells.length,
       };
     }
 
-    const ctx = this.c2d;
     // Center-of-cell points; the tube width tapers slightly toward the tail.
     const pts = cells.map(([x, y]) => [(x + 0.5) * cell, (y + 0.5) * cell] as [number, number]);
     const baseW = cell * 0.74;
 
+    // A torus has no privileged seam. Draw the continuous unwrapped tube in
+    // every periodic copy that intersects the canvas, so a head exits one edge
+    // and enters the other without a board-wide bridge.
+    const shifts = this.wrapped
+      ? periodicPixelOffsets(cells, this.side, this.cssSize)
+      : [[0, 0] as [number, number]];
+    for (const [ox, oy] of shifts) {
+      const shifted = pts.map(([x, y]) => [x + ox, y + oy] as [number, number]);
+      this.drawSnakeCopy(shifted, visibleDir, cell, baseW, pal, to.alive);
+    }
+  }
+
+  private drawSnakeCopy(
+    pts: [number, number][],
+    dir: Abs,
+    cell: number,
+    baseW: number,
+    pal: Palette,
+    alive: boolean,
+  ): void {
+    const ctx = this.c2d;
+
     ctx.save();
-    ctx.globalAlpha = to.alive ? 1 : 0.4;
+    ctx.globalAlpha = alive ? 1 : 0.4;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
 
     // Outer glow under everything (skipped when dead — it's dissolving).
-    if (to.alive) {
+    if (alive) {
       ctx.save();
       ctx.shadowColor = pal.glow;
       ctx.shadowBlur = cell * 0.6;
@@ -989,7 +1038,7 @@ class SnakeFrontend implements GameFrontend {
 
     ctx.restore();
 
-    this.drawHead(pts[0], to.dir, cell, pal, to.alive);
+    this.drawHead(pts[0], dir, cell, pal, alive);
   }
 
   private drawHead(
@@ -1090,6 +1139,70 @@ class SnakeFrontend implements GameFrontend {
   }
 }
 
+function cloneView(view: BattlesnakeView): BattlesnakeView {
+  return {
+    ...view,
+    snakes: view.snakes.map((snake) => ({
+      ...snake,
+      cells: snake.cells.map(([x, y]) => [x, y]),
+    })),
+    food: view.food.map(([x, y]) => [x, y]),
+    hazards: view.hazards.map(([x, y]) => [x, y]),
+  };
+}
+
+/** Read the resolved joint action so a dead snake can finish its final real
+ * step locally instead of interpolating toward the engine's off-board sentinel. */
+function transitionDirections(data: unknown): (Abs | undefined)[] {
+  if (!data || typeof data !== 'object') return [];
+  const moves = (data as { moves?: unknown }).moves;
+  if (!Array.isArray(moves)) return [];
+  const directions: Record<string, Abs> = {
+    up: 'n',
+    right: 'e',
+    down: 's',
+    left: 'w',
+  };
+  return moves.map((move) => (typeof move === 'string' ? directions[move] : undefined));
+}
+
+/** Reconstruct one already-resolved displacement for the death animation.
+ * Collision, health, hazards, food, and alive state remain engine-owned. */
+function predictSnakeMove(
+  view: BattlesnakeView,
+  seat: number,
+  dir: Abs,
+  wrapped: boolean,
+): BattlesnakeView {
+  const out = cloneView(view);
+  const snake = out.snakes[seat];
+  const [dx, dy] = DELTA[dir];
+  let x = snake.cells[0][0] + dx;
+  let y = snake.cells[0][1] + dy;
+  if (wrapped) {
+    x = wrapCoordinate(x, view.side);
+    y = wrapCoordinate(y, view.side);
+  }
+  const cells: [number, number][] = [[x, y], ...snake.cells.slice(0, -1)];
+  const ate =
+    x >= 0 &&
+    x < view.side &&
+    y >= 0 &&
+    y < view.side &&
+    view.food.some(([fx, fy]) => fx === x && fy === y);
+  if (ate && cells.length > 0) {
+    const tail = cells[cells.length - 1];
+    cells.push([tail[0], tail[1]]);
+  }
+  out.snakes[seat] = {
+    ...snake,
+    cells,
+    dir,
+    score: cells.length,
+  };
+  return out;
+}
+
 /** Interpolate a body's segments from their previous to current positions.
  * On a non-eating tick the body lengths match and segment i tweens from
  * from[i] to to[i]; on an eating tick the body grew by one, so the new head
@@ -1098,14 +1211,67 @@ function interpBody(
   from: [number, number][],
   to: [number, number][],
   t: number,
+  side: number,
+  wrapped: boolean,
 ): [number, number][] {
   const out: [number, number][] = [];
   const grew = to.length > from.length;
   for (let i = 0; i < to.length; i++) {
     const a = grew ? from[Math.max(0, i - 1)] : from[Math.min(i, from.length - 1)];
     const b = to[i];
-    out.push([lerp(a[0], b[0], t), lerp(a[1], b[1], t)]);
+    const bx = wrapped ? nearestPeriodic(b[0], a[0], side) : b[0];
+    const by = wrapped ? nearestPeriodic(b[1], a[1], side) : b[1];
+    out.push([lerp(a[0], bx, t), lerp(a[1], by, t)]);
   }
+  return out;
+}
+
+/** Put every segment in the periodic image nearest its predecessor. This turns
+ * a body stored as `[0, …, 10]` across an 11-wide seam into one continuous
+ * local path such as `[0, …, -1]`, never a line spanning the board. */
+function unwrapBody(cells: [number, number][], side: number): [number, number][] {
+  if (cells.length === 0) return [];
+  const out: [number, number][] = [[cells[0][0], cells[0][1]]];
+  for (let i = 1; i < cells.length; i++) {
+    const previous = out[i - 1];
+    out.push([
+      nearestPeriodic(cells[i][0], previous[0], side),
+      nearestPeriodic(cells[i][1], previous[1], side),
+    ]);
+  }
+  return out;
+}
+
+function nearestPeriodic(value: number, anchor: number, side: number): number {
+  return value + Math.round((anchor - value) / side) * side;
+}
+
+function wrapCoordinate(value: number, side: number): number {
+  return ((value % side) + side) % side;
+}
+
+/** Pixel translations for every periodic copy of an unwrapped body that can
+ * touch the visible board. Usually this is one copy, or two at a seam. */
+function periodicPixelOffsets(
+  cells: [number, number][],
+  side: number,
+  size: number,
+): [number, number][] {
+  const xs = cells.map(([x]) => x);
+  const ys = cells.map(([, y]) => y);
+  const axis = (min: number, max: number): number[] => {
+    const out: number[] = [];
+    const lo = Math.floor((-max - 1) / side);
+    const hi = Math.ceil((side - min + 1) / side);
+    for (let k = lo; k <= hi; k++) {
+      if (max + k * side >= -1 && min + k * side <= side) out.push(k * size);
+    }
+    return out;
+  };
+  const xOffsets = axis(Math.min(...xs), Math.max(...xs));
+  const yOffsets = axis(Math.min(...ys), Math.max(...ys));
+  const out: [number, number][] = [];
+  for (const x of xOffsets) for (const y of yOffsets) out.push([x, y]);
   return out;
 }
 
@@ -1162,10 +1328,6 @@ function strokeTube(
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
-}
-
-function clamp(x: number, lo: number, hi: number): number {
-  return Math.min(hi, Math.max(lo, x));
 }
 
 function easeOut(t: number): number {
