@@ -10,15 +10,10 @@ past checkpoints."
 
 ```bash
 cd ml/stratego-trainer
-# one-time build (needs a JDK; verified against OpenJDK 21):
-mkdir -p calibration/vendor/stratego/bin
-javac -d calibration/vendor/stratego/bin -encoding UTF-8 \
-  $(find calibration/vendor/stratego/src -name '*.java' | grep -v /editor/)
-mkdir -p calibration/vendor/stratego/bin/com/cjmalloy/stratego/resource
-cp -r calibration/vendor/stratego/src/com/cjmalloy/stratego/resource/* \
-      calibration/vendor/stratego/bin/com/cjmalloy/stratego/resource/
-cp calibration/vendor/stratego/src/com/cjmalloy/stratego/resource/ai.cfg \
-   calibration/vendor/stratego/
+# one-time: fetch the pinned third-party sources (gitignored), then build
+# (needs a JDK; verified against OpenJDK 21):
+calibration/fetch_vendor.sh
+calibration/build_doi.sh
 
 # run
 .venv/bin/python calibration/eval_vs_doi.py --ckpt <path.safetensors> --games 20

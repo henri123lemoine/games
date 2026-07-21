@@ -32,12 +32,6 @@ web/app/.validation/
 # doomrl C build output (compiled .o objects + the doomrl_driver binary)
 doomrl/build/
 
-# Vendored calibration agents: keep the third-party sources, never their
-# local build outputs or macOS archive cruft.
-ml/stratego-trainer/calibration/vendor/strategoevaluator/agents/**/*.o
-ml/stratego-trainer/calibration/vendor/strategoevaluator/agents/**/*.o.dep
-ml/stratego-trainer/calibration/vendor/strategoevaluator/agents/**/__MACOSX/
-ml/stratego-trainer/calibration/vendor/strategoevaluator/agents/**/._*
-ml/stratego-trainer/calibration/vendor/strategoevaluator/agents/peternlewis/peternlewis
-ml/stratego-trainer/calibration/vendor/strategoevaluator/agents/ramen/ramen
-ml/stratego-trainer/calibration/vendor/strategoevaluator/agents/ramen/*.ramen
+# Third-party calibration dependencies: fetched at pinned revisions by
+# ml/stratego-trainer/calibration/fetch_vendor.sh, never tracked here.
+ml/stratego-trainer/calibration/vendor/

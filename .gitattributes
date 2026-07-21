@@ -1,0 +1,4 @@
+# Reference-implementation game logs (test oracles) and shipped model
+# binaries: vendored/generated, not authored code.
+games/stratego/tests/fixtures/** linguist-vendored
+web/app/public/artifacts/* linguist-generated
