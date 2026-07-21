@@ -109,10 +109,17 @@ class StrategoFrontend implements GameFrontend {
     this.ctx = ctx;
     this.flipped = ctx.humanSeat === 1;
     injectStyle();
+    // The seat holding You always sits at the bottom (the board flips), so
+    // each bar names its army's color — the visible answer to "which side am
+    // I playing after a seat swap?".
+    const topSeat = this.flipped ? 0 : 1;
+    const sideTag = (seat: number) =>
+      `<span class="sg-side-tag sg-side-${seat === 0 ? 'red' : 'blue'}">${seat === 0 ? 'Red' : 'Blue'}</span>`;
     host.innerHTML = `
       <div class="sg-root">
         <div class="sg-bar sg-bar-top">
-          <span class="seat-slot" data-seat="${this.flipped ? 0 : 1}"></span>
+          ${sideTag(topSeat)}
+          <span class="seat-slot" data-seat="${topSeat}"></span>
           <div class="sg-tray sg-tray-top" title="Captured pieces"></div>
         </div>
         <div class="sg-stage">
@@ -123,7 +130,8 @@ class StrategoFrontend implements GameFrontend {
           <div class="sg-supply" hidden></div>
         </div>
         <div class="sg-bar sg-bar-bottom">
-          <span class="seat-slot" data-seat="${this.flipped ? 1 : 0}"></span>
+          ${sideTag(1 - topSeat)}
+          <span class="seat-slot" data-seat="${1 - topSeat}"></span>
           <div class="sg-tray sg-tray-bottom" title="Captured pieces"></div>
         </div>
         <pre class="sg-fallback" hidden></pre>
@@ -940,6 +948,16 @@ const CSS_TEXT = `
   gap: 10px;
   min-height: 34px;
 }
+.sg-side-tag {
+  font: 700 11px var(--mono, ui-monospace, monospace);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #fff;
+}
+.sg-side-red { background: var(--sg-red); }
+.sg-side-blue { background: var(--sg-blue); }
 .sg-tray {
   display: flex;
   flex-wrap: wrap;

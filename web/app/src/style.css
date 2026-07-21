@@ -872,6 +872,8 @@ button {
 }
 
 .seat-info-btn {
+  display: grid;
+  place-items: center;
   width: 18px;
   height: 18px;
   border-radius: 50%;
@@ -891,12 +893,9 @@ button {
 }
 
 .bot-info-pop {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: -8px;
-  z-index: 30;
-  width: 300px;
-  max-width: 78vw;
+  position: fixed;
+  z-index: 60;
+  overflow-y: auto;
   padding: 12px 14px;
   background: var(--bg-raised);
   border: 1px solid var(--border);

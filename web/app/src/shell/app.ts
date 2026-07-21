@@ -1115,7 +1115,18 @@ export class App {
     };
     btn.onclick = () => {
       pop.hidden = !pop.hidden;
-      if (!pop.hidden) document.addEventListener("pointerdown", close);
+      if (!pop.hidden) {
+        // Fixed positioning, clamped to the viewport: immune to any
+        // overflow-clipping ancestor and to seats near a window edge.
+        const b = btn.getBoundingClientRect();
+        const width = Math.min(320, window.innerWidth - 24);
+        pop.style.width = `${width}px`;
+        pop.style.left = `${Math.max(12, Math.min(b.left, window.innerWidth - width - 12))}px`;
+        pop.style.top = `${b.bottom + 8}px`;
+        document.addEventListener("pointerdown", close);
+        const below = window.innerHeight - b.bottom - 20;
+        pop.style.maxHeight = `${Math.max(120, below)}px`;
+      }
     };
     wrap.append(btn, pop);
     return wrap;
