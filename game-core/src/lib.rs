@@ -8,18 +8,21 @@
 //!
 //! * [`Game`] — the rules: chance vs. decision nodes, legal actions, terminal
 //!   returns, information-set keys. Implementing it is the only requirement.
+//! * [`SimultaneousGame`] — the corresponding rules contract when active
+//!   players choose from the same state before any move is revealed.
 //! * [`Eval`] — a heuristic state value, which unlocks depth-limited search
 //!   (alpha-beta, MCTS-style cutoffs) for perfect-information games.
 //! * [`Determinizer`] — sampling of hidden information consistent with one
 //!   player's view, which unlocks determinized Monte-Carlo methods for
 //!   imperfect-information games.
-//! * [`GameUi`] — per-player rendering and action labels/parsing, which gives
-//!   every game the same terminal client and, later, the same web service.
+//! * [`GameUi`] and [`SimultaneousGameUi`] — per-player rendering and action
+//!   labels/parsing, which give every game the same terminal and web clients.
 
 mod arena;
 pub mod hash;
 pub mod json;
 pub mod rand;
+mod simultaneous;
 pub mod stats;
 mod ui;
 
@@ -27,7 +30,11 @@ pub use arena::{
     Agent, RandomAgent, Rng, play, play_n, playout_from, win_rate, win_share, winner,
     winrate_vs_field,
 };
-pub use ui::GameUi;
+pub use simultaneous::{
+    RandomSimultaneousAgent, SimultaneousAgent, SimultaneousGame, SimultaneousPolicyValueEncoder,
+    SimultaneousTurn, play_simultaneous, play_simultaneous_n,
+};
+pub use ui::{GameUi, SimultaneousGameUi};
 
 /// Whose turn it is at a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

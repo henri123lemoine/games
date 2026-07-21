@@ -4,7 +4,7 @@
 //! (and, later, the same web service) for free — games never write their own
 //! play loop.
 
-use crate::{Game, Turn};
+use crate::{Game, SimultaneousGame, Turn};
 
 pub trait GameUi: Game {
     /// Stable identifier used by registries/CLIs (e.g. `"chess"`).
@@ -87,5 +87,63 @@ pub trait GameUi: Game {
     /// Whether it is `player`'s turn to act.
     fn is_to_act(&self, state: &Self::State, player: usize) -> bool {
         matches!(self.turn(state), Turn::Player(p) if p == player)
+    }
+}
+
+/// The user-facing surface for a game whose active players choose together.
+///
+/// This is deliberately separate from [`GameUi`]: adapting a simultaneous
+/// game to the ordinary turn-based UI would recreate the information leak the
+/// [`SimultaneousGame`] contract exists to prevent.
+pub trait SimultaneousGameUi: SimultaneousGame {
+    fn id(&self) -> &'static str;
+
+    fn render(&self, state: &Self::State, player: usize) -> String;
+
+    fn action_label(&self, state: &Self::State, player: usize, action: Self::Action) -> String;
+
+    fn parse_action(
+        &self,
+        _state: &Self::State,
+        _player: usize,
+        _input: &str,
+    ) -> Option<Self::Action> {
+        None
+    }
+
+    fn describe_joint_transition(
+        &self,
+        _before: &Self::State,
+        _actions: &[Self::Action],
+        _after: &Self::State,
+        _viewer: usize,
+    ) -> Option<String> {
+        None
+    }
+
+    fn view_data(&self, _state: &Self::State, _viewer: usize) -> Option<String> {
+        None
+    }
+
+    fn transition_data(
+        &self,
+        _before: &Self::State,
+        _actions: &[Self::Action],
+        _after: &Self::State,
+        _viewer: usize,
+    ) -> Option<String> {
+        None
+    }
+
+    fn result_text(&self, state: &Self::State, viewer: usize) -> String {
+        debug_assert!(self.is_terminal(state));
+        let result = self.returns(state, viewer);
+        if result > 0.0 {
+            "You win!".into()
+        } else if result < 0.0 {
+            "You lose.".into()
+        } else {
+            "Draw.".into()
+        }
     }
 }
