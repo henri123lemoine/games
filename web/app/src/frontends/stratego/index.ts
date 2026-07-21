@@ -91,7 +91,17 @@ class StrategoFrontend implements GameFrontend {
     ghost: HTMLElement;
     from: number;
     moved: boolean;
+    /** Set when dragging inside the arrangement editor: the source slot. */
+    editorFrom: number | null;
   } | null = null;
+  /** Arrangement editor: rank glyph per deploy slot (0..39), local until
+   * "Start battle" turns it into the serialized placement queue. Active only
+   * while it is the human's own deployment and nothing has been queued. */
+  private editor: (string | null)[] | null = null;
+  /** Tray-selected glyph, placed on the next clicked open slot. */
+  private editorSel: string | null = null;
+  /** Row-major glyph queue draining through the serialized deploy protocol. */
+  private deployQueue: string[] | null = null;
 
   // ---------- mount ----------
 
@@ -174,6 +184,23 @@ class StrategoFrontend implements GameFrontend {
     return this.piecesEl.querySelector(`[data-cell="${cell}"]`);
   }
 
+  /** Deploy-slot index of an absolute cell in the human's own home area, or
+   * -1. Slot j sits at screen (x = j%10, y = 9 - j/10) for either seat. */
+  private slotOfCell(cell: number): number {
+    const slot = this.ctx.humanSeat === 1 ? 99 - cell : cell;
+    return slot >= 0 && slot < 40 ? slot : -1;
+  }
+
+  private cellOfSlot(slot: number): number {
+    return this.ctx.humanSeat === 1 ? 99 - slot : slot;
+  }
+
+  /** The flag must sit in slot columns 5-9 (the right half of the owner's own
+   * view, both seats). */
+  private flagAllowed(slot: number): boolean {
+    return slot % 10 >= 5;
+  }
+
   // ---------- render ----------
 
   render(state: ViewState): void {
@@ -187,7 +214,7 @@ class StrategoFrontend implements GameFrontend {
     this.view = view;
     this.syncPieces(view);
     this.syncTrays(view);
-    this.syncSupply(view);
+    this.syncDeployPanel(view);
     this.syncHighlights(view);
   }
 
@@ -197,6 +224,18 @@ class StrategoFrontend implements GameFrontend {
       if (cell === null || cell === '~') return;
       frag.append(this.makePiece(i, cell));
     });
+    if (this.editor) {
+      const me = this.ctx.humanSeat as 0 | 1;
+      this.editor.forEach((glyph, slot) => {
+        if (glyph === null) return;
+        const el = document.createElement('div');
+        el.className = `sg-piece sg-edit sg-${me === 0 ? 'red' : 'blue'}`;
+        el.title = RANK_NAMES[glyph];
+        el.innerHTML = badgeSvg(glyph, me);
+        this.place(el, this.cellOfSlot(slot));
+        frag.append(el);
+      });
+    }
     this.piecesEl.replaceChildren(frag);
   }
 
@@ -204,17 +243,22 @@ class StrategoFrontend implements GameFrontend {
     const el = document.createElement('div');
     el.className = `sg-piece sg-${p.o === 0 ? 'red' : 'blue'}`;
     el.dataset.cell = String(cell);
+    // A spectator sees every rank, so the common-knowledge markers carry the
+    // real information: the ring for ranks both players know, the dot for
+    // hidden pieces the owner has shown can move.
+    const spectator = this.ctx.humanSeat !== 0 && this.ctx.humanSeat !== 1;
     if (p.r === null) {
       el.classList.add('sg-hidden');
       if (p.m) el.classList.add('sg-has-moved');
       el.title = p.m ? 'Hidden enemy (has moved)' : 'Hidden enemy';
+    } else if (p.v && (spectator || p.o === this.ctx.humanSeat)) {
+      el.classList.add('sg-known');
+      el.title = `${RANK_NAMES[p.r]} (${spectator ? 'revealed' : 'revealed to the enemy'})`;
+    } else if (spectator && p.m) {
+      el.classList.add('sg-has-moved');
+      el.title = `${RANK_NAMES[p.r]} (has moved, rank still hidden)`;
     } else {
-      if (p.v && this.view && p.o === this.ctx.humanSeat) {
-        el.classList.add('sg-known');
-        el.title = `${RANK_NAMES[p.r]} (revealed to the enemy)`;
-      } else {
-        el.title = RANK_NAMES[p.r] ?? p.r;
-      }
+      el.title = RANK_NAMES[p.r] ?? p.r;
     }
     el.innerHTML = badgeSvg(p.r, p.o);
     this.place(el, cell);
@@ -252,31 +296,160 @@ class StrategoFrontend implements GameFrontend {
     );
   }
 
-  private syncSupply(view: View): void {
-    const deploying =
+  /** Remaining supply the editor may still place: the engine's remaining
+   * counts minus the editor's own placements. */
+  private editorCounts(): Map<string, number> {
+    const counts = new Map<string, number>();
+    const supply = this.view?.supply ?? [];
+    for (const rank of TRAY_ORDER) counts.set(rank, supply[TYPE_INDEX[rank]] ?? 0);
+    for (const glyph of this.editor ?? []) {
+      if (glyph !== null) counts.set(glyph, (counts.get(glyph) ?? 0) - 1);
+    }
+    return counts;
+  }
+
+  /** First deploy slot the engine has not consumed yet (all before it are on
+   * the board already). */
+  private firstOpenSlot(view: View): number {
+    return view.deployed?.[this.ctx.humanSeat] ?? 0;
+  }
+
+  private syncDeployPanel(view: View): void {
+    const arranging =
       view.phase === 'deploy' &&
       view.supply !== null &&
-      view.toAct === this.ctx.humanSeat;
-    this.trayEl.hidden = !deploying;
-    this.root.classList.toggle('sg-deploying', deploying);
-    if (!deploying || !view.supply) return;
+      view.toAct === this.ctx.humanSeat &&
+      this.deployQueue === null;
+    if (!arranging) {
+      this.editor = null;
+      this.editorSel = null;
+      this.trayEl.hidden = true;
+      this.root.classList.remove('sg-deploying');
+      return;
+    }
+    if (!this.editor) {
+      this.editor = new Array<string | null>(40).fill(null);
+      this.shuffleEditor();
+    }
+    this.trayEl.hidden = false;
+    this.root.classList.add('sg-deploying');
 
-    this.trayEl.replaceChildren(
+    const me = this.ctx.humanSeat === 1 ? 1 : 0;
+    const counts = this.editorCounts();
+    const unplaced = [...counts.values()].reduce((a, b) => a + b, 0);
+    const grid = document.createElement('div');
+    grid.className = 'sg-supply-grid';
+    grid.append(
       ...TRAY_ORDER.map((rank) => {
-        const count = view.supply![TYPE_INDEX[rank]];
+        const count = counts.get(rank) ?? 0;
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = `sg-supply-btn sg-${this.ctx.humanSeat === 1 ? 'blue' : 'red'}`;
-        btn.disabled = count === 0 || !this.placements.has(rank);
-        btn.title = `${RANK_NAMES[rank]} — ${count} left`;
-        btn.innerHTML = `${badgeSvg(rank, this.ctx.humanSeat === 1 ? 1 : 0)}<span class="sg-supply-count">${count}</span>`;
+        btn.className = `sg-supply-btn sg-${me === 0 ? 'red' : 'blue'}`;
+        if (this.editorSel === rank) btn.classList.add('sg-supply-sel');
+        btn.disabled = count === 0 && this.editorSel !== rank;
+        btn.title = `${RANK_NAMES[rank]} — ${count} to place`;
+        btn.innerHTML = `${badgeSvg(rank, me)}<span class="sg-supply-count">${count}</span>`;
         btn.onclick = () => {
-          const label = this.placements.get(rank);
-          if (label) this.submitOnce(label);
+          this.editorSel = this.editorSel === rank ? null : count > 0 ? rank : null;
+          this.refreshEditor();
         };
         return btn;
       }),
     );
+
+    const actions = document.createElement('div');
+    actions.className = 'sg-supply-actions';
+    const button = (label: string, cls: string, onclick: () => void, disabled = false) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = cls;
+      b.textContent = label;
+      b.onclick = onclick;
+      b.disabled = disabled;
+      return b;
+    };
+    actions.append(
+      button('Shuffle', 'sg-action', () => {
+        this.shuffleEditor();
+        this.refreshEditor();
+      }),
+      button('Clear', 'sg-action', () => {
+        this.editor = new Array<string | null>(40).fill(null);
+        this.editorSel = null;
+        this.refreshEditor();
+      }),
+      button(
+        'Start battle',
+        'sg-action sg-action-go',
+        () => this.confirmDeployment(),
+        unplaced > 0,
+      ),
+    );
+    const hint = document.createElement('div');
+    hint.className = 'sg-supply-hint';
+    hint.textContent =
+      unplaced > 0
+        ? `Arrange your army — ${unplaced} to place. The flag stays on the right half.`
+        : 'Drag to rearrange, then start the battle.';
+    this.trayEl.replaceChildren(grid, actions, hint);
+  }
+
+  /** Fills every open slot with a uniformly-shuffled draw from the remaining
+   * supply, flag pinned to a legal right-half slot. */
+  private shuffleEditor(): void {
+    if (!this.editor || !this.view) return;
+    this.editorSel = null;
+    const first = this.firstOpenSlot(this.view);
+    for (let s = first; s < 40; s++) this.editor[s] = null;
+    const pool: string[] = [];
+    for (const [rank, n] of this.editorCounts()) {
+      for (let i = 0; i < n; i++) pool.push(rank);
+    }
+    const open = () =>
+      this.editor!.flatMap((g, s) => (g === null && s >= first ? [s] : []));
+    const flag = pool.indexOf('F');
+    if (flag >= 0) {
+      const zones = open().filter((s) => this.flagAllowed(s));
+      const slot = zones[Math.floor(Math.random() * zones.length)];
+      this.editor[slot] = 'F';
+      pool.splice(flag, 1);
+    }
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    for (const slot of open()) this.editor[slot] = pool.pop() ?? null;
+  }
+
+  /** Turns the finished arrangement into the serialized row-major placement
+   * queue the engine consumes; `promptAction` drains it. */
+  private confirmDeployment(): void {
+    if (!this.editor || !this.view) return;
+    const first = this.firstOpenSlot(this.view);
+    this.deployQueue = this.editor
+      .slice(first)
+      .map((g) => g ?? '')
+      .filter((g) => g !== '');
+    this.editor = null;
+    this.editorSel = null;
+    this.trayEl.hidden = true;
+    this.root.classList.remove('sg-deploying');
+    this.drainDeployQueue();
+  }
+
+  private drainDeployQueue(): void {
+    if (!this.deployQueue || !this.myTurn) return;
+    const next = this.deployQueue.shift();
+    if (this.deployQueue.length === 0) this.deployQueue = null;
+    const label = next ? this.placements.get(next) : undefined;
+    if (label) this.submitOnce(label);
+  }
+
+  private refreshEditor(): void {
+    if (!this.view) return;
+    this.syncPieces(this.view);
+    this.syncDeployPanel(this.view);
+    this.syncHighlights(this.view);
   }
 
   private syncHighlights(view: View): void {
@@ -284,16 +457,27 @@ class StrategoFrontend implements GameFrontend {
       sq.classList.remove(
         'sg-sq-last-from', 'sg-sq-last-to', 'sg-sq-next', 'sg-sq-selected',
         'sg-sq-target', 'sg-sq-capture', 'sg-sq-movable', 'sg-sq-drop',
+        'sg-sq-home', 'sg-sq-flagzone',
       );
     }
     if (view.lastMove) {
       this.squareEl(view.lastMove.from)?.classList.add('sg-sq-last-from');
       this.squareEl(view.lastMove.to)?.classList.add('sg-sq-last-to');
     }
+    if (this.editor && this.view) {
+      const first = this.firstOpenSlot(this.view);
+      for (let slot = first; slot < 40; slot++) {
+        const sq = this.squareEl(this.cellOfSlot(slot));
+        sq?.classList.add('sg-sq-home');
+        if (this.editorSel === 'F' && this.flagAllowed(slot)) {
+          sq?.classList.add('sg-sq-flagzone');
+        }
+      }
+    }
     if (
       view.phase === 'deploy' &&
       view.nextSquare !== null &&
-      view.toAct === this.ctx.humanSeat
+      this.deployQueue !== null
     ) {
       this.squareEl(view.nextSquare)?.classList.add('sg-sq-next');
     }
@@ -381,8 +565,14 @@ class StrategoFrontend implements GameFrontend {
     }
     this.myTurn = true;
     this.selected = null;
+    if (this.deployQueue) {
+      // The shell arms its submit listener only after promptAction returns —
+      // a synchronous submit here would be dropped.
+      setTimeout(() => this.drainDeployQueue(), 0);
+      return;
+    }
     if (this.view) {
-      this.syncSupply(this.view);
+      this.syncDeployPanel(this.view);
       this.syncHighlights(this.view);
     }
   }
@@ -408,7 +598,12 @@ class StrategoFrontend implements GameFrontend {
   }
 
   private onPointerDown(e: PointerEvent): void {
-    if (!this.myTurn || this.view?.phase !== 'play' || e.button !== 0) return;
+    if (e.button !== 0) return;
+    if (this.editor) {
+      this.onEditorPointerDown(e);
+      return;
+    }
+    if (!this.myTurn || this.view?.phase !== 'play') return;
     const cell = this.cellFromEvent(e);
     if (cell === null) return;
 
@@ -433,7 +628,45 @@ class StrategoFrontend implements GameFrontend {
     ghost.classList.add('sg-ghost');
     this.piecesEl.append(ghost);
     piece.classList.add('sg-drag-src');
-    this.drag = { piece, ghost, from: cell, moved: false };
+    this.drag = { piece, ghost, from: cell, moved: false, editorFrom: null };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    this.moveGhost(e);
+  }
+
+  /** Editor interactions: click a tray type then click a home square to place
+   * it; click a placed piece to pick it back up; drag between home squares to
+   * swap. The only rule beyond supply is the flag's right-half zone. */
+  private onEditorPointerDown(e: PointerEvent): void {
+    if (!this.editor || !this.view) return;
+    const cell = this.cellFromEvent(e);
+    const slot = cell === null ? -1 : this.slotOfCell(cell);
+    const open = slot >= this.firstOpenSlot(this.view) && slot < 40;
+    if (!open) return;
+
+    if (this.editorSel !== null) {
+      if (this.editorSel === 'F' && !this.flagAllowed(slot)) return;
+      const evicted = this.editor[slot];
+      if (evicted === 'F' && this.editorSel !== 'F') {
+        // Never strand the flag in hand implicitly; put it down explicitly.
+        return;
+      }
+      this.editor[slot] = this.editorSel;
+      const counts = this.editorCounts();
+      this.editorSel = evicted ?? ((counts.get(this.editorSel) ?? 0) > 0 ? this.editorSel : null);
+      this.refreshEditor();
+      return;
+    }
+
+    const glyph = this.editor[slot];
+    if (glyph === null) return;
+    const piece = this.piecesEl
+      .querySelector(`.sg-edit[data-cell="${cell}"]`) as HTMLElement | null;
+    if (!piece) return;
+    const ghost = piece.cloneNode(true) as HTMLElement;
+    ghost.classList.add('sg-ghost');
+    this.piecesEl.append(ghost);
+    piece.classList.add('sg-drag-src');
+    this.drag = { piece, ghost, from: cell!, moved: false, editorFrom: slot };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     this.moveGhost(e);
   }
@@ -453,16 +686,53 @@ class StrategoFrontend implements GameFrontend {
     this.moveGhost(e);
     const over = this.cellFromEvent(e);
     for (const sq of this.squaresEl.children) sq.classList.remove('sg-sq-drop');
-    if (over !== null && this.moves.get(this.drag.from)?.has(over)) {
+    if (over === null) return;
+    if (this.drag.editorFrom !== null) {
+      if (this.editorDropOk(this.drag.editorFrom, over)) {
+        this.squareEl(over)?.classList.add('sg-sq-drop');
+      }
+    } else if (this.moves.get(this.drag.from)?.has(over)) {
       this.squareEl(over)?.classList.add('sg-sq-drop');
     }
   }
 
+  /** Whether dragging the editor piece at `fromSlot` may drop on `cell`:
+   * both slots open, and no flag ends up outside its zone. */
+  private editorDropOk(fromSlot: number, cell: number): boolean {
+    if (!this.editor || !this.view) return false;
+    const slot = this.slotOfCell(cell);
+    if (slot < this.firstOpenSlot(this.view) || slot >= 40 || slot === fromSlot) {
+      return false;
+    }
+    const dragged = this.editor[fromSlot];
+    const other = this.editor[slot];
+    if (dragged === 'F' && !this.flagAllowed(slot)) return false;
+    if (other === 'F' && !this.flagAllowed(fromSlot)) return false;
+    return true;
+  }
+
   private onPointerUp(e: PointerEvent): void {
     if (!this.drag) return;
-    const { from, moved } = this.drag;
+    const { from, moved, editorFrom } = this.drag;
     const over = this.cellFromEvent(e);
     this.cancelDrag();
+    if (editorFrom !== null) {
+      if (!this.editor) return;
+      if (!moved || over === from) {
+        // A plain click picks the piece back up into the tray selection.
+        this.editorSel = this.editor[editorFrom];
+        this.editor[editorFrom] = null;
+        this.refreshEditor();
+        return;
+      }
+      if (over !== null && this.editorDropOk(editorFrom, over)) {
+        const slot = this.slotOfCell(over);
+        [this.editor[editorFrom], this.editor[slot]] =
+          [this.editor[slot], this.editor[editorFrom]];
+        this.refreshEditor();
+      }
+      return;
+    }
     if (!moved || over === null || over === from) return; // click-select flow
     const label = this.moves.get(from)?.get(over);
     if (label) this.submitOnce(label);
@@ -820,19 +1090,50 @@ const CSS_TEXT = `
 .sg-back-border { fill: none; stroke: var(--sg-gold); stroke-width: 1.6; opacity: 0.65; }
 .sg-crest { fill: var(--sg-gold); opacity: 0.7; }
 
-/* --- supply tray (deployment) --- */
+/* --- editor squares --- */
+.sg-sq-home { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 45%, transparent); }
+.sg-sq-flagzone { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.sg-piece.sg-edit { cursor: grab; pointer-events: none; }
+
+/* --- deployment panel --- */
 .sg-supply[hidden] { display: none; }
 .sg-supply {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   padding: 10px;
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  width: 132px;
+  width: 148px;
   flex-shrink: 0;
 }
+.sg-supply-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+.sg-supply-actions { display: flex; flex-direction: column; gap: 6px; }
+.sg-action {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-inset);
+  color: var(--text);
+  font: 600 13px inherit;
+  cursor: pointer;
+}
+.sg-action:hover:not(:disabled) { border-color: var(--accent); }
+.sg-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sg-action:disabled { opacity: 0.45; cursor: default; }
+.sg-action-go {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 700;
+}
+.sg-supply-hint { font-size: 11.5px; line-height: 1.35; color: var(--text-dim); }
+.sg-supply-sel { border-color: var(--accent) !important; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
 .sg-supply-btn {
   position: relative;
   aspect-ratio: 1;

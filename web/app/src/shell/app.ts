@@ -52,7 +52,7 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   go: { size: "19", bot: "azero-gpu", sims: "1500" },
   snake: { bot: "azero-gpu", sims: "128" },
   // The site ships only the trained net (ataraxios) — never the heuristic.
-  stratego: { bot: "ataraxios" },
+  stratego: { bot: "ataraxios", setup: "manual" },
 };
 
 /** Games registered in the lab but not surfaced on the site. */

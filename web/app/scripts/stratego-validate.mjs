@@ -96,13 +96,21 @@ async function main() {
 
     await page.goto(base + '/#/g/stratego', { waitUntil: 'load', timeout: 30000 });
 
-    // The human is seat 0 (red, moves first) on a random pre-deployed board.
-    // The board frontend shows all 80 pieces; movable squares light up once
-    // the engine and artifact are up.
+    // Default setup=manual: the arrangement editor opens prefilled with a
+    // legal random setup. Confirm it, then ataraxios deploys its own 40
+    // through its setup net, and the move phase begins.
     await page.waitForSelector('.sg-board', { timeout: 60000 });
     await page.waitForFunction(
+      () => document.querySelectorAll('.sg-piece.sg-edit').length === 40,
+      null,
+      { timeout: 120000 },
+    );
+    await page.screenshot({ path: join(OUT_DIR, 'stratego-setup.png') });
+    await page.click('.sg-action-go');
+    await page.waitForFunction(
       () => document.querySelectorAll('.sg-piece').length === 80,
-      { timeout: 60000 },
+      null,
+      { timeout: 120000 },
     );
     await page.waitForSelector('.sg-sq-movable', { timeout: 120000 });
 
