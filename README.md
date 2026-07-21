@@ -1,10 +1,10 @@
 # Games lab
 
-Game-playing algorithms (CFR variants, alpha-beta search, MCTS, determinized Monte-Carlo rollouts, PUCT/AlphaZero) written **once** against a shared `Game` trait, applied to many games — the OpenSpiel idea, scoped to a personal lab. Games contribute only their rules and knowledge (an evaluator, a determinizer, a UI surface); they never contain algorithm code. See [ARCHITECTURE.md](ARCHITECTURE.md); the in-browser arcade (everything compiled to wasm, per-game frontends) is designed in [web/DESIGN.md](web/DESIGN.md).
+Game-playing algorithms (CFR variants, alpha-beta search, MCTS, determinized Monte-Carlo rollouts, PUCT/AlphaZero, simultaneous best-node search) written against shared game contracts and applied across many games — the OpenSpiel idea, scoped to a personal lab. Games contribute their rules and game knowledge; algorithms never fake a simultaneous decision by revealing one player's current move to another. See [ARCHITECTURE.md](ARCHITECTURE.md); the in-browser arcade is designed in [web/DESIGN.md](web/DESIGN.md).
 
 ```
-game-core/           foundations: Game trait, Agent, capability traits
-                     (Eval, Determinizer, SearchSpec, GameUi), match arena
+game-core/           alternating and simultaneous game/agent contracts,
+                     capability traits, match arenas
 solvers/             the algorithms, generic over any game with the right
                      capabilities: cfr, mccfr, os-mccfr, exploitability,
                      alpha-beta, MCTS, determinized rollout, and the
@@ -12,7 +12,7 @@ solvers/             the algorithms, generic over any game with the right
 games/               one crate per game — perfect-information board games
                      (chess, othello, connect4, pente, go), N-player imperfect
                      info (liars-dice, poker, twentyone), and real-time
-                     snake. Each ships only rules + knowledge;
+                     canonical Battlesnake. Each ships rules + knowledge;
                      its bot is a generic solver (alpha-beta / MCTS / rollout /
                      azero) or, where the structure demands it, a bespoke
                      in-crate solver exposed as an ordinary Agent
@@ -42,7 +42,8 @@ cargo run --release -p lab -- play pente size=13 depth=4
 cargo run --release -p lab -- play liars-dice players=5 dice=5 rollouts=1000
 cargo run --release -p lab -- play poker players=6 samples=2000
 cargo run --release -p lab -- play twentyone hearts=6
-cargo run --release -p lab -- play snake                      # 1v1; the AlphaZero seat is browser-only
+cargo run --release -p lab -- play snake bot=bns              # canonical 11x11 simultaneous Battlesnake
+cargo run --release -p lab -- play snake players=4 mode=royale seat=watch
 ```
 
 One client drives every game: menus by number, or game-native input (`e2e4`, `open 2x4`, `d`/`s`). Hidden information is viewer-scoped throughout.
