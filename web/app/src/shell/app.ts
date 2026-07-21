@@ -553,13 +553,6 @@ export class App {
       .join("");
     // DOOD and Coil are not engine games (real-time, not Game-trait matches);
     // their cards open standalone screens instead of starting a match.
-    const slitherCard = `
-        <div class="card card-slither" data-special="coil" role="button" tabindex="0">
-          ${miniFor("coil")}
-          <div class="card-text">
-            <span class="card-name">Coil</span>
-          </div>
-        </div>`;
     const doomCard = `
         <div class="card card-doom" data-special="dood" role="button" tabindex="0">
           ${miniFor("dood")}
@@ -572,7 +565,7 @@ export class App {
         <header class="home-head">
           <h1>Games Room</h1>
         </header>
-        <div class="card-grid">${cards}${slitherCard}${doomCard}</div>
+        <div class="card-grid">${cards}${doomCard}</div>
         <footer class="home-footer">
           <button type="button" class="icon-btn tourney-link" title="Tournament lab" aria-label="Tournament lab">${ICON_BEAKER}</button>
           <a class="icon-btn" href="https://github.com/henri123lemoine/games" title="GitHub" aria-label="GitHub">${ICON_GITHUB}</a>
