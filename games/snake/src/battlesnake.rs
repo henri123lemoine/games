@@ -8,6 +8,7 @@
 
 use game_core::{Rng, SimultaneousGame, SimultaneousTurn};
 
+pub mod search;
 mod ui;
 
 pub const SIDE: usize = 11;

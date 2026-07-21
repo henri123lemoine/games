@@ -9,7 +9,9 @@ name = "snake"
 path = "src/lib.rs"
 
 [dependencies]
+arrayvec = "0.7"
 game-core = { workspace = true }
+web-time = "1"
 
 [dev-dependencies]
 solvers = { path = "../../solvers" }
