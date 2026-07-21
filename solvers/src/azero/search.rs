@@ -111,6 +111,15 @@ impl Value {
         Value::Seats(a)
     }
 
+    /// The scalar mover-relative value. Panics on a per-seat vector — callers
+    /// reading this are two-player scalar paths (eval harnesses, verify).
+    pub fn as_mover(self) -> f32 {
+        match self {
+            Value::Mover(v) => v,
+            Value::Seats(_) => panic!("expected a scalar mover value, got per-seat values"),
+        }
+    }
+
     /// This evaluation's value for `seat`, where `mover` is the player to
     /// move at the evaluated node (scalar values are mover-relative).
     fn for_seat(self, seat: usize, mover: usize) -> f64 {

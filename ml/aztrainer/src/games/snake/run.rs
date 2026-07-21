@@ -25,6 +25,7 @@ pub fn config(blocks: usize, channels: i64, size: i64) -> NetConfig {
         head: HeadKind::GlobalPoolDense,
         policy_len: ACTIONS,
         go_aux: false,
+        seats: 1,
     }
 }
 

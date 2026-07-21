@@ -74,9 +74,17 @@ pub struct HeadFlags(pub u32);
 impl HeadFlags {
     /// Go's per-point ownership head (`o1`, a bias-less 1×1 `C`→1 conv → tanh).
     pub const OWNERSHIP: u32 = 1;
+    /// Multi-seat value head: the reserved header word carries the seat count
+    /// and the value head's final linear emits that many raw logits (softmax
+    /// over seats at the consumer) instead of one tanh scalar.
+    pub const VALUE_SEATS: u32 = 2;
 
     pub fn ownership(self) -> bool {
         self.0 & Self::OWNERSHIP != 0
+    }
+
+    pub fn value_seats(self) -> bool {
+        self.0 & Self::VALUE_SEATS != 0
     }
 }
 
@@ -94,6 +102,9 @@ pub struct Arch {
     /// `0` for [`HeadKind::GlobalPoolSpatial`], whose width is `size²+1`.
     pub policy_len: usize,
     pub flags: HeadFlags,
+    /// Value-head width: 1 is the scalar tanh head; >1 emits raw per-seat
+    /// logits (multiplayer win shares after a softmax).
+    pub value_seats: usize,
 }
 
 impl Arch {
@@ -127,17 +138,28 @@ impl Arch {
         if blocks == 0 || blocks > 64 || channels == 0 || channels > 1024 {
             return Err(format!("implausible architecture {blocks}x{channels}"));
         }
-        if planes == 0 || planes > 256 {
+        if planes == 0 || planes > 1024 {
             return Err(format!("implausible planes {planes}"));
         }
         if !(1..=64).contains(&size) {
             return Err(format!("implausible size {size}"));
         }
-        if reserved != 0 {
-            return Err(format!("nonzero reserved header word {reserved}"));
-        }
-        if flags.0 & !HeadFlags::OWNERSHIP != 0 {
+        if flags.0 & !(HeadFlags::OWNERSHIP | HeadFlags::VALUE_SEATS) != 0 {
             return Err(format!("unknown head flags {:#x}", flags.0));
+        }
+        let value_seats = if flags.value_seats() {
+            if !(2..=8).contains(&(reserved as usize)) {
+                return Err(format!("implausible value seat count {reserved}"));
+            }
+            reserved as usize
+        } else {
+            if reserved != 0 {
+                return Err(format!("nonzero reserved header word {reserved}"));
+            }
+            1
+        };
+        if value_seats > 1 && head == HeadKind::FlatConv {
+            return Err("multi-seat value requires a global-pool head".into());
         }
         match head {
             HeadKind::GlobalPoolSpatial if policy_len != 0 => {
@@ -158,6 +180,7 @@ impl Arch {
                 head,
                 policy_len,
                 flags,
+                value_seats,
             },
             HEADER_LEN,
         ))
@@ -168,6 +191,14 @@ impl Arch {
     pub fn header_bytes(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(HEADER_LEN);
         b.extend_from_slice(MAGIC);
+        let (flags, reserved) = if self.value_seats > 1 {
+            (
+                self.flags.0 | HeadFlags::VALUE_SEATS,
+                self.value_seats as u32,
+            )
+        } else {
+            (self.flags.0 & !HeadFlags::VALUE_SEATS, 0)
+        };
         for word in [
             VERSION,
             self.blocks as u32,
@@ -177,8 +208,8 @@ impl Arch {
             self.scalars as u32,
             self.head.as_u32(),
             self.policy_len as u32,
-            self.flags.0,
-            0,
+            flags,
+            reserved,
         ] {
             b.extend_from_slice(&word.to_le_bytes());
         }
@@ -287,7 +318,40 @@ mod tests {
             head: HeadKind::GlobalPoolSpatial,
             policy_len: 0,
             flags: HeadFlags(HeadFlags::OWNERSHIP),
+            value_seats: 1,
         }
+    }
+
+    #[test]
+    fn value_seats_round_trip() {
+        let a = Arch {
+            head: HeadKind::GlobalPoolDense,
+            policy_len: 200,
+            flags: HeadFlags::default(),
+            size: 1,
+            value_seats: 4,
+            ..arch()
+        };
+        let (parsed, _) = Arch::parse(&a.header_bytes()).expect("parse");
+        assert_eq!(parsed.value_seats, 4);
+        assert!(parsed.flags.value_seats());
+    }
+
+    #[test]
+    fn value_seats_rejects_flat_head_and_wild_counts() {
+        let mut a = arch();
+        a.value_seats = 4;
+        a.head = HeadKind::FlatConv;
+        a.policy_len = 4672;
+        assert!(
+            Arch::parse(&a.header_bytes()).is_err(),
+            "flat head rejected"
+        );
+        let mut b = arch();
+        b.head = HeadKind::GlobalPoolDense;
+        b.policy_len = 8;
+        b.value_seats = 9;
+        assert!(Arch::parse(&b.header_bytes()).is_err(), "9 seats rejected");
     }
 
     #[test]

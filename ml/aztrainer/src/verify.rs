@@ -67,11 +67,24 @@ pub fn verify<V: VerifyGame>(
 
         // nn_infer's PUCT bridge: forward, restrict to the legal support, softmax
         // — exactly what `Infer::forward_batch` does on the tch side.
-        let (nn_priors, nn_value) = net.forward_support(&req.features, &[], &support);
-        for (a, b) in tch_out.priors.iter().zip(&nn_priors) {
-            max_dp = max_dp.max((a - b).abs());
+        if cfg.seats > 1 {
+            let (nn_priors, nn_shares) = net.forward_support_seats(&req.features, &[], &support);
+            for (a, b) in tch_out.priors.iter().zip(&nn_priors) {
+                max_dp = max_dp.max((a - b).abs());
+            }
+            let solvers::azero::Value::Seats(tch_shares) = tch_out.value else {
+                return Err("tch forward did not produce per-seat values".into());
+            };
+            for (a, b) in tch_shares.iter().zip(&nn_shares) {
+                max_dv = max_dv.max((a - b).abs());
+            }
+        } else {
+            let (nn_priors, nn_value) = net.forward_support(&req.features, &[], &support);
+            for (a, b) in tch_out.priors.iter().zip(&nn_priors) {
+                max_dp = max_dp.max((a - b).abs());
+            }
+            max_dv = max_dv.max((tch_out.value.as_mover() - nn_value).abs());
         }
-        max_dv = max_dv.max((tch_out.value - nn_value).abs());
 
         // Go ownership head, when present.
         let out = net.forward_at(&req.features, &[], cfg.size as usize);

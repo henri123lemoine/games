@@ -43,6 +43,9 @@ pub struct NetConfig {
     pub policy_len: i64,
     /// The go auxiliary heads (ownership conv + score linear). Off elsewhere.
     pub go_aux: bool,
+    /// Value-head width: 1 is the scalar tanh head; >1 emits raw per-seat
+    /// logits trained as a win-share softmax (multiplayer games).
+    pub seats: i64,
 }
 
 impl NetConfig {
@@ -146,6 +149,7 @@ struct PoolValue {
     vb: nn::BatchNorm,
     vf1: nn::Linear,
     vf2: nn::Linear,
+    seats: i64,
 }
 
 enum Value {
@@ -173,13 +177,16 @@ pub struct Net {
 impl Net {
     pub fn new(root: &nn::Path, cfg: NetConfig) -> Net {
         let c = cfg.channels;
+        // A 1x1 "board" is the MLP degenerate case: 1x1 kernels make the stem
+        // and tower plain linear layers with no dead taps.
+        let k = if cfg.size == 1 { 1 } else { 3 };
         let tower = (0..cfg.blocks)
             .map(|i| {
                 let p = root / format!("block{i}");
                 Block {
-                    c1: conv(&p / "c1", c, c, 3),
+                    c1: conv(&p / "c1", c, c, k),
                     b1: nn::batch_norm2d(&p / "b1", c, Default::default()),
-                    c2: conv(&p / "c2", c, c, 3),
+                    c2: conv(&p / "c2", c, c, k),
                     b2: nn::batch_norm2d(&p / "b2", c, Default::default()),
                 }
             })
@@ -223,7 +230,13 @@ impl Net {
                 v1: conv(root / "v1", c, c, 1),
                 vb: nn::batch_norm2d(root / "vb", c, Default::default()),
                 vf1: nn::linear(root / "vf1", 3 * c, POOL_VALUE_HIDDEN, Default::default()),
-                vf2: nn::linear(root / "vf2", POOL_VALUE_HIDDEN, 1, Default::default()),
+                vf2: nn::linear(
+                    root / "vf2",
+                    POOL_VALUE_HIDDEN,
+                    cfg.seats.max(1),
+                    Default::default(),
+                ),
+                seats: cfg.seats.max(1),
             }),
         };
 
@@ -289,7 +302,13 @@ impl Net {
             Value::Pool(v) => {
                 let conv = t.apply(&v.v1).apply_t(&v.vb, train).relu();
                 let vh = global_pool(&conv).apply(&v.vf1).relu();
-                let value = vh.apply(&v.vf2).tanh().squeeze_dim(-1);
+                // Scalar head: tanh to (-1,1). Multi-seat head: raw [B, seats]
+                // logits, softmaxed to win shares by the consumer/loss.
+                let value = if v.seats == 1 {
+                    vh.apply(&v.vf2).tanh().squeeze_dim(-1)
+                } else {
+                    vh.apply(&v.vf2)
+                };
                 let score = self.aux.as_ref().map(|a| vh.apply(&a.sf).squeeze_dim(-1));
                 (value, score)
             }
@@ -377,6 +396,7 @@ pub struct Infer {
     planes: i64,
     size: i64,
     policy: i64,
+    seats: i64,
 }
 
 impl Infer {
@@ -398,6 +418,7 @@ impl Infer {
             planes: cfg.planes,
             size: cfg.size,
             policy: cfg.policy(),
+            seats: cfg.seats.max(1),
         }
     }
 
@@ -424,6 +445,7 @@ impl Infer {
             planes: cfg.planes,
             size: cfg.size,
             policy: cfg.policy(),
+            seats: cfg.seats.max(1),
         })
     }
 
@@ -489,7 +511,10 @@ impl Infer {
             )
         });
         let legal: Vec<f32> = legal_logits.try_into().expect("legal logits to vec");
-        let values: Vec<f32> = values.reshape([b]).try_into().expect("values to vec");
+        let values: Vec<f32> = values
+            .reshape([b * self.seats])
+            .try_into()
+            .expect("values to vec");
 
         let mut offset = 0;
         reqs.iter()
@@ -498,10 +523,17 @@ impl Infer {
                 let mut priors = legal[offset..offset + r.support.len()].to_vec();
                 offset += r.support.len();
                 softmax(&mut priors);
-                EvalResult {
-                    priors,
-                    value: values[i],
-                }
+                let value = if self.seats == 1 {
+                    solvers::azero::Value::Mover(values[i])
+                } else {
+                    // Softmax the raw seat logits to win shares; the game's
+                    // driver maps shares onto its returns scale.
+                    let s = self.seats as usize;
+                    let mut shares = values[i * s..(i + 1) * s].to_vec();
+                    softmax(&mut shares);
+                    solvers::azero::Value::seats(&shares)
+                };
+                EvalResult { priors, value }
             })
             .collect()
     }

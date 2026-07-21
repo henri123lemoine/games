@@ -1400,7 +1400,10 @@ impl AzeroPenteBot {
                 .iter()
                 .map(|r| {
                     let (priors, value) = self.net.forward_support(&r.features, &[], &r.support);
-                    solvers::azero::EvalResult { priors, value: solvers::azero::Value::Mover(value) }
+                    solvers::azero::EvalResult {
+                        priors,
+                        value: solvers::azero::Value::Mover(value),
+                    }
                 })
                 .collect();
         }
@@ -1832,6 +1835,7 @@ mod tests {
             head: nn_infer::HeadKind::GlobalPoolSpatial,
             policy_len: 0,
             flags: nn_infer::HeadFlags(0),
+            value_seats: 1,
         };
         let mut b = arch.header_bytes();
         for _ in 0..floats {

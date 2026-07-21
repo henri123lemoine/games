@@ -31,6 +31,7 @@ fn aznet1_header(cfg: &NetConfig, has_ownership: bool) -> Vec<u8> {
         } else {
             0
         }),
+        value_seats: cfg.seats.max(1) as usize,
     }
     .header_bytes()
 }

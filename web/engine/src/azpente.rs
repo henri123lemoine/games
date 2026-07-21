@@ -298,6 +298,7 @@ mod tests {
             head: nn_infer::HeadKind::GlobalPoolSpatial,
             policy_len: 0,
             flags: nn_infer::HeadFlags(0),
+            value_seats: 1,
         };
         let mut b = arch.header_bytes();
         for _ in 0..floats {

@@ -250,7 +250,17 @@ impl Trainer {
                 let pl = -(tp * logp)
                     .sum_dim_intlist(-1, false, Kind::Float)
                     .mean(Kind::Float);
-                let vl = (v - tz).square().mean(Kind::Float);
+                // Scalar head: MSE against the (-1,1) outcome. Multi-seat head:
+                // cross-entropy against the win-share distribution.
+                let vl = if self.cfg.seats > 1 {
+                    let tz = tz.reshape([n, self.cfg.seats]);
+                    let logv = v.log_softmax(-1, Kind::Float);
+                    -(tz * logv)
+                        .sum_dim_intlist(-1, false, Kind::Float)
+                        .mean(Kind::Float)
+                } else {
+                    (v - tz).square().mean(Kind::Float)
+                };
                 let mut group_loss = &pl + &vl;
 
                 // Go auxiliary losses, when the batch carries those targets and

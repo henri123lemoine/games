@@ -322,6 +322,7 @@ mod tests {
             } else {
                 0
             }),
+            value_seats: 1,
         };
         let mut b = arch.header_bytes();
         for _ in 0..floats {

@@ -348,11 +348,11 @@ pub fn score(args: &[String]) {
     for (p, out) in arr.iter().zip(&outs) {
         let value_label = p["value"].as_f64().expect("value") as f32;
         let best_label = p["best_move"].as_u64().expect("best_move") as usize;
-        let d = (out.value - value_label) as f64;
+        let d = (out.value.as_mover() - value_label) as f64;
         sq_err += d * d;
         // A label is ±1 (won/lost game), so sign-accuracy is the value head's
         // win-prediction rate; the rare exact-zero is counted correct either way.
-        if (out.value >= 0.0) == (value_label >= 0.0) {
+        if (out.value.as_mover() >= 0.0) == (value_label >= 0.0) {
             sign_ok += 1;
         }
         // Priors are aligned with `support` = 0..policy, so argmax over them is
