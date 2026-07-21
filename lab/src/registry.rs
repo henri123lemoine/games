@@ -29,7 +29,8 @@ use crate::compare::{
     BotBuilder, BotParser, BotSpec, BoxedAgent, CompareArgs, TourneyArgs, head_to_head, parse_spec,
     round_robin, run_field, run_pairs, split_specs, vs_field,
 };
-use crate::runner::{AnyMatch, TypedMatch};
+use crate::runner::{AnyMatch, SimultaneousTypedMatch, TypedMatch};
+use crate::simultaneous_compare::{BoxedSimultaneousAgent, SimultaneousBotBuilder};
 
 /// Loose `key=value` options from the command line. Lookups are recorded so a
 /// client can reject typos after a build succeeds (see [`Opts::unused`]);
@@ -565,14 +566,32 @@ const GO_OPTS: &[OptSpec] = &[
 ];
 
 const SNAKE_OPTS: &[OptSpec] = &[
-    opt("seat", "0|1|watch", "(0=Snake A)"),
+    opt("players", "2", "(2..=4)"),
     opt(
-        "bot",
-        "azero-gpu|mcts|mcts-eval",
-        "(azero-gpu: browser only)",
+        "mode",
+        "standard|royale|constrictor|wrapped|wrapped-constrictor",
+        "",
     ),
-    bot_opt("sims", "200", "", &["azero-gpu", "mcts", "mcts-eval"]),
-    bot_opt("depth", "16", "", &["mcts-eval"]),
+    opt(
+        "food",
+        "standard|one",
+        "(one keeps exactly one apple on the board)",
+    ),
+    opt("seat", "0|..|watch", "(0=Snake A)"),
+    opt("bot", "bns|random", ""),
+    bot_opt("millis", "440", "(search time per move)", &["bns"]),
+    bot_opt("depth", "255", "", &["bns"]),
+    bot_opt("qdepth", "3", "", &["bns"]),
+    bot_opt("model", "mcs|brs+|full", "", &["bns"]),
+    bot_opt("tt-bits", "19", "", &["bns"]),
+    opt(
+        "food-spawn",
+        "15",
+        "(official source has 14% effective rate)",
+    ),
+    opt("minimum-food", "1", ""),
+    opt("hazard-damage", "14", ""),
+    opt("shrink-every", "25", "(royale turns)"),
     opt("seed", "...", ""),
 ];
 
@@ -761,21 +780,13 @@ pub fn entries() -> Vec<Entry> {
         },
         Entry {
             id: "snake",
-            name: "Snake",
+            name: "Battlesnake",
             solo: false,
             watch_bot: "",
-            summary: "Competitive 1v1 Snake (20x20) vs AlphaZero",
+            summary: "Canonical simultaneous Battlesnake vs best-node search",
             opts: SNAKE_OPTS,
-            make: Box::new(|o| {
-                make_versus_or_gpu(o, snake::Duel::new(), "mcts-eval", &["sims"], snake_bot)
-            }),
-            eval: Some(eval_entry(
-                "mcts-eval[:sims=200,depth=16] | mcts[:sims=200]",
-                0,
-                false,
-                |_| Ok(snake::Duel::new()),
-                snake_bot,
-            )),
+            make: Box::new(make_battlesnake),
+            eval: Some(battlesnake_eval_entry()),
         },
         Entry {
             id: "stratego",
@@ -857,23 +868,221 @@ fn pente_game(o: &Opts) -> Result<pente::Pente, String> {
     Ok(pente::Pente::new(size))
 }
 
-fn snake_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<snake::Duel>, String> {
-    let sims: u32 = spec.opts.get("sims", 200)?;
-    Ok(match spec.name.as_str() {
-        "mcts" => Box::new(move |_| Box::new(Mcts::new(sims)) as BoxedAgent<snake::Duel>),
-        "mcts-eval" => {
-            let depth: u32 = spec.opts.get("depth", 16)?;
-            Box::new(move |_| {
-                Box::new(Mcts::with_eval(sims, snake::DuelEval, depth)) as BoxedAgent<snake::Duel>
-            })
-        }
-        "azero-gpu" => {
-            return Err("the snake 'azero-gpu' bot runs client-side (browser only)".into());
-        }
+fn battlesnake_rules(o: &Opts, seed: u64) -> Result<snake::battlesnake::Rules, String> {
+    use snake::battlesnake::{InitialFood, Mode, Rules};
+
+    let mode = match o.str("mode", "standard").as_str() {
+        "standard" => Mode::Standard,
+        "royale" => Mode::Royale,
+        "constrictor" => Mode::Constrictor,
+        "wrapped" => Mode::Wrapped,
+        "wrapped-constrictor" => Mode::WrappedConstrictor,
         other => {
-            return Err(format!("unknown snake bot '{other}' (mcts-eval|mcts)"));
+            return Err(format!(
+                "snake mode must be standard|royale|constrictor|wrapped|wrapped-constrictor, got '{other}'"
+            ));
         }
+    };
+    // Parse the advanced knobs even when the one-apple preset overrides them,
+    // so changing the preset in the web drawer cannot leave rejected leftovers.
+    let configured_spawn = o.get("food-spawn", 15)?;
+    let configured_minimum = o.get("minimum-food", 1)?;
+    let (initial_food, food_spawn_chance, minimum_food) = match o.str("food", "standard").as_str() {
+        "standard" => (InitialFood::Official, configured_spawn, configured_minimum),
+        "one" => (InitialFood::One, 0, 1),
+        other => return Err(format!("snake food must be standard|one, got '{other}'")),
+    };
+    Ok(Rules {
+        mode,
+        initial_food,
+        food_spawn_chance,
+        minimum_food,
+        hazard_damage: o.get("hazard-damage", 14)?,
+        shrink_every_n_turns: o.get("shrink-every", 25)?,
+        seed,
     })
+}
+
+fn battlesnake_bot<const N: usize>(
+    spec: &BotSpec,
+    _o: &Opts,
+) -> Result<SimultaneousBotBuilder<snake::battlesnake::Battlesnake<N>>, String> {
+    use snake::battlesnake::search::{OpponentModel, SearchAgent, SearchConfig};
+
+    match spec.name.as_str() {
+        "random" => Ok(Box::new(|_| {
+            Box::new(game_core::RandomSimultaneousAgent)
+                as BoxedSimultaneousAgent<snake::battlesnake::Battlesnake<N>>
+        })),
+        "bns" => {
+            let model = match spec.opts.str("model", "mcs").as_str() {
+                "full" => OpponentModel::Full,
+                "mcs" => OpponentModel::MoveCombination,
+                "brs+" | "brs-plus" => OpponentModel::BestReplyPlus,
+                other => {
+                    return Err(format!("snake model must be full|mcs|brs+, got '{other}'"));
+                }
+            };
+            let config = SearchConfig {
+                time_limit: std::time::Duration::from_millis(spec.opts.get("millis", 440)?),
+                max_depth: spec.opts.get("depth", u8::MAX)?,
+                quiescence_depth: spec.opts.get("qdepth", 3)?,
+                opponent_model: model,
+                tt_bits: spec.opts.get("tt-bits", 19)?,
+                ..SearchConfig::default()
+            };
+            Ok(Box::new(move |_| {
+                Box::new(SearchAgent::<N>::new(config))
+                    as BoxedSimultaneousAgent<snake::battlesnake::Battlesnake<N>>
+            }))
+        }
+        other => Err(format!("unknown snake bot '{other}' (bns|random)")),
+    }
+}
+
+fn make_battlesnake_n<const N: usize>(o: &Opts, seed: u64) -> Result<Box<dyn AnyMatch>, String> {
+    use snake::battlesnake::Battlesnake;
+
+    let game = Battlesnake::<N>::new(battlesnake_rules(o, seed)?);
+    let seat = parse_seat(o, N)?;
+    let bots_list = o.str("bots", "");
+    let bots: Vec<Option<BoxedSimultaneousAgent<Battlesnake<N>>>> = if bots_list.is_empty() {
+        let spec = BotSpec {
+            name: o.str("bot", "bns"),
+            opts: o.clone(),
+        };
+        let builder = battlesnake_bot::<N>(&spec, o)?;
+        (0..N)
+            .map(|player| {
+                (Some(player) != seat).then(|| builder(hash::combine(seed, player as u64)))
+            })
+            .collect()
+    } else {
+        let specs = split_specs(&bots_list);
+        if specs.len() != N {
+            return Err(format!(
+                "bots= needs one spec per seat ({N}), got {}",
+                specs.len()
+            ));
+        }
+        let builders: Vec<_> = specs
+            .iter()
+            .map(|text| {
+                let spec = parse_spec(text)?;
+                let builder = battlesnake_bot::<N>(&spec, o)?;
+                spec.opts.ensure_consumed(&format!("bot '{text}'"))?;
+                Ok::<_, String>(builder)
+            })
+            .collect::<Result<_, _>>()?;
+        (0..N)
+            .map(|player| {
+                (Some(player) != seat).then(|| builders[player](hash::combine(seed, player as u64)))
+            })
+            .collect()
+    };
+    Ok(SimultaneousTypedMatch::new(game, bots, seat, seed).boxed())
+}
+
+fn make_battlesnake(o: &Opts) -> Result<Box<dyn AnyMatch>, String> {
+    let players: usize = o.get("players", 2)?;
+    let seed = o.get("seed", default_seed())?;
+    match players {
+        2 => make_battlesnake_n::<2>(o, seed),
+        3 => make_battlesnake_n::<3>(o, seed),
+        4 => make_battlesnake_n::<4>(o, seed),
+        _ => Err("snake players must be 2..=4".into()),
+    }
+}
+
+fn battlesnake_eval_entry() -> EvalEntry {
+    use crate::simultaneous_compare as sim;
+    use snake::battlesnake::Battlesnake;
+
+    fn game<const N: usize>(o: &Opts, seed: u64) -> Result<Battlesnake<N>, String> {
+        Ok(Battlesnake::new(battlesnake_rules(o, seed)?))
+    }
+    fn players(o: &Opts) -> Result<usize, String> {
+        match o.get("players", 2)? {
+            count @ 2..=4 => Ok(count),
+            _ => Err("snake players must be 2..=4".into()),
+        }
+    }
+
+    EvalEntry {
+        bots_help: "bns[:millis=440,depth=255,qdepth=3,model=mcs,tt-bits=19] | random",
+        has_field: true,
+        compare: Box::new(move |args| match players(&args.opts)? {
+            2 => sim::head_to_head(
+                &game::<2>(&args.opts, args.seed)?,
+                args,
+                0,
+                battlesnake_bot::<2>,
+            ),
+            3 => sim::vs_field(
+                &game::<3>(&args.opts, args.seed)?,
+                args,
+                battlesnake_bot::<3>,
+            ),
+            4 => sim::vs_field(
+                &game::<4>(&args.opts, args.seed)?,
+                args,
+                battlesnake_bot::<4>,
+            ),
+            _ => unreachable!(),
+        }),
+        tourney: Box::new(move |args| match players(&args.opts)? {
+            2 => sim::round_robin(
+                &game::<2>(&args.opts, args.seed)?,
+                args,
+                0,
+                battlesnake_bot::<2>,
+            ),
+            _ => Err("snake tourney requires players=2; use compare field mode for 3-4".into()),
+        }),
+        pairs: Box::new(move |o, a, b, seed, range| match players(o)? {
+            2 => sim::run_pairs(
+                &game::<2>(o, seed)?,
+                o,
+                a,
+                b,
+                0,
+                battlesnake_bot::<2>,
+                seed,
+                range,
+            ),
+            _ => Err("paired Battlesnake games require players=2".into()),
+        }),
+        field: Box::new(move |o, a, b, seed, range| match players(o)? {
+            2 => sim::run_field(
+                &game::<2>(o, seed)?,
+                o,
+                a,
+                b,
+                battlesnake_bot::<2>,
+                seed,
+                range,
+            ),
+            3 => sim::run_field(
+                &game::<3>(o, seed)?,
+                o,
+                a,
+                b,
+                battlesnake_bot::<3>,
+                seed,
+                range,
+            ),
+            4 => sim::run_field(
+                &game::<4>(o, seed)?,
+                o,
+                a,
+                b,
+                battlesnake_bot::<4>,
+                seed,
+                range,
+            ),
+            _ => unreachable!(),
+        }),
+    }
 }
 
 /// Shares the net (compare builders clone it per game) and runs a fresh PUCT

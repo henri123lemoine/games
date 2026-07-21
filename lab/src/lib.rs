@@ -7,3 +7,4 @@ pub mod artifacts;
 pub mod compare;
 pub mod registry;
 pub mod runner;
+pub mod simultaneous_compare;
