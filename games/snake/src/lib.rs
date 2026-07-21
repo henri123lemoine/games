@@ -17,6 +17,7 @@
 //! [`Game::returns`] is snake length / board area, in `[0, 1]`.
 
 pub mod battlesnake;
+pub mod battlesnake_encode;
 pub mod duel;
 mod duel_ui;
 pub mod encode;
