@@ -1400,7 +1400,7 @@ impl AzeroPenteBot {
                 .iter()
                 .map(|r| {
                     let (priors, value) = self.net.forward_support(&r.features, &[], &r.support);
-                    solvers::azero::EvalResult { priors, value }
+                    solvers::azero::EvalResult { priors, value: solvers::azero::Value::Mover(value) }
                 })
                 .collect();
         }

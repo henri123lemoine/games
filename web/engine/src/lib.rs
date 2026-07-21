@@ -155,7 +155,7 @@ pub(crate) fn eval_batch(net: &nn_infer::Net, reqs: &[EvalRequest]) -> Vec<EvalR
     reqs.iter()
         .map(|r| {
             let (priors, value) = net.forward_support(&r.features, &[], &r.support);
-            EvalResult { priors, value }
+            EvalResult { priors, value: solvers::azero::Value::Mover(value) }
         })
         .collect()
 }
@@ -193,7 +193,7 @@ pub(crate) fn unpack_eval_results(
         }
         out.push(EvalResult {
             priors: priors[off..off + k].to_vec(),
-            value,
+            value: solvers::azero::Value::Mover(value),
         });
         off += k;
     }
