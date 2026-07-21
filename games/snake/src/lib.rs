@@ -1,6 +1,6 @@
-//! Snake as a [`game_core::Game`]: a single-player [`Snake`] (the terminal
-//! client keeps it) and the competitive 1v1 [`Duel`] on a shared 20x20 grid
-//! (the arcade's flagship — see [`duel`]).
+//! Snake games: canonical simultaneous [`battlesnake::Battlesnake`] for the
+//! competitive lab, plus the compact single-player [`Snake`] rules used by
+//! solver examples.
 //!
 //! The single-player rules follow.
 //!
@@ -16,6 +16,7 @@
 //! (win), and a starvation cap of `w*h` consecutive moves without eating.
 //! [`Game::returns`] is snake length / board area, in `[0, 1]`.
 
+pub mod battlesnake;
 pub mod duel;
 mod duel_ui;
 pub mod encode;
