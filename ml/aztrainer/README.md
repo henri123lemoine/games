@@ -21,7 +21,8 @@ workspace's `cargo test`. Build from this directory.
   (`verify.rs`).
 - **Per game** (`src/games/<game>/`): the `NetConfig`, the replay `Sample`
   codec, the self-play reward shaping (chess repetition / go komi-ownership-score
-  + dihedral + mixed-size / snake chance-resolution + discount + opponent pool),
+  + dihedral + mixed-size / Battlesnake joint-equilibrium backups + chance
+  resolution + discount + all-perspective dihedral augmentation),
   the eval ladder, the strength gauge, and any serving commands.
 
 ## Binaries
@@ -29,7 +30,7 @@ workspace's `cargo test`. Build from this directory.
 ```
 cargo run --release --bin chess -- <run|bench|play|uci|elo|calibrate|export|verify-export>
 cargo run --release --bin go    -- <run|bench|elo|rate|calibrate|calibrate-pass|export|verify-export>
-cargo run --release --bin snake -- <run|bench|rate|elo|export|verify-export>
+cargo run --release --bin snake -- <run|bench|rate|elo|field|compare|field-compare|split-compare|export|verify-export>
 ```
 
 A short example:
@@ -37,6 +38,8 @@ A short example:
 ```
 cargo run --release --bin go -- run --dir ../../data/azgo/run1 --hours 5 --size 9
 cargo run --release --bin go -- verify-export --net ../../data/azgo/run1/latest.ot
+cargo run --release --bin snake -- run --method logit --players 4 --hours 8 --dir runs/battlesnake/logit-p4
+cargo run --release --bin snake -- field --net runs/battlesnake/logit-p4/latest.ot --method logit
 ```
 
 ## Running the built binaries: the libtorch dylib path

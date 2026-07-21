@@ -1,173 +1,429 @@
-//! The cheap progress gauge: the current net vs an older snapshot of itself
-//! (KataGo-style relative rating), plus a coarse absolute strength readout
-//! against the fixed baseline ladder (random / greedy / shallow MCTS).
+//! Checkpoint progress and absolute-strength gauges for simultaneous Battlesnake.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use tch::Kind;
 
-use super::eval::{self, Opponent, ladder};
+use super::eval::{
+    Opponent, field_ladder, ladder, net_vs_net, net_vs_net_field, net_vs_net_split, score_interval,
+};
 use super::run::{device_for, net_config_for, parse_arg as arg};
-use super::selfplay::mix;
+use super::sim_selfplay::{BackupMethod, SolveConfig};
 use crate::net::Infer;
 use crate::rundir::{append_line, epoch_secs};
 
-fn metrics_last_iter(path: &Path) -> u64 {
-    crate::rundir::last_iter(path)
+fn solve(args: &[String]) -> SolveConfig {
+    SolveConfig {
+        method: arg(args, "--method", BackupMethod::Logit),
+        rationality: arg(args, "--rationality", 8.0),
+        solve_iters: arg(args, "--solve-iters", 32),
+        damping: arg(args, "--damping", 0.5),
+    }
 }
 
-/// The oldest `ckpt-NNNNNN.ot` snapshot in `dir` — the fixed baseline the rate
-/// signal measures improvement against.
+fn solve_method(
+    args: &[String],
+    method_name: &str,
+    rationality_name: &str,
+    iterations_name: &str,
+    damping_name: &str,
+    default: BackupMethod,
+) -> SolveConfig {
+    let global = solve(args);
+    SolveConfig {
+        method: arg(args, method_name, default),
+        rationality: arg(args, rationality_name, global.rationality),
+        solve_iters: arg(args, iterations_name, global.solve_iters),
+        damping: arg(args, damping_name, global.damping),
+    }
+}
+
 fn oldest_snapshot(dir: &Path) -> Option<(PathBuf, u64)> {
     std::fs::read_dir(dir)
         .ok()?
-        .filter_map(|e| {
-            let p = e.ok()?.path();
-            let it: u64 = p
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let iteration = path
                 .file_name()?
                 .to_str()?
                 .strip_prefix("ckpt-")?
                 .strip_suffix(".ot")?
                 .parse()
                 .ok()?;
-            Some((p, it))
+            Some((path, iteration))
         })
-        .min_by_key(|&(_, it)| it)
+        .min_by_key(|&(_, iteration)| iteration)
 }
 
-/// The cheap, continuous progress signal (KataGo-style relative rating): the
-/// current net vs an older snapshot of itself at low sims. A win rate above 0.5
-/// means the net is still improving. Appends `{"event":"rate",...}`; `--watch N`
-/// repeats every N minutes.
 pub fn rate(args: &[String]) {
-    let dir: PathBuf = arg(args, "--dir", PathBuf::from("../../data/azsnake/run1"));
-    let pairs: u32 = arg(args, "--pairs", 8);
-    let sims: u32 = arg(args, "--sims", 96);
-    let watch_min: f64 = arg(args, "--watch", 0.0);
+    let dir: PathBuf = arg(args, "--dir", PathBuf::from("runs/battlesnake/logit-p2"));
+    let pairs: u32 = arg(args, "--pairs", 16);
+    let seed: u64 = arg(args, "--seed", 0x4A7E_u64);
+    let watch_minutes: f64 = arg(args, "--watch", 0.0);
     let latest = dir.join("latest.ot");
     let metrics = dir.join("metrics.jsonl");
-    let stop = dir.join("STOP");
     let dev = device_for();
     let cfg = net_config_for(args, &latest);
+    let kind = if dev == tch::Device::Cpu {
+        Kind::Float
+    } else {
+        Kind::Half
+    };
     loop {
-        let latest_iter = metrics_last_iter(&metrics);
+        let latest_iter = crate::rundir::last_iter(&metrics);
         match oldest_snapshot(&dir) {
-            Some((ref_path, ref_iter)) if ref_iter < latest_iter => {
-                let a = Infer::load(&latest, cfg, dev, Kind::Half);
-                let b = Infer::load(&ref_path, cfg, dev, Kind::Half);
-                if let (Ok(a), Ok(b)) = (a, b) {
-                    let t = Instant::now();
-                    let (wins, total) =
-                        eval::net_vs_net(&a, &b, pairs, sims, mix(0x4A7E, epoch_secs()));
-                    let wr = f64::from(wins) / f64::from(total.max(1));
-                    println!(
-                        "rate: iter {latest_iter} vs ref {ref_iter}: {wr:.2} ({wins}/{total}, \
-                         {sims} sims, {:.0}s)",
-                        t.elapsed().as_secs_f32()
-                    );
-                    append_line(
-                        &metrics,
-                        &serde_json::json!({
-                            "event": "rate", "time": epoch_secs(), "iter": latest_iter,
-                            "ref_iter": ref_iter, "win_rate": wr, "games": total, "sims": sims,
-                        })
-                        .to_string(),
-                    );
-                } else {
-                    eprintln!("rate: checkpoint load failed; retrying next cycle");
+            Some((reference, reference_iter)) if reference_iter < latest_iter => {
+                let first = Infer::load(&latest, cfg, dev, kind);
+                let second = Infer::load(&reference, cfg, dev, kind);
+                match (first, second) {
+                    (Ok(first), Ok(second)) => {
+                        let started = Instant::now();
+                        let (wins, draws, losses) =
+                            net_vs_net(&first, solve(args), &second, solve(args), pairs, seed);
+                        let (score, ci_low, ci_high) = score_interval(wins, draws, losses, 0.5);
+                        println!(
+                            "rate: iter {latest_iter} vs {reference_iter}: {score:.3} \
+                             (95% CI {ci_low:.3}..{ci_high:.3}, {wins}-{draws}-{losses}, {:.1}s)",
+                            started.elapsed().as_secs_f32()
+                        );
+                        append_line(
+                            &metrics,
+                            &serde_json::json!({
+                                "event": "rate", "time": epoch_secs(), "iter": latest_iter,
+                                "ref_iter": reference_iter, "score": score,
+                                "ci_low": ci_low, "ci_high": ci_high,
+                                "wins": wins, "draws": draws, "losses": losses,
+                            })
+                            .to_string(),
+                        );
+                    }
+                    _ => eprintln!("rate: checkpoint load failed"),
                 }
             }
-            _ => println!(
-                "rate: waiting for a snapshot older than the current net (iter {latest_iter})"
-            ),
+            _ => println!("rate: waiting for an older snapshot"),
         }
-        if watch_min <= 0.0 {
+        if watch_minutes <= 0.0 {
             break;
         }
-        let deadline = Instant::now() + Duration::from_secs_f64(watch_min * 60.0);
-        loop {
-            if stop.exists() {
-                println!("STOP present; rate watcher exiting");
-                return;
-            }
-            if Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(Duration::from_secs(10));
-        }
+        std::thread::sleep(Duration::from_secs_f64(watch_minutes * 60.0));
     }
 }
 
-/// A coarse absolute strength readout: the checkpoint's win rate against the
-/// fixed baseline ladder (random / greedy / shallow MCTS). There is no external
-/// engine anchor for 1v1 snake, so this is a plain win-rate panel rather than a
-/// calibrated Elo. `--watch N` re-runs every N minutes.
 pub fn elo_gauge(args: &[String]) {
     let net_path: PathBuf = arg(
         args,
         "--net",
-        PathBuf::from("../../data/azsnake/run1/latest.ot"),
+        PathBuf::from("runs/battlesnake/logit-p2/latest.ot"),
     );
-    let sims: u32 = arg(args, "--sims", 200);
     let pairs: u32 = arg(args, "--pairs", 16);
-    let watch_min: f64 = arg(args, "--watch", 0.0);
-
+    let seed: u64 = arg(args, "--seed", 0x510_u64);
+    let watch_minutes: f64 = arg(args, "--watch", 0.0);
     let dev = device_for();
     let cfg = net_config_for(args, &net_path);
+    let kind = if dev == tch::Device::Cpu {
+        Kind::Float
+    } else {
+        Kind::Half
+    };
     let metrics = net_path
         .parent()
         .unwrap_or(Path::new("."))
         .join("metrics.jsonl");
-    let opponents = [Opponent::Random, Opponent::Greedy, Opponent::Mcts(256)];
+    let opponents = [
+        Opponent::Random,
+        Opponent::Search {
+            millis: 1,
+            depth: 4,
+        },
+        Opponent::Search {
+            millis: 5,
+            depth: 8,
+        },
+    ];
     loop {
-        let infer = match Infer::load(&net_path, cfg, dev, Kind::Half) {
-            Ok(i) => i,
-            Err(e) if watch_min > 0.0 => {
-                eprintln!("load failed ({e}); retrying in 30s");
-                std::thread::sleep(Duration::from_secs(30));
-                continue;
-            }
-            Err(e) => {
-                eprintln!("failed to load {}: {e}", net_path.display());
-                std::process::exit(1);
-            }
-        };
-
-        let t = Instant::now();
-        let entries = ladder(&infer, &opponents, pairs, sims, mix(0x510, epoch_secs()));
+        let infer = Infer::load(&net_path, cfg, dev, kind)
+            .unwrap_or_else(|error| panic!("failed to load {}: {error}", net_path.display()));
+        let started = Instant::now();
+        let entries = ladder(&infer, solve(args), &opponents, pairs, seed);
         let detail = entries
             .iter()
-            .map(|e| format!("{}:{:.2}", e.name, e.score))
+            .map(|entry| {
+                format!(
+                    "{}:{:.3}[{:.3},{:.3}]({}-{}-{})",
+                    entry.name,
+                    entry.score,
+                    entry.ci_low,
+                    entry.ci_high,
+                    entry.wins,
+                    entry.draws,
+                    entry.losses
+                )
+            })
             .collect::<Vec<_>>()
             .join(" ");
-        let games: u32 = entries.iter().map(|e| e.wins + e.draws + e.losses).sum();
         println!(
-            "strength vs baseline: [{detail}] ({games} games, {sims} sims, {:.0}s)",
-            t.elapsed().as_secs_f32()
+            "strength: {detail} ({:.1}s)",
+            started.elapsed().as_secs_f32()
         );
         append_line(
             &metrics,
             &serde_json::json!({
                 "event": "strength", "time": epoch_secs(), "detail": detail,
-                "games": games, "sims": sims,
             })
             .to_string(),
         );
-        if watch_min <= 0.0 {
+        if watch_minutes <= 0.0 {
             break;
         }
-        let stop = net_path.parent().unwrap_or(Path::new(".")).join("STOP");
-        let deadline = Instant::now() + Duration::from_secs_f64(watch_min * 60.0);
-        loop {
-            if stop.exists() {
-                println!("STOP file present; strength watcher exiting");
-                return;
-            }
-            if Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(Duration::from_secs(15));
-        }
+        std::thread::sleep(Duration::from_secs_f64(watch_minutes * 60.0));
     }
+}
+
+pub fn field_gauge(args: &[String]) {
+    let net_path: PathBuf = arg(
+        args,
+        "--net",
+        PathBuf::from("runs/battlesnake/logit-p4/latest.ot"),
+    );
+    let sets: u32 = arg(args, "--sets", 8);
+    let seed: u64 = arg(args, "--seed", 0xF1E1_D400_u64);
+    let dev = device_for();
+    let cfg = net_config_for(args, &net_path);
+    let kind = if dev == tch::Device::Cpu {
+        Kind::Float
+    } else {
+        Kind::Half
+    };
+    let infer = Infer::load(&net_path, cfg, dev, kind)
+        .unwrap_or_else(|error| panic!("failed to load {}: {error}", net_path.display()));
+    let opponents = [
+        Opponent::Random,
+        Opponent::Search {
+            millis: 1,
+            depth: 4,
+        },
+        Opponent::Search {
+            millis: 5,
+            depth: 8,
+        },
+    ];
+    let started = Instant::now();
+    let entries = field_ladder(&infer, solve(args), &opponents, sets, seed);
+    let detail = entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{}:{:.3}[{:.3},{:.3}]({}-{}-{})",
+                entry.name,
+                entry.score,
+                entry.ci_low,
+                entry.ci_high,
+                entry.wins,
+                entry.draws,
+                entry.losses
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    println!(
+        "field win share (fair=0.250): {detail} ({:.1}s, {} seat-rotated games/opponent)",
+        started.elapsed().as_secs_f32(),
+        sets * 4,
+    );
+}
+
+/// Deterministic paired-seat comparison for two independently trained
+/// checkpoints. Each network retains its own simultaneous backup rule; the
+/// opponent never observes the other network's current action.
+pub fn compare(args: &[String]) {
+    let first_path: PathBuf = arg(
+        args,
+        "--first",
+        PathBuf::from("runs/battlesnake/logit-p2/latest.ot"),
+    );
+    let second_path: PathBuf = arg(
+        args,
+        "--second",
+        PathBuf::from("runs/battlesnake/maximin-p2/latest.ot"),
+    );
+    let first_solve = solve_method(
+        args,
+        "--first-method",
+        "--first-rationality",
+        "--first-solve-iters",
+        "--first-damping",
+        BackupMethod::Logit,
+    );
+    let second_solve = solve_method(
+        args,
+        "--second-method",
+        "--second-rationality",
+        "--second-solve-iters",
+        "--second-damping",
+        BackupMethod::Maximin,
+    );
+    let pairs: u32 = arg(args, "--pairs", 32);
+    let seed: u64 = arg(args, "--seed", 0xBA_CE_0F_F0_u64);
+    let dev = device_for();
+    let kind = if dev == tch::Device::Cpu {
+        Kind::Float
+    } else {
+        Kind::Half
+    };
+    let first_cfg = net_config_for(args, &first_path);
+    let second_cfg = net_config_for(args, &second_path);
+    let first = Infer::load(&first_path, first_cfg, dev, kind)
+        .unwrap_or_else(|error| panic!("failed to load {}: {error}", first_path.display()));
+    let second = Infer::load(&second_path, second_cfg, dev, kind)
+        .unwrap_or_else(|error| panic!("failed to load {}: {error}", second_path.display()));
+    let started = Instant::now();
+    let (wins, draws, losses) = net_vs_net(&first, first_solve, &second, second_solve, pairs, seed);
+    let (score, ci_low, ci_high) = score_interval(wins, draws, losses, 0.5);
+    println!(
+        "compare: {} ({} r={:.1} i={} d={:.2}) vs {} ({} r={:.1} i={} d={:.2}): {score:.3} \
+         (95% CI {ci_low:.3}..{ci_high:.3}, {wins}-{draws}-{losses}, {:.1}s, seed {seed})",
+        first_path.display(),
+        first_solve.method.name(),
+        first_solve.rationality,
+        first_solve.solve_iters,
+        first_solve.damping,
+        second_path.display(),
+        second_solve.method.name(),
+        second_solve.rationality,
+        second_solve.solve_iters,
+        second_solve.damping,
+        started.elapsed().as_secs_f32(),
+    );
+}
+
+pub fn field_compare(args: &[String]) {
+    let first_path: PathBuf = arg(
+        args,
+        "--first",
+        PathBuf::from("runs/battlesnake/logit-p4-a/latest.ot"),
+    );
+    let second_path: PathBuf = arg(
+        args,
+        "--second",
+        PathBuf::from("runs/battlesnake/logit-p4-b/latest.ot"),
+    );
+    let first_solve = solve_method(
+        args,
+        "--first-method",
+        "--first-rationality",
+        "--first-solve-iters",
+        "--first-damping",
+        BackupMethod::Logit,
+    );
+    let second_solve = solve_method(
+        args,
+        "--second-method",
+        "--second-rationality",
+        "--second-solve-iters",
+        "--second-damping",
+        BackupMethod::Logit,
+    );
+    let sets: u32 = arg(args, "--sets", 8);
+    let seed: u64 = arg(args, "--seed", 0xF1E1_DA7A_u64);
+    let dev = device_for();
+    let kind = if dev == tch::Device::Cpu {
+        Kind::Float
+    } else {
+        Kind::Half
+    };
+    let first = Infer::load(&first_path, net_config_for(args, &first_path), dev, kind)
+        .unwrap_or_else(|error| panic!("failed to load {}: {error}", first_path.display()));
+    let second = Infer::load(&second_path, net_config_for(args, &second_path), dev, kind)
+        .unwrap_or_else(|error| panic!("failed to load {}: {error}", second_path.display()));
+    let started = Instant::now();
+    let first_field = net_vs_net_field(&first, first_solve, &second, second_solve, sets, seed);
+    eprintln!(
+        "field compare progress: first composition complete ({:.1}s)",
+        started.elapsed().as_secs_f32()
+    );
+    let second_field = net_vs_net_field(&second, second_solve, &first, first_solve, sets, seed);
+    let first_score = score_interval(first_field.0, first_field.1, first_field.2, 0.0);
+    let second_score = score_interval(second_field.0, second_field.1, second_field.2, 0.0);
+    println!(
+        "field compare (fair=0.250, {} games/composition, seed {seed}):\n  {} hero vs 3x {}: \
+         {:.3} (95% CI {:.3}..{:.3}, {}-{}-{})\n  {} hero vs 3x {}: {:.3} \
+         (95% CI {:.3}..{:.3}, {}-{}-{}); {:.1}s",
+        sets * 4,
+        first_path.display(),
+        second_path.display(),
+        first_score.0,
+        first_score.1,
+        first_score.2,
+        first_field.0,
+        first_field.1,
+        first_field.2,
+        second_path.display(),
+        first_path.display(),
+        second_score.0,
+        second_score.1,
+        second_score.2,
+        second_field.0,
+        second_field.1,
+        second_field.2,
+        started.elapsed().as_secs_f32(),
+    );
+}
+
+pub fn split_compare(args: &[String]) {
+    let first_path: PathBuf = arg(
+        args,
+        "--first",
+        PathBuf::from("runs/battlesnake/logit-p4-a/latest.ot"),
+    );
+    let second_path: PathBuf = arg(
+        args,
+        "--second",
+        PathBuf::from("runs/battlesnake/logit-p4-b/latest.ot"),
+    );
+    let first_solve = solve_method(
+        args,
+        "--first-method",
+        "--first-rationality",
+        "--first-solve-iters",
+        "--first-damping",
+        BackupMethod::Logit,
+    );
+    let second_solve = solve_method(
+        args,
+        "--second-method",
+        "--second-rationality",
+        "--second-solve-iters",
+        "--second-damping",
+        BackupMethod::Logit,
+    );
+    let sets: u32 = arg(args, "--sets", 8);
+    let seed: u64 = arg(args, "--seed", 0x5A11_7DA7A_u64);
+    let dev = device_for();
+    let kind = if dev == tch::Device::Cpu {
+        Kind::Float
+    } else {
+        Kind::Half
+    };
+    let first = Infer::load(&first_path, net_config_for(args, &first_path), dev, kind)
+        .unwrap_or_else(|error| panic!("failed to load {}: {error}", first_path.display()));
+    let second = Infer::load(&second_path, net_config_for(args, &second_path), dev, kind)
+        .unwrap_or_else(|error| panic!("failed to load {}: {error}", second_path.display()));
+    let started = Instant::now();
+    let result = net_vs_net_split(&first, first_solve, &second, second_solve, sets, seed);
+    let score = score_interval(result.0, result.1, result.2, 0.5);
+    println!(
+        "split compare (fair=0.500, {} games, seed {seed}):\n  {} (2 snakes) vs {} (2 snakes): \
+         {:.3} (95% CI {:.3}..{:.3}, {}-{}-{}); {:.1}s",
+        sets * 6,
+        first_path.display(),
+        second_path.display(),
+        score.0,
+        score.1,
+        score.2,
+        result.0,
+        result.1,
+        result.2,
+        started.elapsed().as_secs_f32(),
+    );
 }

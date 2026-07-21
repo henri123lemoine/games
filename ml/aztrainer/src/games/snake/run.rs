@@ -1,7 +1,4 @@
-//! The snake training entry: the batched self-play + tch training loop, the
-//! benchmark, and the CLI dispatch. The net/optimizer/replay/run-dir machinery
-//! is the shared `aztrainer` core; this module supplies snake's config, the
-//! opponent-pool snapshot loading, and the per-iteration metric fields.
+//! Canonical simultaneous Battlesnake training entry and preflight benchmark.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -10,22 +7,20 @@ use game_core::Rng;
 use nn_infer::HeadKind;
 use tch::{Device, Kind};
 
-use super::eval::{Opponent, ladder};
-use super::selfplay::{SelfPlay, SelfPlayConfig, mix};
+use super::sim_selfplay::{BackupMethod, SelfPlay, SelfPlayConfig, mix};
 use crate::net::{Infer, NetConfig};
 use crate::rundir::{append_line, device, epoch_secs, save_with_retry};
 use crate::train::{OptConfig, Replay, Trainer};
-use solvers::azero::PuctConfig;
 
-const DASHBOARD: &str = include_str!("../../../../../assets/azsnake_dashboard.html");
-/// The four absolute headings the snake policy scores.
 const ACTIONS: i64 = 4;
+const BOARD_SIZE: i64 = snake::battlesnake::SIDE as i64;
 
 pub fn config(blocks: usize, channels: i64, size: i64) -> NetConfig {
+    assert_eq!(size, BOARD_SIZE, "canonical Battlesnake is 11x11");
     NetConfig {
         blocks,
         channels,
-        planes: snake::encode::PLANES as i64,
+        planes: snake::battlesnake_encode::PLANES as i64,
         size,
         head: HeadKind::GlobalPoolDense,
         policy_len: ACTIONS,
@@ -33,469 +28,366 @@ pub fn config(blocks: usize, channels: i64, size: i64) -> NetConfig {
     }
 }
 
-fn arg<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> T {
+pub fn parse_arg<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> T {
     arg_opt(args, name).unwrap_or(default)
 }
 
 fn arg_opt<T: std::str::FromStr>(args: &[String], name: &str) -> Option<T> {
     args.windows(2)
-        .find(|w| w[0] == name)
-        .and_then(|w| w[1].parse().ok())
+        .find(|window| window[0] == name)
+        .and_then(|window| window[1].parse().ok())
 }
 
-/// Net architecture for a checkpoint: explicit `--blocks`/`--ch`/`--size` flags
-/// win, then the checkpoint's own `<name>.json` sidecar, then the latest `start`
-/// event in the metrics.jsonl beside it.
 pub fn net_config_for(args: &[String], net_path: &Path) -> NetConfig {
     let (blocks, channels, size) = crate::rundir::resolve_arch(
         arg_opt(args, "--blocks"),
         arg_opt(args, "--ch"),
         arg_opt(args, "--size"),
         net_path,
-        (4, 64, 20),
+        (4, 64, BOARD_SIZE),
     );
     config(blocks, channels, size)
 }
 
-/// The most recent `pool_size` snapshot checkpoints (`ckpt-NNNNNN.ot`) in `dir`,
-/// oldest-to-newest. The opponent pool draws from these.
-fn snapshot_paths(dir: &Path, pool_size: usize) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut ckpts: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("ckpt-") && n.ends_with(".ot"))
-        })
-        .collect();
-    ckpts.sort();
-    if ckpts.len() > pool_size {
-        ckpts.drain(..ckpts.len() - pool_size);
-    }
-    ckpts
-}
-
-fn last_lr(path: &Path) -> Option<f64> {
-    let text = std::fs::read_to_string(path).ok()?;
-    text.lines().rev().find_map(|l| {
-        let v: serde_json::Value = serde_json::from_str(l).ok()?;
-        if v.get("policy_loss").is_some() {
-            v.get("lr")?.as_f64()
-        } else {
-            None
-        }
-    })
+pub fn device_for() -> Device {
+    device()
 }
 
 #[allow(clippy::too_many_lines)]
 pub fn run(args: &[String]) {
-    let hours: f64 = arg(args, "--hours", 5.0);
-    let dir: PathBuf = arg(args, "--dir", PathBuf::from("../../data/azsnake/run1"));
-    let sims: u32 = arg(args, "--sims", 320);
-    let leaves: u32 = arg(args, "--leaves", 8);
-    let concurrent: usize = arg(args, "--concurrent", 256);
-    let samples_per_iter: usize = arg(args, "--samples-per-iter", 8192);
-    let temp_plies: u16 = arg(args, "--temp-plies", 12);
-    let alpha: f64 = arg(args, "--alpha", 1.0);
-    let value_mix: f32 = arg(args, "--value-mix", 0.3);
-    let resign_fp_target: f64 = arg(args, "--resign-fp-target", 0.05);
-    let resign_q: f64 = arg(args, "--resign-q", 0.95);
-    let resign_min_ply: u16 = arg(args, "--resign-ply", 20);
-    let resign_off: f64 = arg(args, "--resign-off", 0.1);
-    let fast_sims: u32 = arg(args, "--fast-sims", 32);
-    let full_sims: u32 = arg(args, "--full-sims", sims.max(256));
-    let full_prob: f64 = arg(args, "--full-prob", 0.0);
-    let gamma: f32 = arg(args, "--gamma", 0.997);
-    let margin_w: f32 = arg(args, "--margin-w", 0.25);
-    let pool_frac: f64 = arg(args, "--pool-frac", 0.2);
-    let pool_size: usize = arg(args, "--pool-size", 5);
-    let forced_k: f32 = arg(args, "--forced-k", 0.0);
-    let swa_decay: f64 = arg(args, "--swa-decay", 0.0);
-    let use_sgd = arg(args, "--optimizer", String::from("adam")) == "sgd";
-    let momentum: f64 = arg(args, "--momentum", 0.9);
-    let grad_clip: f64 = arg(args, "--grad-clip", 0.0);
-    let warmup_iters: u64 = arg(args, "--warmup-iters", 0);
-    let batch: usize = arg(args, "--batch", 512);
-    let reuse: f64 = arg(args, "--reuse", 1.8);
-    let replay_cap: usize = arg(args, "--replay", 400_000);
-    let lr: f64 = arg(args, "--lr", 1e-3);
-    let weight_decay: f64 = arg(args, "--wd", 1e-4);
-    let eval_every: u64 = arg(args, "--eval-every", 4);
-    let eval_pairs: u32 = arg(args, "--eval-pairs", 16);
-    let eval_sims: u32 = arg(args, "--eval-sims", 128);
-    let snapshot_every: u64 = arg(args, "--snapshot-every", 30);
-    let max_iters: u64 = arg(args, "--max-iters", 0);
+    let players: usize = parse_arg(args, "--players", 2);
+    let method: BackupMethod = parse_arg(args, "--method", BackupMethod::Logit);
+    let default_dir = PathBuf::from(format!("runs/battlesnake/{}-p{players}", method.name()));
+    let dir: PathBuf = parse_arg(args, "--dir", default_dir);
+    let hours: f64 = parse_arg(args, "--hours", 0.5);
+    let default_concurrent = if players == 4 { 2 } else { 128 };
+    let concurrent: usize = parse_arg(args, "--concurrent", default_concurrent);
+    let samples_per_iter: usize = parse_arg(args, "--samples-per-iter", 4096);
+    let rationality: f32 = parse_arg(args, "--rationality", 8.0);
+    let solve_iters: usize = parse_arg(args, "--solve-iters", 32);
+    let damping: f32 = parse_arg(args, "--damping", 0.5);
+    let root_noise: f32 = parse_arg(args, "--root-noise", 0.15);
+    let dirichlet_alpha: f64 = parse_arg(args, "--alpha", 1.0);
+    let sample_turns: u16 = parse_arg(args, "--sample-turns", 20);
+    let gamma: f32 = parse_arg(args, "--gamma", 0.997);
+    let max_turns: u16 = parse_arg(args, "--max-turns", 750);
+    let batch: usize = parse_arg(args, "--batch", 256);
+    let reuse: f64 = parse_arg(args, "--reuse", 1.5);
+    let replay_cap: usize = parse_arg(args, "--replay", 50_000);
+    let lr: f64 = parse_arg(args, "--lr", 1e-3);
+    let value_mix: f32 = parse_arg(args, "--value-mix", 0.25);
+    let weight_decay: f64 = parse_arg(args, "--wd", 1e-4);
+    let grad_clip: f64 = parse_arg(args, "--grad-clip", 1.0);
+    let swa_decay: f64 = parse_arg(args, "--swa-decay", 0.0);
+    let snapshot_every: u64 = parse_arg(args, "--snapshot-every", 10);
+    let max_iters: u64 = parse_arg(args, "--max-iters", 0);
+    let seed: u64 = parse_arg(args, "--seed", 0xBA77_1E5A);
 
-    let net_cfg = net_config_for(args, &dir.join("latest.ot"));
-    let (blocks, channels, size) = (net_cfg.blocks, net_cfg.channels, net_cfg.size);
-    let sp_cfg = SelfPlayConfig {
-        puct: PuctConfig {
-            sims,
-            max_leaves: leaves,
-            dirichlet_alpha: alpha,
-            forced_playouts_k: forced_k,
-            ..PuctConfig::default()
-        },
+    if !(2..=4).contains(&players) {
+        panic!("--players must be 2, 3, or 4");
+    }
+    if method == BackupMethod::Maximin && players != 2 {
+        panic!("--method maximin is defined only for two-player zero-sum games");
+    }
+    let run_args = RunArgs {
+        args,
+        method,
+        dir,
+        hours,
         concurrent,
-        temp_plies,
-        resign_q,
-        resign_min_ply,
-        resign_off,
-        fast_sims,
-        full_sims,
-        full_prob,
+        samples_per_iter,
+        rationality,
+        solve_iters,
+        damping,
+        root_noise,
+        dirichlet_alpha,
+        sample_turns,
         gamma,
-        margin_w,
-        pool_frac,
+        max_turns,
+        batch,
+        reuse,
+        replay_cap,
+        lr,
+        value_mix,
+        weight_decay,
+        grad_clip,
+        swa_decay,
+        snapshot_every,
+        max_iters,
+        seed,
     };
+    match players {
+        2 => run_players::<2>(run_args),
+        3 => run_players::<3>(run_args),
+        4 => run_players::<4>(run_args),
+        _ => unreachable!(),
+    }
+}
 
-    std::fs::create_dir_all(&dir).expect("create run dir");
-    std::fs::write(dir.join("dashboard.html"), DASHBOARD).expect("write dashboard");
-    let latest = dir.join("latest.ot");
-    let metrics = dir.join("metrics.jsonl");
-    let stop = dir.join("STOP");
+struct RunArgs<'a> {
+    args: &'a [String],
+    method: BackupMethod,
+    dir: PathBuf,
+    hours: f64,
+    concurrent: usize,
+    samples_per_iter: usize,
+    rationality: f32,
+    solve_iters: usize,
+    damping: f32,
+    root_noise: f32,
+    dirichlet_alpha: f64,
+    sample_turns: u16,
+    gamma: f32,
+    max_turns: u16,
+    batch: usize,
+    reuse: f64,
+    replay_cap: usize,
+    lr: f64,
+    value_mix: f32,
+    weight_decay: f64,
+    grad_clip: f64,
+    swa_decay: f64,
+    snapshot_every: u64,
+    max_iters: u64,
+    seed: u64,
+}
+
+fn run_players<const N: usize>(a: RunArgs<'_>) {
+    std::fs::create_dir_all(&a.dir).expect("create durable run directory");
+    let latest = a.dir.join("latest.ot");
+    let metrics = a.dir.join("metrics.jsonl");
+    let stop = a.dir.join("STOP");
     if stop.exists() {
         std::fs::remove_file(&stop).expect("clear stale STOP file");
     }
 
+    let net_cfg = net_config_for(a.args, &latest);
     let dev = device();
-    let opt_cfg = OptConfig {
-        sgd: use_sgd,
-        momentum,
-        weight_decay,
-        grad_clip,
-    };
-    let mut trainer = Trainer::new(dev, net_cfg, lr, value_mix, swa_decay, opt_cfg);
-    let mut iter = 0u64;
+    let mut trainer = Trainer::new(
+        dev,
+        net_cfg,
+        a.lr,
+        a.value_mix,
+        a.swa_decay,
+        OptConfig {
+            sgd: false,
+            momentum: 0.9,
+            weight_decay: a.weight_decay,
+            grad_clip: a.grad_clip,
+        },
+    );
+    let mut iter = crate::rundir::last_iter(&metrics);
+    let continuity;
     if latest.exists() {
-        trainer.load(&latest).unwrap_or_else(|e| {
-            eprintln!("failed to load {}: {e}", latest.display());
-            std::process::exit(1);
-        });
-        iter = crate::rundir::last_iter(&metrics);
-        println!("resumed {} at iter {iter}", latest.display());
-    } else if let Some(seed) = arg_opt::<PathBuf>(args, "--init-from") {
-        trainer.init_from(&seed).unwrap_or_else(|e| {
-            eprintln!("failed to seed from {}: {e}", seed.display());
-            std::process::exit(1);
-        });
-        println!("seeded weights from {} (transfer)", seed.display());
+        trainer
+            .load(&latest)
+            .unwrap_or_else(|error| panic!("failed to resume {}: {error}", latest.display()));
+        println!(
+            "checkpoint continuation: {} at iter {iter} (weights restored; optimizer and replay fresh)",
+            latest.display()
+        );
+        continuity = "weights-only-continuation";
+    } else if let Some(seed_path) = arg_opt::<PathBuf>(a.args, "--init-from") {
+        trainer
+            .init_from(&seed_path)
+            .unwrap_or_else(|error| panic!("failed to seed from {}: {error}", seed_path.display()));
+        println!("fresh run seeded from {}", seed_path.display());
+        continuity = "fresh-dir-seeded-weights";
+    } else {
+        println!("fresh scratch run");
+        continuity = "fresh-scratch";
     }
-    let mut current_lr = lr;
-    let mut lr_dropped = false;
-    if iter > 0
-        && let Some(prev) = last_lr(&metrics)
-        && prev < lr
-    {
-        trainer.set_lr(prev);
-        current_lr = prev;
-        lr_dropped = true;
-        println!("restored lr {prev} from the previous leg (base {lr})");
-    }
-    let mut pool = SelfPlay::new(sp_cfg, mix(0x60A1_5EED, 0));
-    let mut replay: Replay<super::sample::Sample> = Replay::new(replay_cap);
-    let mut calib_pool: std::collections::VecDeque<f64> = std::collections::VecDeque::new();
-    let mut live_resign_q = resign_q;
+
+    let sp_cfg = SelfPlayConfig {
+        concurrent: a.concurrent,
+        method: a.method,
+        rationality: a.rationality,
+        solve_iters: a.solve_iters,
+        damping: a.damping,
+        root_noise: a.root_noise,
+        dirichlet_alpha: a.dirichlet_alpha,
+        sample_turns: a.sample_turns,
+        gamma: a.gamma,
+        max_turns: a.max_turns,
+        safety_mask: true,
+    };
+    let mut selfplay = SelfPlay::<N>::new(sp_cfg, mix(a.seed, iter));
+    let mut replay = Replay::new(a.replay_cap);
+    let mut train_rng = Rng::new(mix(a.seed, 0x7A11_0000));
+    let inference_kind = if dev == Device::Cpu {
+        Kind::Float
+    } else {
+        Kind::Half
+    };
 
     append_line(
         &metrics,
         &serde_json::json!({
             "event": "start", "time": epoch_secs(), "iter": iter,
-            "blocks": blocks, "channels": channels, "size": size, "sims": sims,
-            "concurrent": concurrent, "samples_per_iter": samples_per_iter,
-            "batch_size": batch, "replay_capacity": replay_cap, "lr": lr,
-            "eval_every": eval_every, "eval_pairs": eval_pairs,
-            "eval_sims": eval_sims, "value_mix": value_mix,
-            "fast_sims": fast_sims, "full_sims": full_sims, "full_prob": full_prob,
-            "gamma": gamma, "margin_w": margin_w,
-            "pool_frac": pool_frac, "pool_size": pool_size,
-            "forced_k": forced_k, "swa_decay": swa_decay,
-            "optimizer": if use_sgd { "sgd" } else { "adam" },
-            "grad_clip": grad_clip, "warmup_iters": warmup_iters,
-            "resign_fp_target": resign_fp_target, "alpha": alpha,
-            "threads": rayon::current_num_threads(),
+            "continuity": continuity,
+            "rules": "canonical-simultaneous-11x11", "players": N,
+            "method": a.method.name(), "joint_actions": 4usize.pow(N as u32),
+            "hours": a.hours, "seed": a.seed, "max_iters": a.max_iters,
+            "blocks": net_cfg.blocks, "channels": net_cfg.channels,
+            "planes": net_cfg.planes, "size": net_cfg.size,
+            "concurrent": a.concurrent, "samples_per_iter": a.samples_per_iter,
+            "rationality": a.rationality, "solve_iters": a.solve_iters,
+            "damping": a.damping, "root_noise": a.root_noise,
+            "dirichlet_alpha": a.dirichlet_alpha, "sample_turns": a.sample_turns,
+            "safety_mask": true,
+            "gamma": a.gamma, "max_turns": a.max_turns,
+            "batch": a.batch, "reuse": a.reuse, "replay": a.replay_cap,
+            "lr": a.lr, "value_mix": a.value_mix,
+            "weight_decay": a.weight_decay, "grad_clip": a.grad_clip,
+            "swa_decay": a.swa_decay, "snapshot_every": a.snapshot_every,
+            "device": format!("{dev:?}"),
         })
         .to_string(),
     );
     println!(
-        "run: {hours:.1}h budget, {blocks}x{channels} resnet, {size}x{size} board on {dev:?}, \
-         {sims} sims/move, {concurrent} concurrent games, {samples_per_iter} samples/iter, dir {}",
-        dir.display()
+        "run: {:.2}h {} p{N}, {}x{} net, {} concurrent, dir {} on {dev:?}",
+        a.hours,
+        a.method.name(),
+        net_cfg.blocks,
+        net_cfg.channels,
+        a.concurrent,
+        a.dir.display(),
     );
 
-    let budget_secs = hours * 3600.0;
-    let mut work_secs = 0.0f64;
-    let start = Instant::now();
-    let opponents = [Opponent::Random, Opponent::Greedy, Opponent::Mcts(256)];
-    let mut pool_paths: Vec<PathBuf> = Vec::new();
+    let started = Instant::now();
     loop {
-        iter += 1;
-
-        if pool_size > 0 && pool_frac > 0.0 {
-            let latest_paths = snapshot_paths(&dir, pool_size);
-            if latest_paths != pool_paths {
-                let nets: Vec<Infer> = latest_paths
-                    .iter()
-                    .filter_map(|p| Infer::load(p, net_cfg, dev, Kind::Half).ok())
-                    .collect();
-                println!("opponent pool: {} past checkpoints", nets.len());
-                pool.set_pool(nets);
-                pool_paths = latest_paths;
-            }
-        }
-        if warmup_iters > 0 {
-            if iter <= warmup_iters {
-                trainer.set_lr(current_lr * iter as f64 / warmup_iters as f64);
-            } else if iter == warmup_iters + 1 {
-                trainer.set_lr(current_lr);
-            }
-        }
-        let sp_start = Instant::now();
-        let infer = Infer::snapshot(trainer.infer_vs(), net_cfg, Kind::Half);
-        let (samples, stats, calib) = pool.collect(&infer, samples_per_iter.max(1));
-        let self_play_secs = sp_start.elapsed().as_secs_f32();
-        let n_new = samples.len();
-        replay.extend(samples);
-
-        calib_pool.extend(calib);
-        while calib_pool.len() > 1000 {
-            calib_pool.pop_front();
-        }
-        if calib_pool.len() >= 100 {
-            let mut sorted: Vec<f64> = calib_pool.iter().copied().collect();
-            sorted.sort_by(f64::total_cmp);
-            let q = ((resign_fp_target * sorted.len() as f64) as usize).min(sorted.len() - 1);
-            let t = sorted[q];
-            live_resign_q = (-t).clamp(0.5, 0.995);
-            pool.set_resign_q(live_resign_q);
-        }
-
-        let steps = ((n_new as f64 * reuse) / batch as f64).ceil() as usize;
-        let train_start = Instant::now();
-        let (policy_loss, value_loss) =
-            trainer.train(&replay, steps, batch, &mut Rng::new(mix(0xC0FFEE, iter)));
-        trainer.update_swa();
-        let train_secs = train_start.elapsed().as_secs_f32();
-
-        save_with_retry(&trainer, &latest);
-        if let Err(e) = trainer.save_swa(&dir.join("latest_swa.ot")) {
-            eprintln!("save_swa failed: {e}");
-        }
-        if iter.is_multiple_of(snapshot_every) {
-            save_with_retry(&trainer, &dir.join(format!("ckpt-{iter:06}.ot")));
-        }
-
-        let mut eval_fields: Option<(f32, serde_json::Value)> = None;
-        let mut eval_human = String::new();
-        let mut eval_work = 0.0f32;
-        if iter == 1 || iter.is_multiple_of(eval_every) {
-            let infer = Infer::snapshot(trainer.infer_vs(), net_cfg, Kind::Half);
-            let t = Instant::now();
-            let entries = ladder(&infer, &opponents, eval_pairs, eval_sims, mix(0xE7A1, iter));
-            let eval_secs = t.elapsed().as_secs_f32();
-            eval_work = eval_secs;
-            let table: serde_json::Map<String, serde_json::Value> = entries
-                .iter()
-                .map(|e| {
-                    (
-                        e.name.clone(),
-                        serde_json::json!({
-                            "score": e.score, "w": e.wins, "d": e.draws, "l": e.losses
-                        }),
-                    )
-                })
-                .collect();
-            eval_fields = Some((eval_secs, serde_json::Value::Object(table)));
-            eval_human = format!(
-                " | eval [{eval_secs:.0}s] {}",
-                entries
-                    .iter()
-                    .map(|e| format!("{} {:.2}", e.name, e.score))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
-
-        let elapsed_min = start.elapsed().as_secs_f64() / 60.0;
-        let mut line = serde_json::json!({
-            "iter": iter, "time": epoch_secs(), "elapsed_min": elapsed_min,
-            "policy_loss": policy_loss, "value_loss": value_loss,
-            "n_new": n_new, "games": stats.games, "seat0_wins": stats.seat0_wins,
-            "avg_plies": stats.avg_plies(), "buffer": replay.len(),
-            "self_play_secs": self_play_secs, "train_secs": train_secs,
-            "resigned": stats.resigned, "capped": stats.capped,
-            "would_resign": stats.would_resign, "resign_fp": stats.resign_fp,
-            "resign_q": live_resign_q, "lr": current_lr,
-        });
-        if let Some((eval_secs, table)) = eval_fields {
-            line["eval_secs"] = serde_json::json!(eval_secs);
-            line["eval"] = table;
-        }
-        append_line(&metrics, &line.to_string());
-        println!(
-            "iter {iter:>4} [{elapsed_min:>6.1}m] loss {:.3} (p {policy_loss:.3} + v {value_loss:.3}) | \
-             {} games, {} seat0 wins ({} resign, {} capped), avg {:>3.0} plies, buffer {:>7} | \
-             sp {self_play_secs:>5.1}s train {train_secs:>4.1}s{eval_human}",
-            policy_loss + value_loss,
-            stats.games,
-            stats.seat0_wins,
-            stats.resigned,
-            stats.capped,
-            stats.avg_plies(),
-            replay.len(),
-        );
-
-        work_secs += f64::from(self_play_secs) + f64::from(train_secs) + f64::from(eval_work);
-        if !lr_dropped && work_secs > 0.6 * budget_secs {
-            current_lr = lr * 0.3;
-            trainer.set_lr(current_lr);
-            lr_dropped = true;
-            println!("lr {lr} -> {current_lr} at 60% of work budget");
-        }
-
-        let reason = if stop.exists() {
-            Some("STOP file")
-        } else if work_secs >= budget_secs {
-            Some("work budget reached")
-        } else if max_iters > 0 && iter >= max_iters {
-            Some("max iters reached")
-        } else {
-            None
-        };
-        if let Some(reason) = reason {
-            append_line(
-                &metrics,
-                &serde_json::json!({
-                    "event": "stop", "time": epoch_secs(), "iter": iter, "reason": reason,
-                })
-                .to_string(),
-            );
-            println!(
-                "stopping ({reason}) after iter {iter}; checkpoint at {}",
-                latest.display()
-            );
+        if stop.exists() || (a.max_iters > 0 && iter >= a.max_iters) {
             break;
         }
+        if started.elapsed().as_secs_f64() >= a.hours * 3600.0 {
+            break;
+        }
+        iter += 1;
+        let infer = Infer::snapshot(trainer.infer_vs(), net_cfg, inference_kind);
+        let selfplay_started = Instant::now();
+        let (samples, stats) = selfplay.collect(&infer, a.samples_per_iter.max(1));
+        let selfplay_secs = selfplay_started.elapsed().as_secs_f32();
+        let new_samples = samples.len();
+        replay.extend(samples);
+
+        let steps = ((new_samples as f64 * a.reuse) / a.batch as f64)
+            .ceil()
+            .max(1.0) as usize;
+        let train_started = Instant::now();
+        let (policy_loss, value_loss) = trainer.train(&replay, steps, a.batch, &mut train_rng);
+        trainer.update_swa();
+        let train_secs = train_started.elapsed().as_secs_f32();
+        save_with_retry(&trainer, &latest);
+        if a.snapshot_every > 0 && iter.is_multiple_of(a.snapshot_every) {
+            save_with_retry(&trainer, &a.dir.join(format!("ckpt-{iter:06}.ot")));
+        }
+        let samples_per_sec = new_samples as f32 / selfplay_secs.max(1e-6);
+        append_line(
+            &metrics,
+            &serde_json::json!({
+                "event": "train", "time": epoch_secs(), "iter": iter,
+                "method": a.method.name(), "players": N,
+                "samples": new_samples, "replay_size": replay.len(), "steps": steps,
+                "games": stats.games, "avg_turns": stats.avg_turns(),
+                "draws": stats.draws, "capped": stats.capped,
+                "root_evals": stats.root_evals, "leaf_evals": stats.leaf_evals,
+                "selfplay_secs": selfplay_secs, "train_secs": train_secs,
+                "samples_per_sec": samples_per_sec,
+                "policy_loss": policy_loss, "value_loss": value_loss,
+                "elapsed_hours": started.elapsed().as_secs_f64() / 3600.0,
+            })
+            .to_string(),
+        );
+        println!(
+            "iter {iter}: {new_samples} samples ({samples_per_sec:.0}/s), {} games x {:.1} turns, \
+             replay {}, train {steps} steps, loss p={policy_loss:.4} v={value_loss:.4}",
+            stats.games,
+            stats.avg_turns(),
+            replay.len(),
+        );
     }
+    save_with_retry(&trainer, &latest);
+    append_line(
+        &metrics,
+        &serde_json::json!({
+            "event": "stop", "time": epoch_secs(), "iter": iter,
+            "elapsed_hours": started.elapsed().as_secs_f64() / 3600.0,
+        })
+        .to_string(),
+    );
+    println!("stopped cleanly at iter {iter}: {}", latest.display());
 }
 
 pub fn bench(args: &[String]) {
-    use game_core::{Game, PolicyValueEncoder};
-    use snake::Duel;
-    use snake::encode::SnakeEncoder;
-
-    let blocks: usize = arg(args, "--blocks", 4);
-    let channels: i64 = arg(args, "--ch", 64);
-    let size: i64 = arg(args, "--size", 20);
-    let sims: u32 = arg(args, "--sims", 320);
-    let leaves: u32 = arg(args, "--leaves", 8);
-    let concurrent: usize = arg(args, "--concurrent", 256);
-    let samples: usize = arg(args, "--samples", 4096);
-
+    let players: usize = parse_arg(args, "--players", 2);
+    let method: BackupMethod = parse_arg(args, "--method", BackupMethod::Logit);
+    let samples: usize = parse_arg(args, "--samples", 512);
+    let concurrent: usize = parse_arg(args, "--concurrent", if players == 4 { 2 } else { 32 });
+    let blocks: usize = parse_arg(args, "--blocks", 4);
+    let channels: i64 = parse_arg(args, "--ch", 64);
+    let rationality: f32 = parse_arg(args, "--rationality", 8.0);
+    let solve_iters: usize = parse_arg(args, "--solve-iters", 32);
+    let damping: f32 = parse_arg(args, "--damping", 0.5);
+    let safety_mask: bool = parse_arg(args, "--safety-mask", true);
+    tch::manual_seed(7);
     let dev = device();
-    let net_cfg = config(blocks, channels, size);
-    let trainer = Trainer::new(
+    let cfg = config(blocks, channels, BOARD_SIZE);
+    let mut trainer = Trainer::new(
         dev,
-        net_cfg,
+        cfg,
         1e-3,
-        0.3,
+        0.25,
         0.0,
         OptConfig {
             sgd: false,
             momentum: 0.9,
             weight_decay: 1e-4,
-            grad_clip: 0.0,
+            grad_clip: 1.0,
         },
     );
-    let infer = Infer::snapshot(&trainer.vs, net_cfg, Kind::Half);
+    let kind = if dev == Device::Cpu {
+        Kind::Float
+    } else {
+        Kind::Half
+    };
+    let infer = Infer::snapshot(trainer.infer_vs(), cfg, kind);
     let sp_cfg = SelfPlayConfig {
-        puct: PuctConfig {
-            sims,
-            max_leaves: leaves,
-            dirichlet_alpha: 1.0,
-            ..PuctConfig::default()
-        },
         concurrent,
+        method,
+        rationality,
+        solve_iters,
+        damping,
+        safety_mask,
         ..SelfPlayConfig::default()
     };
-    let mut pool = SelfPlay::new(sp_cfg, 0xBE7C);
-
-    println!(
-        "bench: {blocks}x{channels} resnet, {size}x{size} board on {dev:?}, {sims} sims, {concurrent} games"
-    );
-
-    let game = Duel::new();
-    let enc = SnakeEncoder::new();
-    let synth = |n: usize| {
-        let mut s = game.initial_state();
-        let outs = game.chance_outcomes(&s);
-        game.apply(&mut s, outs[0].0);
-        let actions = game.legal_actions(&s);
-        (0..n)
-            .map(|_| crate::net::EvalRequest {
-                features: enc.encode_state(&game, &s),
-                support: actions
-                    .iter()
-                    .map(|&a| enc.action_index(&game, &s, a) as u16)
-                    .collect(),
-            })
-            .collect::<Vec<_>>()
+    let started = Instant::now();
+    let (generated, stats) = match players {
+        2 => SelfPlay::<2>::new(sp_cfg, 7).collect(&infer, samples),
+        3 => SelfPlay::<3>::new(sp_cfg, 7).collect(&infer, samples),
+        4 => SelfPlay::<4>::new(sp_cfg, 7).collect(&infer, samples),
+        _ => panic!("--players must be 2, 3, or 4"),
     };
-    for bs in [256usize, 1024, 4096] {
-        let reqs = synth(bs);
-        infer.forward_batch(&reqs);
-        let t = Instant::now();
-        let iters = 20;
-        for _ in 0..iters {
-            infer.forward_batch(&reqs);
-        }
-        let dt = t.elapsed().as_secs_f64();
-        println!(
-            "forward_batch {bs:>5}: {:>7.0} evals/s ({:.1} ms/batch)",
-            bs as f64 * iters as f64 / dt,
-            dt / iters as f64 * 1000.0
-        );
-    }
-
-    let t0 = Instant::now();
-    let (s, stats, _calib) = pool.collect(&infer, samples);
-    let dt = t0.elapsed().as_secs_f64();
-    let spg = stats.avg_plies().max(1.0) as f64;
+    let elapsed = started.elapsed().as_secs_f32();
+    let generated_count = generated.len();
+    drop(infer);
+    let mut replay = Replay::new(generated.len());
+    replay.extend(generated);
+    let train_started = Instant::now();
+    let mut rng = Rng::new(9);
+    let train_batch = samples.clamp(1, 128);
+    let (policy_loss, value_loss) = trainer.train(&replay, 2, train_batch, &mut rng);
+    let train_elapsed = train_started.elapsed().as_secs_f32();
     println!(
-        "self-play: {} samples in {dt:.1}s = {:.0} samples/s ({} games, avg {:.0} plies; \
-         cpu {:.1}s gpu {:.1}s; {} seat0 wins, {} resign, {} cap)",
-        s.len(),
-        s.len() as f64 / dt,
+        "preflight: {} p{players} mask={safety_mask}, {generated_count} samples (target {samples}) \
+         in {elapsed:.2}s ({:.0}/s), \
+         {} root + {} leaf evals, {} games, {:.1} avg turns, {} caps; \
+         two train steps in {train_elapsed:.2}s, loss p={policy_loss:.4} v={value_loss:.4}",
+        method.name(),
+        generated_count as f32 / elapsed.max(1e-6),
+        stats.root_evals,
+        stats.leaf_evals,
         stats.games,
-        spg,
-        stats.cpu_secs,
-        stats.gpu_secs,
-        stats.seat0_wins,
-        stats.resigned,
+        stats.avg_turns(),
         stats.capped,
     );
-
-    let mut trainer = trainer;
-    let mut replay: Replay<super::sample::Sample> = Replay::new(1_000_000);
-    replay.extend(s);
-    let t1 = Instant::now();
-    let steps = 30;
-    let (pl, vl) = trainer.train(&replay, steps, 512, &mut Rng::new(7));
-    let dt = t1.elapsed().as_secs_f64();
-    println!(
-        "train: {steps} steps of 512 in {dt:.1}s = {:.0} samples/s (losses p {pl:.3} v {vl:.3})",
-        steps as f64 * 512.0 / dt
-    );
-}
-
-/// The argument parser shared with the gauge module.
-pub(super) fn parse_arg<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> T {
-    arg(args, name, default)
-}
-
-pub(super) fn device_for() -> Device {
-    device()
 }

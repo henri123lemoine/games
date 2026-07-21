@@ -1,239 +1,177 @@
-//! The strength ladder: the net (batched PUCT, no noise, argmax) against fixed
-//! opponents — uniform random, a one-ply greedy [`DuelEval`] agent, and rollout
-//! MCTS over [`DuelEval`] — with paired random openings. All net games run in
-//! one pool so the GPU sees wide batches.
+//! Canonical simultaneous evaluation against fixed, non-leaking baselines.
 
-use game_core::{Agent, Eval, Game, Rng, Turn};
-use rayon::prelude::*;
-use snake::encode::SnakeEncoder;
-use snake::{Duel, DuelAction, DuelEval, DuelState};
-use solvers::azero::{self, Gather, PuctConfig, argmax};
-use solvers::mcts::Mcts;
+use std::time::Duration;
 
-use super::selfplay::mix;
-use crate::net::{EvalRequest, EvalResult, Infer};
+use game_core::{Rng, SimultaneousGame, SimultaneousTurn};
+use snake::battlesnake::search::{OpponentModel, SearchConfig, Searcher};
+use snake::battlesnake::{Battlesnake, BoardState, Direction, Rules};
 
-const OPENING_PLIES: usize = 2;
-/// Rollout-MCTS playouts are truncated here and scored by [`DuelEval`].
-const PLAYOUT_DEPTH: u32 = 60;
+use super::sim_selfplay::{SolveConfig, evaluate_states, mix};
+use crate::net::Infer;
 
-#[derive(Clone, Copy, PartialEq)]
+const TURN_CAP: u16 = 1_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opponent {
     Random,
-    /// One-ply greedy over [`DuelEval`].
-    Greedy,
-    /// Rollout MCTS (`solvers::Mcts` with [`DuelEval`]-truncated playouts).
-    Mcts(u32),
+    Search { millis: u64, depth: u8 },
 }
 
 impl Opponent {
     pub fn name(self) -> String {
         match self {
-            Opponent::Random => "random".into(),
-            Opponent::Greedy => "greedy".into(),
-            Opponent::Mcts(sims) => format!("mcts-{sims}"),
+            Self::Random => "random".into(),
+            Self::Search { millis, depth } => format!("bns-{millis}ms-d{depth}"),
         }
-    }
-
-    fn agent(self) -> Box<dyn Agent<Duel> + Send> {
-        match self {
-            Opponent::Random => Box::new(game_core::RandomAgent),
-            Opponent::Greedy => Box::new(GreedyAgent),
-            Opponent::Mcts(sims) => Box::new(RolloutMcts { sims }),
-        }
-    }
-}
-
-/// Picks the legal heading whose successor [`DuelEval`] scores highest for the
-/// mover, resolving the food chance node by expectation over a single sampled
-/// spawn (cheap and deterministic enough for a baseline).
-struct GreedyAgent;
-
-impl Agent<Duel> for GreedyAgent {
-    fn act(&self, g: &Duel, s: &DuelState, p: usize, rng: &mut Rng) -> usize {
-        let actions = g.legal_actions(s);
-        let mut best = 0;
-        let mut best_v = f64::NEG_INFINITY;
-        for (i, &a) in actions.iter().enumerate() {
-            let mut next = s.clone();
-            g.apply(&mut next, a);
-            while !g.is_terminal(&next) && matches!(g.turn(&next), Turn::Chance) {
-                let outs = g.chance_outcomes(&next);
-                let j = game_core::rand::sample_outcome(&outs, rng);
-                g.apply(&mut next, outs[j].0);
-            }
-            let v = DuelEval.eval(g, &next, p);
-            if v > best_v {
-                best_v = v;
-                best = i;
-            }
-        }
-        best
-    }
-}
-
-struct RolloutMcts {
-    sims: u32,
-}
-
-impl Agent<Duel> for RolloutMcts {
-    fn act(&self, g: &Duel, s: &DuelState, p: usize, rng: &mut Rng) -> usize {
-        Mcts::with_eval(self.sims, DuelEval, PLAYOUT_DEPTH).act(g, s, p, rng)
     }
 }
 
 pub struct LadderEntry {
     pub name: String,
     pub score: f64,
+    pub ci_low: f64,
+    pub ci_high: f64,
     pub wins: u32,
     pub draws: u32,
     pub losses: u32,
 }
 
 struct EvalGame {
-    state: DuelState,
+    game: Battlesnake<2>,
+    state: BoardState<2>,
     opponent: Opponent,
-    agent: Box<dyn Agent<Duel> + Send>,
-    /// 0 if the net plays seat 0.
     net_seat: usize,
-    search: azero::Search<Duel>,
-    rng: Rng,
+    searcher: Option<Searcher<2>>,
+    chance_rng: Rng,
+    opponent_rng: Rng,
+    net_rng: Rng,
     outcome: Option<f64>,
 }
 
 impl EvalGame {
-    /// Resolves chance, plays opponent plies, and checks termination; afterwards
-    /// the game is either finished or it is the net's turn.
-    fn advance_to_net_turn(&mut self, game: &Duel) {
-        loop {
-            if self.outcome.is_some() {
-                return;
+    fn new(seed: u64, opponent: Opponent, net_seat: usize) -> Self {
+        let game = Battlesnake::new(Rules {
+            seed,
+            ..Rules::default()
+        });
+        let state = game.initial_state();
+        let searcher = match opponent {
+            Opponent::Random => None,
+            Opponent::Search { millis, depth } => Some(Searcher::new(SearchConfig {
+                time_limit: Duration::from_millis(millis),
+                max_depth: depth,
+                quiescence_depth: 2,
+                opponent_model: OpponentModel::Full,
+                tt_bits: 12,
+                ..SearchConfig::default()
+            })),
+        };
+        Self {
+            game,
+            state,
+            opponent,
+            net_seat,
+            searcher,
+            // Seat-swapped games use identical chance and opponent streams.
+            // Separate streams keep random-opponent choices from perturbing
+            // food placement when game trajectories remain paired.
+            chance_rng: Rng::new(mix(seed, 0xC11A_CE00)),
+            opponent_rng: Rng::new(mix(seed, 0x0FF0_5E70)),
+            net_rng: Rng::new(mix(seed, 0x0E71_0000)),
+            outcome: None,
+        }
+    }
+
+    fn opponent_action(&mut self) -> Direction {
+        let seat = 1 - self.net_seat;
+        match self.opponent {
+            Opponent::Random => Direction::ALL[self.opponent_rng.below(4)],
+            Opponent::Search { .. } => {
+                self.searcher
+                    .as_mut()
+                    .expect("search opponent")
+                    .search(&self.game, &self.state, seat)
+                    .action
             }
-            if game.is_terminal(&self.state) {
-                self.outcome = Some(game.returns(&self.state, self.net_seat));
-                return;
-            }
-            match game.turn(&self.state) {
-                Turn::Chance => {
-                    let outs = game.chance_outcomes(&self.state);
-                    let j = game_core::rand::sample_outcome(&outs, &mut self.rng);
-                    game.apply(&mut self.state, outs[j].0);
-                }
-                Turn::Player(stm) if stm == self.net_seat => return,
-                Turn::Player(stm) => {
-                    let actions = game.legal_actions(&self.state);
-                    let i = self.agent.act(game, &self.state, stm, &mut self.rng);
-                    game.apply(&mut self.state, actions[i]);
-                }
-            }
+        }
+    }
+
+    fn finish_if_needed(&mut self) {
+        if self.game.is_terminal(&self.state) {
+            self.outcome = Some(self.game.returns(&self.state, self.net_seat));
+        } else if self.state.turn_number() >= TURN_CAP {
+            self.outcome = Some(0.0);
         }
     }
 }
 
-/// Plays `pairs` paired games per opponent (net as seat 0 then seat 1 from the
-/// same random opening), all concurrently.
 pub fn ladder(
     infer: &Infer,
+    solve: SolveConfig,
     opponents: &[Opponent],
     pairs: u32,
-    sims: u32,
     seed: u64,
 ) -> Vec<LadderEntry> {
-    let game = Duel::new();
-    let enc = SnakeEncoder::new();
-    let puct = PuctConfig {
-        sims,
-        root_noise: 0.0,
-        ..PuctConfig::default()
-    };
-    let mut games: Vec<EvalGame> = Vec::new();
-    for (oi, &opp) in opponents.iter().enumerate() {
+    let mut games = Vec::new();
+    for (opponent_index, &opponent) in opponents.iter().enumerate() {
         for pair in 0..pairs {
-            let mut rng = Rng::new(mix(seed, (oi as u64) << 32 | u64::from(pair)));
-            let opening = random_opening(&game, &mut rng);
-            for net_seat in 0..2 {
-                games.push(EvalGame {
-                    state: opening.clone(),
-                    opponent: opp,
-                    agent: opp.agent(),
-                    net_seat,
-                    search: azero::Search::new(None),
-                    rng: Rng::new(mix(
-                        seed,
-                        (oi as u64) << 40 | u64::from(pair) << 8 | net_seat as u64,
-                    )),
-                    outcome: None,
-                });
-            }
+            let game_seed = mix(seed, (opponent_index as u64) << 32 | u64::from(pair));
+            games.push(EvalGame::new(game_seed, opponent, 0));
+            games.push(EvalGame::new(game_seed, opponent, 1));
         }
     }
 
-    let mut results: Vec<Vec<EvalResult>> = (0..games.len()).map(|_| Vec::new()).collect();
-    loop {
-        let gathered: Vec<Vec<EvalRequest>> = games
-            .par_iter_mut()
-            .zip(results.par_iter_mut())
-            .map(|(g, r)| {
-                let mut pending = std::mem::take(r);
-                loop {
-                    g.advance_to_net_turn(&game);
-                    if g.outcome.is_some() {
-                        return Vec::new();
-                    }
-                    match g.search.advance(
-                        &game,
-                        &enc,
-                        &g.state,
-                        &puct,
-                        &mut g.rng,
-                        std::mem::take(&mut pending),
-                        &|_| false,
-                        None,
-                    ) {
-                        Gather::Requests(reqs) => return reqs,
-                        Gather::Done => {
-                            let visits = g.search.root_visits().to_vec();
-                            let actions = g.search.root_actions();
-                            let action = actions[argmax(&visits)];
-                            game.apply(&mut g.state, action);
-                            g.search = azero::Search::new(None);
-                        }
-                    }
-                }
-            })
-            .collect();
-
-        let mut flat: Vec<EvalRequest> = Vec::new();
-        let mut spans: Vec<(usize, usize)> = Vec::with_capacity(gathered.len());
-        for reqs in gathered {
-            spans.push((flat.len(), reqs.len()));
-            flat.extend(reqs);
+    while games.iter().any(|game| game.outcome.is_none()) {
+        for game in &mut games {
+            if game.outcome.is_none() {
+                resolve_chance(&game.game, &mut game.state, &mut game.chance_rng);
+                game.finish_if_needed();
+            }
         }
-        if flat.is_empty() {
+        let active: Vec<_> = games
+            .iter()
+            .enumerate()
+            .filter(|(_, game)| game.outcome.is_none())
+            .map(|(index, _)| index)
+            .collect();
+        if active.is_empty() {
             break;
         }
-        let mut outs = infer.forward_batch(&flat);
-        for (i, (start, len)) in spans.into_iter().enumerate().rev() {
-            results[i] = outs.split_off(start);
-            debug_assert_eq!(results[i].len(), len);
+        let active_games: Vec<_> = active.iter().map(|&index| games[index].game).collect();
+        let active_states: Vec<_> = active.iter().map(|&index| games[index].state).collect();
+        let neural = evaluate_states(infer, &active_games, &active_states, solve);
+        let opponents: Vec<_> = active
+            .iter()
+            .map(|&index| games[index].opponent_action())
+            .collect();
+        for ((&index, equilibrium), opponent_action) in active.iter().zip(neural).zip(opponents) {
+            let game = &mut games[index];
+            debug_assert!(equilibrium.values[game.net_seat].is_finite());
+            let mut joint = [Direction::Up; 2];
+            joint[game.net_seat] = Direction::ALL
+                [sample_strategy(&equilibrium.strategies[game.net_seat], &mut game.net_rng)];
+            joint[1 - game.net_seat] = opponent_action;
+            game.game.apply_joint(&mut game.state, &joint);
         }
     }
 
     opponents
         .iter()
-        .map(|&opp| {
-            let outcomes: Vec<f64> = games
+        .map(|&opponent| {
+            let outcomes: Vec<_> = games
                 .iter()
-                .filter(|g| g.opponent == opp)
-                .map(|g| g.outcome.unwrap_or(0.0))
+                .filter(|game| game.opponent == opponent)
+                .map(|game| game.outcome.unwrap_or(0.0))
                 .collect();
-            let wins = outcomes.iter().filter(|&&r| r > 0.0).count() as u32;
-            let losses = outcomes.iter().filter(|&&r| r < 0.0).count() as u32;
-            let n = outcomes.len() as u32;
-            let draws = n - wins - losses;
+            let wins = outcomes.iter().filter(|&&value| value > 0.0).count() as u32;
+            let losses = outcomes.iter().filter(|&&value| value < 0.0).count() as u32;
+            let draws = outcomes.len() as u32 - wins - losses;
+            let (score, ci_low, ci_high) = score_interval(wins, draws, losses, 0.5);
             LadderEntry {
-                name: opp.name(),
-                score: (f64::from(wins) + 0.5 * f64::from(draws)) / f64::from(n.max(1)),
+                name: opponent.name(),
+                score,
+                ci_low,
+                ci_high,
                 wins,
                 draws,
                 losses,
@@ -242,144 +180,491 @@ pub fn ladder(
         .collect()
 }
 
-/// Plays `pairs` paired games (each random opening with net A as seat 0, then
-/// seat 1) between two nets — both argmax, no root noise, at `sims`. Returns
-/// (net A wins, total games). The KataGo-style relative progress signal: A =
-/// current net, B = an older snapshot, so a win rate above 0.5 means the net is
-/// still improving.
-pub fn net_vs_net(a: &Infer, b: &Infer, pairs: u32, sims: u32, seed: u64) -> (u32, u32) {
-    let game = Duel::new();
-    let enc = SnakeEncoder::new();
-    let puct = PuctConfig {
-        sims,
-        root_noise: 0.0,
-        ..PuctConfig::default()
-    };
+struct FieldGame {
+    game: Battlesnake<4>,
+    state: BoardState<4>,
+    opponent: Opponent,
+    hero: usize,
+    searchers: [Option<Searcher<4>>; 4],
+    chance_rng: Rng,
+    opponent_rngs: [Rng; 4],
+    net_rng: Rng,
+    outcome: Option<f64>,
+}
 
-    struct RateGame {
-        state: DuelState,
-        search: azero::Search<Duel>,
-        a_seat: usize,
+impl FieldGame {
+    fn new(seed: u64, opponent: Opponent, hero: usize) -> Self {
+        let game = Battlesnake::new(Rules {
+            seed,
+            ..Rules::default()
+        });
+        let searchers = std::array::from_fn(|seat| match opponent {
+            Opponent::Random => None,
+            Opponent::Search { millis, depth } if seat != hero => {
+                Some(Searcher::new(SearchConfig {
+                    time_limit: Duration::from_millis(millis),
+                    max_depth: depth,
+                    quiescence_depth: 2,
+                    opponent_model: OpponentModel::MoveCombination,
+                    tt_bits: 12,
+                    ..SearchConfig::default()
+                }))
+            }
+            Opponent::Search { .. } => None,
+        });
+        Self {
+            state: game.initial_state(),
+            game,
+            opponent,
+            hero,
+            searchers,
+            chance_rng: Rng::new(mix(seed, 0xC11A_CE00)),
+            opponent_rngs: std::array::from_fn(|seat| {
+                Rng::new(mix(seed, 0x0FF0_5E70 + seat as u64))
+            }),
+            net_rng: Rng::new(mix(seed, 0x0E71_0000)),
+            outcome: None,
+        }
+    }
+
+    fn opponent_actions(&mut self) -> [Direction; 4] {
+        std::array::from_fn(|seat| {
+            if seat == self.hero || !self.game.is_active(&self.state, seat) {
+                return Direction::Up;
+            }
+            match self.opponent {
+                Opponent::Random => Direction::ALL[self.opponent_rngs[seat].below(4)],
+                Opponent::Search { .. } => {
+                    self.searchers[seat]
+                        .as_mut()
+                        .expect("field search opponent")
+                        .search(&self.game, &self.state, seat)
+                        .action
+                }
+            }
+        })
+    }
+
+    fn finish_if_needed(&mut self) {
+        if self.game.is_terminal(&self.state) {
+            self.outcome = Some(self.game.returns(&self.state, self.hero));
+        } else if self.state.turn_number() >= TURN_CAP {
+            self.outcome = Some(0.0);
+        }
+    }
+}
+
+/// Four-player field evaluation with the neural hero rotated through every
+/// seat. `score` is raw win share; fair play against three equal opponents is
+/// therefore 0.25 rather than the duel convention of counting draws as half.
+pub fn field_ladder(
+    infer: &Infer,
+    solve: SolveConfig,
+    opponents: &[Opponent],
+    sets: u32,
+    seed: u64,
+) -> Vec<LadderEntry> {
+    let mut games = Vec::new();
+    for (opponent_index, &opponent) in opponents.iter().enumerate() {
+        for set in 0..sets {
+            let game_seed = mix(seed, (opponent_index as u64) << 32 | u64::from(set));
+            for hero in 0..4 {
+                games.push(FieldGame::new(game_seed, opponent, hero));
+            }
+        }
+    }
+
+    while games.iter().any(|game| game.outcome.is_none()) {
+        for game in &mut games {
+            if game.outcome.is_none() {
+                resolve_chance(&game.game, &mut game.state, &mut game.chance_rng);
+                game.finish_if_needed();
+            }
+        }
+        let active: Vec<_> = games
+            .iter()
+            .enumerate()
+            .filter(|(_, game)| game.outcome.is_none())
+            .map(|(index, _)| index)
+            .collect();
+        if active.is_empty() {
+            break;
+        }
+        let active_games: Vec<_> = active.iter().map(|&index| games[index].game).collect();
+        let active_states: Vec<_> = active.iter().map(|&index| games[index].state).collect();
+        let neural = evaluate_states(infer, &active_games, &active_states, solve);
+        let opponents: Vec<_> = active
+            .iter()
+            .map(|&index| games[index].opponent_actions())
+            .collect();
+        for ((&index, equilibrium), mut joint) in active.iter().zip(neural).zip(opponents) {
+            let game = &mut games[index];
+            debug_assert!(equilibrium.values[game.hero].is_finite());
+            joint[game.hero] = Direction::ALL
+                [sample_strategy(&equilibrium.strategies[game.hero], &mut game.net_rng)];
+            game.game.apply_joint(&mut game.state, &joint);
+        }
+    }
+
+    opponents
+        .iter()
+        .map(|&opponent| {
+            let outcomes: Vec<_> = games
+                .iter()
+                .filter(|game| game.opponent == opponent)
+                .map(|game| game.outcome.unwrap_or(0.0))
+                .collect();
+            let wins = outcomes.iter().filter(|&&value| value > 0.0).count() as u32;
+            let losses = outcomes.iter().filter(|&&value| value < 0.0).count() as u32;
+            let draws = outcomes.len() as u32 - wins - losses;
+            let (score, ci_low, ci_high) = score_interval(wins, draws, losses, 0.0);
+            LadderEntry {
+                name: opponent.name(),
+                score,
+                ci_low,
+                ci_high,
+                wins,
+                draws,
+                losses,
+            }
+        })
+        .collect()
+}
+
+pub fn net_vs_net(
+    first: &Infer,
+    first_solve: SolveConfig,
+    second: &Infer,
+    second_solve: SolveConfig,
+    pairs: u32,
+    seed: u64,
+) -> (u32, u32, u32) {
+    struct Game {
+        game: Battlesnake<2>,
+        state: BoardState<2>,
+        first_seat: usize,
         rng: Rng,
+        first_rng: Rng,
+        second_rng: Rng,
         outcome: Option<f64>,
     }
-    let mut games: Vec<RateGame> = Vec::new();
+    let mut games = Vec::new();
     for pair in 0..pairs {
-        let mut rng = Rng::new(mix(seed, u64::from(pair)));
-        let opening = random_opening(&game, &mut rng);
-        for a_seat in 0..2 {
-            games.push(RateGame {
-                state: opening.clone(),
-                search: azero::Search::new(None),
-                a_seat,
-                rng: Rng::new(mix(seed, (u64::from(pair) << 8) | a_seat as u64)),
+        let game_seed = mix(seed, u64::from(pair));
+        for first_seat in 0..2 {
+            let game = Battlesnake::new(Rules {
+                seed: game_seed,
+                ..Rules::default()
+            });
+            games.push(Game {
+                state: game.initial_state(),
+                game,
+                first_seat,
+                rng: Rng::new(mix(game_seed, 0xC11A_CE00)),
+                first_rng: Rng::new(mix(game_seed, 0xF1A5_7000)),
+                second_rng: Rng::new(mix(game_seed, 0x5EC0_0000)),
+                outcome: None,
+            });
+        }
+    }
+    while games.iter().any(|game| game.outcome.is_none()) {
+        for game in &mut games {
+            if game.outcome.is_some() {
+                continue;
+            }
+            resolve_chance(&game.game, &mut game.state, &mut game.rng);
+            if game.game.is_terminal(&game.state) {
+                game.outcome = Some(game.game.returns(&game.state, game.first_seat));
+            } else if game.state.turn_number() >= TURN_CAP {
+                game.outcome = Some(0.0);
+            }
+        }
+        let active: Vec<_> = games
+            .iter()
+            .enumerate()
+            .filter(|(_, game)| game.outcome.is_none())
+            .map(|(index, _)| index)
+            .collect();
+        if active.is_empty() {
+            break;
+        }
+        let active_games: Vec<_> = active.iter().map(|&index| games[index].game).collect();
+        let active_states: Vec<_> = active.iter().map(|&index| games[index].state).collect();
+        let first_roots = evaluate_states(first, &active_games, &active_states, first_solve);
+        let second_roots = evaluate_states(second, &active_games, &active_states, second_solve);
+        for ((&index, first_root), second_root) in active.iter().zip(first_roots).zip(second_roots)
+        {
+            let game = &mut games[index];
+            debug_assert!(first_root.values[game.first_seat].is_finite());
+            let other = 1 - game.first_seat;
+            let mut joint = [Direction::Up; 2];
+            joint[game.first_seat] = Direction::ALL
+                [sample_strategy(&first_root.strategies[game.first_seat], &mut game.first_rng)];
+            joint[other] = Direction::ALL
+                [sample_strategy(&second_root.strategies[other], &mut game.second_rng)];
+            game.game.apply_joint(&mut game.state, &joint);
+        }
+    }
+    let wins = games
+        .iter()
+        .filter(|game| game.outcome.unwrap_or(0.0) > 0.0)
+        .count() as u32;
+    let losses = games
+        .iter()
+        .filter(|game| game.outcome.unwrap_or(0.0) < 0.0)
+        .count() as u32;
+    (wins, games.len() as u32 - wins - losses, losses)
+}
+
+/// Four-player asymmetric cross-play: `hero_net` controls one snake, rotated
+/// through every seat, while `field_net` controls the other three. Run the
+/// reverse composition separately because multiplayer strength is not a
+/// symmetric head-to-head statistic.
+pub fn net_vs_net_field(
+    hero_net: &Infer,
+    hero_solve: SolveConfig,
+    field_net: &Infer,
+    field_solve: SolveConfig,
+    sets: u32,
+    seed: u64,
+) -> (u32, u32, u32) {
+    struct Game {
+        game: Battlesnake<4>,
+        state: BoardState<4>,
+        hero: usize,
+        chance_rng: Rng,
+        hero_rng: Rng,
+        field_rngs: [Rng; 4],
+        outcome: Option<f64>,
+    }
+
+    let mut games = Vec::new();
+    for set in 0..sets {
+        let game_seed = mix(seed, u64::from(set));
+        for hero in 0..4 {
+            let game = Battlesnake::new(Rules {
+                seed: game_seed,
+                ..Rules::default()
+            });
+            games.push(Game {
+                state: game.initial_state(),
+                game,
+                hero,
+                chance_rng: Rng::new(mix(game_seed, 0xC11A_CE00)),
+                hero_rng: Rng::new(mix(game_seed, 0x4E70_0000)),
+                field_rngs: std::array::from_fn(|seat| {
+                    Rng::new(mix(game_seed, 0xF1E1_D000 + seat as u64))
+                }),
                 outcome: None,
             });
         }
     }
 
-    let mut results: Vec<Vec<EvalResult>> = (0..games.len()).map(|_| Vec::new()).collect();
-    loop {
-        let gathered: Vec<(Option<bool>, Vec<EvalRequest>)> = games
-            .par_iter_mut()
-            .zip(results.par_iter_mut())
-            .map(|(g, r)| {
-                let mut pending = std::mem::take(r);
-                loop {
-                    if g.outcome.is_some() {
-                        return (None, Vec::new());
-                    }
-                    if game.is_terminal(&g.state) {
-                        g.outcome = Some(game.returns(&g.state, g.a_seat));
-                        return (None, Vec::new());
-                    }
-                    if matches!(game.turn(&g.state), Turn::Chance) {
-                        let outs = game.chance_outcomes(&g.state);
-                        let j = game_core::rand::sample_outcome(&outs, &mut g.rng);
-                        game.apply(&mut g.state, outs[j].0);
-                        continue;
-                    }
-                    let on_move = match game.turn(&g.state) {
-                        Turn::Player(p) => p,
-                        Turn::Chance => unreachable!("resolved above"),
-                    };
-                    match g.search.advance(
-                        &game,
-                        &enc,
-                        &g.state,
-                        &puct,
-                        &mut g.rng,
-                        std::mem::take(&mut pending),
-                        &|_| false,
-                        None,
-                    ) {
-                        Gather::Requests(reqs) => {
-                            return (Some(on_move == g.a_seat), reqs);
-                        }
-                        Gather::Done => {
-                            let visits = g.search.root_visits().to_vec();
-                            let actions = g.search.root_actions();
-                            let action = actions[argmax(&visits)];
-                            game.apply(&mut g.state, action);
-                            g.search = azero::Search::new(None);
-                        }
-                    }
-                }
-            })
-            .collect();
-
-        let mut a_flat: Vec<EvalRequest> = Vec::new();
-        let mut b_flat: Vec<EvalRequest> = Vec::new();
-        let mut route: Vec<(Option<bool>, usize)> = Vec::with_capacity(gathered.len());
-        for (tag, reqs) in gathered {
-            route.push((tag, reqs.len()));
-            match tag {
-                Some(true) => a_flat.extend(reqs),
-                Some(false) => b_flat.extend(reqs),
-                None => {}
+    while games.iter().any(|game| game.outcome.is_none()) {
+        for game in &mut games {
+            if game.outcome.is_some() {
+                continue;
+            }
+            resolve_chance(&game.game, &mut game.state, &mut game.chance_rng);
+            if game.game.is_terminal(&game.state) {
+                game.outcome = Some(game.game.returns(&game.state, game.hero));
+            } else if game.state.turn_number() >= TURN_CAP {
+                game.outcome = Some(0.0);
             }
         }
-        if a_flat.is_empty() && b_flat.is_empty() {
+        let active: Vec<_> = games
+            .iter()
+            .enumerate()
+            .filter(|(_, game)| game.outcome.is_none())
+            .map(|(index, _)| index)
+            .collect();
+        if active.is_empty() {
             break;
         }
-        let mut a_out = a.forward_batch(&a_flat).into_iter();
-        let mut b_out = b.forward_batch(&b_flat).into_iter();
-        for (i, (tag, len)) in route.into_iter().enumerate() {
-            results[i] = match tag {
-                Some(true) => (0..len).filter_map(|_| a_out.next()).collect(),
-                Some(false) => (0..len).filter_map(|_| b_out.next()).collect(),
-                None => Vec::new(),
-            };
+        let active_games: Vec<_> = active.iter().map(|&index| games[index].game).collect();
+        let active_states: Vec<_> = active.iter().map(|&index| games[index].state).collect();
+        let hero_roots = evaluate_states(hero_net, &active_games, &active_states, hero_solve);
+        let field_roots = evaluate_states(field_net, &active_games, &active_states, field_solve);
+        for ((&index, hero_root), field_root) in active.iter().zip(hero_roots).zip(field_roots) {
+            let game = &mut games[index];
+            let joint: [Direction; 4] = std::array::from_fn(|seat| {
+                if seat == game.hero {
+                    Direction::ALL[sample_strategy(&hero_root.strategies[seat], &mut game.hero_rng)]
+                } else {
+                    Direction::ALL
+                        [sample_strategy(&field_root.strategies[seat], &mut game.field_rngs[seat])]
+                }
+            });
+            game.game.apply_joint(&mut game.state, &joint);
         }
     }
 
-    let a_wins = games
+    let wins = games
         .iter()
-        .filter(|g| g.outcome.unwrap_or(0.0) > 0.0)
+        .filter(|game| game.outcome.unwrap_or(0.0) > 0.0)
         .count() as u32;
-    (a_wins, games.len() as u32)
+    let losses = games
+        .iter()
+        .filter(|game| game.outcome.unwrap_or(0.0) < 0.0)
+        .count() as u32;
+    (wins, games.len() as u32 - wins - losses, losses)
 }
 
-/// A random opening: resolve the initial food spawn, then play `OPENING_PLIES`
-/// uniform random plies, resolving any food spawn between them, so paired games
-/// diverge from a shared but varied start.
-fn random_opening(game: &Duel, rng: &mut Rng) -> DuelState {
-    let mut s = game.initial_state();
-    let resolve = |game: &Duel, s: &mut DuelState, rng: &mut Rng| {
-        while !game.is_terminal(s) && matches!(game.turn(s), Turn::Chance) {
-            let outs = game.chance_outcomes(s);
-            let j = game_core::rand::sample_outcome(&outs, rng);
-            game.apply(s, outs[j].0);
+/// Balanced four-player cross-play. Each net controls two snakes, with all
+/// three distinct seat partitions and their complements evaluated for every
+/// seed. A win belongs to the net controlling the sole surviving snake.
+pub fn net_vs_net_split(
+    first_net: &Infer,
+    first_solve: SolveConfig,
+    second_net: &Infer,
+    second_solve: SolveConfig,
+    sets: u32,
+    seed: u64,
+) -> (u32, u32, u32) {
+    struct Game {
+        game: Battlesnake<4>,
+        state: BoardState<4>,
+        first_seats: [bool; 4],
+        chance_rng: Rng,
+        action_rngs: [Rng; 4],
+        outcome: Option<f64>,
+    }
+
+    // Every possible 2-vs-2 allocation appears exactly once: the three
+    // partitions below plus their complements.
+    const PARTITIONS: [[bool; 4]; 3] = [
+        [true, true, false, false],
+        [true, false, true, false],
+        [true, false, false, true],
+    ];
+    let mut games = Vec::new();
+    for set in 0..sets {
+        let game_seed = mix(seed, u64::from(set));
+        for base in PARTITIONS {
+            for complement in [false, true] {
+                let first_seats = base.map(|seat| seat ^ complement);
+                let game = Battlesnake::new(Rules {
+                    seed: game_seed,
+                    ..Rules::default()
+                });
+                games.push(Game {
+                    state: game.initial_state(),
+                    game,
+                    first_seats,
+                    chance_rng: Rng::new(mix(game_seed, 0xC11A_CE00)),
+                    action_rngs: std::array::from_fn(|seat| {
+                        Rng::new(mix(game_seed, 0xAC71_0000 + seat as u64))
+                    }),
+                    outcome: None,
+                });
+            }
         }
-    };
-    resolve(game, &mut s, rng);
-    for _ in 0..OPENING_PLIES {
-        if game.is_terminal(&s) {
+    }
+
+    while games.iter().any(|game| game.outcome.is_none()) {
+        for game in &mut games {
+            if game.outcome.is_some() {
+                continue;
+            }
+            resolve_chance(&game.game, &mut game.state, &mut game.chance_rng);
+            if game.game.is_terminal(&game.state) {
+                let first_won = (0..4).any(|seat| {
+                    game.first_seats[seat] && game.game.returns(&game.state, seat) > 0.0
+                });
+                let second_won = (0..4).any(|seat| {
+                    !game.first_seats[seat] && game.game.returns(&game.state, seat) > 0.0
+                });
+                game.outcome = Some(match (first_won, second_won) {
+                    (true, false) => 1.0,
+                    (false, true) => -1.0,
+                    _ => 0.0,
+                });
+            } else if game.state.turn_number() >= TURN_CAP {
+                game.outcome = Some(0.0);
+            }
+        }
+        let active: Vec<_> = games
+            .iter()
+            .enumerate()
+            .filter(|(_, game)| game.outcome.is_none())
+            .map(|(index, _)| index)
+            .collect();
+        if active.is_empty() {
             break;
         }
-        let actions: Vec<DuelAction> = game.legal_actions(&s);
-        game.apply(&mut s, actions[rng.below(actions.len())]);
-        resolve(game, &mut s, rng);
+        let active_games: Vec<_> = active.iter().map(|&index| games[index].game).collect();
+        let active_states: Vec<_> = active.iter().map(|&index| games[index].state).collect();
+        let first_roots = evaluate_states(first_net, &active_games, &active_states, first_solve);
+        let second_roots = evaluate_states(second_net, &active_games, &active_states, second_solve);
+        for ((&index, first_root), second_root) in active.iter().zip(first_roots).zip(second_roots)
+        {
+            let game = &mut games[index];
+            let joint: [Direction; 4] = std::array::from_fn(|seat| {
+                let strategy = if game.first_seats[seat] {
+                    &first_root.strategies[seat]
+                } else {
+                    &second_root.strategies[seat]
+                };
+                Direction::ALL[sample_strategy(strategy, &mut game.action_rngs[seat])]
+            });
+            game.game.apply_joint(&mut game.state, &joint);
+        }
     }
-    s
+
+    let wins = games
+        .iter()
+        .filter(|game| game.outcome.unwrap_or(0.0) > 0.0)
+        .count() as u32;
+    let losses = games
+        .iter()
+        .filter(|game| game.outcome.unwrap_or(0.0) < 0.0)
+        .count() as u32;
+    (wins, games.len() as u32 - wins - losses, losses)
+}
+
+/// Wilson interval around a match score. `draw_weight` is 0.5 for duels and
+/// zero for multiplayer win share, where every non-win is a miss.
+pub fn score_interval(wins: u32, draws: u32, losses: u32, draw_weight: f64) -> (f64, f64, f64) {
+    let n = f64::from(wins + draws + losses);
+    if n == 0.0 {
+        return (0.0, 0.0, 1.0);
+    }
+    let score = (f64::from(wins) + draw_weight * f64::from(draws)) / n;
+    let z = 1.959_963_984_540_054;
+    let z2 = z * z;
+    let denominator = 1.0 + z2 / n;
+    let center = (score + z2 / (2.0 * n)) / denominator;
+    let half = z * (score * (1.0 - score) / n + z2 / (4.0 * n * n)).sqrt() / denominator;
+    (score, (center - half).max(0.0), (center + half).min(1.0))
+}
+
+fn resolve_chance<const N: usize>(game: &Battlesnake<N>, state: &mut BoardState<N>, rng: &mut Rng) {
+    while !game.is_terminal(state) && game.turn(state) == SimultaneousTurn::Chance {
+        let action = game.sample_chance_action(state, rng);
+        game.apply_chance(state, action);
+    }
+}
+
+fn sample_strategy(strategy: &[f32; 4], rng: &mut Rng) -> usize {
+    rng.pick(&strategy.map(f64::from))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn score_interval_contains_observed_score() {
+        let (score, low, high) = score_interval(12, 4, 8, 0.5);
+        assert!((score - 14.0 / 24.0).abs() < 1e-12);
+        assert!(low < score && score < high);
+    }
+
+    #[test]
+    fn equilibrium_action_sampling_respects_pure_support() {
+        let mut rng = Rng::new(7);
+        for _ in 0..32 {
+            assert_eq!(sample_strategy(&[0.0, 0.0, 1.0, 0.0], &mut rng), 2);
+        }
+    }
 }
