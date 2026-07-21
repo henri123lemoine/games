@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<!-- Template: launchd cannot expand $HOME, so the install step substitutes
+     the __REPO__ and __HOME__ placeholders (see mirror_training_runs.sh). -->
 <dict>
     <key>Label</key>
     <string>com.henrilemoine.trainingmirror</string>
@@ -8,7 +10,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/henrilemoine/Documents/Programming/PersonalProjects/games/games/tools/mirror_training_runs.sh</string>
+        <string>__REPO__/tools/mirror_training_runs.sh</string>
     </array>
 
     <key>StartInterval</key>
@@ -18,10 +20,10 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/henrilemoine/TrainingMirror/launchd.out.log</string>
+    <string>__HOME__/TrainingMirror/launchd.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/henrilemoine/TrainingMirror/launchd.err.log</string>
+    <string>__HOME__/TrainingMirror/launchd.err.log</string>
 
     <key>ProcessType</key>
     <string>Background</string>

@@ -6,16 +6,18 @@
 # Discovery is by directory name ("runs"), not a hardcoded project list, so
 # new games/ml crates are covered automatically without editing this file.
 #
-# Invoked every 30 minutes by the com.henrilemoine.trainingmirror launchd
-# agent (see tools/com.henrilemoine.trainingmirror.plist). Install with:
-#   cp tools/com.henrilemoine.trainingmirror.plist ~/Library/LaunchAgents/
+# Runs fine straight from an interactive shell (cron-style loop or alongside
+# a training session) — that shell's existing folder access suffices, and no
+# extra permissions are involved. The optional launchd route below runs it
+# every 30 minutes unattended; the repo plist is a template (launchd cannot
+# expand $HOME), installed with:
+#   sed -e "s|__REPO__|$(git rev-parse --show-toplevel)|" -e "s|__HOME__|$HOME|" \
+#     tools/com.henrilemoine.trainingmirror.plist \
+#     > ~/Library/LaunchAgents/com.henrilemoine.trainingmirror.plist
 #   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.henrilemoine.trainingmirror.plist
-#
-# One-time manual step required (macOS TCC, cannot be scripted): launchd
-# spawns /bin/bash with no Full Disk / Documents-folder grant of its own —
-# unlike an interactive shell, it doesn't inherit Terminal's grant — so the
-# very first run fails with "Operation not permitted" until you add it in
-# System Settings -> Privacy & Security -> Full Disk Access -> + -> /bin/bash.
+# Note launchd's bash has no Documents-folder TCC grant of its own, so the
+# unattended route only works if you choose to extend one — prefer the
+# interactive invocation over widening any grant.
 # Verify with: launchctl kickstart -k gui/$(id -u)/com.henrilemoine.trainingmirror
 # then check ~/TrainingMirror/mirror.log (success) vs launchd.err.log (denied).
 #
@@ -25,8 +27,8 @@
 
 set -euo pipefail
 
-GAMES_ROOT="$HOME/Documents/Programming/PersonalProjects/games"
-MIRROR_ROOT="$HOME/TrainingMirror"
+GAMES_ROOT="${GAMES_ROOT:-$HOME/Documents/Programming/PersonalProjects/games}"
+MIRROR_ROOT="${MIRROR_ROOT:-$HOME/TrainingMirror}"
 LOG="$MIRROR_ROOT/mirror.log"
 LOCK_DIR="/tmp/training_mirror.lock.d"
 
