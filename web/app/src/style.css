@@ -864,6 +864,55 @@ button {
   flex-wrap: wrap;
 }
 
+/* The ⓘ provenance popover beside a bot seat: what the opponent is and how
+   it was trained. */
+.seat-info {
+  position: relative;
+  display: inline-flex;
+}
+
+.seat-info-btn {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-inset);
+  color: var(--text-dim);
+  font: italic 700 11px/1 Georgia, serif;
+  cursor: pointer;
+  padding: 0;
+}
+
+.seat-info-btn:hover,
+.seat-info-btn:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: none;
+}
+
+.bot-info-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: -8px;
+  z-index: 30;
+  width: 300px;
+  max-width: 78vw;
+  padding: 12px 14px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--card-shadow);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--text);
+  text-align: left;
+}
+
+.bot-info-pop strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
 /* The per-seat selector the shell injects into a board's slot (or the
    fallback bar). Compact and quiet so it reads as a control on the panel. */
 .seat-select,

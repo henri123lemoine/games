@@ -25,6 +25,47 @@ export function botLabel(bot: string): string {
   return BOT_LABELS[bot] ?? bot;
 }
 
+/** Provenance blurbs per `game/bot`: what the opponent is, how it was built,
+ * and what it cost to train — real numbers from the actual runs, all on one
+ * Apple M5 Max MacBook. Shown from the ⓘ beside a bot's seat picker. */
+export const BOT_INFO: Record<string, string> = {
+  "stratego/ataraxios":
+    "A 27M-parameter transformer pair — an 8-layer move net plus a 4-layer setup net that arranges its own army. " +
+    "Trained from scratch by pure self-play (no human games) in MLX on a single Apple M5 Max MacBook: " +
+    "6.5 days, 7,600 iterations, about 1.5 billion self-play moves. " +
+    "Measured at least +645 Elo above the classic Demon of Ignorance bot.",
+  "chess/azero-gpu":
+    "An AlphaZero-style conv-resnet trained by self-play with MCTS in one overnight run on a MacBook. " +
+    "In your browser it searches on WebGPU, with an identical CPU forward when no GPU is available.",
+  "go/azero-gpu":
+    "An AlphaZero-style self-play net with board-size-agnostic global-pool heads (one net for 9×9 through 19×19), " +
+    "trained for about two days on a MacBook. Play-time search is MCTS with a proof solver.",
+  "pente/azero-gpu":
+    "An AlphaZero-style self-play net for 19×19 pente — trained in next to no time; pente falls quickly to self-play. " +
+    "It drives the same VCF-hybrid search as the native bot.",
+  "snake/azero-gpu":
+    "An AlphaZero-style self-play duel net, roughly a few hours of training on a MacBook; MCTS at play time.",
+  "liars-dice/history":
+    "PPO over a history-attention encoder with a belief head, trained in a multi-round self-play league " +
+    "with an exploiter pool across about ten days. The shipped net is the league's round-21 head-to-head champion.",
+  "liars-dice/rollout":
+    "A Monte-Carlo rollout bot: samples the hidden dice, plays out candidate bids, and picks the best average. No training — just simulation.",
+  "poker/equity":
+    "A Monte-Carlo equity bot: samples hole cards and runouts to estimate win probability and bets accordingly. No training.",
+  "othello/alphabeta":
+    "Classic alpha-beta search over a hand-tuned positional evaluation. No training — depth is the whole difficulty knob.",
+  "connect4/alphabeta":
+    "Classic alpha-beta search with a hand-tuned evaluation. No training — depth is the whole difficulty knob.",
+  "pente/alphabeta":
+    "Alpha-beta search with a VCF (forcing-sequence) hybrid — the hand-written counterpart of the AlphaZero net.",
+  "twentyone/__solver__":
+    "Not a learned bot at all: the game solved offline into exact lookup tables, playing perfectly within its heart budget.",
+};
+
+export function botInfo(gameId: string, bot: string): string | undefined {
+  return BOT_INFO[`${gameId}/${bot}`];
+}
+
 export interface Difficulty {
   /** The bot knob this difficulty drives (depth / sims / rollouts). */
   key: string;

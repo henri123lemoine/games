@@ -22,6 +22,7 @@ import type { FrontendCtx, GameFrontend } from "../frontends/types";
 import { CPU_LEVELS, isCpuFallback, TRIVIAL_SIMS } from "./azero";
 import {
   DIFFICULTY,
+  botInfo,
   botLabel,
   botSpec,
   mediumLevel,
@@ -1083,8 +1084,41 @@ export class App {
       }
       sel.onchange = () => this.applySeatChange(game, opts, i, sel.value);
       const level = this.seatLevelSelect(game, opts, i, states[i]);
-      slot.replaceChildren(level ? this.fragment([sel, level]) : sel);
+      const info = this.seatInfoButton(game, states[i]);
+      const parts = [sel, level, info].filter((n): n is HTMLElement => n !== null);
+      slot.replaceChildren(parts.length > 1 ? this.fragment(parts) : sel);
     }
+  }
+
+  /** The ⓘ beside a bot seat: a provenance popover — what this opponent is
+   * and how (and for how long) it was trained. */
+  private seatInfoButton(game: GameInfo, seatValue: string): HTMLElement | null {
+    const text = botInfo(game.id, seatValue);
+    if (!text) return null;
+    const wrap = document.createElement("span");
+    wrap.className = "seat-info";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "seat-info-btn";
+    btn.title = "About this opponent";
+    btn.setAttribute("aria-label", "About this opponent");
+    btn.textContent = "i";
+    const pop = document.createElement("div");
+    pop.className = "bot-info-pop";
+    pop.hidden = true;
+    pop.innerHTML = `<strong>${esc(botLabel(seatValue))}</strong><span>${esc(text)}</span>`;
+    const close = (e: MouseEvent) => {
+      if (!wrap.contains(e.target as Node)) {
+        pop.hidden = true;
+        document.removeEventListener("pointerdown", close);
+      }
+    };
+    btn.onclick = () => {
+      pop.hidden = !pop.hidden;
+      if (!pop.hidden) document.addEventListener("pointerdown", close);
+    };
+    wrap.append(btn, pop);
+    return wrap;
   }
 
   /** A `[sel, level]` pair wrapped so `replaceChildren` takes one node. */
