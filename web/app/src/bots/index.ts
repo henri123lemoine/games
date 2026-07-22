@@ -4,7 +4,7 @@
 // it consults the frontends one; a game without a matching driver here plays
 // its bots inside the wasm engine as usual.
 
-import type { EngineHost } from '../engine/host';
+import { EngineHost } from '../engine/host';
 import type { MatchEventData, ViewState } from '../engine/protocol';
 import { createAzeroChess } from './azero-chess';
 import { createAzeroGo } from './azero-go';
@@ -38,4 +38,77 @@ const factories = new Map<string, ClientBotFactory>([
 
 export function clientBotFor(gameId: string, bot: string | undefined): ClientBotFactory | null {
   return (bot && factories.get(`${gameId}/${bot}`)) || null;
+}
+
+export interface ClientBotConfig {
+  seat: number;
+  bot: string;
+  opts: Record<string, string>;
+}
+
+/** One independently configured client-side bot per externally driven seat.
+ * Dedicated workers keep distinct visit/forcing budgets genuinely independent
+ * and let a superseded async model boot be torn down without touching a match. */
+export async function createClientBots(
+  gameId: string,
+  configs: ClientBotConfig[],
+): Promise<ClientBot | null> {
+  if (configs.length === 0) return null;
+  const entries: { seat: number; bot: ClientBot; host: EngineHost }[] = [];
+  try {
+    for (const config of configs) {
+      const factory = clientBotFor(gameId, config.bot);
+      if (!factory)
+        throw new Error(`no client-side driver for ${gameId}/${config.bot} at seat ${config.seat}`);
+      // Search state never shares the match worker. A superseded async model
+      // boot can then be terminated without posting stale config into the new
+      // match, and every external seat owns an independent tree.
+      const host = new EngineHost();
+      try {
+        entries.push({
+          seat: config.seat,
+          bot: await factory(host, config.opts),
+          host,
+        });
+      } catch (error) {
+        host.terminate();
+        throw error;
+      }
+    }
+  } catch (error) {
+    for (const entry of entries) {
+      entry.bot.cancel();
+      entry.host.terminate();
+    }
+    throw error;
+  }
+
+  const bySeat = new Map(entries.map((entry) => [entry.seat, entry.bot]));
+  const fallbackMessages = [
+    ...new Set(entries.map((entry) => entry.bot.cpuFallback).filter((x): x is string => !!x)),
+  ];
+  return {
+    cpuFallback: fallbackMessages.length ? fallbackMessages.join(' ') : undefined,
+    async onMove(ev: MatchEventData): Promise<void> {
+      await Promise.all(entries.map((entry) => entry.bot.onMove(ev)));
+    },
+    async chooseMove(st: ViewState): Promise<string> {
+      const bot = bySeat.get(st.toAct);
+      if (!bot) throw new Error(`no client-side bot configured for seat ${st.toAct}`);
+      return bot.chooseMove(st);
+    },
+    async finalResult(): Promise<string> {
+      for (const entry of entries) {
+        const result = (await entry.bot.finalResult?.()) ?? '';
+        if (result) return result;
+      }
+      return '';
+    },
+    cancel(): void {
+      for (const entry of entries) {
+        entry.bot.cancel();
+        entry.host.terminate();
+      }
+    },
+  };
 }

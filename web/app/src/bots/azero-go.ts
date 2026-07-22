@@ -5,15 +5,15 @@
 // `play_cpu` run the whole search in-wasm against nn-infer's reference forward —
 // same net, so anyone can play, GPU or not.
 
-import { CPU_MAX_SIMS, cpuFallbackMessage, isCpuFallback, TRIVIAL_SIMS } from '../shell/azero';
+import { CPU_MAX_SIMS, cpuFallbackMessage, isCpuFallback } from '../shell/azero';
 import type { EngineHost } from '../engine/host';
 import type { MatchEventData, ViewState } from '../engine/protocol';
 import { GoGpu, policyLen, softmaxOver } from '../frontends/go/azgpu';
 import { setGoEval } from '../frontends/go/eval-bridge';
 import { gpuLoader, weightsLoader } from './azero-net';
 import type { ClientBot } from './index';
+import { errorMessage, requiredU32 } from './options';
 
-const DEFAULT_SIMS = 1500;
 const LEAVES = 8;
 // Shared with the shell's per-visitor forward self-check so it validates the
 // same device + weights the bot booted, with no extra fetch or device init.
@@ -103,30 +103,31 @@ export async function createAzeroGo(
   host: EngineHost,
   opts: Record<string, string>,
 ): Promise<ClientBot> {
-  const seed = Number(opts.seed) >>> 0 || 1;
+  const seed = requiredU32(opts, 'seed');
+  const requestedSims = requiredU32(opts, 'sims');
+  const size = requiredU32(opts, 'size');
   let cpuReason = 'No compatible WebGPU device was detected';
   // Prefer WebGPU; if the device fails to come up even where it is advertised,
   // fall through to CPU rather than failing the match.
   if (!isCpuFallback()) {
+    let gpu: GoGpu | null = null;
     try {
-      const gpu = await getGpu();
-      const sims = Number(opts.sims) > 0 ? Number(opts.sims) : DEFAULT_SIMS;
+      gpu = await getGpu();
+    } catch (error) {
+      cpuReason = `WebGPU initialization failed: ${errorMessage(error)}`;
+    }
+    if (gpu) {
       // The pooled net is board-size-agnostic; play at the requested size (≤
       // the export's max), no per-size weights needed.
-      const size = Number(opts.size) > 0 ? Number(opts.size) : gpu.model.size;
       // Weights also go to the wasm bot so it can run the ownership head for
       // the pass decision; leaf evaluation still happens on the GPU.
-      await host.goNew(sims, LEAVES, seed, size, await getWeights());
+      await host.goNew(requestedSims, LEAVES, seed, size, await getWeights());
       setGoEval(() => host.goEval());
       return new AzeroGoGpu(host, gpu, size);
-    } catch {
-      cpuReason = 'WebGPU was detected, but initialization failed';
-      // fall through to the CPU forward
     }
   }
   // CPU: the chosen level, capped so moves stay responsive without a GPU.
-  const size = Number(opts.size) > 0 ? Number(opts.size) : 19;
-  const sims = Math.min(Number(opts.sims) > 0 ? Number(opts.sims) : TRIVIAL_SIMS, CPU_MAX_SIMS);
+  const sims = Math.min(requestedSims, CPU_MAX_SIMS);
   await host.goNew(sims, LEAVES, seed, size, await getWeights());
   setGoEval(() => host.goEval());
   return new AzeroGoCpu(host, cpuFallbackMessage(cpuReason, sims));

@@ -140,11 +140,37 @@ export function tourneyBots(game: GameInfo): string[] {
   return spec.value.split("|").filter((b) => !TOURNEY_EXCLUDE.has(b));
 }
 
-/** A compare/tourney spec string, e.g. `alphabeta:depth=4`; a bot with no
- * difficulty knob is just its bare name. */
-export function botSpec(gameId: string, bot: string, levelValue?: string): string {
-  const diff = difficultyFor(gameId, bot);
-  return diff && levelValue ? `${bot}:${diff.key}=${levelValue}` : bot;
+export interface ParsedBotSpec {
+  bot: string;
+  opts: Record<string, string>;
+}
+
+/** Parse the lab's canonical `bot:key=value,key=value` wire format. Invalid
+ * specs fail here instead of quietly turning into a differently configured
+ * client-side bot. */
+export function parseBotSpec(text: string): ParsedBotSpec {
+  const colon = text.indexOf(":");
+  const bot = colon < 0 ? text : text.slice(0, colon);
+  if (!bot) throw new Error(`bot spec has no bot name: '${text}'`);
+  const opts: Record<string, string> = {};
+  if (colon >= 0) {
+    const rest = text.slice(colon + 1);
+    for (const part of rest.split(",")) {
+      const equals = part.indexOf("=");
+      if (equals <= 0)
+        throw new Error(`bot option must be key=value, got '${part}' in '${text}'`);
+      opts[part.slice(0, equals)] = part.slice(equals + 1);
+    }
+  }
+  return { bot, opts };
+}
+
+/** Serialize one bot and all of its explicit per-seat options. */
+export function formatBotSpec(bot: string, opts: Record<string, string> = {}): string {
+  const entries = Object.entries(opts).filter(([, value]) => value !== "");
+  return entries.length
+    ? `${bot}:${entries.map(([key, value]) => `${key}=${value}`).join(",")}`
+    : bot;
 }
 
 /** The middle difficulty value for a bot, or '' if it has no difficulty knob.

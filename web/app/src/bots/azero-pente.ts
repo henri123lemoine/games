@@ -12,24 +12,22 @@
 // happens transparently here — the advance/best loop is identical to go's; a
 // root the solver proves a win just ends the search early with best ready.
 
-import { CPU_MAX_SIMS, isCpuFallback, TRIVIAL_SIMS } from '../shell/azero';
+import { CPU_MAX_SIMS, cpuFallbackMessage, isCpuFallback } from '../shell/azero';
 import type { EngineHost } from '../engine/host';
 import type { MatchEventData, ViewState } from '../engine/protocol';
 import { PenteGpu, policyLen, softmaxOver } from '../frontends/pente/azgpu';
 import { setPenteEval } from '../frontends/pente/eval-bridge';
 import { gpuLoader, weightsLoader } from './azero-net';
 import type { ClientBot } from './index';
+import { errorMessage, requiredU32 } from './options';
 
 // The shipped net is trained at 19×19; the arcade pins the AZ matchup there.
 const SIZE = 19;
-const DEFAULT_SIMS = 400;
 const LEAVES = 8;
 // The native bot's *per-leaf* forcing budget (depth 7, ~1500 nodes): the solver
 // runs at every expanded MCTS leaf as the search's prover, so the budget must be
 // cheap — small enough to stay fast per leaf while still proving the short
 // forcing wins (open fours, double-fours, fifth-pair captures) that matter.
-const VCF_DEPTH = 7;
-const VCF_NODES = 1500;
 const getWeights = weightsLoader(`${import.meta.env.BASE_URL}azero/azero-pente.azweb`);
 const getGpu = gpuLoader(PenteGpu.init, getWeights);
 
@@ -77,7 +75,10 @@ class AzeroPenteGpu implements ClientBot {
  * to cancel — just a guard so a torn-down match drops its move. */
 class AzeroPenteCpu implements ClientBot {
   private cancelled = false;
-  constructor(private host: EngineHost) {}
+  constructor(
+    private host: EngineHost,
+    readonly cpuFallback: string,
+  ) {}
 
   onMove(ev: MatchEventData): Promise<void> {
     return this.host.azPush(ev.label);
@@ -100,27 +101,31 @@ export async function createAzeroPente(
   host: EngineHost,
   opts: Record<string, string>,
 ): Promise<ClientBot> {
-  const seed = Number(opts.seed) >>> 0 || 1;
-  const vcfDepth = Number(opts['vcf-depth']) > 0 ? Number(opts['vcf-depth']) : VCF_DEPTH;
-  const vcfNodes = Number(opts['vcf-nodes']) > 0 ? Number(opts['vcf-nodes']) : VCF_NODES;
+  const seed = requiredU32(opts, 'seed');
+  const requestedSims = requiredU32(opts, 'sims');
+  const vcfDepth = requiredU32(opts, 'vcf-depth');
+  const vcfNodes = requiredU32(opts, 'vcf-nodes');
+  let cpuReason = 'No compatible WebGPU device was detected';
   // Prefer WebGPU; if the device fails to come up even where it is advertised,
   // fall through to CPU rather than failing the match.
   if (!isCpuFallback()) {
+    let gpu: PenteGpu | null = null;
     try {
-      const gpu = await getGpu();
-      const sims = Number(opts.sims) > 0 ? Number(opts.sims) : DEFAULT_SIMS;
+      gpu = await getGpu();
+    } catch (error) {
+      cpuReason = `WebGPU initialization failed: ${errorMessage(error)}`;
+    }
+    if (gpu) {
       // GPU path evaluates leaves page-side, so the wasm bot needs no weights;
       // the VCF hybrid is net-free and runs regardless.
-      await host.penteNew(sims, LEAVES, seed, SIZE, vcfDepth, vcfNodes, await getWeights());
+      await host.penteNew(requestedSims, LEAVES, seed, SIZE, vcfDepth, vcfNodes, await getWeights());
       setPenteEval(() => host.penteEval());
       return new AzeroPenteGpu(host, gpu);
-    } catch {
-      // fall through to the CPU forward
     }
   }
   // CPU: the chosen level, capped so moves stay responsive without a GPU.
-  const sims = Math.min(Number(opts.sims) > 0 ? Number(opts.sims) : TRIVIAL_SIMS, CPU_MAX_SIMS);
+  const sims = Math.min(requestedSims, CPU_MAX_SIMS);
   await host.penteNew(sims, LEAVES, seed, SIZE, vcfDepth, vcfNodes, await getWeights());
   setPenteEval(() => host.penteEval());
-  return new AzeroPenteCpu(host);
+  return new AzeroPenteCpu(host, cpuFallbackMessage(cpuReason, sims));
 }

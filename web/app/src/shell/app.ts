@@ -3,7 +3,12 @@
 // you and the board. One engine worker drives play; the shell owns the loop
 // and narration, frontends own the board.
 
-import { type ClientBot, clientBotFor } from "../bots";
+import {
+  type ClientBot,
+  type ClientBotConfig,
+  clientBotFor,
+  createClientBots,
+} from "../bots";
 import { EngineHost } from "../engine/host";
 import type {
   GameInfo,
@@ -21,9 +26,10 @@ import {
   DIFFICULTY,
   botInfo,
   botLabel,
-  botSpec,
+  formatBotSpec,
   mediumLevel,
   optChoicesFor,
+  parseBotSpec,
   splitSpecs,
 } from "./config";
 import { TournamentScreen } from "./tournament";
@@ -78,11 +84,14 @@ const ARTIFACTS: Record<string, string> = {
  * A config whose artifact is not shipped fails loudly at create — the
  * browser never trains. */
 function artifactsFor(gameId: string, opts: Record<string, string>): string[] {
+  const seatBots = opts.bots
+    ? splitSpecs(opts.bots).map((spec) => parseBotSpec(spec).bot)
+    : [];
   const wanted: string[] = [];
   if (gameId === "chess") {
     const usesAzero =
       opts.bot === "azero" ||
-      (opts.bots ?? "").split(",").some((s) => s.split(":")[0] === "azero");
+      seatBots.includes("azero");
     const net = opts.net ?? (usesAzero ? "data/azero/chess.bin" : null);
     if (net) wanted.push(net);
   }
@@ -91,13 +100,13 @@ function artifactsFor(gameId: string, opts: Record<string, string>): string[] {
   if (gameId === "liars-dice") {
     const usesHistory =
       opts.bot === "history" ||
-      (opts.bots ?? "").split(",").some((s) => s.split(":")[0] === "history");
+      seatBots.includes("history");
     if (usesHistory) wanted.push("runs/ld_history/best.bin");
   }
   if (gameId === "stratego") {
     const usesNet =
       opts.bot === "ataraxios" ||
-      (opts.bots ?? "").split(",").some((s) => s.split(":")[0] === "ataraxios");
+      seatBots.includes("ataraxios");
     if (usesNet) wanted.push("runs/stratego/ataraxios.bin");
   }
   return wanted.filter((w) => w in ARTIFACTS);
@@ -219,6 +228,18 @@ function seatCount(game: GameInfo, opts: Record<string, string>): number {
 
 function randomSeed(): number {
   return (Math.floor(Math.random() * 0x7fff_ffff) | 1) >>> 0;
+}
+
+/** First concrete value in a manifest option, or undefined for generated
+ * placeholders such as `...`. */
+function optionDefault(opt: GameOpt): string | undefined {
+  const value = opt.value.split("|")[0];
+  return !value || value.endsWith("...") ? undefined : value;
+}
+
+function sameOptions(a: Record<string, string>, b: Record<string, string>): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  return [...keys].every((key) => a[key] === b[key]);
 }
 
 /** For interpolating user-editable values into markup (drawer fields). */
@@ -696,6 +717,22 @@ export class App {
       // as unused by the engine).
       delete opts.bot;
       for (const o of game.optsSchema) if (o.bots.length > 0) delete opts[o.key];
+      // A browser with no WebGPU must not keep displaying a GPU-only level in
+      // a per-seat spec while the driver silently caps it. Normalize every
+      // active external seat to the canonical trivial CPU budget.
+      if (isCpuFallback()) {
+        const human = opts.seat === "watch" ? -1 : Number(opts.seat ?? "0");
+        opts.bots = splitSpecs(opts.bots)
+          .map((text, seat) => {
+            const spec = parseBotSpec(text);
+            if (seat !== human && spec.bot === "azero-gpu") {
+              const allowed = new Set(CPU_LEVELS.map(([, value]) => value));
+              if (!allowed.has(spec.opts.sims ?? "")) spec.opts.sims = String(TRIVIAL_SIMS);
+            }
+            return formatBotSpec(spec.bot, spec.opts);
+          })
+          .join(",");
+      }
     } else {
       const bot = effectiveBot(game, opts);
       for (const o of game.optsSchema) {
@@ -714,7 +751,10 @@ export class App {
     // board there, so force the engine match to 19 too whenever that bot plays —
     // a stale size from the drawer would desync the page-side search from the
     // engine board.
-    if (game.id === "pente" && effectiveBot(game, opts) === "azero-gpu") {
+    if (
+      game.id === "pente" &&
+      this.seatStates(game, opts).some((bot) => bot === "azero-gpu")
+    ) {
       opts.size = PENTE_AZ_SIZE;
     }
     opts.seed ||= String(randomSeed());
@@ -728,20 +768,14 @@ export class App {
   ): Promise<void> {
     const gen = ++this.gen;
     this.teardownMatch();
-    const opts = this.buildOpts(game, mode, overrides);
-    this.syncMatchUrl(game, mode);
-    this.renderMatchSkeleton(game, mode, opts);
-    // An AlphaZero seat (single bot, or one seat of a heterogeneous board) is
-    // driven page-side: WebGPU when present, otherwise the in-wasm CPU forward.
-    const isAzeroSpec = (b: string) => b === "azero-gpu" || b === "azero";
-    const azeroSeat =
-      isAzeroSpec(opts.bot ?? "") ||
-      splitSpecs(opts.bots ?? "").some((s) => isAzeroSpec(s.split(":")[0]));
-    const usesAzeroGpu =
-      opts.bot === "azero-gpu" ||
-      splitSpecs(opts.bots ?? "").some((s) => s.split(":")[0] === "azero-gpu");
-    if (azeroSeat && isCpuFallback()) this.showCpuNote();
     try {
+      const opts = this.buildOpts(game, mode, overrides);
+      this.syncMatchUrl(game, mode);
+      this.renderMatchSkeleton(game, mode, opts);
+      // Each externally driven seat gets its own resolved config and search
+      // instance. This is what makes the per-seat controls true at runtime.
+      const clientConfigs = this.clientBotConfigs(game, opts);
+      if (clientConfigs.length && isCpuFallback()) this.showCpuNote();
       await this.loadArtifacts(game, opts);
       const st = await this.host.create(game.id, opts);
       if (gen !== this.gen) return;
@@ -763,13 +797,16 @@ export class App {
       this.frontend.render(st);
       this.fillSeatSlots(game, opts);
 
-      const makeBot = clientBotFor(game.id, usesAzeroGpu ? "azero-gpu" : opts.bot);
-      this.clientBot = makeBot ? await makeBot(this.host, opts) : null;
-      if (gen !== this.gen) return;
+      const clientBot = await createClientBots(game.id, clientConfigs);
+      if (gen !== this.gen) {
+        clientBot?.cancel();
+        return;
+      }
+      this.clientBot = clientBot;
       if (this.clientBot?.cpuFallback) this.showCpuNote(this.clientBot.cpuFallback);
       // The GPU bot booted with no CPU-fallback note, so WebGPU really ran:
       // validate this device's forward against the reference, non-blocking.
-      if (game.id === "go" && usesAzeroGpu && !this.clientBot?.cpuFallback)
+      if (game.id === "go" && clientConfigs.length && !this.clientBot?.cpuFallback)
         void this.checkGoConformance();
       this.setStatus(st.humanSeat < 0 ? "Bots playing…" : "Thinking…");
       void this.runLoop(gen);
@@ -1144,11 +1181,10 @@ export class App {
     if (!diff) return "";
     if (opts.bots) {
       const spec = splitSpecs(opts.bots)[i];
-      const knob = spec
-        ?.split(",")
-        .map((seg) => seg.split(":")[1] ?? seg)
-        .find((seg) => seg.startsWith(`${diff.key}=`));
-      if (knob) return knob.slice(diff.key.length + 1);
+      if (spec) {
+        const value = parseBotSpec(spec).opts[diff.key];
+        if (value !== undefined) return value;
+      }
     }
     const cpu = seatValue === "azero-gpu" && isCpuFallback();
     return opts[diff.key] ?? (cpu ? String(TRIVIAL_SIMS) : mediumLevel(game.id, seatValue));
@@ -1169,7 +1205,10 @@ export class App {
     const specs = states.map((seat, j) => {
       const bot = seat === "__you__" ? botFiller : seat;
       const level = j === i ? value : this.seatLevel(game, opts, j, bot);
-      return botSpec(game.id, bot, level);
+      const botOpts = this.seatBotOptions(game, opts, j, bot);
+      const diff = DIFFICULTY[`${game.id}/${bot}`];
+      if (diff && level) botOpts[diff.key] = level;
+      return formatBotSpec(bot, botOpts);
     });
     const carry = this.gameLevelCarry(game, opts);
     const config = { ...carry, bots: specs.join(",") };
@@ -1191,7 +1230,7 @@ export class App {
       const specs = splitSpecs(opts.bots);
       states = Array.from(
         { length: n },
-        (_, i) => specs[i]?.split(":")[0] ?? currentBotValue(game, opts),
+        (_, i) => (specs[i] ? parseBotSpec(specs[i]).bot : currentBotValue(game, opts)),
       );
     } else {
       const cur = currentBotValue(game, opts);
@@ -1200,6 +1239,68 @@ export class App {
     const human = opts.seat === "watch" ? -1 : Number(opts.seat ?? "0");
     if (human >= 0 && human < n) states[human] = "__you__";
     return states;
+  }
+
+  /** Explicit bot-scoped options currently belonging to one seat. In simple
+   * `bot=` form they live at the top level; in `bots=` form they live only in
+   * that seat's spec. Options from a different bot are never inherited. */
+  private seatBotOptions(
+    game: GameInfo,
+    opts: Record<string, string>,
+    i: number,
+    bot: string,
+  ): Record<string, string> {
+    if (opts.bots) {
+      const text = splitSpecs(opts.bots)[i];
+      if (text) {
+        const spec = parseBotSpec(text);
+        if (spec.bot === bot) return { ...spec.opts };
+      }
+      return {};
+    }
+    const out: Record<string, string> = {};
+    for (const opt of game.optsSchema) {
+      if (opt.bots.includes(bot) && opts[opt.key] !== undefined)
+        out[opt.key] = opts[opt.key];
+    }
+    return out;
+  }
+
+  /** Resolve the actual page-side driver configuration for every external
+   * seat. Browser-tuned defaults win over registry defaults; explicit per-seat
+   * values win over both. Missing required values are then rejected by the
+   * driver instead of silently becoming a private constant. */
+  private clientBotConfigs(
+    game: GameInfo,
+    opts: Record<string, string>,
+  ): ClientBotConfig[] {
+    const states = this.seatStates(game, opts);
+    const configs: ClientBotConfig[] = [];
+    for (const [seat, bot] of states.entries()) {
+      if (bot === "__you__" || !clientBotFor(game.id, bot)) continue;
+      const explicit = this.seatBotOptions(game, opts, seat, bot);
+      const allowed = new Set(
+        game.optsSchema
+          .filter((opt) => !opt.nativeOnly && opt.bots.includes(bot))
+          .map((opt) => opt.key),
+      );
+      const unknown = Object.keys(explicit).filter((key) => !allowed.has(key));
+      if (unknown.length)
+        throw new Error(
+          `unused option(s) for client bot '${bot}' at seat ${seat}: ${unknown.join(", ")}`,
+        );
+      const resolved: Record<string, string> = { ...opts, ...explicit, bot };
+      delete resolved.bots;
+      delete resolved.seat;
+      for (const opt of game.optsSchema) {
+        if (opt.nativeOnly || !opt.bots.includes(bot) || resolved[opt.key] !== undefined)
+          continue;
+        const value = DEFAULT_OPTS[game.id]?.[opt.key] ?? optionDefault(opt);
+        if (value !== undefined) resolved[opt.key] = value;
+      }
+      configs.push({ seat, bot, opts: resolved });
+    }
+    return configs;
   }
 
   /** Game-level options only (board size, player count, …) — never the seat,
@@ -1239,7 +1340,8 @@ export class App {
     const bots = rosterBots(game);
     const sendsBot = (name: string) =>
       bots.find((b) => b.value === name)?.sendsBot ?? false;
-    const next = this.seatStates(game, opts);
+    const previous = this.seatStates(game, opts);
+    const next = [...previous];
     next[i] = value;
     if (value === "__you__") {
       // At most one human; bump any other "You" back to a bot.
@@ -1249,32 +1351,37 @@ export class App {
     }
     const human = next.indexOf("__you__");
     const vals = next.filter((x) => x !== "__you__");
-    // Per-seat difficulty: the seat whose bot just changed takes that bot's
-    // medium default; every other seat keeps its own current level.
-    const levels = next.map((v, j) =>
-      j === i ? mediumLevel(game.id, v) : this.seatLevel(game, opts, j, v),
-    );
-    // The simple `bot=` form only applies when every bot seat shares the same
-    // bot AND the same difficulty; once either diverges, seats must each carry
-    // their own knob via `bots=`.
-    const botSeats = next
-      .map((v, j) => ({ v, level: levels[j] }))
-      .filter((s) => s.v !== "__you__");
+    const botFiller = vals[0] ?? bots[0]?.value ?? "";
+    // Preserve every explicit option on unchanged seats. A newly selected bot
+    // starts from its medium difficulty and its own declared defaults, never
+    // stale knobs belonging to the bot it replaced.
+    const seatConfigs = next.map((valueAtSeat, j) => {
+      const bot = valueAtSeat === "__you__" ? botFiller : valueAtSeat;
+      const changedBot = valueAtSeat !== "__you__" && bot !== previous[j];
+      const botOpts = changedBot ? {} : this.seatBotOptions(game, opts, j, bot);
+      const diff = DIFFICULTY[`${game.id}/${bot}`];
+      if (diff) {
+        const level = changedBot
+          ? mediumLevel(game.id, bot)
+          : this.seatLevel(game, opts, j, bot);
+        if (level) botOpts[diff.key] = level;
+      }
+      return { bot, botOpts, human: valueAtSeat === "__you__" };
+    });
+    // The simple `bot=` form is valid only when every actual bot seat has the
+    // same bot and the same complete option map.
+    const botSeats = seatConfigs.filter((config) => !config.human);
     const uniform =
       botSeats.length > 0 &&
-      botSeats.every((s) => s.v === botSeats[0].v && s.level === botSeats[0].level);
+      botSeats.every(
+        (config) =>
+          config.bot === botSeats[0].bot && sameOptions(config.botOpts, botSeats[0].botOpts),
+      );
     if (uniform) {
-      const carry = { ...opts };
-      delete carry.seat;
-      delete carry.bot;
-      delete carry.bots;
-      delete carry.seed;
-      const diff = DIFFICULTY[`${game.id}/${botSeats[0].v}`];
-      if (diff) delete carry[diff.key];
-      const changes: Record<string, string> = sendsBot(botSeats[0].v)
-        ? { bot: botSeats[0].v }
+      const carry = this.gameLevelCarry(game, opts);
+      const changes: Record<string, string> = sendsBot(botSeats[0].bot)
+        ? { bot: botSeats[0].bot, ...botSeats[0].botOpts }
         : {};
-      if (diff && botSeats[0].level) changes[diff.key] = botSeats[0].level;
       if (human >= 0)
         void this.startMatch(game, "play", {
           ...carry,
@@ -1283,12 +1390,7 @@ export class App {
         });
       else void this.startMatch(game, "watch", { ...carry, ...changes });
     } else {
-      const botFiller = vals[0] ?? bots[0]?.value ?? "";
-      const specs = next.map((v, j) => {
-        const bot = v === "__you__" ? botFiller : v;
-        const level = v === "__you__" ? mediumLevel(game.id, bot) : levels[j];
-        return botSpec(game.id, bot, level);
-      });
+      const specs = seatConfigs.map((config) => formatBotSpec(config.bot, config.botOpts));
       const carry = this.gameLevelCarry(game, opts);
       if (human >= 0)
         void this.startMatch(game, "play", {

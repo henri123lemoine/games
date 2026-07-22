@@ -5,15 +5,15 @@
 // `play_cpu` run the whole search in-wasm against nn-infer's reference forward —
 // same net, so anyone can play, GPU or not.
 
-import { CPU_MAX_SIMS, cpuFallbackMessage, isCpuFallback, TRIVIAL_SIMS } from '../shell/azero';
+import { CPU_MAX_SIMS, cpuFallbackMessage, isCpuFallback } from '../shell/azero';
 import type { EngineHost } from '../engine/host';
 import type { MatchEventData, ViewState } from '../engine/protocol';
 import { AzGpu, POLICY_LEN, softmaxOver } from '../frontends/chess/azgpu';
 import { setChessEval } from '../frontends/chess/eval-bridge';
 import { gpuLoader, weightsLoader } from './azero-net';
 import type { ClientBot } from './index';
+import { errorMessage, requiredU32 } from './options';
 
-const DEFAULT_SIMS = 600;
 const LEAVES = 8;
 const getWeights = weightsLoader(`${import.meta.env.BASE_URL}azero/azero-chess.azweb`);
 const getGpu = gpuLoader(AzGpu.init, getWeights);
@@ -87,27 +87,29 @@ export async function createAzeroChess(
   host: EngineHost,
   opts: Record<string, string>,
 ): Promise<ClientBot> {
-  const seed = Number(opts.seed) >>> 0 || 1;
+  const seed = requiredU32(opts, 'seed');
+  const requestedSims = requiredU32(opts, 'sims');
   let cpuReason = 'No compatible WebGPU device was detected';
   // Prefer WebGPU; if the device fails to come up even where it is advertised,
   // fall through to CPU rather than failing the match.
   if (!isCpuFallback()) {
+    let gpu: AzGpu | null = null;
     try {
-      const gpu = await getGpu();
-      const sims = Number(opts.sims) > 0 ? Number(opts.sims) : DEFAULT_SIMS;
+      gpu = await getGpu();
+    } catch (error) {
+      cpuReason = `WebGPU initialization failed: ${errorMessage(error)}`;
+    }
+    if (gpu) {
       // GPU search evaluates leaves page-side, so the wasm bot needs no weights
       // to play — but the debug position readout (`chessEval`) runs the net's
       // value head in-wasm, so load them anyway (the bytes are already fetched).
-      await host.azNew(sims, LEAVES, seed, await getWeights());
+      await host.azNew(requestedSims, LEAVES, seed, await getWeights());
       setChessEval(() => host.chessEval());
       return new AzeroChessGpu(host, gpu);
-    } catch {
-      cpuReason = 'WebGPU was detected, but initialization failed';
-      // fall through to the CPU forward
     }
   }
   // CPU: the chosen level, capped so moves stay responsive without a GPU.
-  const sims = Math.min(Number(opts.sims) > 0 ? Number(opts.sims) : TRIVIAL_SIMS, CPU_MAX_SIMS);
+  const sims = Math.min(requestedSims, CPU_MAX_SIMS);
   await host.azNew(sims, LEAVES, seed, await getWeights());
   setChessEval(() => host.chessEval());
   return new AzeroChessCpu(host, cpuFallbackMessage(cpuReason, sims));

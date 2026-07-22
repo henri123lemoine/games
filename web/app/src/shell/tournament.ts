@@ -4,7 +4,7 @@
 
 import { EngineHost } from '../engine/host';
 import type { CompareInfo, GameInfo, Wdl } from '../engine/protocol';
-import { botLabel, botSpec, difficultyFor, tourneyBots } from './config';
+import { botLabel, difficultyFor, formatBotSpec, tourneyBots } from './config';
 
 /** Fixed per-game options the tournament needs. It is head-to-head, so
  * Liar's Dice is pinned to two seats. */
@@ -164,7 +164,11 @@ export class TournamentScreen {
     }
     const gen = ++this.gen;
     const game = this.root.querySelector<HTMLSelectElement>('.t-game')!.value;
-    const bots = this.entrants.map((e) => botSpec(game, e.bot, e.level || undefined));
+    const bots = this.entrants.map((e) => {
+      const diff = difficultyFor(game, e.bot);
+      const opts = diff && e.level ? { [diff.key]: e.level } : {};
+      return formatBotSpec(e.bot, opts);
+    });
     const gamesPer = Math.max(
       2,
       Number(this.root.querySelector<HTMLSelectElement>('.t-games')!.value) || 8,
