@@ -249,29 +249,6 @@ impl Pente {
         pairs
     }
 
-    /// Whether some stone lies within [`RELEVANCE_RADIUS`] (Chebyshev) of `p`.
-    fn near_stone(&self, s: &PenteState, p: usize) -> bool {
-        let size = self.size as i32;
-        let (row, col) = ((p / self.size) as i32, (p % self.size) as i32);
-        for dr in -RELEVANCE_RADIUS..=RELEVANCE_RADIUS {
-            for dc in -RELEVANCE_RADIUS..=RELEVANCE_RADIUS {
-                if dr == 0 && dc == 0 {
-                    continue;
-                }
-                let (r, c) = (row + dr, col + dc);
-                if r >= 0
-                    && c >= 0
-                    && r < size
-                    && c < size
-                    && s.cells[(r * size + c) as usize] != EMPTY
-                {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
     /// How many pairs placing `color` at empty `p` would capture — counted by
     /// probing the eight `[p=YOU][OPP][OPP][YOU]` arms directly, without
     /// committing the move or cloning the board (a hot path for move ordering).
@@ -326,12 +303,34 @@ impl Game for Pente {
         // pruning it keeps the action set tractable for deep search without
         // changing best play. Distant empties only re-enter if play ever
         // reaches them (their neighbors fill), so termination is unaffected.
-        let mut out = Vec::new();
-        for p in 0..state.cells.len() {
-            if state.cells[p] == EMPTY && self.near_stone(state, p) {
-                out.push(PenteAction(p as u16));
+        // Mark the radius around each *stone* once, then emit marked empties in
+        // board order. The old formulation asked every empty point to scan its
+        // 5×5 neighborhood, repeating the same reads thousands of times on a
+        // 19×19 board. This produces the identical ascending action list in
+        // O(stones × radius² + board area), rather than O(empties × radius²).
+        let size = self.size as i32;
+        let mut relevant = vec![false; state.cells.len()];
+        for (p, &cell) in state.cells.iter().enumerate() {
+            if cell == EMPTY {
+                continue;
+            }
+            let (row, col) = ((p / self.size) as i32, (p % self.size) as i32);
+            for dr in -RELEVANCE_RADIUS..=RELEVANCE_RADIUS {
+                for dc in -RELEVANCE_RADIUS..=RELEVANCE_RADIUS {
+                    let (r, c) = (row + dr, col + dc);
+                    if r >= 0 && c >= 0 && r < size && c < size {
+                        relevant[(r * size + c) as usize] = true;
+                    }
+                }
             }
         }
+        let mut out: Vec<_> = relevant
+            .iter()
+            .enumerate()
+            .filter_map(|(p, &near)| {
+                (near && state.cells[p] == EMPTY).then_some(PenteAction(p as u16))
+            })
+            .collect();
         if out.is_empty() {
             // No stone in range of any empty (only the all-empty board, already
             // handled, or a fully separated remnant): fall back to every empty
@@ -481,6 +480,7 @@ pub(crate) fn col_index(letter: char) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use game_core::Rng;
 
     fn place(g: &Pente, s: &mut PenteState, coord: &str) {
         let p = g.point(coord).unwrap();
@@ -537,6 +537,68 @@ mod tests {
             !legal.contains(&PenteAction(g.point("e5").unwrap())),
             "out of range"
         );
+    }
+
+    #[test]
+    fn relevance_mask_matches_the_per_empty_reference() {
+        fn reference(g: &Pente, state: &PenteState) -> Vec<PenteAction> {
+            if state.moves == 0 {
+                return vec![PenteAction(g.center())];
+            }
+            let size = g.size as i32;
+            let mut out = Vec::new();
+            for p in 0..state.cells.len() {
+                if state.cells[p] != EMPTY {
+                    continue;
+                }
+                let (row, col) = ((p / g.size) as i32, (p % g.size) as i32);
+                let near = (-RELEVANCE_RADIUS..=RELEVANCE_RADIUS).any(|dr| {
+                    (-RELEVANCE_RADIUS..=RELEVANCE_RADIUS).any(|dc| {
+                        if dr == 0 && dc == 0 {
+                            return false;
+                        }
+                        let (r, c) = (row + dr, col + dc);
+                        r >= 0
+                            && c >= 0
+                            && r < size
+                            && c < size
+                            && state.cells[(r * size + c) as usize] != EMPTY
+                    })
+                });
+                if near {
+                    out.push(PenteAction(p as u16));
+                }
+            }
+            if out.is_empty() {
+                out.extend(
+                    state
+                        .cells
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(p, &cell)| (cell == EMPTY).then_some(PenteAction(p as u16))),
+                );
+            }
+            out
+        }
+
+        let mut rng = Rng::new(0xfeed_beef);
+        for size in [5, 9, 13, 19] {
+            let g = Pente::new(size);
+            let mut state = g.initial_state();
+            for ply in 0..120 {
+                assert_eq!(
+                    g.legal_actions(&state),
+                    reference(&g, &state),
+                    "size={size}, ply={ply}"
+                );
+                let actions = g.legal_actions(&state);
+                let action = actions[rng.below(actions.len())];
+                g.apply(&mut state, action);
+                if g.is_terminal(&state) {
+                    state = g.initial_state();
+                }
+            }
+        }
     }
 
     #[test]
