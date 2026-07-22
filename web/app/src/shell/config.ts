@@ -69,30 +69,168 @@ export interface Difficulty {
  * bot, this picks how hard it plays — so a visitor never types a raw search
  * depth. A bot with no entry here has no tunable difficulty. */
 export const DIFFICULTY: Record<string, Difficulty> = {
-  "chess/alphabeta": { key: "depth", levels: [["Easy", "2"], ["Medium", "4"], ["Hard", "6"]] },
-  "chess/alphabeta-rich": { key: "depth", levels: [["Easy", "2"], ["Medium", "4"], ["Hard", "6"]] },
-  "chess/azero": { key: "sims", levels: [["Trivial", "1"], ["Easy", "64"], ["Medium", "256"], ["Hard", "800"]] },
-  "chess/azero-gpu": { key: "sims", levels: [["Trivial", "1"], ["Easy", "64"], ["Medium", "256"], ["Hard", "800"]] },
-  "othello/alphabeta": { key: "depth", levels: [["Easy", "3"], ["Medium", "5"], ["Hard", "7"]] },
-  "othello/mcts": { key: "sims", levels: [["Easy", "500"], ["Medium", "2000"], ["Hard", "6000"]] },
-  "connect4/alphabeta": { key: "depth", levels: [["Easy", "5"], ["Medium", "7"], ["Hard", "9"]] },
-  "connect4/mcts": { key: "sims", levels: [["Easy", "500"], ["Medium", "2000"], ["Hard", "6000"]] },
-  // Depth 6 is ~8-15s/move in wasm (too slow for the arcade); 5 is ~3-5s and
-  // still sharp, so Hard caps there. Easy/Medium stay snappy.
-  "pente/alphabeta": { key: "depth", levels: [["Easy", "2"], ["Medium", "4"], ["Hard", "5"]] },
-  "pente/mcts": { key: "sims", levels: [["Easy", "1000"], ["Medium", "4000"], ["Hard", "10000"]] },
-  "pente/azero-gpu": { key: "sims", levels: [["Trivial", "1"], ["Easy", "100"], ["Medium", "400"], ["Hard", "1000"]] },
-  "go/mcts": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
-  "go/mcts-eval": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
-  "go/mcts-spec": { key: "sims", levels: [["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
-  "go/azero-gpu": { key: "sims", levels: [["Trivial", "1"], ["Easy", "400"], ["Medium", "1500"], ["Hard", "4000"]] },
-  "liars-dice/rollout": { key: "rollouts", levels: [["Easy", "100"], ["Medium", "400"], ["Hard", "1000"]] },
-  "poker/equity": { key: "samples", levels: [["Easy", "300"], ["Medium", "1200"], ["Hard", "3000"]] },
-  "poker/rollout": { key: "rollouts", levels: [["Easy", "60"], ["Medium", "150"], ["Hard", "400"]] },
-  "snake/bns": { key: "millis", levels: [["Easy", "25"], ["Medium", "120"], ["Hard", "440"]] },
+  "chess/alphabeta": {
+    key: "depth",
+    levels: [
+      ["Easy", "2"],
+      ["Medium", "4"],
+      ["Hard", "6"],
+    ],
+  },
+  "chess/alphabeta-rich": {
+    key: "depth",
+    levels: [
+      ["Easy", "2"],
+      ["Medium", "4"],
+      ["Hard", "6"],
+    ],
+  },
+  "chess/azero": {
+    key: "sims",
+    levels: [
+      ["Trivial", "1"],
+      ["Easy", "64"],
+      ["Medium", "256"],
+      ["Hard", "800"],
+    ],
+  },
+  "chess/azero-gpu": {
+    key: "sims",
+    levels: [
+      ["Trivial", "1"],
+      ["Easy", "1200"],
+      ["Medium", "4800"],
+      ["Hard", "12000"],
+    ],
+  },
+  "othello/alphabeta": {
+    key: "depth",
+    levels: [
+      ["Easy", "3"],
+      ["Medium", "5"],
+      ["Hard", "7"],
+    ],
+  },
+  "othello/mcts": {
+    key: "sims",
+    levels: [
+      ["Easy", "500"],
+      ["Medium", "2000"],
+      ["Hard", "6000"],
+    ],
+  },
+  "connect4/alphabeta": {
+    key: "depth",
+    levels: [
+      ["Easy", "5"],
+      ["Medium", "7"],
+      ["Hard", "9"],
+    ],
+  },
+  "connect4/mcts": {
+    key: "sims",
+    levels: [
+      ["Easy", "500"],
+      ["Medium", "2000"],
+      ["Hard", "6000"],
+    ],
+  },
+  "pente/alphabeta": {
+    key: "depth",
+    levels: [
+      ["Easy", "2"],
+      ["Medium", "4"],
+      ["Hard", "5"],
+    ],
+  },
+  "pente/mcts": {
+    key: "sims",
+    levels: [
+      ["Easy", "1000"],
+      ["Medium", "4000"],
+      ["Hard", "10000"],
+    ],
+  },
+  "pente/azero-gpu": {
+    key: "sims",
+    levels: [
+      ["Trivial", "1"],
+      ["Easy", "4"],
+      ["Medium", "12"],
+      ["Hard", "28"],
+    ],
+  },
+  "go/mcts": {
+    key: "sims",
+    levels: [
+      ["Easy", "400"],
+      ["Medium", "1500"],
+      ["Hard", "4000"],
+    ],
+  },
+  "go/mcts-eval": {
+    key: "sims",
+    levels: [
+      ["Easy", "400"],
+      ["Medium", "1500"],
+      ["Hard", "4000"],
+    ],
+  },
+  "go/mcts-spec": {
+    key: "sims",
+    levels: [
+      ["Easy", "400"],
+      ["Medium", "1500"],
+      ["Hard", "4000"],
+    ],
+  },
+  "go/azero-gpu": {
+    key: "sims",
+    levels: [
+      ["Trivial", "1"],
+      ["Easy", "400"],
+      ["Medium", "1200"],
+      ["Hard", "2400"],
+    ],
+  },
+  "liars-dice/rollout": {
+    key: "rollouts",
+    levels: [
+      ["Easy", "100"],
+      ["Medium", "400"],
+      ["Hard", "1000"],
+    ],
+  },
+  "poker/equity": {
+    key: "samples",
+    levels: [
+      ["Easy", "300"],
+      ["Medium", "1200"],
+      ["Hard", "3000"],
+    ],
+  },
+  "poker/rollout": {
+    key: "rollouts",
+    levels: [
+      ["Easy", "60"],
+      ["Medium", "150"],
+      ["Hard", "400"],
+    ],
+  },
+  "snake/bns": {
+    key: "millis",
+    levels: [
+      ["Easy", "25"],
+      ["Medium", "120"],
+      ["Hard", "440"],
+    ],
+  },
 };
 
-export function difficultyFor(gameId: string, bot: string): Difficulty | undefined {
+export function difficultyFor(
+  gameId: string,
+  bot: string,
+): Difficulty | undefined {
   return DIFFICULTY[`${gameId}/${bot}`];
 }
 
@@ -113,7 +251,13 @@ const OPT_CHOICES_BY_GAME: Record<string, Record<string, string[]>> = {
   pente: { size: ["19"] },
   snake: {
     players: ["2", "3", "4"],
-    mode: ["standard", "royale", "constrictor", "wrapped", "wrapped-constrictor"],
+    mode: [
+      "standard",
+      "royale",
+      "constrictor",
+      "wrapped",
+      "wrapped-constrictor",
+    ],
     food: ["standard", "one"],
     model: ["mcs", "brs+", "full"],
   },
@@ -123,14 +267,22 @@ const OPT_CHOICES_BY_GAME: Record<string, Record<string, string[]>> = {
 /** The choices a game offers for an option — its own narrowing, else the
  * generic list. A single-element result means the option is fixed (the shell
  * hides its dropdown). */
-export function optChoicesFor(gameId: string, key: string): string[] | undefined {
+export function optChoicesFor(
+  gameId: string,
+  key: string,
+): string[] | undefined {
   return OPT_CHOICES_BY_GAME[gameId]?.[key] ?? OPT_CHOICES[key];
 }
 
 /** Bots that can't run in the tournament (they need a GPU or a trained
  * artifact the tournament pool doesn't load) — plus stratego's heuristic,
  * which the site never publishes anywhere by policy. */
-const TOURNEY_EXCLUDE = new Set(["azero", "azero-gpu", "ataraxios", "heuristic"]);
+const TOURNEY_EXCLUDE = new Set([
+  "azero",
+  "azero-gpu",
+  "ataraxios",
+  "heuristic",
+]);
 
 /** Bot ids a game can field in the tournament — its play bots minus the ones
  * that need a GPU/artifact. Empty for games without bot-vs-bot evaluation. */
@@ -158,7 +310,9 @@ export function parseBotSpec(text: string): ParsedBotSpec {
     for (const part of rest.split(",")) {
       const equals = part.indexOf("=");
       if (equals <= 0)
-        throw new Error(`bot option must be key=value, got '${part}' in '${text}'`);
+        throw new Error(
+          `bot option must be key=value, got '${part}' in '${text}'`,
+        );
       opts[part.slice(0, equals)] = part.slice(equals + 1);
     }
   }
@@ -166,7 +320,10 @@ export function parseBotSpec(text: string): ParsedBotSpec {
 }
 
 /** Serialize one bot and all of its explicit per-seat options. */
-export function formatBotSpec(bot: string, opts: Record<string, string> = {}): string {
+export function formatBotSpec(
+  bot: string,
+  opts: Record<string, string> = {},
+): string {
   const entries = Object.entries(opts).filter(([, value]) => value !== "");
   return entries.length
     ? `${bot}:${entries.map(([key, value]) => `${key}=${value}`).join(",")}`

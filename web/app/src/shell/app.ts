@@ -44,7 +44,7 @@ import { type ConformanceResult, runGoConformance } from "../frontends/go/confor
 const PENTE_AZ_SIZE = "19";
 
 const DEFAULT_OPTS: Record<string, Record<string, string>> = {
-  chess: { bot: "azero-gpu", sims: "256" },
+  chess: { bot: "azero-gpu", sims: "4800" },
   "liars-dice": { players: "5", dice: "5", faces: "6", rollouts: "400", bot: "history" },
   twentyone: { hearts: "3" },
   othello: { depth: "5" },
@@ -52,8 +52,8 @@ const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   // AlphaZero Pente is trained at 19×19 and the human opens (Black, seat 0); a
   // ~88% first-player game, so the human gets the edge. The net plays the same
   // VCF hybrid the native bot does.
-  pente: { size: PENTE_AZ_SIZE, bot: "azero-gpu", sims: "400" },
-  go: { size: "19", bot: "azero-gpu", sims: "1500" },
+  pente: { size: PENTE_AZ_SIZE, bot: "azero-gpu", sims: "12" },
+  go: { size: "19", bot: "azero-gpu", sims: "1200" },
   snake: { players: "2", food: "one", bot: "bns", millis: "25" },
   // The site ships only the trained net (ataraxios) — never the heuristic.
   stratego: { bot: "ataraxios", setup: "manual" },
