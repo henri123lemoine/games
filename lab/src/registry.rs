@@ -265,6 +265,7 @@ fn make_versus<G: game_core::GameUi + Sync + 'static>(
     o: &Opts,
     game: G,
     default_bot: &str,
+    external_opts: &[&str],
     parse: BotParser<G>,
 ) -> Result<Box<dyn AnyMatch>, String> {
     let seats = game.num_players();
@@ -301,6 +302,10 @@ fn make_versus<G: game_core::GameUi + Sync + 'static>(
                 // the driver, exactly as make_external_versus does. This lets a
                 // GPU seat share a board with an in-engine bot.
                 if spec.name == "azero-gpu" {
+                    for key in external_opts {
+                        let _ = spec.opts.str(key, "");
+                    }
+                    spec.opts.ensure_consumed(&format!("bot '{s}'"))?;
                     return Ok::<_, String>(None);
                 }
                 let builder = parse(&spec, o)?;
@@ -357,7 +362,7 @@ fn make_versus_or_gpu<G: game_core::GameUi + Sync + 'static>(
     if o.str("bot", default_bot) == "azero-gpu" {
         return make_external_versus(o, game, client_opts);
     }
-    make_versus(o, game, default_bot, parse)
+    make_versus(o, game, default_bot, client_opts, parse)
 }
 
 const CHESS_OPTS: &[OptSpec] = &[
@@ -645,7 +650,7 @@ pub fn entries() -> Vec<Entry> {
             watch_bot: "",
             summary: "N-player Liar's Dice vs determinized-rollout bots",
             opts: LIARS_DICE_OPTS,
-            make: Box::new(|o| make_versus(o, liars_dice_game(o)?, "rollout", liars_dice_bot)),
+            make: Box::new(|o| make_versus(o, liars_dice_game(o)?, "rollout", &[], liars_dice_bot)),
             eval: Some(eval_entry(
                 "rollout[:rollouts=768] | abstract-rollout[:rollouts=768] | \
                  is-mcts[:mcts_worlds=8,mcts_sims=32] | mccfr[:mccfr_iters=256] | \
@@ -673,7 +678,13 @@ pub fn entries() -> Vec<Entry> {
             // hand, stacks carried, button rotating). The eval path below keeps
             // the bare one-hand game so the bb/hand metric is unchanged.
             make: Box::new(|o| {
-                make_versus(o, poker_game(o)?.with_session(true), "equity", poker_bot)
+                make_versus(
+                    o,
+                    poker_game(o)?.with_session(true),
+                    "equity",
+                    &[],
+                    poker_bot,
+                )
             }),
             // `compare`/`tourney` here report win share, which understates a
             // poker bot badly: only one seat wins each pot, so a single rotated
@@ -704,7 +715,7 @@ pub fn entries() -> Vec<Entry> {
             watch_bot: "",
             summary: "Othello vs alpha-beta (weighted squares + mobility)",
             opts: OTHELLO_OPTS,
-            make: Box::new(|o| make_versus(o, othello::Othello, "alphabeta", othello_bot)),
+            make: Box::new(|o| make_versus(o, othello::Othello, "alphabeta", &[], othello_bot)),
             eval: Some(eval_entry(
                 "alphabeta[:depth=6] | mcts[:sims=2000]",
                 4,
@@ -720,7 +731,7 @@ pub fn entries() -> Vec<Entry> {
             watch_bot: "",
             summary: "Connect-4 vs alpha-beta",
             opts: CONNECT4_OPTS,
-            make: Box::new(|o| make_versus(o, connect4::Connect4, "alphabeta", connect4_bot)),
+            make: Box::new(|o| make_versus(o, connect4::Connect4, "alphabeta", &[], connect4_bot)),
             eval: Some(eval_entry(
                 "alphabeta[:depth=9] | mcts[:sims=2000]",
                 4,
@@ -738,13 +749,13 @@ pub fn entries() -> Vec<Entry> {
             opts: GO_OPTS,
             make: Box::new(|o| {
                 if o.str("bot", "mcts") == "azero-gpu" {
-                    return make_external_versus(o, go_game(o)?, &["sims", "size"]);
+                    return make_external_versus(o, go_game(o)?, &["sims"]);
                 }
                 // Play wants a stronger default than compare's quick 2000.
                 let sims: u32 = o.get("sims", 6000)?;
                 let mut spec_opts = o.clone();
                 spec_opts.map.insert("sims".into(), sims.to_string());
-                make_versus(&spec_opts, go_game(o)?, "mcts", go_bot)
+                make_versus(&spec_opts, go_game(o)?, "mcts", &["sims"], go_bot)
             }),
             eval: Some(eval_entry(
                 "mcts[:sims=2000] | mcts-eval[:sims=2000,depth=NxN] | mcts-spec[:sims=2000]",
@@ -766,7 +777,7 @@ pub fn entries() -> Vec<Entry> {
                     o,
                     pente_game(o)?,
                     "alphabeta",
-                    &["sims", "size", "vcf-nodes", "vcf-depth"],
+                    &["sims", "vcf-nodes", "vcf-depth"],
                     pente_bot,
                 )
             }),
@@ -1748,6 +1759,41 @@ fn default_seed() -> u64 {
 mod tests {
     use super::*;
     use game_core::Game;
+
+    fn opts(entries: &[(&str, &str)]) -> Opts {
+        Opts::new(
+            entries
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn external_bot_specs_reject_unknown_options() {
+        let chess = entries()
+            .into_iter()
+            .find(|entry| entry.id == "chess")
+            .unwrap();
+        let invalid = opts(&[
+            ("bots", "azero-gpu:sims=256,typo=1,azero-gpu:sims=800"),
+            ("seat", "0"),
+            ("seed", "7"),
+        ]);
+        let error = match (chess.make)(&invalid) {
+            Ok(_) => panic!("unknown external-bot option was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.contains("unused option(s)"), "{error}");
+        assert!(error.contains("typo"), "{error}");
+
+        let valid = opts(&[
+            ("bots", "azero-gpu:sims=256,azero-gpu:sims=800"),
+            ("seat", "0"),
+            ("seed", "7"),
+        ]);
+        assert!((chess.make)(&valid).is_ok());
+    }
 
     /// A synthetic `AZNET1` Pente net of the right shape (8 planes,
     /// global-pool-spatial head, no ownership/score head): a tiny uniform fill,
