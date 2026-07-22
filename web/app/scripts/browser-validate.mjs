@@ -394,13 +394,13 @@ async function validateSettings(page, base, gpu) {
   await waitForRequests(page, 'penteNew', 1);
   await page.waitForTimeout(250);
   await clearRequests(page);
-  await page.locator('.seat-level').selectOption('28');
+  await page.locator('.seat-level').selectOption('256');
   await waitForRequests(page, 'create', 1);
   await waitForRequests(page, 'penteNew', 1);
   const pente = await requests(page);
   const penteCreate = pente.find((request) => request.op === 'create');
   const penteNew = pente.find((request) => request.op === 'penteNew');
-  for (const expected of ['sims=28', 'vcf-depth=9', 'vcf-nodes=1234']) {
+  for (const expected of ['sims=256', 'vcf-depth=9', 'vcf-nodes=1234']) {
     if (!penteCreate?.opts?.bots?.includes(expected))
       throw new Error(`Pente spec lost ${expected}: ${JSON.stringify(penteCreate)}`);
   }

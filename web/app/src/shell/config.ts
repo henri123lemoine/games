@@ -155,9 +155,9 @@ export const DIFFICULTY: Record<string, Difficulty> = {
     key: "sims",
     levels: [
       ["Trivial", "1"],
-      ["Easy", "4"],
-      ["Medium", "12"],
-      ["Hard", "28"],
+      ["Easy", "16"],
+      ["Medium", "64"],
+      ["Hard", "256"],
     ],
   },
   "go/mcts": {
