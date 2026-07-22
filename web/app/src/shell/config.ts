@@ -31,36 +31,27 @@ export function botLabel(bot: string): string {
  * Apple M5 Max MacBook. Shown from the ⓘ beside a bot's seat picker. */
 export const BOT_INFO: Record<string, string> = {
   "stratego/ataraxios":
-    "A 27M-parameter transformer pair — an 8-layer move net plus a 4-layer setup net that arranges its own army. " +
-    "Trained from scratch by pure self-play (no human games) in MLX on a single Apple M5 Max MacBook: " +
-    "6.5 days, 7,600 iterations, about 1.5 billion self-play moves. " +
-    "Measured at least +645 Elo above the classic Demon of Ignorance bot.",
+    "Follows Ataraxos AI's implementation. A 27M-parameter transformer pair — an 8-layer move net plus a 4-layer setup net that arranges its own army. Trained from scratch by self-play in MLX on a Apple M5 Max MacBook: 6.5 days, 7,600 iterations, ~1.5 billion moves.",
   "chess/azero-gpu":
-    "An AlphaZero-style conv-resnet trained by self-play with MCTS in one overnight run on a MacBook. " +
-    "In your browser it searches on WebGPU, with an identical CPU forward when no GPU is available.",
+    "AlphaZero conv-resnet trained by self-play with MCTS in one overnight run on a MacBook.",
   "go/azero-gpu":
-    "An AlphaZero-style self-play net with board-size-agnostic global-pool heads (one net for 9×9 through 19×19), " +
-    "trained for about two days on a MacBook. Play-time search is MCTS with a proof solver.",
-  "pente/azero-gpu":
-    "An AlphaZero-style self-play net for 19×19 pente — trained in next to no time; pente falls quickly to self-play. " +
-    "It drives the same VCF-hybrid search as the native bot.",
+    "AlphaZero self-play net with board-size-agnostic global-pool heads, similar to KataGo, trained for about two days on a MacBook. Play-time search is MCTS.",
+  "pente/azero-gpu": "AlphaZero self-play net.",
   "snake/bns":
-    "A simultaneous best-node search with bitboard territory, collision-aware quiescence, transpositions, and a phase-aware Battlesnake evaluation. No current move is revealed before the joint turn resolves.",
+    "A simultaneous best-node search with bitboard territory, collision-aware quiescence, transpositions, and a phase-aware Battlesnake evaluation.",
   "liars-dice/history":
-    "PPO over a history-attention encoder with a belief head, trained in a multi-round self-play league " +
-    "with an exploiter pool across about ten days. The shipped net is the league's round-21 head-to-head champion.",
+    "PPO over a history-attention encoder with a belief head, trained in a multi-round self-play league with an exploiter pool across about ten days. The shipped net is the league's round-21 head-to-head champion.",
   "liars-dice/rollout":
-    "A Monte-Carlo rollout bot: samples the hidden dice, plays out candidate bids, and picks the best average. No training — just simulation.",
+    "A Monte-Carlo rollout bot: samples the hidden dice, plays out candidate bids, and picks the best average.",
   "poker/equity":
-    "A Monte-Carlo equity bot: samples hole cards and runouts to estimate win probability and bets accordingly. No training.",
+    "A Monte-Carlo equity bot: samples hole cards and runouts to estimate win probability and bets accordingly.",
   "othello/alphabeta":
-    "Classic alpha-beta search over a hand-tuned positional evaluation. No training — depth is the whole difficulty knob.",
+    "Classic alpha-beta search over a hand-tuned positional evaluation.",
   "connect4/alphabeta":
-    "Classic alpha-beta search with a hand-tuned evaluation. No training — depth is the whole difficulty knob.",
-  "pente/alphabeta":
-    "Alpha-beta search with a VCF (forcing-sequence) hybrid — the hand-written counterpart of the AlphaZero net.",
+    "Classic alpha-beta search with a hand-tuned evaluation.",
+  "pente/alphabeta": "Alpha-beta search with a VCF hybrid.",
   "twentyone/__solver__":
-    "Not a learned bot at all: the game solved offline into exact lookup tables, playing perfectly within its heart budget.",
+    "The game solved offline into exact lookup tables, playing perfectly within its heart budget.",
 };
 
 export function botInfo(gameId: string, bot: string): string | undefined {
