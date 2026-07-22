@@ -38,6 +38,7 @@ use game_core::{Game, Turn};
 const BLACK: u8 = 0;
 const WHITE: u8 = 1;
 const EMPTY: u8 = 2;
+const MAX_POINTS: usize = 19 * 19;
 
 /// Captured pairs needed to win (ten enemy stones).
 pub const PAIRS_TO_WIN: u8 = 5;
@@ -69,9 +70,12 @@ impl Default for Pente {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PenteAction(pub u16);
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PenteState {
-    cells: Vec<u8>,
+    // Pente is capped at 19×19. Keeping the board inline makes the solver's
+    // extremely frequent state clones a fixed memcpy instead of a heap
+    // allocation; callers use only the game's `size²` prefix.
+    cells: [u8; MAX_POINTS],
     to_move: usize,
     /// Captured *pairs* by each player (a pair = two enemy stones).
     pairs: [u8; 2],
@@ -191,7 +195,7 @@ impl Pente {
     /// the test helper exists to set up tactical positions, not finished games.
     pub fn parse_state(&self, rows: &[&str], to_move: usize, pairs: [u8; 2]) -> PenteState {
         assert_eq!(rows.len(), self.size, "expected {} rows", self.size);
-        let mut cells = vec![EMPTY; self.size * self.size];
+        let mut cells = [EMPTY; MAX_POINTS];
         let mut placed = 0u32;
         for (i, row) in rows.iter().enumerate() {
             let r = self.size - 1 - i;
@@ -265,7 +269,7 @@ impl Game for Pente {
 
     fn initial_state(&self) -> PenteState {
         PenteState {
-            cells: vec![EMPTY; self.size * self.size],
+            cells: [EMPTY; MAX_POINTS],
             to_move: 0,
             pairs: [0, 0],
             moves: 0,
@@ -309,8 +313,9 @@ impl Game for Pente {
         // 19×19 board. This produces the identical ascending action list in
         // O(stones × radius² + board area), rather than O(empties × radius²).
         let size = self.size as i32;
-        let mut relevant = vec![false; state.cells.len()];
-        for (p, &cell) in state.cells.iter().enumerate() {
+        let area = self.size * self.size;
+        let mut relevant = [false; MAX_POINTS];
+        for (p, &cell) in state.cells[..area].iter().enumerate() {
             if cell == EMPTY {
                 continue;
             }
@@ -335,7 +340,7 @@ impl Game for Pente {
             // No stone in range of any empty (only the all-empty board, already
             // handled, or a fully separated remnant): fall back to every empty
             // so the draw clause still sees the board fill.
-            for p in 0..state.cells.len() {
+            for p in 0..area {
                 if state.cells[p] == EMPTY {
                     out.push(PenteAction(p as u16));
                 }
@@ -547,7 +552,7 @@ mod tests {
             }
             let size = g.size as i32;
             let mut out = Vec::new();
-            for p in 0..state.cells.len() {
+            for p in 0..g.size * g.size {
                 if state.cells[p] != EMPTY {
                     continue;
                 }
@@ -571,8 +576,7 @@ mod tests {
             }
             if out.is_empty() {
                 out.extend(
-                    state
-                        .cells
+                    state.cells[..g.size * g.size]
                         .iter()
                         .enumerate()
                         .filter_map(|(p, &cell)| (cell == EMPTY).then_some(PenteAction(p as u16))),

@@ -59,7 +59,7 @@ impl PolicyValueEncoder<Pente> for PenteEncoder {
         let own = state.to_move as u8;
         let opp = own ^ 1;
 
-        for (p, &c) in state.cells.iter().enumerate() {
+        for (p, &c) in state.cells[..n].iter().enumerate() {
             if c == own {
                 out[OWN * n + p] = 1.0;
             } else if c == opp {
@@ -76,14 +76,14 @@ impl PolicyValueEncoder<Pente> for PenteEncoder {
         // stones so the net sees its own pairs in danger and the opponent's pairs
         // it can take.
         mark_capturable_pairs(
-            &state.cells,
+            &state.cells[..n],
             size,
             own,
             opp,
             &mut out[OPP_CAPTURABLE * n..(OPP_CAPTURABLE + 1) * n],
         );
         mark_capturable_pairs(
-            &state.cells,
+            &state.cells[..n],
             size,
             opp,
             own,

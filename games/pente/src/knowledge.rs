@@ -49,7 +49,7 @@ impl Eval<Pente> for PenteEval {
 /// capture progress plus capture tactics plus center control.
 fn side_score(game: &Pente, state: &PenteState, color: u8) -> i32 {
     let size = game.size();
-    let cells = &state.cells;
+    let cells = &state.cells[..size * size];
     let mut score = line_potential(cells, size, color);
 
     // Capture progress escalates: the fifth pair wins, so being close is worth
