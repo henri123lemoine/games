@@ -524,13 +524,13 @@ const PENTE_OPTS: &[OptSpec] = &[
     bot_opt("net", "data/azpente/azero-pente.azweb", "", &["azero"]),
     bot_opt(
         "vcf-nodes",
-        "4000",
+        "1500",
         "(move-time VCF node budget)",
         &["azero", "azero-gpu"],
     ),
     bot_opt(
         "vcf-depth",
-        "8",
+        "7",
         "(VCF max attacker plies)",
         &["azero", "azero-gpu"],
     ),
@@ -1793,6 +1793,17 @@ mod tests {
             ("seed", "7"),
         ]);
         assert!((chess.make)(&valid).is_ok());
+    }
+
+    #[test]
+    fn pente_manifest_matches_the_runtime_forcing_defaults() {
+        let pente = entries()
+            .into_iter()
+            .find(|entry| entry.id == "pente")
+            .unwrap();
+        let value = |key| pente.opts.iter().find(|opt| opt.key == key).unwrap().value;
+        assert_eq!(value("vcf-depth"), "7");
+        assert_eq!(value("vcf-nodes"), "1500");
     }
 
     /// A synthetic `AZNET1` Pente net of the right shape (8 planes,
