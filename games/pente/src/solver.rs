@@ -32,9 +32,13 @@
 //! immediate wins and counter-threats are checked first: if the defender can win
 //! or simply escape (reach a non-loss) the attacker has not forced a win.
 
+use std::collections::HashMap;
+
 use game_core::Game;
 
-use crate::{EMPTY, PAIRS_TO_WIN, Pente, PenteAction, PenteState, completes_line};
+use crate::{
+    DIRECTIONS, EMPTY, PAIRS_TO_WIN, Pente, PenteAction, PenteState, completes_line, step,
+};
 
 /// Which class of threats counts as "forcing". [`Level::Vcf`] is the legacy
 /// fours-and-capture-wins solver; [`Level::Vct`] widens forcing moves to any
@@ -174,6 +178,7 @@ pub fn winning_move(game: &Pente, state: &PenteState, cfg: VcfConfig) -> Option<
         nodes: 0,
         max_nodes: cfg.max_nodes,
     };
+    let mut forcing_cache = HashMap::new();
     // Iterative deepening over attacker plies. A forced win is a *shallow* fact —
     // a double-three mates in three attacker moves regardless of how deep the
     // budget would allow — so searching depth 1, 2, 3, … finds the shortest win
@@ -189,8 +194,28 @@ pub fn winning_move(game: &Pente, state: &PenteState, cfg: VcfConfig) -> Option<
     if let Some(m) = first_win(game, state, &moves, attacker) {
         return Some(m);
     }
+    // Threat classification is independent of the iterative-deepening depth.
+    // It is also by far the expensive part of VCT (every legal move launches a
+    // bounded null-move probe), so compute the root candidates once rather than
+    // repeating the identical work at depths 1, 2, … . With no forcing first
+    // move, no deeper forcing line can exist under this solver's definition.
+    let forcing = forcing_moves(game, state, attacker, cfg, &moves, &mut forcing_cache);
+    if forcing.is_empty() {
+        return None;
+    }
     for depth in 1..=cfg.max_depth {
-        if let Some(m) = attack_from(game, state, attacker, cfg, depth, &mut budget, &moves) {
+        if !budget.spend() {
+            break;
+        }
+        if let Some(m) = attack_candidates(
+            game,
+            attacker,
+            cfg,
+            depth,
+            &mut budget,
+            &forcing,
+            &mut forcing_cache,
+        ) {
             return Some(m);
         }
         if budget.nodes >= budget.max_nodes {
@@ -200,13 +225,27 @@ pub fn winning_move(game: &Pente, state: &PenteState, cfg: VcfConfig) -> Option<
     None
 }
 
+/// A capture win needs two opponent stones per still-missing pair. This cheap
+/// node-level bound avoids probing eight capture rays at every candidate in
+/// sparse positions where a fifth-pair capture is materially impossible.
+fn capture_win_possible(game: &Pente, state: &PenteState, color: u8) -> bool {
+    let missing = PAIRS_TO_WIN.saturating_sub(state.pairs[color as usize]);
+    let opponent = color ^ 1;
+    state.cells[..game.size() * game.size()]
+        .iter()
+        .filter(|&&cell| cell == opponent)
+        .count()
+        >= usize::from(missing) * 2
+}
+
 /// Whether placing `color` at empty `p` wins outright — completes a five, or
 /// captures the fifth pair. `color` need not be the side to move.
-fn wins_at(game: &Pente, state: &PenteState, p: usize, color: u8) -> bool {
+fn wins_at(game: &Pente, state: &PenteState, p: usize, color: u8, capture_possible: bool) -> bool {
     let size = game.size();
     let (row, col) = (p / size, p % size);
-    state.pairs[color as usize] + game.capture_pairs_at(state, p, color) >= PAIRS_TO_WIN
-        || completes_line(&state.cells, size, row, col, color)
+    completes_line(&state.cells, size, row, col, color)
+        || (capture_possible
+            && state.pairs[color as usize] + game.capture_pairs_at(state, p, color) >= PAIRS_TO_WIN)
 }
 
 /// The first move in `moves` by which `color` wins outright, if any.
@@ -216,18 +255,20 @@ fn first_win(
     moves: &[PenteAction],
     color: u8,
 ) -> Option<PenteAction> {
+    let capture_possible = capture_win_possible(game, state, color);
     moves
         .iter()
         .copied()
-        .find(|a| wins_at(game, state, a.0 as usize, color))
+        .find(|a| wins_at(game, state, a.0 as usize, color, capture_possible))
 }
 
 /// How many moves in `moves` win outright for `color` — the immediate-threat
 /// count that orders forcing moves (strongest, e.g. double-threats, first).
 fn count_wins(game: &Pente, state: &PenteState, moves: &[PenteAction], color: u8) -> usize {
+    let capture_possible = capture_win_possible(game, state, color);
     moves
         .iter()
-        .filter(|a| wins_at(game, state, a.0 as usize, color))
+        .filter(|a| wins_at(game, state, a.0 as usize, color, capture_possible))
         .count()
 }
 
@@ -239,8 +280,8 @@ fn count_wins(game: &Pente, state: &PenteState, moves: &[PenteAction], color: u8
 /// that misses a free win merely under-counts threats, never invents one.)
 fn frontier(game: &Pente, state: &PenteState, side: u8) -> Vec<usize> {
     let size = game.size() as i32;
-    let mut out = Vec::new();
-    for p in 0..state.cells.len() {
+    let mut marked = [false; 19 * 19];
+    for p in 0..game.size() * game.size() {
         if state.cells[p] != side {
             continue;
         }
@@ -253,18 +294,92 @@ fn frontier(game: &Pente, state: &PenteState, side: u8) -> Vec<usize> {
                 }
                 let q = (r * size + c) as usize;
                 if state.cells[q] == EMPTY {
-                    out.push(q);
+                    marked[q] = true;
                 }
             }
         }
     }
-    // The frontier is the size of the attacker's stone neighborhood, far smaller
-    // than the board, so dedup it directly (sort+dedup) instead of allocating a
-    // board-sized seen bitmap on every recursion. The probe takes the min horizon
-    // over the frontier, so its order does not affect the result.
-    out.sort_unstable();
-    out.dedup();
-    out
+    marked[..game.size() * game.size()]
+        .iter()
+        .enumerate()
+        .filter_map(|(p, &is_frontier)| is_frontier.then_some(p))
+        .collect()
+}
+
+/// After a quiet attacker placement at `placed`, whether that new stone creates
+/// a one-move line win. Before the placement the caller has already established
+/// that no immediate win exists, so every newly winning five-cell window must
+/// contain `placed`; inspecting only those 20 local windows is exact.
+fn creates_line_win(game: &Pente, state: &PenteState, placed: usize, attacker: u8) -> bool {
+    let size = game.size() as i32;
+    let (row, col) = ((placed / game.size()) as i32, (placed % game.size()) as i32);
+    for (dr, dc) in DIRECTIONS {
+        for offset in -4..=0 {
+            let (start_r, start_c) = (row + dr * offset, col + dc * offset);
+            let (end_r, end_c) = (start_r + dr * 4, start_c + dc * 4);
+            if start_r < 0
+                || start_c < 0
+                || end_r < 0
+                || end_c < 0
+                || start_r >= size
+                || start_c >= size
+                || end_r >= size
+                || end_c >= size
+            {
+                continue;
+            }
+            let mut stones = 0;
+            let mut empties = 0;
+            for k in 0..5 {
+                let r = start_r + dr * k;
+                let c = start_c + dc * k;
+                match state.cells[(r * size + c) as usize] {
+                    cell if cell == attacker => stones += 1,
+                    EMPTY => empties += 1,
+                    _ => break,
+                }
+            }
+            if stones == 4 && empties == 1 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// After a non-capturing attacker placement at `placed`, whether the new stone
+/// becomes the far anchor of a capture that wins on the next move. With pair
+/// counts and every other cell unchanged, this is the only way the placement
+/// can create a previously absent immediate capture win.
+fn creates_capture_win(game: &Pente, state: &PenteState, placed: usize, attacker: u8) -> bool {
+    let needed = PAIRS_TO_WIN.saturating_sub(state.pairs[attacker as usize]);
+    if needed == 0 {
+        return true;
+    }
+    let opponent = attacker ^ 1;
+    let (row, col) = (placed / game.size(), placed % game.size());
+    for (dr, dc) in DIRECTIONS {
+        for sign in [1, -1] {
+            let (dr, dc) = (dr * sign, dc * sign);
+            let Some(a) = step(game.size(), row, col, dr, dc, 1) else {
+                continue;
+            };
+            let Some(b) = step(game.size(), row, col, dr, dc, 2) else {
+                continue;
+            };
+            let Some(c) = step(game.size(), row, col, dr, dc, 3) else {
+                continue;
+            };
+            if state.cells[a] == opponent
+                && state.cells[b] == opponent
+                && state.cells[c] == EMPTY
+                && game.capture_pairs_at(state, c, attacker) >= needed
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Null-move threat analysis: the fewest *free* consecutive `attacker`
@@ -303,12 +418,27 @@ fn null_move_horizon(
     // walking only the attacker's frontier so the probe stays near-linear.
     let mut best: Option<u32> = None;
     for p in frontier(game, state, attacker) {
+        let captures = game.capture_pairs_at(state, p, attacker);
         let mut next = state.clone();
         game.apply(&mut next, PenteAction(p as u16));
         if next.over {
             // `apply` ends the game only on a win; a winning placement is already
             // caught by `first_win` above, so this is defensive.
             return Some(1);
+        }
+        // The play-time prover uses horizon 2. A non-capturing placement changes
+        // only one cell, so any newly available win must be a five-cell window
+        // through that stone or a capture using it as the far anchor. Check
+        // those local deltas directly instead of rescanning every legal move.
+        // Captures alter several cells and the pair score, so retain the full
+        // reference check for those rare moves.
+        if max_h == 2 && captures == 0 {
+            if creates_line_win(game, &next, p, attacker)
+                || creates_capture_win(game, &next, p, attacker)
+            {
+                return Some(2);
+            }
+            continue;
         }
         // The defender passes: hand the move straight back to the attacker.
         next.to_move = attacker as usize;
@@ -362,6 +492,7 @@ fn attack(
     cfg: VcfConfig,
     depth: u32,
     budget: &mut Budget,
+    forcing_cache: &mut ForcingCache,
 ) -> Option<PenteAction> {
     if depth == 0 || !budget.spend() {
         return None;
@@ -370,56 +501,81 @@ fn attack(
     if let Some(m) = first_win(game, state, &moves, attacker) {
         return Some(m);
     }
-    attack_forcing(game, state, attacker, cfg, depth, budget, &moves)
+    let forcing = forcing_moves(game, state, attacker, cfg, &moves, forcing_cache);
+    attack_candidates(game, attacker, cfg, depth, budget, &forcing, forcing_cache)
 }
 
-/// [`attack`] with the node's legal `moves` and outright-win check already done
-/// — the iterative-deepening loop in [`winning_move`] reuses the root's (which
-/// are identical at every depth) instead of recomputing them. Still spends one
-/// budget node per call, matching the per-depth `attack` it replaces.
-fn attack_from(
+#[derive(Clone)]
+struct ForcingMove {
+    action: PenteAction,
+    next: PenteState,
+    horizon: u32,
+    immediate: usize,
+}
+
+type ForcingCache = HashMap<PenteState, Vec<ForcingMove>>;
+
+/// Classify and order the forcing moves at one attacker node. This result does
+/// not depend on the remaining proof depth and can therefore be reused by
+/// iterative deepening.
+fn forcing_moves(
     game: &Pente,
     state: &PenteState,
     attacker: u8,
     cfg: VcfConfig,
-    depth: u32,
-    budget: &mut Budget,
     moves: &[PenteAction],
-) -> Option<PenteAction> {
-    if depth == 0 || !budget.spend() {
-        return None;
+    cache: &mut ForcingCache,
+) -> Vec<ForcingMove> {
+    if let Some(cached) = cache.get(state) {
+        return cached.clone();
     }
-    attack_forcing(game, state, attacker, cfg, depth, budget, moves)
-}
-
-/// The forcing-move OR search over `moves` (the outright-win check is the
-/// caller's): generate forcing moves, order strongest first, return the first
-/// that beats every defense.
-fn attack_forcing(
-    game: &Pente,
-    state: &PenteState,
-    attacker: u8,
-    cfg: VcfConfig,
-    depth: u32,
-    budget: &mut Budget,
-    moves: &[PenteAction],
-) -> Option<PenteAction> {
     // Forcing moves: those that leave the attacker threatening a win within the
     // horizon the defender must parry. Order stronger threats first (shorter
     // horizon, then more immediate-win follow-ups).
-    let mut forcing: Vec<(PenteAction, PenteState, u32, usize)> = Vec::new();
+    let mut forcing = Vec::new();
     for &a in moves {
         if let Some((next, horizon)) = forcing_after(game, state, a, attacker, cfg) {
             let immediate = count_wins(game, &next, &game.legal_actions(&next), attacker);
-            forcing.push((a, next, horizon, immediate));
+            forcing.push(ForcingMove {
+                action: a,
+                next,
+                horizon,
+                immediate,
+            });
         }
     }
-    forcing.sort_by(|x, y| x.2.cmp(&y.2).then(y.3.cmp(&x.3)));
-    for (m, next, _, _) in forcing {
+    forcing.sort_by(|x, y| {
+        x.horizon
+            .cmp(&y.horizon)
+            .then(y.immediate.cmp(&x.immediate))
+    });
+    cache.insert(state.clone(), forcing.clone());
+    forcing
+}
+
+/// Search an already-classified attacker node at one iterative-deepening depth.
+fn attack_candidates(
+    game: &Pente,
+    attacker: u8,
+    cfg: VcfConfig,
+    depth: u32,
+    budget: &mut Budget,
+    forcing: &[ForcingMove],
+    forcing_cache: &mut ForcingCache,
+) -> Option<PenteAction> {
+    for candidate in forcing {
         // `next` has the defender to move facing the threat `m` created. The
         // attacker wins with `m` iff every defense fails.
-        if defends_fail(game, &next, attacker, cfg, depth - 1, budget) {
-            return Some(m);
+        if defends_fail(
+            game,
+            &candidate.next,
+            attacker,
+            cfg,
+            depth - 1,
+            budget,
+            forcing_cache,
+        ) {
+            return Some(candidate.action);
         }
     }
     None
@@ -446,6 +602,7 @@ fn defends_fail(
     cfg: VcfConfig,
     depth: u32,
     budget: &mut Budget,
+    forcing_cache: &mut ForcingCache,
 ) -> bool {
     if !budget.spend() {
         return false;
@@ -475,7 +632,7 @@ fn defends_fail(
         // A genuine defense (a block, or a capture that took a threat stone
         // away): does the attacker still force a win? An empty result means this
         // defense holds — the win is not proven, so (soundly) report it.
-        if attack(game, &next, attacker, cfg, depth, budget).is_none() {
+        if attack(game, &next, attacker, cfg, depth, budget, forcing_cache).is_none() {
             return false;
         }
     }
@@ -487,6 +644,7 @@ fn defends_fail(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use game_core::Rng;
 
     fn vcf(g: &Pente, s: &PenteState) -> Option<PenteAction> {
         winning_move(g, s, VcfConfig::default())
@@ -494,6 +652,85 @@ mod tests {
 
     fn vct(g: &Pente, s: &PenteState) -> Option<PenteAction> {
         winning_move(g, s, VcfConfig::vct(12, 400_000, 2))
+    }
+
+    /// The pre-optimization horizon-two probe: after ruling out an immediate
+    /// win, play each frontier move and rescan every legal follow-up. Kept only
+    /// as a test oracle for the local-delta fast path.
+    fn reference_horizon_two(game: &Pente, state: &PenteState, attacker: u8) -> Option<u32> {
+        let moves = game.legal_actions(state);
+        if first_win(game, state, &moves, attacker).is_some() {
+            return Some(1);
+        }
+        for p in frontier(game, state, attacker) {
+            let mut next = state.clone();
+            game.apply(&mut next, PenteAction(p as u16));
+            if next.over {
+                return Some(1);
+            }
+            next.to_move = attacker as usize;
+            let replies = game.legal_actions(&next);
+            if first_win(game, &next, &replies, attacker).is_some() {
+                return Some(2);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn optimized_horizon_two_matches_exhaustive_rescan() {
+        // Deterministic real-game positions exercise sparse/dense boards, both
+        // colors, captures, edges, and both board sizes used by the product.
+        // The optimized path must classify every one exactly like the old full
+        // legal-move rescan; this is an equivalence test, not a golden sample.
+        let mut rng = Rng::new(0x000d_3a7a_11ce_5eed);
+        for size in [9, 19] {
+            let game = Pente::new(size);
+            let mut state = game.initial_state();
+            for sample in 0..100 {
+                if game.is_terminal(&state) {
+                    state = game.initial_state();
+                }
+                let attacker = state.to_move as u8;
+                let expected = reference_horizon_two(&game, &state, attacker);
+                let mut steps = PROBE_STEPS;
+                let actual = null_move_horizon(&game, &state, attacker, 2, &mut steps);
+                assert_eq!(actual, expected, "size={size}, sample={sample}");
+
+                let actions = game.legal_actions(&state);
+                let action = actions[rng.below(actions.len())];
+                game.apply(&mut state, action);
+            }
+        }
+    }
+
+    #[test]
+    fn quiet_anchor_can_create_a_capture_win() {
+        // Black's new b5 anchor creates the fifth-pair capture at e5 without
+        // itself capturing anything. This is the capture-specific local delta
+        // that a line-only optimization would miss.
+        let game = Pente::new(9);
+        let state = game.parse_state(
+            &[
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". X O O . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+                ". . . . . . . . .",
+            ],
+            1,
+            [4, 0],
+        );
+        assert!(creates_capture_win(
+            &game,
+            &state,
+            game.point("b5").unwrap() as usize,
+            crate::BLACK
+        ));
     }
 
     #[test]
