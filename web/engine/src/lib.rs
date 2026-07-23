@@ -105,7 +105,8 @@ pub fn load_artifact(id: &str, bytes: &[u8]) {
 }
 
 /// One batch's reference-forward output: flat policy `logits` (per-position
-/// stride is game-fixed) and one `value` per position. The CPU bots play
+/// stride is game-fixed) and either one scalar or all seat logits per position.
+/// The CPU bots play
 /// against exactly this forward; the calibration test pages call it to compare
 /// the WebGPU kernels against it live (the same check the committed fixtures
 /// encode, but against the engine the browser actually runs).
