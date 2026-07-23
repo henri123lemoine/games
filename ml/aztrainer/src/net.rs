@@ -289,8 +289,8 @@ impl Net {
         }
     }
 
-    /// Value (tanh) and, for the go aux config, the score margin (raw, mover's
-    /// view). The score head shares the pooled value features.
+    /// Scalar tanh value or raw absolute-seat logits, plus the Go auxiliary
+    /// score margin when configured. The score head shares pooled features.
     fn value_forward(&self, t: &Tensor, train: bool) -> (Tensor, Option<Tensor>) {
         match &self.value {
             Value::Flat(v) => {
