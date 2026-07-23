@@ -178,6 +178,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "four-player-chess"
+version = "0.1.0"
+dependencies = [
+ "game-core",
+ "solvers",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -374,6 +382,7 @@ version = "0.1.0"
 dependencies = [
  "chess",
  "connect4",
+ "four-player-chess",
  "game-core",
  "go",
  "liars-dice",
@@ -908,6 +917,7 @@ version = "0.1.0"
 dependencies = [
  "chess",
  "console_error_panic_hook",
+ "four-player-chess",
  "game-core",
  "go",
  "lab",

@@ -21,6 +21,7 @@ game-core = { workspace = true }
 rayon = { workspace = true, optional = true }
 solvers = { path = "../solvers", default-features = false }
 chess = { path = "../games/chess" }
+four-player-chess = { path = "../games/four-player-chess" }
 liars-dice = { path = "../games/liars-dice" }
 twentyone = { path = "../games/twentyone" }
 othello = { path = "../games/othello" }

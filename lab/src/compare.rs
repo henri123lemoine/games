@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use game_core::stats::{BinomialSprt, Sprt, Verdict, elo_estimate, fit_elo};
-use game_core::{Agent, Game, Rng, Turn, hash, play_n, winner};
+use game_core::{Agent, Game, Rng, ScoreShare, Turn, hash, play_n, winner};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
@@ -191,17 +191,13 @@ fn play_pairs<G: Game + Sync>(
     pairs.map(one).fold((0, 0, 0), sum)
 }
 
-/// One N-player field game: hero (A) rotated to seat `g % n` against a field
-/// of B; `true` only when the hero is the *strict* winner. A tie at the top is
-/// a non-win for every seat — uniform across the rotation, unlike crediting
-/// the lowest seat. Seeds derive from `mix(seed, g)`.
-pub fn play_one_field_game<G: Game>(
+fn play_one_field_terminal<G: Game>(
     game: &G,
     a: &BotBuilder<G>,
     b: &BotBuilder<G>,
     g: u64,
     seed: u64,
-) -> bool {
+) -> (G::State, usize) {
     let s = mix(seed, g);
     let n = game.num_players();
     let hero_seat = (g as usize) % n;
@@ -220,7 +216,21 @@ pub fn play_one_field_game<G: Game>(
             }
         })
         .collect();
-    let terminal = play_n(game, &agents, &mut Rng::new(s));
+    (play_n(game, &agents, &mut Rng::new(s)), hero_seat)
+}
+
+/// One N-player field game: hero (A) rotated to seat `g % n` against a field
+/// of B; `true` only when the hero is the *strict* winner. A tie at the top is
+/// a non-win for every seat — uniform across the rotation, unlike crediting
+/// the lowest seat. Seeds derive from `mix(seed, g)`.
+pub fn play_one_field_game<G: Game>(
+    game: &G,
+    a: &BotBuilder<G>,
+    b: &BotBuilder<G>,
+    g: u64,
+    seed: u64,
+) -> bool {
+    let (terminal, hero_seat) = play_one_field_terminal(game, a, b, g, seed);
     winner(game, &terminal) == Some(hero_seat)
 }
 
@@ -355,6 +365,27 @@ pub fn vs_field<G: Game + Sync>(
     args: &CompareArgs,
     parse: BotParser<G>,
 ) -> Result<(), String> {
+    vs_field_with_score(game, args, parse, None)
+}
+
+/// [`vs_field`] plus the raw point-score share supplied by a game with that
+/// capability. Both metrics use the same seat-rotated games.
+pub fn vs_field_scored<G: ScoreShare + Sync>(
+    game: &G,
+    args: &CompareArgs,
+    parse: BotParser<G>,
+) -> Result<(), String> {
+    vs_field_with_score(game, args, parse, Some(G::score_share))
+}
+
+type ScoreShareFn<G> = fn(&G, &<G as Game>::State, usize) -> f64;
+
+fn vs_field_with_score<G: Game + Sync>(
+    game: &G,
+    args: &CompareArgs,
+    parse: BotParser<G>,
+    score_share: Option<ScoreShareFn<G>>,
+) -> Result<(), String> {
     let a = parse_bot(&args.a, parse, &args.opts)?;
     let b = parse_bot(&args.b, parse, &args.opts)?;
     args.opts.ensure_consumed("compare")?;
@@ -376,33 +407,59 @@ pub fn vs_field<G: Game + Sync>(
     );
     let batch = args.batch.max(1);
     let mut next = 0u64;
+    let mut score_total = 0.0;
+    let mut score_games = 0u64;
     while next < args.max_games {
         let hi = (next + batch).min(args.max_games);
         let one = |g: u64| {
-            if play_one_field_game(game, &a, &b, g, args.seed) {
+            let (terminal, hero) = play_one_field_terminal(game, &a, &b, g, args.seed);
+            let (win, loss) = if winner(game, &terminal) == Some(hero) {
                 (1u64, 0u64)
             } else {
                 (0, 1)
-            }
+            };
+            let score =
+                score_share.map_or((0.0, 0u64), |metric| (metric(game, &terminal, hero), 1));
+            (win, loss, score.0, score.1)
         };
-        let sum = |x: (u64, u64), y: (u64, u64)| (x.0 + y.0, x.1 + y.1);
+        let sum = |x: (u64, u64, f64, u64), y: (u64, u64, f64, u64)| {
+            (x.0 + y.0, x.1 + y.1, x.2 + y.2, x.3 + y.3)
+        };
         #[cfg(feature = "parallel")]
-        let (wins, losses) = (next..hi).into_par_iter().map(one).reduce(|| (0, 0), sum);
+        let (wins, losses, score_sum, scored) = (next..hi)
+            .into_par_iter()
+            .map(one)
+            .reduce(|| (0, 0, 0.0, 0), sum);
         #[cfg(not(feature = "parallel"))]
-        let (wins, losses) = (next..hi).map(one).fold((0, 0), sum);
+        let (wins, losses, score_sum, scored) = (next..hi).map(one).fold((0, 0, 0.0, 0), sum);
         next = hi;
         sprt.update(wins, losses);
+        score_total += score_sum;
+        score_games += scored;
         let (w, l) = sprt.counts();
         let share = w as f64 / sprt.games() as f64;
-        println!(
-            "games {:>5}  {}-{}  share {:.3} (fair {:.3})  llr {:>6.2}",
-            sprt.games(),
-            w,
-            l,
-            share,
-            p0,
-            sprt.llr()
-        );
+        if score_games > 0 {
+            println!(
+                "games {:>5}  {}-{}  win share {:.3} (fair {:.3})  score share {:.3}  llr {:>6.2}",
+                sprt.games(),
+                w,
+                l,
+                share,
+                p0,
+                score_total / score_games as f64,
+                sprt.llr()
+            );
+        } else {
+            println!(
+                "games {:>5}  {}-{}  share {:.3} (fair {:.3})  llr {:>6.2}",
+                sprt.games(),
+                w,
+                l,
+                share,
+                p0,
+                sprt.llr()
+            );
+        }
         if sprt.verdict() != Verdict::Open {
             break;
         }

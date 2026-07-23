@@ -1,0 +1,15 @@
+[package]
+name = "four-player-chess"
+version = "0.1.0"
+edition = "2024"
+description = "Chess.com-style four-player free-for-all chess as a game-core Game"
+
+[lib]
+name = "four_player_chess"
+path = "src/lib.rs"
+
+[dependencies]
+game-core = { workspace = true }
+
+[dev-dependencies]
+solvers = { path = "../../solvers" }

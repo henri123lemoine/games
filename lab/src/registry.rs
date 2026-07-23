@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use game_core::{Agent, Game, NoSpec, hash};
+use game_core::{Agent, Game, NoSpec, ScoreShare, hash};
 use liars_dice::rebel::{PbsNet, RebelAgent};
 use liars_dice::{
     AbstractedMccfrAgent, AbstractedQAgent, AbstractedRolloutAgent, ActionAbstractionConfig,
@@ -27,7 +27,7 @@ use twentyone::game::{Action as T21Action, T21State, TwentyOne};
 
 use crate::compare::{
     BotBuilder, BotParser, BotSpec, BoxedAgent, CompareArgs, TourneyArgs, head_to_head, parse_spec,
-    round_robin, run_field, run_pairs, split_specs, vs_field,
+    round_robin, run_field, run_pairs, split_specs, vs_field, vs_field_scored,
 };
 use crate::runner::{AnyMatch, SimultaneousTypedMatch, TypedMatch};
 use crate::simultaneous_compare::{BoxedSimultaneousAgent, SimultaneousBotBuilder};
@@ -245,6 +245,26 @@ fn eval_entry<G: Game + Sync + 'static>(
     }
 }
 
+/// Field evaluator variant for games with a raw point scoreboard. Its compare
+/// output reports score share alongside the ordinary strict-win SPRT.
+fn eval_entry_scored<G: ScoreShare + Sync + 'static>(
+    bots_help: &'static str,
+    default_open: u64,
+    game_of: fn(&Opts) -> Result<G, String>,
+    parse: BotParser<G>,
+) -> EvalEntry {
+    EvalEntry {
+        bots_help,
+        has_field: true,
+        compare: Box::new(move |a| vs_field_scored(&game_of(&a.opts)?, a, parse)),
+        tourney: Box::new(move |a| round_robin(&game_of(&a.opts)?, a, default_open, parse)),
+        pairs: Box::new(move |o, a, b, s, r| {
+            run_pairs(&game_of(o)?, o, a, b, default_open, parse, s, r)
+        }),
+        field: Box::new(move |o, a, b, s, r| run_field(&game_of(o)?, o, a, b, parse, s, r)),
+    }
+}
+
 /// Parses `seat=` — the human's seat index, or `watch` (`None`) to make
 /// every seat a bot and spectate.
 fn parse_seat(o: &Opts, seats: usize) -> Result<Option<usize>, String> {
@@ -374,6 +394,18 @@ const CHESS_OPTS: &[OptSpec] = &[
     ),
     bot_opt("depth", "5", "", &["alphabeta", "alphabeta-rich"]),
     bot_opt("net", "data/azero/chess.bin", "", &["azero"]),
+    bot_opt("sims", "256", "", &["azero", "azero-gpu"]),
+    opt("seed", "...", ""),
+];
+
+const FOUR_PLAYER_CHESS_OPTS: &[OptSpec] = &[
+    opt("seat", "0|1|2|3|watch", "(Red, Blue, Yellow, Green)"),
+    opt(
+        "bot",
+        "azero-gpu|azero|greedy|mobility|random",
+        "(azero-gpu: browser only)",
+    ),
+    bot_opt("net", "data/azero/four-player-chess.bin", "", &["azero"]),
     bot_opt("sims", "256", "", &["azero", "azero-gpu"]),
     opt("seed", "...", ""),
 ];
@@ -641,6 +673,29 @@ pub fn entries() -> Vec<Entry> {
                 false,
                 |_| Ok(chess::Chess),
                 chess_bot,
+            )),
+        },
+        Entry {
+            id: "four-player-chess",
+            name: "Four-player Chess",
+            solo: false,
+            watch_bot: "",
+            summary: "Chess.com-style four-player FFA chess",
+            opts: FOUR_PLAYER_CHESS_OPTS,
+            make: Box::new(|o| {
+                make_versus_or_gpu(
+                    o,
+                    four_player_chess::FourPlayerChess::default(),
+                    "greedy",
+                    &["sims"],
+                    four_player_chess_bot,
+                )
+            }),
+            eval: Some(eval_entry_scored(
+                "azero[:net=data/azero/four-player-chess.bin,sims=256] | greedy | mobility | random",
+                0,
+                |_| Ok(four_player_chess::FourPlayerChess::default()),
+                four_player_chess_bot,
             )),
         },
         Entry {
@@ -1126,6 +1181,118 @@ impl Agent<chess::Chess> for AzeroBot {
         ))
         .act(game, state, player, rng)
     }
+}
+
+/// Native four-player AlphaZero: the shared multiplayer PUCT search driven by
+/// the same AZNET1 reference forward used by wasm's CPU fallback. The value
+/// head predicts absolute-seat win shares; those are mapped to the game's
+/// zero-sum return convention before backup.
+struct FourPlayerAzeroBot {
+    net: std::sync::Arc<Net>,
+    sims: u32,
+}
+
+impl Agent<four_player_chess::FourPlayerChess> for FourPlayerAzeroBot {
+    fn act(
+        &self,
+        game: &four_player_chess::FourPlayerChess,
+        state: &four_player_chess::State,
+        _player: usize,
+        rng: &mut game_core::Rng,
+    ) -> usize {
+        let cfg = PuctConfig {
+            sims: self.sims,
+            root_noise: 0.0,
+            cycle_draws: true,
+            ..PuctConfig::default()
+        };
+        let enc = four_player_chess::encode::FourPlayerChessEncoder;
+        let mut search = Search::new(None);
+        let mut results = Vec::new();
+        while let Gather::Requests(reqs) = search.advance(
+            game,
+            &enc,
+            state,
+            &cfg,
+            rng,
+            std::mem::take(&mut results),
+            &|_| false,
+            None,
+        ) {
+            results = reqs
+                .iter()
+                .map(|request| {
+                    let (priors, shares) =
+                        self.net
+                            .forward_support_seats(&request.features, &[], &request.support);
+                    let returns = four_player_chess::encode::shares_to_returns(&shares);
+                    solvers::azero::EvalResult {
+                        priors,
+                        value: solvers::azero::Value::Seats(returns),
+                    }
+                })
+                .collect();
+        }
+        solvers::azero::argmax(search.root_visits())
+    }
+}
+
+fn load_four_player_chess_net(path: &str) -> Result<std::sync::Arc<Net>, String> {
+    let bytes = crate::artifacts::read(path)?;
+    let net = Net::parse(&bytes)
+        .map_err(|e| format!("failed to load four-player chess net '{path}': {e}"))?;
+    let arch = net.arch();
+    if arch.size != four_player_chess::SIDE
+        || arch.planes != four_player_chess::encode::PLANE_COUNT
+        || arch.policy_len != four_player_chess::encode::POLICY_LEN
+        || arch.value_seats != 4
+        || arch.head != nn_infer::HeadKind::FlatConv
+    {
+        return Err(format!(
+            "four-player chess net '{path}' has incompatible architecture: \
+             expected size=14 planes={} policy={} flat value-seats=4, got {:?}",
+            four_player_chess::encode::PLANE_COUNT,
+            four_player_chess::encode::POLICY_LEN,
+            arch,
+        ));
+    }
+    Ok(std::sync::Arc::new(net))
+}
+
+fn four_player_chess_bot(
+    spec: &BotSpec,
+    _o: &Opts,
+) -> Result<BotBuilder<four_player_chess::FourPlayerChess>, String> {
+    Ok(match spec.name.as_str() {
+        "azero" => {
+            let path = spec.opts.str("net", "data/azero/four-player-chess.bin");
+            let net = load_four_player_chess_net(&path)?;
+            let sims: u32 = spec.opts.get("sims", 256)?;
+            Box::new(move |_| {
+                Box::new(FourPlayerAzeroBot {
+                    net: net.clone(),
+                    sims,
+                }) as BoxedAgent<four_player_chess::FourPlayerChess>
+            })
+        }
+        "greedy" => Box::new(|_| {
+            Box::new(four_player_chess::GreedyAgent)
+                as BoxedAgent<four_player_chess::FourPlayerChess>
+        }),
+        "mobility" => Box::new(|_| {
+            Box::new(four_player_chess::MobilityAgent)
+                as BoxedAgent<four_player_chess::FourPlayerChess>
+        }),
+        "random" => Box::new(|_| {
+            Box::new(game_core::RandomAgent) as BoxedAgent<four_player_chess::FourPlayerChess>
+        }),
+        other => {
+            return Err(format!(
+                "unknown four-player chess bot '{other}' \
+                 (azero|greedy|mobility|random; azero-gpu plays only in the browser)"
+            ));
+        }
+    })
 }
 
 /// Plays the solved strategy greedily via the solver's draw probability.
