@@ -1,8 +1,9 @@
 // Shared WebGPU evaluator for the AlphaZero resnet family — the one driver the
 // chess, go, and snake frontends run their nets through. All three are the same
-// network shape (a 3×3 conv stem, a residual tower of paired 3×3 convs with BN
-// folded into the conv weights, then policy + value heads); they differ only in
-// the head topology and the board size. This module owns everything that is the
+// network shape (a conv stem, a residual tower of paired convs with BN folded
+// into the weights, then policy + value heads); ordinary boards use 3×3 kernels
+// and the 1×1 degenerate case uses 1×1 kernels. They differ only in the head
+// topology and board size. This module owns everything that is the
 // same across them: the padded-conv WGSL kernel (and a dense kernel for chess's
 // on-GPU head), the buffer/pipeline scaffolding and the conv→tower→heads
 // dispatch loop, the binary parser, and the CPU-side global-pool / linear /
@@ -232,9 +233,11 @@ export interface Trunk {
 export function parseTrunk(buf: ArrayBuffer): { trunk: Trunk; reader: Reader } {
   const { arch, body } = parseArch(buf);
   const r = new Reader(buf, body);
-  const stem = r.conv(arch.planes, arch.C, 3);
+  const k = arch.size === 1 ? 1 : 3;
+  const stem = r.conv(arch.planes, arch.C, k);
   const tower: [Conv, Conv][] = [];
-  for (let i = 0; i < arch.blocks; i++) tower.push([r.conv(arch.C, arch.C, 3), r.conv(arch.C, arch.C, 3)]);
+  for (let i = 0; i < arch.blocks; i++)
+    tower.push([r.conv(arch.C, arch.C, k), r.conv(arch.C, arch.C, k)]);
   return { trunk: { arch, stem, tower }, reader: r };
 }
 
