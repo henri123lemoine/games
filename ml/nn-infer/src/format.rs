@@ -138,7 +138,7 @@ impl Arch {
         if blocks == 0 || blocks > 64 || channels == 0 || channels > 1024 {
             return Err(format!("implausible architecture {blocks}x{channels}"));
         }
-        if planes == 0 || planes > 1024 {
+        if planes == 0 || planes > 256 {
             return Err(format!("implausible planes {planes}"));
         }
         if !(1..=64).contains(&size) {
