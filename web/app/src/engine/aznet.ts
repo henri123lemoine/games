@@ -1,5 +1,6 @@
 // Shared WebGPU evaluator for the AlphaZero resnet family — the one driver the
-// chess, go, and snake frontends run their nets through. All three are the same
+// chess, four-player chess, go, and snake frontends run their nets through.
+// All are the same
 // network shape (a conv stem, a residual tower of paired convs with BN folded
 // into the weights, then policy + value heads); ordinary boards use 3×3 kernels
 // and the 1×1 degenerate case uses 1×1 kernels. They differ only in the head
@@ -16,9 +17,11 @@
 //     with nn-infer's reference fp32 forward). go and snake plug in only their
 //     `heads()` math. The conv weights are board-size-agnostic, so a pooled net
 //     forwards at any size ≤ the buffers it was sized for.
-//   * `FlatHeadNet` (chess): the policy head is a 1×1 conv stack and the value
-//     head a small conv then a pair of linears, all on the GPU via the dense
-//     kernel; only the final channel-major→square-major reshuffle is CPU-side.
+//   * Flat heads (chess and four-player chess): the policy head is a 1×1 conv
+//     stack and the value head a small conv then a pair of linears, all on the
+//     GPU via the dense kernel; only the final channel-major→square-major
+//     reshuffle is CPU-side. Chess uses `FlatHeadNet`; four-player chess adds
+//     its four-logit value readback in its game-specific subclass.
 //
 // The parser reads the unified AZNET1 header (see nn-infer/src/format.rs); it is
 // the only export format the arcade ships.
