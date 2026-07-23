@@ -348,6 +348,32 @@ fn bare_kings_end_as_insufficient_material() {
 }
 
 #[test]
+fn threefold_repetition_awards_all_active_armies_ten() {
+    let game = FourPlayerChess::default();
+    let mut state = position(Color::Red);
+    put(&mut state, "d4", Color::Red, PieceKind::Knight);
+    state.record_position(false);
+
+    for _ in 0..2 {
+        for (from, to) in [
+            ("d4", "e6"),
+            ("a7", "a6"),
+            ("h14", "h13"),
+            ("n7", "n8"),
+            ("e6", "d4"),
+            ("a6", "a7"),
+            ("h13", "h14"),
+            ("n8", "n7"),
+        ] {
+            play(&game, &mut state, from, to);
+        }
+    }
+
+    assert_eq!(state.end, EndReason::Repetition);
+    assert_eq!(state.scores, [10, 10, 10, 10]);
+}
+
+#[test]
 fn terminal_returns_match_the_value_heads_centered_win_shares() {
     let game = FourPlayerChess::default();
     let mut state = position(Color::Red);
