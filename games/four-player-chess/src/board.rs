@@ -222,7 +222,9 @@ impl State {
             history: None,
         };
 
-        // Red is the canonical army; the others are exact quarter-turns.
+        // Chess.com's modern standard setup keeps Red/Yellow as exact
+        // half-turns, while Blue/Green swap the central king/queen squares.
+        // This places the kings on h1, a8, g14, n7 respectively.
         let back = [
             PieceKind::Rook,
             PieceKind::Knight,
@@ -337,7 +339,16 @@ impl State {
 
 /// Board square for one item in an army's own left-to-right back rank and pawn rank.
 fn army_square(color: Color, file: usize) -> (u8, u8) {
-    let canonical_x = 3 + file as i8;
+    let modern_file = if matches!(color, Color::Blue | Color::Green) {
+        match file {
+            3 => 4,
+            4 => 3,
+            _ => file,
+        }
+    } else {
+        file
+    };
+    let canonical_x = 3 + modern_file as i8;
     match color {
         Color::Red => (
             square(canonical_x, 0).unwrap(),
@@ -408,5 +419,24 @@ pub(crate) fn home_king(color: Color) -> u8 {
 }
 
 pub(crate) fn home_rook(color: Color, king_side: bool) -> u8 {
-    army_square(color, if king_side { 7 } else { 0 }).0
+    let king_side_file = if matches!(color, Color::Blue | Color::Green) {
+        0
+    } else {
+        7
+    };
+    army_square(
+        color,
+        if king_side {
+            king_side_file
+        } else {
+            7 - king_side_file
+        },
+    )
+    .0
+}
+
+pub(crate) fn castle_step(color: Color, king_side: bool) -> (i8, i8) {
+    let (king_x, king_y) = xy(home_king(color));
+    let (rook_x, rook_y) = xy(home_rook(color, king_side));
+    ((rook_x - king_x).signum(), (rook_y - king_y).signum())
 }

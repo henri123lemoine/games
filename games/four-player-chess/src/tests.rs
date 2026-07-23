@@ -33,7 +33,7 @@ fn play(game: &FourPlayerChess, state: &mut State, from: &str, to: &str) -> i16 
 }
 
 #[test]
-fn standard_board_is_the_160_square_cross_with_four_rotated_armies() {
+fn standard_board_is_the_160_square_cross_with_modern_king_orientation() {
     let state = State::standard();
     assert_eq!(
         (0..14)
@@ -56,7 +56,7 @@ fn standard_board_is_the_160_square_cross_with_four_rotated_armies() {
         Some(Piece::new(Color::Red, PieceKind::King))
     );
     assert_eq!(
-        state.piece_at(sq("a7")),
+        state.piece_at(sq("a8")),
         Some(Piece::new(Color::Blue, PieceKind::King))
     );
     assert_eq!(
@@ -64,8 +64,16 @@ fn standard_board_is_the_160_square_cross_with_four_rotated_armies() {
         Some(Piece::new(Color::Yellow, PieceKind::King))
     );
     assert_eq!(
-        state.piece_at(sq("n8")),
+        state.piece_at(sq("n7")),
         Some(Piece::new(Color::Green, PieceKind::King))
+    );
+    assert_eq!(
+        state.piece_at(sq("a7")),
+        Some(Piece::new(Color::Blue, PieceKind::Queen))
+    );
+    assert_eq!(
+        state.piece_at(sq("n8")),
+        Some(Piece::new(Color::Green, PieceKind::Queen))
     );
     assert_eq!(state.to_move, Color::Red);
 }
@@ -273,6 +281,27 @@ fn castling_moves_the_king_two_and_rook_one() {
         Some(Piece::new(Color::Red, PieceKind::Rook))
     );
     assert!(state.piece_at(sq("k1")).is_none());
+}
+
+#[test]
+fn modern_blue_castling_uses_the_rook_above_the_king() {
+    let game = FourPlayerChess::default();
+    let mut state = position(Color::Blue);
+    state.board[sq("a7") as usize] = Piece::EMPTY;
+    state.board[sq("a8") as usize] = Piece::new(Color::Blue, PieceKind::King);
+    put(&mut state, "a11", Color::Blue, PieceKind::Rook);
+    state.castling = castle_bit(Color::Blue, true);
+
+    play(&game, &mut state, "a8", "a10");
+    assert_eq!(
+        state.piece_at(sq("a10")),
+        Some(Piece::new(Color::Blue, PieceKind::King))
+    );
+    assert_eq!(
+        state.piece_at(sq("a9")),
+        Some(Piece::new(Color::Blue, PieceKind::Rook))
+    );
+    assert!(state.piece_at(sq("a11")).is_none());
 }
 
 #[test]

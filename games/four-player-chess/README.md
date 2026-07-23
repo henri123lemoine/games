@@ -16,8 +16,9 @@ The board rules are ordinary chess, rotated once for each army, with these FFA
 rules:
 
 - The board has 160 playable squares: a 14×14 square with each 3×3 corner
-  removed. Each army has the ordinary `R N B Q K B N R` back rank and eight
-  pawns.
+  removed. The modern Chess.com setup places the four kings on h1, a8, g14,
+  and n7 (Blue and Green use the site's central king/queen orientation), with
+  eight pawns per army.
 - Pawns move toward the opposite arm, may double from their starting rank, and
   promote automatically to a queen on their own eighth rank. A promoted queen
   remains marked as a one-point queen.

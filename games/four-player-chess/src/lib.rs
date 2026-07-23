@@ -22,7 +22,7 @@ pub use board::{
 
 use game_core::{Game, Turn};
 
-use board::{add, castle_bit, home_king, home_rook};
+use board::{add, castle_bit, castle_step, home_king, home_rook};
 
 /// Exact site rules have no arbitrary turn cap. Training/fuzzing can opt into
 /// one to keep episodes bounded; capped games are ranked by their current score.
@@ -410,12 +410,11 @@ fn castle_moves(state: &State, color: Color, moves: &mut Vec<Move>) {
     {
         return;
     }
-    let (rx, ry) = color.right();
     for king_side in [true, false] {
         if state.castling & castle_bit(color, king_side) == 0 {
             continue;
         }
-        let sign = if king_side { 1 } else { -1 };
+        let (step_x, step_y) = castle_step(color, king_side);
         let rook = home_rook(color, king_side);
         if state.board[rook as usize] != Piece::new(color, PieceKind::Rook) {
             continue;
@@ -423,7 +422,7 @@ fn castle_moves(state: &State, color: Color, moves: &mut Vec<Move>) {
         let distance = if king_side { 3 } else { 4 };
         let mut clear = true;
         for step in 1..distance {
-            let sq = add(king, sign * step * rx, sign * step * ry).expect("home rank");
+            let sq = add(king, step * step_x, step * step_y).expect("home rank");
             if !state.board[sq as usize].is_empty() {
                 clear = false;
                 break;
@@ -432,8 +431,8 @@ fn castle_moves(state: &State, color: Color, moves: &mut Vec<Move>) {
         if !clear {
             continue;
         }
-        let through = add(king, sign * rx, sign * ry).expect("castle through");
-        let to = add(king, sign * 2 * rx, sign * 2 * ry).expect("castle to");
+        let through = add(king, step_x, step_y).expect("castle through");
+        let to = add(king, 2 * step_x, 2 * step_y).expect("castle to");
         if !is_attacked(state, through, color) && !is_attacked(state, to, color) {
             moves.push(Move::new(king, to));
         }
@@ -482,13 +481,14 @@ fn apply_board_move(state: &mut State, action: Move) -> MoveOutcome {
 
     if moved.kind() == PieceKind::King {
         state.castling &= !(castle_bit(actor, true) | castle_bit(actor, false));
-        let (rx, ry) = actor.right();
-        let king_side = add(action.from, 2 * rx, 2 * ry) == Some(action.to);
-        let queen_side = add(action.from, -2 * rx, -2 * ry) == Some(action.to);
+        let (king_x, king_y) = castle_step(actor, true);
+        let (queen_x, queen_y) = castle_step(actor, false);
+        let king_side = add(action.from, 2 * king_x, 2 * king_y) == Some(action.to);
+        let queen_side = add(action.from, 2 * queen_x, 2 * queen_y) == Some(action.to);
         if action.from == home_king(actor) && (king_side || queen_side) {
             let rook_from = home_rook(actor, king_side);
-            let sign = if king_side { 1 } else { -1 };
-            let rook_to = add(action.from, sign * rx, sign * ry).expect("rook destination");
+            let (step_x, step_y) = castle_step(actor, king_side);
+            let rook_to = add(action.from, step_x, step_y).expect("rook destination");
             state.board[rook_to as usize] = state.board[rook_from as usize];
             state.board[rook_from as usize] = Piece::EMPTY;
         }
