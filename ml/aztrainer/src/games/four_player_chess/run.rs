@@ -1,4 +1,4 @@
-//! Four-player chess training loop: batched MPS self-play, four-seat
+//! Four-player chess training loop: batched neural self-play, four-seat
 //! cross-entropy values, replay training, checkpoint league, and seat-rotated
 //! field evaluation.
 
