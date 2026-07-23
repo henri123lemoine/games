@@ -1,364 +1,470 @@
-// Doom — 1v1 vs AI. The human drives seat 0 (rendered POV), the trained PPO bot
-// drives seat 1 via the tch-free forward (forward.js). One doomrl WASM engine
-// steps both seats' ticcmds per tic; JS blits seat 0's framebuffer to canvas.
-import { DoomBot, decodeAction, parseWeights, PLAYER_STATE_FLOATS } from "./forward.js";
+// Strategic Doom FFA. Seat 0 is the rendered human; seats 1-3 can be
+// deterministic, route-aware tactical opponents. The future strategic PPO
+// policy can replace TacticalBot at this seam once a compatible
+// 40-input/486-action net exists.
 import DoomRL from "./doomrl.js";
+import { PLAYER_STATE_FLOATS, S, TacticalBot } from "./tactical.js";
 
 const TICRATE = 35;
-const RESX = 640;
-const RESY = 400;
+const MAX_PLAYERS = 4;
+const MOVE = 50;
+const KEY_TURN = 900;
 
-const SPEED = 50; // forward/back move units
-const TURN = 900; // human turn rate per tic
+// The one-sided linedef loops that must remain solid. Keep these in the smoke
+// telemetry so long bot soaks catch collision regressions, not just rendering
+// regressions. Sector-height borders (reactor, stairs, shrines) are omitted
+// because they are intentionally traversable.
+const SOLID_RECTS = [
+  [-712, -568, 240, 620], [-712, -568, -620, -240],
+  [568, 712, 240, 620], [568, 712, -620, -240],
+  [-435, -225, 210, 390], [225, 435, -390, -210],
+  [-1020, -840, 120, 340], [840, 1020, -340, -120],
+  [-170, 170, 523, 647], [-170, 170, -647, -523],
+];
+const ARENA_OUTLINE = [
+  [-1120, 768], [1120, 768], [1280, 608], [1280, -608],
+  [1120, -768], [-1120, -768], [-1280, -608], [-1280, 608],
+];
 
-const els = {
-  canvas: document.getElementById("canvas"),
-  overlay: document.getElementById("overlay"),
-  start: document.getElementById("start"),
-  status: document.getElementById("status"),
-  hud: document.getElementById("hud"),
-};
+const canvas = document.getElementById("canvas");
+const overlay = document.getElementById("overlay");
+const startButton = document.getElementById("start");
+const setupBotsButton = document.getElementById("setup-bots");
+const setupDifficultyButton = document.getElementById("setup-difficulty");
+const pauseOverlay = document.getElementById("pause-overlay");
+const pauseContinueButton = document.getElementById("pause-continue");
+const pauseHomeButton = document.getElementById("pause-home");
 
 const keys = Object.create(null);
+let mouseTurn = 0;
+let mouseFire = false;
 let running = false;
+let pauseArena = null;
+let resumeArena = null;
+let movePauseSelection = null;
+let activatePauseSelection = null;
+let moveSetupSelection = null;
+let changeSetupValue = null;
+let activateSetupSelection = null;
 
-// Twin-stick touch controls feed the SAME `keys` map the keyboard writes, so the
-// rest of the pipeline (humanAction) is untouched. Three independent systems —
-// left move stick, right drag-to-turn, and fire/use buttons — each track their
-// own pointerId so move + turn + fire register simultaneously and one finger's
-// release never clears another's keys.
-const STICK_DEADZONE = 16; // px from stick centre before a move key engages
-const STICK_RADIUS = 52; // knob travel cap
-const TURN_DEADZONE = 4; // px of horizontal drag before a turn key engages
-const TURN_IDLE_MS = 90; // release turn keys after the finger stops moving
+const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 
-function setupTouchControls() {
-  const isTouch =
-    "ontouchstart" in window ||
-    navigator.maxTouchPoints > 0 ||
-    matchMedia("(pointer: coarse)").matches;
-  if (!isTouch) return;
-  document.body.classList.add("touch", "menu");
-
-  setupMoveStick();
-  setupTurnZone();
-  for (const btn of document.querySelectorAll("#touch .btn")) setupActionButton(btn);
+function pointInPolygon(x, y, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    const [xi, yi] = polygon[i];
+    const [xj, yj] = polygon[j];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
 }
 
-// Pointer capture keeps a drag bound to its zone even if the finger wanders over
-// a sibling button; harmless if it throws (synthetic events, unsupported).
-function capture(el, pointerId) {
-  try {
-    el.setPointerCapture(pointerId);
-  } catch {}
-}
-
-function clearMoveKeys() {
-  keys["KeyW"] = keys["KeyS"] = keys["KeyA"] = keys["KeyD"] = false;
-}
-
-function setupMoveStick() {
-  const zone = document.getElementById("move-zone");
-  const stick = document.getElementById("stick");
-  const knob = document.getElementById("knob");
-  let pointerId = null;
-  let originX = 0;
-  let originY = 0;
-
-  const place = (el, x, y) => {
-    el.style.left = x + "px";
-    el.style.top = y + "px";
-  };
-
-  const onDown = (e) => {
-    if (pointerId !== null) return;
-    e.preventDefault();
-    pointerId = e.pointerId;
-    capture(zone, pointerId);
-    originX = e.clientX;
-    originY = e.clientY;
-    place(stick, originX, originY);
-    knob.style.transform = "translate(0px, 0px)";
-    stick.classList.add("active");
-  };
-
-  const onMove = (e) => {
-    if (e.pointerId !== pointerId) return;
-    e.preventDefault();
-    let dx = e.clientX - originX;
-    let dy = e.clientY - originY;
-    const dist = Math.hypot(dx, dy);
-    // 8-way thresholding off the drag angle keeps strafing crisp like a D-pad
-    // while feeling analog: forward/back from vertical, strafe from horizontal.
-    clearMoveKeys();
-    if (dist >= STICK_DEADZONE) {
-      const ax = Math.abs(dx);
-      const ay = Math.abs(dy);
-      if (dy < 0 && ay > ax * 0.4) keys["KeyW"] = true;
-      if (dy > 0 && ay > ax * 0.4) keys["KeyS"] = true;
-      if (dx < 0 && ax > ay * 0.4) keys["KeyA"] = true;
-      if (dx > 0 && ax > ay * 0.4) keys["KeyD"] = true;
-    }
-    const clamp = Math.min(dist, STICK_RADIUS) / (dist || 1);
-    knob.style.transform = `translate(${dx * clamp}px, ${dy * clamp}px)`;
-  };
-
-  const onUp = (e) => {
-    if (e.pointerId !== pointerId) return;
-    e.preventDefault();
-    pointerId = null;
-    clearMoveKeys();
-    stick.classList.remove("active");
-  };
-
-  zone.addEventListener("pointerdown", onDown);
-  zone.addEventListener("pointermove", onMove);
-  zone.addEventListener("pointerup", onUp);
-  zone.addEventListener("pointercancel", onUp);
-}
-
-function clearTurnKeys() {
-  keys["ArrowLeft"] = keys["ArrowRight"] = false;
-}
-
-function setupTurnZone() {
-  const zone = document.getElementById("turn-zone");
-  let pointerId = null;
-  let lastX = 0;
-  let idle = null;
-
-  const stopTurning = () => clearTurnKeys();
-
-  const onDown = (e) => {
-    if (pointerId !== null) return;
-    e.preventDefault();
-    pointerId = e.pointerId;
-    capture(zone, pointerId);
-    lastX = e.clientX;
-    document.body.classList.add("aiming");
-  };
-
-  // DOOM auto-aims vertically, so only horizontal drag turns. The key is held
-  // for the direction of the most recent horizontal motion and released shortly
-  // after the finger stops, giving continuous turning while dragging.
-  const onMove = (e) => {
-    if (e.pointerId !== pointerId) return;
-    e.preventDefault();
-    const dx = e.clientX - lastX;
-    lastX = e.clientX;
-    if (Math.abs(dx) >= TURN_DEADZONE) {
-      keys["ArrowRight"] = dx > 0;
-      keys["ArrowLeft"] = dx < 0;
-      if (idle) clearTimeout(idle);
-      idle = setTimeout(stopTurning, TURN_IDLE_MS);
-    }
-  };
-
-  const onUp = (e) => {
-    if (e.pointerId !== pointerId) return;
-    e.preventDefault();
-    pointerId = null;
-    if (idle) clearTimeout(idle);
-    clearTurnKeys();
-    document.body.classList.remove("aiming");
-  };
-
-  zone.addEventListener("pointerdown", onDown);
-  zone.addEventListener("pointermove", onMove);
-  zone.addEventListener("pointerup", onUp);
-  zone.addEventListener("pointercancel", onUp);
-}
-
-function setupActionButton(btn) {
-  const code = btn.dataset.code;
-  let pointerId = null;
-  const press = (e) => {
-    if (pointerId !== null) return;
-    e.preventDefault();
-    pointerId = e.pointerId;
-    keys[code] = true;
-    btn.classList.add("pressed");
-  };
-  const release = (e) => {
-    if (e.pointerId !== pointerId) return;
-    e.preventDefault();
-    pointerId = null;
-    keys[code] = false;
-    btn.classList.remove("pressed");
-  };
-  btn.addEventListener("pointerdown", press);
-  btn.addEventListener("pointerup", release);
-  btn.addEventListener("pointercancel", release);
-  btn.addEventListener("pointerleave", release);
+function wallBreachAt(x, y) {
+  if (!pointInPolygon(x, y, ARENA_OUTLINE)) return "outer";
+  const rect = SOLID_RECTS.findIndex(([left, right, bottom, top]) => (
+    x > left && x < right && y > bottom && y < top
+  ));
+  return rect >= 0 ? `solid-${rect}` : null;
 }
 
 function humanAction() {
-  // Keyboard -> seat 0 ticcmd. Arrows/WASD move + turn; Ctrl/Space fire; E use.
-  let forward = 0,
-    side = 0,
-    turn = 0,
-    fire = 0;
-  if (keys["KeyW"] || keys["ArrowUp"]) forward += SPEED;
-  if (keys["KeyS"] || keys["ArrowDown"]) forward -= SPEED;
-  if (keys["ArrowLeft"]) turn += TURN;
-  if (keys["ArrowRight"]) turn -= TURN;
-  if (keys["KeyA"]) side -= SPEED;
-  if (keys["KeyD"]) side += SPEED;
-  if (keys["ControlLeft"] || keys["ControlRight"] || keys["Space"]) fire = 1;
-  return { forward, side, turn, fire, use: keys["KeyE"] ? 1 : 0, weapon: 0 };
+  let forward = 0;
+  let side = 0;
+  let turn = 0;
+  if (keys.KeyW || keys.ArrowUp) forward += MOVE;
+  if (keys.KeyS || keys.ArrowDown) forward -= MOVE;
+  if (keys.KeyA) side -= MOVE;
+  if (keys.KeyD) side += MOVE;
+  if (keys.ArrowLeft) turn += KEY_TURN;
+  if (keys.ArrowRight) turn -= KEY_TURN;
+  turn -= clamp(Math.round(mouseTurn * 34), -1300, 1300);
+  mouseTurn = 0;
+
+  let weapon = 0;
+  if (keys.Digit1) weapon = 1;
+  else if (keys.Digit3) weapon = 3;
+  else if (keys.Digit4) weapon = 4;
+  else if (keys.Digit5) weapon = 5;
+
+  return {
+    forward,
+    side,
+    turn,
+    fire: mouseFire || keys.Space || keys.ControlLeft || keys.ControlRight ? 1 : 0,
+    use: keys.KeyE ? 1 : 0,
+    weapon,
+  };
+}
+
+function sendAction(c, seat, action) {
+  c.setAction(
+    seat,
+    action.forward,
+    action.side,
+    action.turn,
+    action.fire,
+    action.use,
+    action.weapon,
+  );
 }
 
 async function boot() {
-  els.status.textContent = "loading engine…";
   const Module = await DoomRL();
-
-  // typed C entry points
+  const params = new URLSearchParams(location.search);
+  const botBoth = params.has("botboth");
+  const difficulties = ["casual", "standard", "relentless"];
+  let selectedBots = clamp(Number(params.get("bots")) || 1, 1, 3);
+  let selectedDifficulty = difficulties.includes(params.get("difficulty"))
+    ? params.get("difficulty")
+    : "standard";
   const c = {
     init: Module.cwrap("web_init", null, []),
     setAction: Module.cwrap("web_set_action", null, [
       "number", "number", "number", "number", "number", "number", "number",
     ]),
     step: Module.cwrap("web_step", null, []),
-    spawnNear: Module.cwrap("web_spawn_near", null, ["number"]),
+    drawPause: Module.cwrap("web_draw_pause", null, ["number"]),
+    drawSetup: Module.cwrap("web_draw_setup", null, ["number", "number", "number"]),
     reset: Module.cwrap("web_reset", null, []),
+    setPlayerCount: Module.cwrap("web_set_player_count", "number", ["number"]),
+    numPlayers: Module.cwrap("web_num_players", "number", []),
     screenbuffer: Module.cwrap("web_screenbuffer", "number", []),
+    screenWidth: Module.cwrap("web_screen_w", "number", []),
+    screenHeight: Module.cwrap("web_screen_h", "number", []),
     playerState: Module.cwrap("web_player_state", null, ["number", "number"]),
   };
 
-  els.status.textContent = "loading bot weights…";
-  const buf = await (await fetch("./doomppo_best.bin")).arrayBuffer();
-  const bot = new DoomBot(parseWeights(buf));
-
-  els.status.textContent = "starting match…";
   c.init();
-  c.spawnNear(384);
-  bot.reset();
-
-  // scratch buffer in WASM heap for web_player_state output
-  const statePtr = Module._malloc(PLAYER_STATE_FLOATS * 4);
+  const screenWidth = c.screenWidth();
+  const screenHeight = c.screenHeight();
+  if (screenWidth <= 0 || screenHeight <= 0) {
+    throw new Error(`invalid framebuffer dimensions: ${screenWidth}x${screenHeight}`);
+  }
+  canvas.width = screenWidth;
+  canvas.height = screenHeight;
+  const statePtrs = Array.from(
+    { length: MAX_PLAYERS },
+    () => Module._malloc(PLAYER_STATE_FLOATS * 4),
+  );
   const readState = (seat) => {
-    c.playerState(seat, statePtr);
-    return Module.HEAPF32.subarray(
-      statePtr >> 2,
-      (statePtr >> 2) + PLAYER_STATE_FLOATS,
+    c.playerState(seat, statePtrs[seat]);
+    return new Float32Array(
+      Module.HEAPF32.subarray(statePtrs[seat] >> 2, (statePtrs[seat] >> 2) + PLAYER_STATE_FLOATS),
     );
   };
 
-  const ctx = els.canvas.getContext("2d");
-  const img = ctx.createImageData(RESX, RESY);
+  const timeScale = botBoth ? clamp(Number(params.get("speed")) || 1, 1, 8) : 1;
+  let playerCount = c.numPlayers();
+  let bots = [];
+  let bot0 = null;
+  let configuredDifficulty = "";
+
+  function configureMatch() {
+    const wantedPlayers = selectedBots + 1;
+    const difficulty = selectedDifficulty;
+    const changed = wantedPlayers !== playerCount || difficulty !== configuredDifficulty;
+    if (!changed) return false;
+
+    if (wantedPlayers !== playerCount) playerCount = c.setPlayerCount(wantedPlayers);
+    configuredDifficulty = difficulty;
+    bots = Array.from(
+      { length: playerCount - 1 },
+      (_unused, index) => new TacticalBot(index + 1, configuredDifficulty),
+    );
+    bot0 = botBoth ? new TacticalBot(0, configuredDifficulty) : null;
+    return true;
+  }
+
+  const ctx = canvas.getContext("2d", { alpha: false });
+  ctx.imageSmoothingEnabled = false;
+  const image = ctx.createImageData(screenWidth, screenHeight);
+  const frameBytes = screenWidth * screenHeight * 4;
+  const metrics = { tics: 0, frames: 0 };
+  let maxObservedZ = 0;
+  let wallBreaches = 0;
+  let wallBreachDetails = [];
+  let pauseSelection = 0;
+  let setupSelection = 0;
 
   function blit() {
     const ptr = c.screenbuffer();
     if (!ptr) return;
-    const src = Module.HEAPU8.subarray(ptr, ptr + RESX * RESY * 4);
-    const dst = img.data;
-    // doomgeneric rgba8888 stores bytes [B,G,R,A]; canvas wants [R,G,B,A].
-    for (let i = 0; i < RESX * RESY * 4; i += 4) {
+    const src = Module.HEAPU8.subarray(ptr, ptr + frameBytes);
+    const dst = image.data;
+    for (let i = 0; i < dst.length; i += 4) {
       dst[i] = src[i + 2];
       dst[i + 1] = src[i + 1];
       dst[i + 2] = src[i];
       dst[i + 3] = 255;
     }
-    ctx.putImageData(img, 0, 0);
+    ctx.putImageData(image, 0, 0);
+    metrics.frames += 1;
   }
 
-  function hud() {
-    const me = readState(0);
-    const myFrags = me[11];
-    const oppState = readState(1);
-    const botFrags = oppState[11];
-    els.hud.textContent = `YOU ${myFrags}  —  AI ${botFrags}    [hp ${Math.max(0, me[7] | 0)}]`;
+  function updateHud() {
+    const states = Array.from({ length: playerCount }, (_unused, seat) => readState(seat));
+    maxObservedZ = Math.max(maxObservedZ, ...states.map((state) => state[3]));
+    states.forEach((state, seat) => {
+      if (state[S.alive] < 0.5) return;
+      const wall = wallBreachAt(state[S.x], state[S.y]);
+      if (wall === null) return;
+      wallBreaches += 1;
+      if (wallBreachDetails.length < 16) {
+        wallBreachDetails.push({
+          tic: metrics.tics,
+          seat,
+          wall,
+          x: Math.round(state[S.x]),
+          y: Math.round(state[S.y]),
+        });
+      }
+    });
+    // Keep compact, DOM-visible telemetry for the browser smoke test. This is
+    // deliberately read-only and contains nothing the tactical bots cannot see.
+    canvas.dataset.players = JSON.stringify(states.map((state, seat) => ({
+      seat,
+      alive: state[S.alive] > 0.5,
+      x: Math.round(state[S.x]),
+      y: Math.round(state[S.y]),
+      z: Math.round(state[3]),
+      frags: state[S.frags] | 0,
+      deaths: state[S.deaths] | 0,
+    })));
+    canvas.dataset.tics = String(metrics.tics);
+    canvas.dataset.playerCount = String(playerCount);
+    canvas.dataset.maxZ = String(Math.round(maxObservedZ));
+    canvas.dataset.wallBreaches = String(wallBreaches);
+    canvas.dataset.wallBreachDetails = JSON.stringify(wallBreachDetails);
   }
 
-  // Validation/demo mode: drive seat 0 with the net too (bot-vs-bot), so the
-  // match advances and fights with no human. Enable with ?botboth.
-  const params = new URLSearchParams(location.search);
-  const botBoth = params.has("botboth");
-  const bot0 = botBoth ? new DoomBot(parseWeights(buf)) : null;
-  if (bot0) bot0.reset();
+  let nextHudTic = 0;
 
-  let acc = 0;
+  function resetMatch() {
+    c.reset();
+    for (const bot of bots) bot.reset();
+    if (bot0) bot0.reset();
+    metrics.tics = 0;
+    maxObservedZ = 0;
+    wallBreaches = 0;
+    wallBreachDetails = [];
+    nextHudTic = 0;
+    mouseTurn = 0;
+    updateHud();
+    blit();
+  }
+
+  let accumulator = 0;
   let last = performance.now();
-  let ticCount = 0;
-  const TIC_MS = 1000 / TICRATE;
+  const ticMs = 1000 / TICRATE;
 
   function frame(now) {
     if (!running) return;
-    acc += now - last;
+    accumulator += (now - last) * timeScale;
     last = now;
     let steps = 0;
-    while (acc >= TIC_MS && steps < 4) {
-      // seat 0 = human (or the net in ?botboth); seat 1 = bot, each acting from
-      // its OWN LOS-gated state.
-      if (bot0) {
-        const a = decodeAction(bot0.act(readState(0)));
-        c.setAction(0, a.forward, a.side, a.turn, a.fire, a.use, a.weapon);
-      } else {
-        const ha = humanAction();
-        c.setAction(0, ha.forward, ha.side, ha.turn, ha.fire, ha.use, ha.weapon);
+    while (accumulator >= ticMs && steps < 32) {
+      sendAction(c, 0, bot0 ? bot0.act(readState(0)) : humanAction());
+      for (let seat = 1; seat < playerCount; seat += 1) {
+        sendAction(c, seat, bots[seat - 1].act(readState(seat)));
       }
-
-      const botState = readState(1);
-      const ba = decodeAction(bot.act(botState));
-      c.setAction(1, ba.forward, ba.side, ba.turn, ba.fire, ba.use, ba.weapon);
-
       c.step();
-      ticCount++;
-      // keep the duel close: re-converge if both alive and they drift apart, so
-      // an idle wander can't masquerade as the match (and the bot keeps fighting).
-      if (ticCount % 350 === 0) {
-        const a = readState(0), b = readState(1);
-        const dx = a[1] - b[1], dy = a[2] - b[2];
-        if (a[0] && b[0] && dx * dx + dy * dy > 700 * 700) c.spawnNear(384);
-      }
-      acc -= TIC_MS;
-      steps++;
+      metrics.tics += 1;
+      accumulator -= ticMs;
+      steps += 1;
     }
-    blit();
-    hud();
+    if (steps > 0) {
+      blit();
+      if (metrics.tics >= nextHudTic) {
+        updateHud();
+        nextHudTic = metrics.tics + 4;
+      }
+    }
     requestAnimationFrame(frame);
   }
 
-  els.start.disabled = false;
-  els.status.textContent = "ready";
-  els.start.addEventListener("click", () => {
-    els.overlay.style.display = "none";
-    els.canvas.focus();
-    document.body.classList.remove("menu");
+  function startMatch() {
+    if (running) return;
+    if (configureMatch()) resetMatch();
+    overlay.hidden = true;
+    pauseOverlay.hidden = true;
     running = true;
     last = performance.now();
-    acc = 0;
+    accumulator = 0;
+    if (!botBoth) canvas.requestPointerLock?.();
     requestAnimationFrame(frame);
+  }
+
+  function renderSetup() {
+    c.drawSetup(selectedBots, difficulties.indexOf(selectedDifficulty), setupSelection);
+    blit();
+  }
+
+  function showSetup() {
+    running = false;
+    mouseFire = false;
+    for (const key of Object.keys(keys)) keys[key] = false;
+    pauseOverlay.hidden = true;
+    overlay.hidden = false;
+    document.exitPointerLock?.();
+    setupSelection = 0;
+    renderSetup();
+  }
+
+  function setSetupSelection(selection) {
+    if (overlay.hidden) return;
+    setupSelection = clamp(selection, 0, 2);
+    renderSetup();
+  }
+
+  function cycleSetupValue(direction) {
+    if (overlay.hidden) return;
+    if (setupSelection === 0) {
+      selectedBots = ((selectedBots - 1 + direction + 3) % 3) + 1;
+    } else if (setupSelection === 1) {
+      const index = difficulties.indexOf(selectedDifficulty);
+      selectedDifficulty = difficulties[(index + direction + difficulties.length) % difficulties.length];
+    }
+    renderSetup();
+  }
+
+  function activateSetup() {
+    if (overlay.hidden) return;
+    if (setupSelection === 2) startMatch();
+    else cycleSetupValue(1);
+  }
+
+  function pauseMatch() {
+    if (!running) return;
+    running = false;
+    mouseFire = false;
+    for (const key of Object.keys(keys)) keys[key] = false;
+    pauseOverlay.hidden = false;
+    document.exitPointerLock?.();
+    pauseSelection = 0;
+    c.drawPause(pauseSelection);
+    blit();
+  }
+
+  function resumeMatch() {
+    if (running || pauseOverlay.hidden) return;
+    pauseOverlay.hidden = true;
+    running = true;
+    last = performance.now();
+    accumulator = 0;
+    if (!botBoth) canvas.requestPointerLock?.();
+    requestAnimationFrame(frame);
+  }
+
+  function returnToSetup() {
+    resetMatch();
+    showSetup();
+  }
+
+  function setPauseSelection(selection) {
+    if (pauseOverlay.hidden) return;
+    pauseSelection = selection ? 1 : 0;
+    c.drawPause(pauseSelection);
+    blit();
+  }
+
+  function activatePause() {
+    if (pauseOverlay.hidden) return;
+    if (pauseSelection === 0) resumeMatch();
+    else returnToSetup();
+  }
+
+  configureMatch();
+  startButton.addEventListener("click", startMatch);
+  setupBotsButton.addEventListener("click", () => {
+    setSetupSelection(0);
+    cycleSetupValue(1);
+  });
+  setupBotsButton.addEventListener("pointerenter", () => setSetupSelection(0));
+  setupDifficultyButton.addEventListener("click", () => {
+    setSetupSelection(1);
+    cycleSetupValue(1);
+  });
+  setupDifficultyButton.addEventListener("pointerenter", () => setSetupSelection(1));
+  startButton.addEventListener("pointerenter", () => setSetupSelection(2));
+  pauseArena = pauseMatch;
+  resumeArena = resumeMatch;
+  movePauseSelection = (direction) => setPauseSelection(pauseSelection + direction > 0 ? 1 : 0);
+  activatePauseSelection = activatePause;
+  moveSetupSelection = (direction) => setSetupSelection(setupSelection + direction);
+  changeSetupValue = cycleSetupValue;
+  activateSetupSelection = activateSetup;
+  pauseContinueButton.addEventListener("click", resumeMatch);
+  pauseContinueButton.addEventListener("pointerenter", () => setPauseSelection(0));
+  pauseHomeButton.addEventListener("click", returnToSetup);
+  pauseHomeButton.addEventListener("pointerenter", () => setPauseSelection(1));
+  canvas.addEventListener("click", () => {
+    if (running && !botBoth) canvas.requestPointerLock?.();
   });
 
-  // expose for the validation harness to assert the bot is fighting
-  window.__doomAI = { readState, running: () => running };
+  resetMatch();
+  window.__doomStrategic = {
+    readState,
+    metrics,
+    screen: { width: screenWidth, height: screenHeight },
+    playerCount: () => playerCount,
+    running: () => running,
+    start: startMatch,
+    reset: resetMatch,
+  };
+  if (params.has("autostart")) startMatch();
+  else showSetup();
 }
 
-window.addEventListener(
-  "keydown",
-  (e) => {
-    keys[e.code] = true;
-    if (running) e.preventDefault();
-  },
-  { passive: false },
-);
-window.addEventListener(
-  "keyup",
-  (e) => {
-    keys[e.code] = false;
-    if (running) e.preventDefault();
-  },
-  { passive: false },
-);
+const blockedKeys = new Set([
+  "KeyW", "KeyA", "KeyS", "KeyD", "KeyE", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+  "Space", "ControlLeft", "ControlRight", "Digit1", "Digit3", "Digit4", "Digit5",
+]);
 
-setupTouchControls();
+window.addEventListener("keydown", (event) => {
+  if (!overlay.hidden && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", "Space"].includes(event.code)) {
+    event.preventDefault();
+    if (event.code === "ArrowUp") moveSetupSelection?.(-1);
+    else if (event.code === "ArrowDown") moveSetupSelection?.(1);
+    else if (event.code === "ArrowLeft") changeSetupValue?.(-1);
+    else if (event.code === "ArrowRight") changeSetupValue?.(1);
+    else activateSetupSelection?.();
+    return;
+  }
+  if (!pauseOverlay.hidden && ["ArrowUp", "ArrowDown", "Enter", "Space"].includes(event.code)) {
+    event.preventDefault();
+    if (event.code === "ArrowUp") movePauseSelection?.(-1);
+    else if (event.code === "ArrowDown") movePauseSelection?.(1);
+    else activatePauseSelection?.();
+    return;
+  }
+  if (event.code === "Escape" && !event.repeat) {
+    event.preventDefault();
+    if (running) pauseArena?.();
+    else if (!pauseOverlay.hidden) resumeArena?.();
+    return;
+  }
+  keys[event.code] = true;
+  if (running && blockedKeys.has(event.code)) event.preventDefault();
+}, { passive: false });
+window.addEventListener("keyup", (event) => {
+  keys[event.code] = false;
+  if (running && blockedKeys.has(event.code)) event.preventDefault();
+}, { passive: false });
+window.addEventListener("mousemove", (event) => {
+  if (document.pointerLockElement === canvas) mouseTurn += event.movementX;
+});
+window.addEventListener("mousedown", (event) => {
+  if (event.button === 0 && running) mouseFire = true;
+});
+window.addEventListener("mouseup", (event) => {
+  if (event.button === 0) mouseFire = false;
+});
+window.addEventListener("blur", () => {
+  mouseFire = false;
+  for (const key of Object.keys(keys)) keys[key] = false;
+});
+canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 
-// expose the synthesized human intent so the validation harness can assert the
-// touch wiring without the WASM engine loaded
-window.__doomInput = humanAction;
-
-boot().catch((err) => {
-  console.error(err);
-  els.status.textContent = "error: " + err.message;
+boot().catch((error) => {
+  console.error(error);
 });

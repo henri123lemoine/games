@@ -17,6 +17,7 @@
 
 
 #include <ctype.h>
+#include <string.h>
 
 #include "doomdef.h"
 #include "doomkeys.h"
@@ -87,6 +88,7 @@ char			chat_char; // remove later.
 static player_t*	plr;
 patch_t*		hu_font[HU_FONTSIZE];
 static hu_textline_t	w_title;
+static hu_textline_t	w_fragboard;
 boolean			chat_on;
 static hu_itext_t	w_chat;
 static boolean		always_off = false;
@@ -331,6 +333,10 @@ void HU_Start(void)
 		       HU_TITLEX, HU_TITLEY,
 		       hu_font,
 		       HU_FONTSTART);
+
+    // Native in-world frag board for deathmatch. Keeping this in Doom's own
+    // HUD path gives the browser match the exact IWAD font and pixel scaling.
+    HUlib_initTextLine(&w_fragboard, 0, 2, hu_font, HU_FONTSTART);
     
     switch ( logical_gamemission )
     {
@@ -380,6 +386,54 @@ void HU_Start(void)
 
 }
 
+static int HU_PlayerFrags(int seat)
+{
+    int total = 0;
+    int other;
+
+    for (other = 0; other < MAXPLAYERS; other++)
+        total += players[seat].frags[other];
+
+    return total;
+}
+
+static int HU_TextLineWidth(const char *text)
+{
+    int width = 0;
+
+    while (*text)
+    {
+        int c = toupper((unsigned char)*text++) - HU_FONTSTART;
+        width += (c < 0 || c >= HU_FONTSIZE) ? 4 : SHORT(hu_font[c]->width);
+    }
+
+    return width;
+}
+
+static void HU_DrawFragboard(void)
+{
+    char text[HU_MAXLINELENGTH + 1];
+    int i;
+
+    DEH_snprintf(text, sizeof(text), "YOU %d", HU_PlayerFrags(consoleplayer));
+    for (i = 0; i < MAXPLAYERS; i++)
+    {
+        size_t used;
+
+        if (!playeringame[i] || i == consoleplayer)
+            continue;
+        used = strlen(text);
+        DEH_snprintf(text + used, sizeof(text) - used,
+                     "  AI%d %d", i, HU_PlayerFrags(i));
+    }
+
+    HUlib_clearTextLine(&w_fragboard);
+    for (i = 0; text[i] != '\0'; i++)
+        HUlib_addCharToTextLine(&w_fragboard, text[i]);
+    w_fragboard.x = (SCREENWIDTH - HU_TextLineWidth(text)) / 2;
+    HUlib_drawTextLine(&w_fragboard, false);
+}
+
 void HU_Drawer(void)
 {
 
@@ -387,6 +441,8 @@ void HU_Drawer(void)
     HUlib_drawIText(&w_chat);
     if (automapactive)
 	HUlib_drawTextLine(&w_title, false);
+    if (deathmatch)
+        HU_DrawFragboard();
 
 }
 
@@ -396,6 +452,7 @@ void HU_Erase(void)
     HUlib_eraseSText(&w_message);
     HUlib_eraseIText(&w_chat);
     HUlib_eraseTextLine(&w_title);
+    HUlib_eraseTextLine(&w_fragboard);
 
 }
 

@@ -51,6 +51,10 @@ void M_Init (void);
 // does nothing if menu is already up.
 void M_StartControlPanel (void);
 
+// Native menu-font helpers, also used by the WebAssembly pause overlay.
+int M_StringWidth(char *string);
+void M_WriteText(int x, int y, char *string);
+
 
 
 extern int detailLevel;

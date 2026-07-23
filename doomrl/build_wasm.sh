@@ -6,9 +6,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 DG="$HERE/vendor/doomgeneric/doomgeneric"
 OUT="${1:-$HERE/build_wasm}"
 mkdir -p "$OUT"
+OBJDIR="$(mktemp -d "${TMPDIR:-/tmp}/doomrl-wasm.XXXXXX")"
+trap 'rm -rf "$OBJDIR"' EXIT
 
 if ! command -v emcc >/dev/null 2>&1; then
   echo "emcc not on PATH — source the emsdk env first:" >&2
@@ -21,8 +24,11 @@ ARENA="$HERE/assets/dumbbell.wad"
 [ -f "$IWAD" ] || { echo "missing $IWAD" >&2; exit 1; }
 [ -f "$ARENA" ] || { echo "missing $ARENA — run tools/make_arena_wad.py assets/dumbbell.wad" >&2; exit 1; }
 
-CFLAGS="-O2 -DNORMALUNIX -D_DEFAULT_SOURCE -DDOOMRL_ALLOW_FILE_DEFAULT \
-  -Wno-deprecated-non-prototype -Wno-format -Wno-parentheses -I$DG -I$HERE"
+CFLAGS=(
+  -O2 -DNORMALUNIX -D_DEFAULT_SOURCE -DDOOMRL_ALLOW_FILE_DEFAULT
+  -Wno-deprecated-non-prototype -Wno-format -Wno-parentheses
+  "-I$DG" "-I$HERE" "-ffile-prefix-map=$ROOT=."
+)
 
 CORE=(
   dummy am_map doomdef doomstat dstrings d_event d_items d_iwad d_loop d_main
@@ -38,19 +44,19 @@ CORE=(
 
 OBJS=()
 for f in "${CORE[@]}"; do
-  obj="$OUT/$f.o"
-  emcc $CFLAGS -c "$DG/$f.c" -o "$obj"
+  obj="$OBJDIR/$f.o"
+  emcc "${CFLAGS[@]}" -c "$DG/$f.c" -o "$obj"
   OBJS+=("$obj")
 done
 for f in doomrl doomrl_sound_null doomrl_web; do
-  obj="$OUT/$f.o"
-  emcc $CFLAGS -c "$HERE/$f.c" -o "$obj"
+  obj="$OBJDIR/$f.o"
+  emcc "${CFLAGS[@]}" -c "$HERE/$f.c" -o "$obj"
   OBJS+=("$obj")
 done
 
-EXPORTS='["_web_init","_web_set_action","_web_step","_web_spawn_near","_web_reset","_web_screenbuffer","_web_screen_w","_web_screen_h","_web_player_state","_malloc","_free"]'
+EXPORTS='["_web_init","_web_set_player_count","_web_num_players","_web_set_action","_web_step","_web_draw_pause","_web_draw_setup","_web_spawn_near","_web_reset","_web_screenbuffer","_web_screen_w","_web_screen_h","_web_player_state","_malloc","_free"]'
 
-emcc $CFLAGS "${OBJS[@]}" -lm \
+emcc "${CFLAGS[@]}" "${OBJS[@]}" -lm \
   -s WASM=1 \
   -s ALLOW_MEMORY_GROWTH=1 \
   -s MODULARIZE=1 -s EXPORT_NAME=DoomRL -s EXPORT_ES6=1 \

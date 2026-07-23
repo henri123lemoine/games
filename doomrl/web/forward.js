@@ -18,7 +18,9 @@ const WEAPONS = [0, 3, 5]; // Doom BT_CHANGE slot: keep / shotgun / rocket
 
 const NUM_KEY_ITEMS = 3;
 const ARENA_HALF = 1024.0;
-const WP_SHOTGUN = 3, WP_CHAINGUN = 4, WP_ROCKET = 5;
+// Raw state reports Doom's zero-based `weapontype_t`; actions below use the
+// separate one-based BT_CHANGE slots in WEAPONS.
+const READY_SHOTGUN = 2, READY_CHAINGUN = 3, READY_ROCKET = 4;
 
 // Layout of the 39 floats written by web_player_state() (see doomrl_web.c).
 const S = {
@@ -50,9 +52,9 @@ export function observation(s) {
   o[5] = s[S.ammo_shell] / 50.0;
   o[6] = s[S.ammo_cell] / 300.0;
   o[7] = s[S.ammo_misl] / 50.0;
-  o[8] = s[S.ready_weapon] === WP_SHOTGUN ? 1 : 0;
-  o[9] = s[S.ready_weapon] === WP_CHAINGUN ? 1 : 0;
-  o[10] = s[S.ready_weapon] === WP_ROCKET ? 1 : 0;
+  o[8] = s[S.ready_weapon] === READY_SHOTGUN ? 1 : 0;
+  o[9] = s[S.ready_weapon] === READY_CHAINGUN ? 1 : 0;
+  o[10] = s[S.ready_weapon] === READY_ROCKET ? 1 : 0;
   o[11] = Math.sin(ang);
   o[12] = Math.cos(ang);
   o[13] = s[S.x] / ARENA_HALF;

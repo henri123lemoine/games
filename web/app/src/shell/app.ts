@@ -629,22 +629,20 @@ export class App {
       this.navTo("/lab");
   }
 
-  /** DOOD: the doomgeneric RL-deathmatch build. The human plays one seat; the
-   * other is driven by a PPO net trained by self-play, run tch-free in the
-   * browser from the same LOS-gated state it trained on. Standalone page in an
-   * iframe. */
+  /** DOOM: the strategic FFA WebAssembly build runs in its own page (it is not
+   * a Game-trait match), mounted in an iframe. */
   private renderDoom(): void {
     this.teardown();
     const src = `${import.meta.env.BASE_URL}doom-ai/index.html`;
     this.root.innerHTML = `
       <div class="match doom-screen">
         <header class="match-bar">
-          <span class="match-title">DOOD</span>
+          <span class="match-title">DOOM · THE FOUNDRY FFA</span>
           <span class="spacer"></span>
-          <span class="muted doom-note">self-play bot · click the frame, then fight</span>
+          <span class="muted doom-note">1–3 tactical opponents · click Fight, then use mouse + WASD</span>
         </header>
         <div class="doom-frame-wrap">
-          <iframe class="doom-frame" src="${src}" title="DOOD"
+          <iframe class="doom-frame" src="${src}" title="DOOM"
             allow="autoplay; fullscreen"></iframe>
         </div>
       </div>`;
