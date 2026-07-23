@@ -334,8 +334,9 @@ impl Net {
             .map(|a| t.apply(&a.o1).flatten(1, -1).tanh())
     }
 
-    /// Policy logits + scalar value. The aux heads (ownership, score) are read
-    /// only during training; inference and search need only policy + value.
+    /// Policy logits plus either a scalar value or absolute-seat logits. The
+    /// aux heads (ownership, score) are read only during training; inference
+    /// and search need only policy + value.
     pub fn forward(&self, x: &Tensor, train: bool) -> (Tensor, Tensor) {
         let t = self.trunk(x, train);
         let p = self.policy_forward(&t, train);

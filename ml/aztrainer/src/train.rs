@@ -1,4 +1,4 @@
-//! The replay buffer and the fp32 training step, unified across the three
+//! The replay buffer and the fp32 training step, unified across the neural
 //! games. The optimizer is the most-evolved of the originals (azgo): AdamW or
 //! SGD+Nesterov-momentum, optional global gradient-norm clipping, and
 //! Stochastic Weight Averaging. The loss is policy cross-entropy against the
@@ -32,7 +32,8 @@ pub struct Batch {
     pub planes: Vec<f32>,
     /// Dense policy target, `n · policy_len`.
     pub policy: Vec<f32>,
-    /// Value target (already z/q-mixed by the caller), length `n`.
+    /// Value target (already z/q-mixed by the caller), length `n` for scalar
+    /// heads or `n * value_seats` for multiplayer heads.
     pub value: Vec<f32>,
     /// Per-point ownership target (mover view), `n · size²`; empty without aux.
     pub ownership: Vec<f32>,
