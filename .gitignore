@@ -36,3 +36,5 @@ doomrl/build/
 # Third-party calibration dependencies: fetched at pinned revisions by
 # ml/stratego-trainer/calibration/fetch_vendor.sh, never tracked here.
 ml/stratego-trainer/calibration/vendor/
+
+__pycache__/
