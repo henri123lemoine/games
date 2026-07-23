@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Games Room — Henri Lemoine</title>
+    <script>
+      if (
+        localStorage.getItem('dark') === 'true' ||
+        (!localStorage.getItem('dark') &&
+          window.matchMedia('(prefers-color-scheme: dark)').matches)
+      ) {
+        document.documentElement.classList.add('dark');
+      }
+    </script>
+    <script type="module" crossorigin src="./assets/main-8ITrjZZA.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/assets-BX42eQBy.js">
+    <link rel="modulepreload" crossorigin href="./assets/azgpu-nL2OYv-D.js">
+    <link rel="modulepreload" crossorigin href="./assets/azgpu-DLGXD1iy.js">
+    <link rel="modulepreload" crossorigin href="./assets/conformance-CcSGGraw.js">
+    <link rel="stylesheet" crossorigin href="./assets/main-DerJOuwC.css">
+  </head>
+  <body>
+    <nav class="corner-nav">
+      <a class="home-link" href="https://henrilemoine.com/" aria-label="Henri Lemoine — home">
+        <svg class="home-link-arrow" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+          <path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span class="home-link-name">Henri Lemoine</span>
+      </a>
+      <a class="home-link games-link" href="#/" data-games-link hidden aria-label="Back to games">
+        <svg class="home-link-arrow" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+          <path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span class="home-link-name">Games</span>
+      </a>
+    </nav>
+    <button class="dark-toggle" aria-label="Toggle dark mode">🌙</button>
+    <div id="app"></div>
+    <script>
+      (function () {
+        var toggle = document.querySelector('.dark-toggle');
+        if (document.documentElement.classList.contains('dark')) {
+          toggle.textContent = '☀️';
+        }
+        toggle.addEventListener('click', function () {
+          var isDark = document.documentElement.classList.toggle('dark');
+          toggle.textContent = isDark ? '☀️' : '🌙';
+          localStorage.setItem('dark', String(isDark));
+        });
+      })();
+    </script>
+  </body>
+</html>

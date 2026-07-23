@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DOOM</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #000;
+        color: #c9b27a;
+        font-family: "Courier New", monospace;
+        overflow: hidden;
+      }
+      #stage {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #canvas {
+        background: #000;
+        image-rendering: pixelated;
+        width: min(100vw, 133.33vh);
+        height: min(75vw, 100vh);
+        display: block;
+        outline: none;
+      }
+      #overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        text-align: center;
+        background: radial-gradient(circle at 50% 38%, #2a0707, #000 72%);
+      }
+      #overlay h1 {
+        margin: 0;
+        font-size: clamp(48px, 14vw, 132px);
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        color: #b71c1c;
+        text-shadow:
+          0 0 18px rgba(183, 28, 28, 0.65),
+          0 4px 0 #5a0a0a;
+      }
+      #overlay p {
+        margin: 0;
+        max-width: 32ch;
+        line-height: 1.6;
+        font-size: 14px;
+        color: #d8c79a;
+      }
+      #overlay .keys {
+        font-size: 12px;
+        color: #9a8c63;
+        line-height: 1.9;
+      }
+      #overlay .keys b {
+        color: #c9b27a;
+      }
+      #start {
+        margin-top: 4px;
+        padding: 14px 38px;
+        font-family: inherit;
+        font-size: 18px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        color: #f5e8c8;
+        background: #7a1010;
+        border: 2px solid #b71c1c;
+        border-radius: 4px;
+        cursor: pointer;
+        text-transform: uppercase;
+        box-shadow: 0 0 22px rgba(183, 28, 28, 0.45);
+        transition: transform 0.08s ease;
+      }
+      #start:hover {
+        background: #9a1414;
+      }
+      #start:active {
+        transform: translateY(1px);
+      }
+      #status {
+        font-size: 12px;
+        color: #8a7c55;
+        min-height: 1.2em;
+      }
+      #credit {
+        position: fixed;
+        bottom: 8px;
+        left: 0;
+        right: 0;
+        text-align: center;
+        font-size: 11px;
+        color: #564a30;
+        z-index: 5;
+        pointer-events: none;
+      }
+      .hidden {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <canvas
+        id="canvas"
+        width="640"
+        height="480"
+        oncontextmenu="event.preventDefault()"
+        tabindex="-1"
+      ></canvas>
+    </div>
+
+    <div id="overlay">
+      <h1>DOOM</h1>
+      <p>The 1993 shareware episode, "Knee-Deep in the Dead", running in WebAssembly.</p>
+      <div class="keys">
+        <b>Arrows / WASD</b> move &nbsp;·&nbsp; <b>Ctrl</b> fire &nbsp;·&nbsp; <b>Space</b> use/open<br />
+        <b>Shift</b> run &nbsp;·&nbsp; <b>Alt</b> strafe &nbsp;·&nbsp; <b>1–7</b> weapons &nbsp;·&nbsp; <b>Esc</b> menu
+      </div>
+      <button id="start" type="button">Enter the gate</button>
+      <div id="status"></div>
+    </div>
+
+    <div id="credit">
+      Chocolate Doom · cloudflare/doom-wasm (GPLv2) · DOOM shareware WAD © id Software
+    </div>
+
+    <script>
+      (function () {
+        const overlay = document.getElementById("overlay");
+        const startBtn = document.getElementById("start");
+        const statusEl = document.getElementById("status");
+        const canvas = document.getElementById("canvas");
+
+        // Doom owns the keyboard once running: swallow keys (incl. arrows and
+        // space) so they drive the game instead of scrolling the host page.
+        const swallow = (e) => {
+          if (running) e.preventDefault();
+        };
+        let running = false;
+        window.addEventListener("keydown", swallow, { passive: false });
+        window.addEventListener("keyup", swallow, { passive: false });
+
+        // Chocolate Doom splits its config in two: the main config (keybindings,
+        // volumes) and a program-named "extra" config that owns the video and
+        // mouse settings — force_software_renderer and novert live ONLY there.
+        // Both must be loaded from the engine's config dir, so we preload them
+        // there and point -config/-extraconfig at it.
+        const CFGDIR = "/libsdl/doom-ws-wasm";
+        const args = [
+          "-iwad",
+          "doom1.wad",
+          "-window",
+          "-nogui",
+          "-config",
+          CFGDIR + "/default.cfg",
+          "-extraconfig",
+          CFGDIR + "/websockets-doom.cfg",
+          "-nomusic",
+        ];
+
+        window.Module = {
+          canvas,
+          noInitialRun: true,
+          arguments: args,
+          locateFile: (path) => path,
+          preRun: [
+            function () {
+              try {
+                Module.FS.mkdirTree(CFGDIR);
+              } catch (e) {}
+              Module.FS.createPreloadedFile("", "doom1.wad", "doom1.wad", true, true);
+              Module.FS.createPreloadedFile(CFGDIR, "default.cfg", "default.cfg", true, true);
+              Module.FS.createPreloadedFile(
+                CFGDIR,
+                "websockets-doom.cfg",
+                "websockets-doom.cfg",
+                true,
+                true,
+              );
+            },
+          ],
+          onRuntimeInitialized: function () {
+            statusEl.textContent = "loading WAD…";
+          },
+          print: (text) => console.log("[doom]", text),
+          printErr: (text) => console.warn("[doom]", text),
+          setStatus: (text) => {
+            if (text) statusEl.textContent = text;
+          },
+        };
+
+        let booted = false;
+        startBtn.addEventListener("click", function () {
+          if (booted) return;
+          booted = true;
+          overlay.classList.add("hidden");
+          canvas.focus();
+          running = true;
+          statusEl.textContent = "booting…";
+
+          const script = document.createElement("script");
+          script.src = "websockets-doom.js";
+          script.onerror = () => {
+            booted = false;
+            running = false;
+            overlay.classList.remove("hidden");
+            statusEl.textContent = "failed to load the engine — reload to retry.";
+          };
+          // The Emscripten module auto-instantiates; callMain runs the game once
+          // the filesystem (WAD) is ready.
+          script.onload = () => {
+            const tryRun = () => {
+              if (Module.calledRun && Module.callMain) {
+                try {
+                  Module.callMain(args);
+                } catch (e) {
+                  console.warn("[doom] callMain", e);
+                }
+              } else {
+                setTimeout(tryRun, 60);
+              }
+            };
+            tryRun();
+          };
+          document.body.appendChild(script);
+        });
+      })();
+    </script>
+  </body>
+</html>
