@@ -97,20 +97,21 @@ impl GameUi for FourPlayerChess {
             .split('=')
             .next()?
             .to_string();
-        let split = if clean
-            .as_bytes()
-            .get(2)
-            .is_some_and(|byte| byte.is_ascii_digit())
-        {
-            3
-        } else {
-            2
-        };
-        let action = Move::new(
-            parse_square(&clean[..split])?,
-            parse_square(&clean[split..])?,
-        );
-        self.legal_moves(state).contains(&action).then_some(action)
+        for split in [2, 3] {
+            let Some((from, to)) = clean.get(..split).zip(clean.get(split..)) else {
+                continue;
+            };
+            let Some(action) = parse_square(from)
+                .zip(parse_square(to))
+                .map(|(from, to)| Move::new(from, to))
+            else {
+                continue;
+            };
+            if self.legal_moves(state).contains(&action) {
+                return Some(action);
+            }
+        }
+        None
     }
 
     fn describe_transition(
@@ -273,5 +274,14 @@ mod tests {
         state.to_move = Color::Blue;
         let action = game.parse_action(&state, "b10-d10").unwrap();
         assert_eq!(game.action_label(&state, action), "b10d10");
+    }
+
+    #[test]
+    fn malformed_input_is_rejected_without_panicking() {
+        let game = FourPlayerChess::default();
+        let state = State::standard();
+        for input in ["", "a", "☃", "d2", "d2-d", "d2d4junk"] {
+            assert_eq!(game.parse_action(&state, input), None, "input {input:?}");
+        }
     }
 }
