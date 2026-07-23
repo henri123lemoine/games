@@ -172,6 +172,25 @@ fn capturing_a_king_scores_twenty_and_eliminates_that_army() {
 }
 
 #[test]
+fn a_captured_kings_defenders_become_inert_during_legality() {
+    let game = FourPlayerChess::default();
+    let mut state = position(Color::Red);
+    state.board[sq("h1") as usize] = Piece::EMPTY;
+    state.board[sq("a7") as usize] = Piece::EMPTY;
+    put(&mut state, "d4", Color::Red, PieceKind::King);
+    put(&mut state, "d5", Color::Blue, PieceKind::King);
+    put(&mut state, "d8", Color::Blue, PieceKind::Rook);
+    put(&mut state, "k12", Color::Yellow, PieceKind::Pawn);
+
+    assert_eq!(play(&game, &mut state, "d4", "d5"), 20);
+    assert!(!state.is_active(Color::Blue));
+    assert_eq!(
+        state.piece_at(sq("d8")),
+        Some(Piece::new(Color::Blue, PieceKind::Rook))
+    );
+}
+
+#[test]
 fn checkmate_awards_twenty_to_the_mating_player() {
     let game = FourPlayerChess::default();
     let mut state = position(Color::Red);

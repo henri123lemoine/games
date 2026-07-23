@@ -223,7 +223,15 @@ fn legal_moves_for(state: &State, color: Color) -> Vec<Move> {
         .into_iter()
         .filter(|&action| {
             let mut next = state.clone();
-            apply_board_move(&mut next, action);
+            let outcome = apply_board_move(&mut next, action);
+            // Capturing a live king eliminates its whole army immediately.
+            // Its remaining pieces are therefore inert and cannot make the
+            // capturing move look self-checking in this legality probe.
+            for captured in outcome.captured.into_iter().flatten() {
+                if captured.kind() == PieceKind::King {
+                    eliminate(&mut next, captured.color());
+                }
+            }
             next.king_square(color)
                 .is_some_and(|king| !is_attacked(&next, king, color))
         })
