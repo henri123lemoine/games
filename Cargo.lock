@@ -182,7 +182,6 @@ name = "four-player-chess"
 version = "0.1.0"
 dependencies = [
  "game-core",
- "solvers",
 ]
 
 [[package]]
