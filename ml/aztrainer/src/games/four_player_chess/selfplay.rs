@@ -73,6 +73,7 @@ struct Worker {
     keys: HashMap<u64, u8>,
     records: Vec<Record>,
     plies: u16,
+    league: bool,
     past_mask: u8,
     search_uses_past: bool,
 }
@@ -131,6 +132,7 @@ impl Worker {
             keys: HashMap::new(),
             records: Vec::new(),
             plies: 0,
+            league: false,
             past_mask: 0,
             search_uses_past: false,
         };
@@ -146,6 +148,7 @@ impl Worker {
         self.keys.insert(self.state.repetition_key(), 1);
         self.records.clear();
         self.plies = 0;
+        self.league = league;
         self.past_mask = if league {
             let current = self.rng.below(4);
             0b1111 & !(1 << current)
@@ -241,7 +244,6 @@ pub struct SelfPlay {
     cfg: SelfPlayConfig,
     workers: Vec<Worker>,
     results: Vec<Vec<EvalResult>>,
-    league: bool,
 }
 
 impl SelfPlay {
@@ -253,18 +255,23 @@ impl SelfPlay {
             cfg,
             workers,
             results: (0..cfg.concurrent).map(|_| Vec::new()).collect(),
-            league: false,
         }
     }
 
     /// Start a collection at game boundaries. The caller supplies one frozen
-    /// current snapshot and at most one named past checkpoint per collection;
-    /// carrying workers across calls would silently switch either policy in
-    /// the middle of a game and make the league metric dishonest.
+    /// current snapshot and at most one named past checkpoint per collection.
+    /// With a past net, three quarters of workers run league games and one
+    /// quarter run all-current self-play. Because current-only games record all
+    /// four seats while league games record one, that minority contributes a
+    /// material share of replay and prevents the learner from fitting only one
+    /// frozen field's conventions. Carrying workers across calls would silently
+    /// switch either policy in the middle of a game and make the league metric
+    /// dishonest.
     fn reset_for_collect(&mut self, active: bool) {
-        self.league = active;
-        for (worker, results) in self.workers.iter_mut().zip(&mut self.results) {
-            worker.reset(&self.cfg, active);
+        for (index, (worker, results)) in self.workers.iter_mut().zip(&mut self.results).enumerate()
+        {
+            let league = active && index % 4 != 0;
+            worker.reset(&self.cfg, league);
             results.clear();
         }
     }
@@ -294,7 +301,7 @@ impl SelfPlay {
                             capped,
                             league,
                         } => {
-                            worker.reset(&cfg, self.league);
+                            worker.reset(&cfg, worker.league);
                             let WorkerStep::Requests { requests, past } =
                                 worker.advance(&cfg, Vec::new())
                             else {
@@ -354,4 +361,33 @@ impl SelfPlay {
 
 pub fn mix(a: u64, b: u64) -> u64 {
     game_core::hash::combine(a, b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn league_collection_keeps_a_current_self_play_quarter() {
+        let cfg = SelfPlayConfig {
+            concurrent: 8,
+            ..SelfPlayConfig::default()
+        };
+        let mut pool = SelfPlay::new(cfg, 7);
+
+        pool.reset_for_collect(true);
+        assert_eq!(
+            pool.workers.iter().filter(|worker| worker.league).count(),
+            6
+        );
+        assert!(
+            pool.workers.iter().all(|worker| {
+                worker.past_mask.count_ones() == if worker.league { 3 } else { 0 }
+            })
+        );
+
+        pool.reset_for_collect(false);
+        assert!(pool.workers.iter().all(|worker| !worker.league));
+        assert!(pool.workers.iter().all(|worker| worker.past_mask == 0));
+    }
 }
