@@ -129,13 +129,10 @@ impl Net {
         let c = arch.channels;
         let mut r = Reader::new(data, body);
 
-        // A 1x1 "board" is the MLP degenerate case: 1x1 kernels make the stem
-        // and tower plain linear layers with no dead taps.
-        let k = if arch.size == 1 { 1 } else { 3 };
-        let stem = r.conv(arch.planes, c, k)?;
+        let stem = r.conv(arch.planes, c, 3)?;
         let mut tower = Vec::with_capacity(arch.blocks);
         for _ in 0..arch.blocks {
-            tower.push((r.conv(c, c, k)?, r.conv(c, c, k)?));
+            tower.push((r.conv(c, c, 3)?, r.conv(c, c, 3)?));
         }
 
         let policy = match arch.head {

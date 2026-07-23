@@ -178,16 +178,13 @@ pub struct Net {
 impl Net {
     pub fn new(root: &nn::Path, cfg: NetConfig) -> Net {
         let c = cfg.channels;
-        // A 1x1 "board" is the MLP degenerate case: 1x1 kernels make the stem
-        // and tower plain linear layers with no dead taps.
-        let k = if cfg.size == 1 { 1 } else { 3 };
         let tower = (0..cfg.blocks)
             .map(|i| {
                 let p = root / format!("block{i}");
                 Block {
-                    c1: conv(&p / "c1", c, c, k),
+                    c1: conv(&p / "c1", c, c, 3),
                     b1: nn::batch_norm2d(&p / "b1", c, Default::default()),
-                    c2: conv(&p / "c2", c, c, k),
+                    c2: conv(&p / "c2", c, c, 3),
                     b2: nn::batch_norm2d(&p / "b2", c, Default::default()),
                 }
             })
@@ -253,7 +250,7 @@ impl Net {
         });
 
         Net {
-            stem_c: conv(root / "stem_c", cfg.planes, c, k),
+            stem_c: conv(root / "stem_c", cfg.planes, c, 3),
             stem_b: nn::batch_norm2d(root / "stem_b", c, Default::default()),
             tower,
             policy,
@@ -557,7 +554,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn one_cell_multiseat_net_uses_exportable_kernel_shapes() {
+    fn multiseat_net_has_four_value_logits() {
         let vs = nn::VarStore::new(Device::Cpu);
         let cfg = NetConfig {
             blocks: 1,
@@ -571,9 +568,9 @@ mod tests {
         };
         let _net = Net::new(&vs.root(), cfg);
         let vars = vs.variables();
-        assert_eq!(vars["stem_c.weight"].size(), [4, 3, 1, 1]);
-        assert_eq!(vars["block0.c1.weight"].size(), [4, 4, 1, 1]);
-        assert_eq!(vars["block0.c2.weight"].size(), [4, 4, 1, 1]);
+        assert_eq!(vars["stem_c.weight"].size(), [4, 3, 3, 3]);
+        assert_eq!(vars["block0.c1.weight"].size(), [4, 4, 3, 3]);
+        assert_eq!(vars["block0.c2.weight"].size(), [4, 4, 3, 3]);
         assert_eq!(vars["vf2.weight"].size(), [4, POOL_VALUE_HIDDEN]);
     }
 }
