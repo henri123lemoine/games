@@ -36,6 +36,7 @@ cargo run --release -p lab -- list
 cargo run --release -p lab -- play chess depth=6
 cargo run --release -p lab -- play chess bot=azero            # the self-play net
 cargo run --release -p lab -- play four-player-chess bot=greedy seat=0
+cargo run --release -p lab -- play four-player-chess bot=azero sims=256 seat=0
 cargo run --release -p lab -- play go size=9 sims=6000
 cargo run --release -p lab -- play othello
 cargo run --release -p lab -- play connect4

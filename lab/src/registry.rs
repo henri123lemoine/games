@@ -405,7 +405,12 @@ const FOUR_PLAYER_CHESS_OPTS: &[OptSpec] = &[
         "azero-gpu|azero|greedy|mobility|random",
         "(azero-gpu: browser only)",
     ),
-    bot_opt("net", "data/azero/four-player-chess.bin", "", &["azero"]),
+    bot_opt(
+        "net",
+        "web/app/public/azero/four-player-chess.azweb",
+        "",
+        &["azero"],
+    ),
     bot_opt("sims", "256", "", &["azero", "azero-gpu"]),
     opt("seed", "...", ""),
 ];
@@ -692,7 +697,7 @@ pub fn entries() -> Vec<Entry> {
                 )
             }),
             eval: Some(eval_entry_scored(
-                "azero[:net=data/azero/four-player-chess.bin,sims=256] | greedy | mobility | random",
+                "azero[:net=web/app/public/azero/four-player-chess.azweb,sims=256] | greedy | mobility | random",
                 0,
                 |_| Ok(four_player_chess::FourPlayerChess::default()),
                 four_player_chess_bot,
@@ -1265,7 +1270,9 @@ fn four_player_chess_bot(
 ) -> Result<BotBuilder<four_player_chess::FourPlayerChess>, String> {
     Ok(match spec.name.as_str() {
         "azero" => {
-            let path = spec.opts.str("net", "data/azero/four-player-chess.bin");
+            let path = spec
+                .opts
+                .str("net", "web/app/public/azero/four-player-chess.azweb");
             let net = load_four_player_chess_net(&path)?;
             let sims: u32 = spec.opts.get("sims", 256)?;
             Box::new(move |_| {
