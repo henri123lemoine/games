@@ -1,12 +1,13 @@
 """Browser smoke for the four-player chess board and inference surfaces."""
 
 import json
+import os
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 
-BASE = "http://127.0.0.1:5173"
+BASE = os.environ.get("FOUR_PLAYER_CHESS_BASE", "http://127.0.0.1:5173")
 OUT = Path(__file__).resolve().parent.parent / ".validation"
 OUT.mkdir(exist_ok=True)
 

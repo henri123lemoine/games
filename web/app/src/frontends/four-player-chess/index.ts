@@ -134,7 +134,6 @@ class FourPlayerChessFrontend implements GameFrontend {
     injectStyle();
     host.innerHTML = `
       <div class="fpc-root">
-        <div class="fpc-kicker">FREE FOR ALL <span>\u00b7</span> FOUR ARMIES <span>\u00b7</span> ONE BOARD</div>
         <div class="fpc-stage" aria-label="Four-player chess board">
           ${this.railMarkup(2, 'north')}
           ${this.railMarkup(1, 'west')}
@@ -371,14 +370,6 @@ const CSS = `
   color: var(--text);
   user-select: none;
 }
-.fpc-kicker {
-  margin: -28px 0 11px;
-  text-align: center;
-  font: 700 clamp(.58rem, 1vw, .7rem)/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-  letter-spacing: .17em;
-  color: var(--text-dim);
-}
-.fpc-kicker span { padding: 0 .45em; opacity: .45; }
 .fpc-stage {
   position: relative;
   aspect-ratio: 1;
@@ -545,11 +536,10 @@ const CSS = `
   letter-spacing: .04em;
 }
 .fpc-fallback { white-space: pre-wrap; color: var(--text); }
-.fpc-text-only .fpc-stage, .fpc-text-only .fpc-kicker, .fpc-text-only .fpc-message { display: none; }
+.fpc-text-only .fpc-stage, .fpc-text-only .fpc-message { display: none; }
 @keyframes fpc-alert { to { filter: brightness(1.55); box-shadow: inset 0 0 0 2px currentColor, 0 0 21px currentColor; } }
 @media (max-width: 620px) {
   .fpc-root { padding: 34px; }
-  .fpc-kicker { margin-top: -24px; letter-spacing: .09em; }
   .fpc-rail { min-height: 27px; padding: 3px 5px; gap: 3px; }
   .fpc-state, .fpc-score small, .fpc-rail .seat-slot { display: none; }
   .fpc-pressure { width: 3px; }
