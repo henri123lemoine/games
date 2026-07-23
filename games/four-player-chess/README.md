@@ -10,10 +10,13 @@ The normative external reference is Chess.com's Help Center article
 [“4 Player Chess (4PC)”](https://support.chess.com/en/articles/8614233-4-player-chess-4pc),
 dated **October 10, 2025**. That date is pinned because Chess.com has changed
 4PC rules over time and its older “Chess Terms” page still describes a
-different opponent-stalemate award.
+different opponent-stalemate award. The modern start squares are cross-checked
+against the standard-board illustration on that official
+[Chess Terms page](https://www.chess.com/terms/4-player-chess); where its older
+scoring prose conflicts, the newer dated Help Center contract controls.
 
-The board rules are ordinary chess, rotated once for each army, with these FFA
-rules:
+Piece movement follows ordinary chess, oriented from each army's home edge,
+with these FFA rules:
 
 - The board has 160 playable squares: a 14×14 square with each 3×3 corner
   removed. The modern Chess.com setup places the four kings on h1, a8, g14,
