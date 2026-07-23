@@ -40,11 +40,13 @@ node scripts/r2-assets.mjs publish azero/azero-chess.azweb /tmp/azero-chess.azwe
 # four-player chess uses the same AZNET1 parity gate with four value logits
 cargo run --release --bin four-player-chess -- export \
     --net ../../runs/four-player-chess/latest.ot \
-    --out /tmp/four-player-chess.azweb
+    --out ../../runs/four-player-chess/four-player-chess.azweb
 cargo run --release --bin four-player-chess -- verify-export \
     --net ../../runs/four-player-chess/latest.ot \
-    --out /tmp/four-player-chess.azweb
-node scripts/r2-assets.mjs publish azero/four-player-chess.azweb /tmp/four-player-chess.azweb
+    --out ../../runs/four-player-chess/four-player-chess.azweb
+cd ../../web/app
+node scripts/r2-assets.mjs publish azero/four-player-chess.azweb \
+    ../../runs/four-player-chess/four-player-chess.azweb
 ```
 
 Without a model file, every other bot works; selecting a net bot reports the missing artifact. `/azero-test.html`, `/four-player-chess-azero-test.html`, and `/go-azero-test.html` (also served in the built site) validate the WebGPU kernels against the reference forward, compare the WebGPU and in-wasm CPU forwards head-to-head (the two backends the bot picks between — see below), and print eval throughput — open the relevant page after publishing a new export. The reference end is `nn-infer`'s torch-free `AZNET1` forward; `aztrainer`'s `verify-export` is the parity gate that asserts the tch forward matches it, so CPU ≡ fixtures ≡ GPU stays locked.

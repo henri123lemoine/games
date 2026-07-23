@@ -2,6 +2,7 @@
 // independent wasm search tree; all four share the page-lifetime weights/GPU.
 
 import { CPU_MAX_SIMS, cpuFallbackMessage, isCpuFallback } from '../shell/azero';
+import { assetUrl } from '../assets';
 import type { EngineHost } from '../engine/host';
 import type { MatchEventData, ViewState } from '../engine/protocol';
 import {
@@ -15,9 +16,7 @@ import type { ClientBot } from './index';
 import { errorMessage, requiredU32 } from './options';
 
 const LEAVES = 8;
-const getWeights = weightsLoader(
-  `${import.meta.env.BASE_URL}azero/four-player-chess.azweb`,
-);
+const getWeights = weightsLoader(assetUrl('azero/four-player-chess.azweb'));
 const getGpu = gpuLoader(FourPlayerAzGpu.init, getWeights);
 
 function seatSoftmax(logits: Float32Array, batch: number): Float32Array {

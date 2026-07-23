@@ -15,8 +15,7 @@ Thumbs.db
 data/
 .claude/
 .worktrees/
-# training-run outputs (net checkpoints + logs); the final published net is
-# committed under web/app/public/artifacts/, not here
+# training-run outputs (net checkpoints + logs); published payloads live in R2
 /runs/
 /ml/*/runs/
 

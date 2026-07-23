@@ -38,7 +38,7 @@ fn export(args: &[String]) {
     let out: PathBuf = run::arg(
         args,
         "--out",
-        PathBuf::from("../../web/app/public/azero/four-player-chess.azweb"),
+        PathBuf::from("../../runs/four-player-chess/four-player-chess.azweb"),
     );
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).expect("create export directory");
@@ -62,7 +62,7 @@ fn verify_export(args: &[String]) {
     let out: PathBuf = run::arg(
         args,
         "--out",
-        PathBuf::from("../../web/app/public/azero/four-player-chess.azweb"),
+        PathBuf::from("../../runs/four-player-chess/four-player-chess.azweb"),
     );
     let cfg = run::net_config_for(args, &net);
     verify::<FourPlayerChessVerify>(&net, cfg, &out, 32).expect("verify export");

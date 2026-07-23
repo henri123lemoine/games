@@ -3,6 +3,7 @@
 
 import init, { four_player_chess_reference_forward } from 'web-engine';
 import wasmUrl from 'web-engine/web_engine_bg.wasm?url';
+import { assetUrl } from './assets';
 import {
   AREA,
   FourPlayerAzGpu,
@@ -37,8 +38,7 @@ function maxDelta(a: Float32Array, b: Float32Array): number {
 
 (async () => {
   try {
-    const base = import.meta.env.BASE_URL;
-    const bin = await fetch(`${base}azero/four-player-chess.azweb`).then((response) => {
+    const bin = await fetch(assetUrl('azero/four-player-chess.azweb')).then((response) => {
       if (!response.ok) throw new Error(`model fetch failed: HTTP ${response.status}`);
       return response.arrayBuffer();
     });

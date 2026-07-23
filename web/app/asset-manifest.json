@@ -7,5 +7,6 @@
   "azero/azero-chess.azweb": "a0b0157e7962ec6559ed3222ed9cce08493d1bae6199adcd40b60ed629a3c268",
   "azero/azero-go.azweb": "21bc53e0ba27ef6fe3a06892cde0a4f64cee872499d1b62b5fecbd14b25c4b5e",
   "azero/azero-pente.azweb": "6519b31a0e72ca56c4f4a8741aa60c5f545ddbad8fefc204a660584dd965c878",
+  "azero/four-player-chess.azweb": "bf18f97cf05f4bed80ee6d58e6ab1fd99a909c8b8f586b7ecad7d193341d96e1",
   "slither/slither.weights": "9f2b3fd9dc30c49a207f1453a3fbd6016db5f49ade74513875fb29b0e7c60d04"
 }

@@ -35,7 +35,7 @@ export const BOT_INFO: Record<string, string> = {
   "chess/azero-gpu":
     "AlphaZero conv-resnet trained by self-play with MCTS in one overnight run on a MacBook.",
   "four-player-chess/azero-gpu":
-    "A four-seat AlphaZero conv-resnet trained locally from scratch by FFA self-play. Its value head predicts all four players at once; play-time search is multiplayer MCTS.",
+    "A 3×24 four-seat AlphaZero conv-resnet trained locally from scratch on an Apple M5 Max CPU: 70 iterations, 4,200 self-play games (3,923 against frozen league checkpoints), 303,107 positions, and 4h05m of measured work. Its value head predicts all four players at once; play-time search is multiplayer MCTS.",
   "go/azero-gpu":
     "AlphaZero self-play net with board-size-agnostic global-pool heads, similar to KataGo, trained for about two days on a MacBook. Play-time search is MCTS.",
   "pente/azero-gpu": "AlphaZero self-play net.",

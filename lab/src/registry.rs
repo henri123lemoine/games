@@ -407,7 +407,7 @@ const FOUR_PLAYER_CHESS_OPTS: &[OptSpec] = &[
     ),
     bot_opt(
         "net",
-        "web/app/public/azero/four-player-chess.azweb",
+        "runs/four-player-chess/four-player-chess.azweb",
         "",
         &["azero"],
     ),
@@ -697,7 +697,7 @@ pub fn entries() -> Vec<Entry> {
                 )
             }),
             eval: Some(eval_entry_scored(
-                "azero[:net=web/app/public/azero/four-player-chess.azweb,sims=256] | greedy | mobility | random",
+                "azero[:net=runs/four-player-chess/four-player-chess.azweb,sims=256] | greedy | mobility | random",
                 0,
                 |_| Ok(four_player_chess::FourPlayerChess::default()),
                 four_player_chess_bot,
@@ -1272,7 +1272,7 @@ fn four_player_chess_bot(
         "azero" => {
             let path = spec
                 .opts
-                .str("net", "web/app/public/azero/four-player-chess.azweb");
+                .str("net", "runs/four-player-chess/four-player-chess.azweb");
             let net = load_four_player_chess_net(&path)?;
             let sims: u32 = spec.opts.get("sims", 256)?;
             Box::new(move |_| {
