@@ -1,19 +1,18 @@
 // Shared WebGPU evaluator for the AlphaZero resnet family — the one driver the
-// chess, four-player chess, go, and snake frontends run their nets through.
-// All are the same
-// network shape (a 3×3 conv stem, a residual tower of paired convs with BN
-// folded into the weights, then policy + value heads). They differ only in the
-// head topology and board size. This module owns everything that is the
+// chess, four-player chess, Go, and Pente frontends run their nets through.
+// All have the same network shape (a 3×3 conv stem, a residual tower of paired
+// convs with BN folded into the weights, then policy + value heads). They
+// differ only in the head topology and board size. This module owns everything that is the
 // same across them: the padded-conv WGSL kernel (and a dense kernel for chess's
 // on-GPU head), the buffer/pipeline scaffolding and the conv→tower→heads
 // dispatch loop, the binary parser, and the CPU-side global-pool / linear /
 // softmax math the pooled heads use after one readback.
 //
 // Two head families subclass the base trunk driver:
-//   * `PooledHeadNet` (go, snake): the residual trunk and each head's 1×1 conv
+//   * `PooledHeadNet` (Go, Pente): the residual trunk and each head's 1×1 conv
 //     run on the GPU; the global pooling and the small linear heads run on the
 //     CPU after one readback (they're tiny, and CPU keeps them exactly in step
-//     with nn-infer's reference fp32 forward). go and snake plug in only their
+//     with nn-infer's reference fp32 forward). Go and Pente plug in only their
 //     `heads()` math. The conv weights are board-size-agnostic, so a pooled net
 //     forwards at any size ≤ the buffers it was sized for.
 //   * Flat heads (chess and four-player chess): the policy head is a 1×1 conv
