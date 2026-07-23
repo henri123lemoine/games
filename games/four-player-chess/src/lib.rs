@@ -148,14 +148,15 @@ impl Game for FourPlayerChess {
         debug_assert!(self.is_terminal(state));
         let best = *state.scores.iter().max().expect("four scores");
         let leaders = state.scores.iter().filter(|&&score| score == best).count();
-        let losers = 4 - leaders;
-        if leaders == 4 {
-            0.0
-        } else if state.scores[player] == best {
+        let win_share = if state.scores[player] == best {
             1.0 / leaders as f64
         } else {
-            -1.0 / losers as f64
-        }
+            0.0
+        };
+        // The value head predicts a categorical first-place share. Affinely
+        // center that distribution at the fair 25% baseline: sole winner +1,
+        // no share -1/3, with tied first place split before centering.
+        (4.0 * win_share - 1.0) / 3.0
     }
 
     fn legal_actions(&self, state: &State) -> Vec<Move> {

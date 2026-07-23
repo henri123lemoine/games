@@ -318,13 +318,13 @@ fn draw_points_go_only_to_active_armies() {
 }
 
 #[test]
-fn terminal_returns_are_zero_sum_and_split_tied_first() {
+fn terminal_returns_match_the_value_heads_centered_win_shares() {
     let game = FourPlayerChess::default();
     let mut state = position(Color::Red);
     state.scores = [12, 12, 3, 1];
     state.end = EndReason::Repetition;
     let returns: Vec<_> = (0..4).map(|seat| game.returns(&state, seat)).collect();
-    assert_eq!(returns, vec![0.5, 0.5, -0.5, -0.5]);
+    assert_eq!(returns, vec![1.0 / 3.0, 1.0 / 3.0, -1.0 / 3.0, -1.0 / 3.0]);
     assert_eq!(returns.iter().sum::<f64>(), 0.0);
 }
 
