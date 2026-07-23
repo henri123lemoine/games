@@ -550,3 +550,29 @@ impl Infer {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_cell_multiseat_net_uses_exportable_kernel_shapes() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let cfg = NetConfig {
+            blocks: 1,
+            channels: 4,
+            planes: 3,
+            size: 1,
+            head: HeadKind::GlobalPoolDense,
+            policy_len: 4,
+            go_aux: false,
+            seats: 4,
+        };
+        let _net = Net::new(&vs.root(), cfg);
+        let vars = vs.variables();
+        assert_eq!(vars["stem_c.weight"].size(), [4, 3, 1, 1]);
+        assert_eq!(vars["block0.c1.weight"].size(), [4, 4, 1, 1]);
+        assert_eq!(vars["block0.c2.weight"].size(), [4, 4, 1, 1]);
+        assert_eq!(vars["vf2.weight"].size(), [4, POOL_VALUE_HIDDEN]);
+    }
+}
