@@ -253,7 +253,7 @@ impl Net {
         });
 
         Net {
-            stem_c: conv(root / "stem_c", cfg.planes, c, 3),
+            stem_c: conv(root / "stem_c", cfg.planes, c, k),
             stem_b: nn::batch_norm2d(root / "stem_b", c, Default::default()),
             tower,
             policy,
