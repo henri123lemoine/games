@@ -55,6 +55,16 @@ with sync_playwright() as playwright:
     assert page.locator(".fpc-rail").count() == 4
     assert page.locator(".fpc-rail .seat-select").count() == 4
     assert page.locator(".fpc-you").count() == 1
+    expected_modern_setup = {
+        "a8": "Blue K",
+        "a7": "Blue Q",
+        "n7": "Green K",
+        "n8": "Green Q",
+    }
+    for square, piece in expected_modern_setup.items():
+        assert piece in page.locator(f'.fpc-square[data-square="{square}"]').get_attribute(
+            "aria-label"
+        )
 
     page.locator(".fpc-origin").first.click()
     target = page.locator(".fpc-target, .fpc-capture").first
