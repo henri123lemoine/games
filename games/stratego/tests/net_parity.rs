@@ -53,10 +53,27 @@ fn repo_file(rel: &str) -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
+/// The shipped artifact lives in the arcade-assets bucket, not in git;
+/// tools/fetch-asset.sh caches it locally and prints the path.
+fn fetched_asset(logical: &str) -> Vec<u8> {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/fetch-asset.sh");
+    let out = std::process::Command::new(&script)
+        .arg(logical)
+        .output()
+        .unwrap_or_else(|e| panic!("run {}: {e}", script.display()));
+    assert!(
+        out.status.success(),
+        "fetch-asset {logical}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let path = String::from_utf8(out.stdout).expect("utf8 path");
+    std::fs::read(path.trim()).unwrap_or_else(|e| panic!("read {}: {e}", path.trim()))
+}
+
 #[test]
 fn exported_artifact_matches_the_mlx_forward() {
-    let bot = NetBot::from_bytes(&repo_file("../../web/app/public/artifacts/ataraxios.bin"))
-        .expect("artifact parses");
+    let bot =
+        NetBot::from_bytes(&fetched_asset("artifacts/ataraxios.bin")).expect("artifact parses");
     let fixture = repo_file("tests/fixtures/net_parity.fix");
     let (magic, body) = fixture.split_at(FIXTURE_MAGIC.len());
     assert_eq!(magic, FIXTURE_MAGIC);

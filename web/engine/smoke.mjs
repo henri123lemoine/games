@@ -4,8 +4,18 @@
 // Exercises the manifest, a spectated match, a human turn, the pair/field
 // runners, and the stats bindings.
 
+import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import init, * as engine from './pkg/web_engine.js';
+
+/** Payload bytes from the arcade-assets bucket (tools/fetch-asset.sh caches
+ * and checksum-verifies; the nets are not in git). */
+const fetchAsset = (logical) =>
+  readFile(
+    execFileSync(new URL('../../tools/fetch-asset.sh', import.meta.url).pathname, [logical], {
+      encoding: 'utf8',
+    }).trim(),
+  );
 
 const wasm = await readFile(new URL('./pkg/web_engine_bg.wasm', import.meta.url));
 await init({ module_or_path: wasm });
@@ -48,9 +58,7 @@ console.log('liars-dice human move:', ev.text);
 
 // Liar's Dice history net: proves the trained champion actually loads through
 // load_artifact and plays — not just that the crate compiles for wasm.
-const ldHistoryWeights = await readFile(
-  new URL('../app/public/artifacts/ld-history-champion.bin', import.meta.url),
-);
+const ldHistoryWeights = await fetchAsset('artifacts/ld-history-champion.bin');
 engine.load_artifact('runs/ld_history/best.bin', new Uint8Array(ldHistoryWeights));
 m = engine.create_match(
   'liars-dice',
@@ -168,7 +176,7 @@ console.log('azero-gpu seam:', plies, 'plies, ok');
 // The no-GPU fallback: the same externally driven seat, but the leaves are
 // evaluated in-wasm by the reference forward (load_weights + play_cpu) instead
 // of WebGPU — the exact path a visitor without a GPU hits. Locked to 1 sim.
-const goWeights = await readFile(new URL('../app/public/azero/azero-go.azweb', import.meta.url));
+const goWeights = await fetchAsset('azero/azero-go.azweb');
 const gm = engine.create_match('go', JSON.stringify({ bot: 'azero-gpu', size: 9, seat: 0, seed: 5 }));
 assert(gm.step() === '', 'no engine-side bot moves in an externally driven go match');
 const goBot = new engine.AzGoBot(1, 8, 5, 9);

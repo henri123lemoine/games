@@ -9,8 +9,18 @@ const WORMS: usize = 6;
 const PELLETS: usize = 250;
 
 fn main() {
-    let weights = std::fs::read("../app/public/slither/slither.weights")
-        .or_else(|_| std::fs::read("web/app/public/slither/slither.weights"))
+    let script =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/fetch-asset.sh");
+    let out = std::process::Command::new(&script)
+        .arg("slither/slither.weights")
+        .output()
+        .expect("run tools/fetch-asset.sh");
+    assert!(
+        out.status.success(),
+        "fetch-asset: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let weights = std::fs::read(String::from_utf8(out.stdout).expect("utf8 path").trim())
         .expect("slither.weights not found");
 
     // Construct exactly as the page does: WORMS worms, PELLETS pellet target.

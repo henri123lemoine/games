@@ -1,6 +1,6 @@
 // The heavyweight immutable payloads (trained nets, solver tables) live in
 // the `arcade-assets` R2 bucket, not in git. Objects are content-addressed
-// (`<dir>/<stem>.<sha256><ext>`), so a URL never changes meaning: old deploys
+// (`<dir>/<stem>.<sha256>.bin`), so a URL never changes meaning: old deploys
 // keep resolving the bytes they were built against, new uploads never
 // overwrite anything, and everything is safe to cache forever
 // (`Cache-Control: immutable`).
@@ -33,9 +33,11 @@ function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+/** Object keys always end in `.bin` whatever the logical extension:
+ * Cloudflare's default cache covers `.bin`, so the edge caches every payload
+ * with zero zone configuration (a `.azweb` key would need a Cache Rule). */
 function urlFor(path, digest) {
-  const ext = extname(path);
-  return `${ASSET_HOST}/${dirname(path)}/${basename(path, ext)}.${digest}${ext}`;
+  return `${ASSET_HOST}/${dirname(path)}/${basename(path, extname(path))}.${digest}.bin`;
 }
 
 function readManifest() {

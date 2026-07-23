@@ -25,16 +25,17 @@ Rebuild the engine whenever Rust changes; Vite picks up the new pkg on the next 
 
 ## Trained artifacts
 
-Published models are committed under `web/app/public/artifacts/` and ship as static assets, fetched only when a bot needs them. After retraining:
+Published models live in the arcade-assets R2 bucket ("Heavyweight payloads" below), fetched only when a bot needs them. After retraining (publish from `web/app/`):
 
 ```bash
-cp data/azero/chess.bin web/app/public/artifacts/azero-chess.bin   # chess bot=azero (~22 MB)
+node scripts/r2-assets.mjs publish artifacts/azero-chess.bin data/azero/chess.bin   # chess bot=azero (~22 MB)
 # chess bot=azero-gpu (WebGPU; ~6 MB) — export to AZNET1, then check the
 # tch forward against nn-infer's torch-free forward. Run from ml/aztrainer/:
 DYLD_LIBRARY_PATH=... cargo run --release --bin chess -- export \
-    --net <run>/latest.ot --out web/app/public/azero/azero-chess.azweb
+    --net <run>/latest.ot --out /tmp/azero-chess.azweb
 DYLD_LIBRARY_PATH=... cargo run --release --bin chess -- verify-export \
-    --net <run>/latest.ot --out web/app/public/azero/azero-chess.azweb
+    --net <run>/latest.ot --out /tmp/azero-chess.azweb
+node scripts/r2-assets.mjs publish azero/azero-chess.azweb /tmp/azero-chess.azweb
 ```
 
 Without a model file, every other bot works; selecting a net bot reports the missing artifact. `/azero-test.html` and `/go-azero-test.html` (also served in the built site) validate the WebGPU kernels against the reference forward over the committed fixtures, compare the WebGPU and in-wasm CPU forwards head-to-head (the two backends the bot picks between — see below), and print eval throughput — open them after publishing a new export. The reference end is `nn-infer`'s torch-free `AZNET1` forward; `aztrainer`'s `verify-export` is the parity gate that asserts the tch forward matches it, so CPU ≡ fixtures ≡ GPU stays locked.
@@ -56,7 +57,7 @@ CI automates the personal-site embed: every push to main rebuilds the arcade and
 
 ### Heavyweight payloads (R2)
 
-The trained nets and solver tables (~160 MB) live in the `arcade-assets` R2 bucket at `https://arcade-assets.henrilemoine.com/`, not in git. Objects are content-addressed (`<dir>/<stem>.<sha256><ext>`, `Cache-Control: immutable`); `web/app/asset-manifest.json` records each payload's logical path and sha256, and every build — dev included — bakes the resulting URLs in via `assetUrl` (`src/assets.ts`). CI fails the build if any manifest entry is missing from the bucket. Deploys are atomic — an old deploy keeps referencing the exact bytes it was built against, nothing is ever overwritten, and an unchanged artifact is never re-uploaded.
+The trained nets and solver tables (~160 MB) live in the `arcade-assets` R2 bucket at `https://arcade-assets.henrilemoine.com/`, not in git. Objects are content-addressed (`<dir>/<stem>.<sha256>.bin` — always `.bin`, so Cloudflare's default cache covers them with no zone configuration; `Cache-Control: immutable`); `web/app/asset-manifest.json` records each payload's logical path and sha256, and every build — dev included — bakes the resulting URLs in via `assetUrl` (`src/assets.ts`). CI fails the build if any manifest entry is missing from the bucket. Deploys are atomic — an old deploy keeps referencing the exact bytes it was built against, nothing is ever overwritten, and an unchanged artifact is never re-uploaded. Anything that needs the bytes on disk (tests, examples, the engine smoke) fetches them through `tools/fetch-asset.sh`, which caches checksum-verified copies in `web/app/.asset-cache/`.
 
 `web/app/scripts/r2-assets.mjs` owns the key scheme and commands. After training or retraining an artifact, publish it and commit the manifest change:
 
@@ -67,7 +68,7 @@ node scripts/r2-assets.mjs publish azero/azero-go.azweb <exported-file>   # uplo
 
 Playing the net/solver games therefore needs network access even in dev. The doom / doom-ai payloads stay in the repo and in `dist/` — their emscripten glue loads iframe-relative.
 
-Cloudflare-side configuration (set up once, 2026-07): the `arcade-assets` bucket with `arcade-assets.henrilemoine.com` as its custom domain, bucket CORS allowing `GET`/`HEAD` from any origin (the objects are public and immutable; localhost previews and the Playwright harnesses fetch cross-origin from random ports), and a zone Cache Rule ("Cache Everything" on `arcade-assets.henrilemoine.com/*`) so non-default extensions like `.azweb` cache at the edge.
+Cloudflare-side configuration (set up once, 2026-07): the `arcade-assets` bucket with `arcade-assets.henrilemoine.com` as its custom domain, and bucket CORS allowing `GET`/`HEAD` from any origin (the objects are public and immutable; localhost previews and the Playwright harnesses fetch cross-origin from random ports). No zone configuration — the uniform `.bin` key suffix is what makes the edge cache apply by default.
 
 ## Performance notes
 

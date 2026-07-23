@@ -27,7 +27,9 @@ use go::{Go, GoAction};
 use nn_infer::Net;
 use serde_json::{Value, json};
 
-const DEFAULT_WEIGHTS: &str = "web/app/public/azero/azero-go.azweb";
+/// Logical asset path, fetched from the arcade-assets bucket via
+/// tools/fetch-asset.sh when no explicit weights path is given.
+const DEFAULT_WEIGHTS_ASSET: &str = "azero/azero-go.azweb";
 const DEFAULT_OUT: &str = "web/app/public/azero/go-fixtures.json";
 
 /// One board size and the move depths to snapshot at, weighted toward the
@@ -148,11 +150,27 @@ fn generate(net: &Net) -> Vec<Value> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let weights_path = args.first().map(String::as_str).unwrap_or(DEFAULT_WEIGHTS);
+    let weights_path = args.first().cloned().unwrap_or_else(|| {
+        let script =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/fetch-asset.sh");
+        let out = std::process::Command::new(&script)
+            .arg(DEFAULT_WEIGHTS_ASSET)
+            .output()
+            .expect("run tools/fetch-asset.sh");
+        assert!(
+            out.status.success(),
+            "fetch-asset: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout)
+            .expect("utf8 path")
+            .trim()
+            .to_string()
+    });
     let out_path = args.get(1).map(String::as_str).unwrap_or(DEFAULT_OUT);
 
     let data =
-        std::fs::read(weights_path).unwrap_or_else(|e| panic!("read weights {weights_path}: {e}"));
+        std::fs::read(&weights_path).unwrap_or_else(|e| panic!("read weights {weights_path}: {e}"));
     let net = Net::parse(&data).expect("parse AZNET1 go weights");
 
     let fixtures = generate(&net);

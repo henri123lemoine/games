@@ -20,15 +20,16 @@ data/
 /runs/
 /ml/*/runs/
 
-# wasm build outputs (public/artifacts/ and public/azero/ are NOT ignored:
-# published nets and their validation fixtures are committed so CI and
-# clones get them with no side channel)
+# wasm build outputs; .asset-cache holds R2-fetched payload bytes
+# (tools/fetch-asset.sh) — the nets themselves live in the arcade-assets
+# bucket, recorded by web/app/asset-manifest.json, never in git
 target-wasm/
 web/engine/pkg/
 web/slither-engine/pkg/
 web/app/node_modules/
 web/app/dist/
 web/app/.validation/
+web/app/.asset-cache/
 
 # doomrl C build output (compiled .o objects + the doomrl_driver binary)
 doomrl/build/
