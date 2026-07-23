@@ -3,12 +3,12 @@ import { defineConfig } from 'vite';
 import { computeManifest } from './scripts/r2-assets.mjs';
 
 // base './' keeps the build embeddable at any path on the host site.
-// Production builds bake the R2 URLs of the heavyweight payloads into
-// `assetUrl` (src/assets.ts); dev serves the same files from public/.
-export default defineConfig(({ command }) => ({
+// The heavyweight payloads live in R2, not in the repo, so every build —
+// dev included — bakes their URLs into `assetUrl` (src/assets.ts).
+export default defineConfig({
   base: './',
   define: {
-    __ARCADE_ASSETS__: JSON.stringify(command === 'build' ? computeManifest() : {}),
+    __ARCADE_ASSETS__: JSON.stringify(computeManifest()),
   },
   build: {
     target: 'esnext',
@@ -22,4 +22,4 @@ export default defineConfig(({ command }) => ({
     },
   },
   worker: { format: 'es' },
-}));
+});

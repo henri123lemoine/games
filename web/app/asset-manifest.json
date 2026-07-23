@@ -1,0 +1,11 @@
+{
+  "artifacts/ataraxios.bin": "2491636518b650068dd72474c1038cfcfcfc91233b9d5c8e9c44a1afe6c0e5ab",
+  "artifacts/azero-chess.bin": "7027dfc0d96794308b458b3c3aefe61482099e0a7708b95f36b9180bdd81ec61",
+  "artifacts/ld-history-champion.bin": "eedc80f43b1c14607a5f06398de450a2bb618b74788502ddcc438d213cd695ee",
+  "artifacts/t21-solver-h3.bin": "9f0f9ff5907ba282b8649e5ba6057684dbbbe5cf55bc15be5ee190d585d06b5b",
+  "artifacts/t21-solver-h6.bin": "95ea7397cdf69ed5a888f28115c4a2cace5604ecbdc81255f4d18e95f9dd3a36",
+  "azero/azero-chess.azweb": "a0b0157e7962ec6559ed3222ed9cce08493d1bae6199adcd40b60ed629a3c268",
+  "azero/azero-go.azweb": "21bc53e0ba27ef6fe3a06892cde0a4f64cee872499d1b62b5fecbd14b25c4b5e",
+  "azero/azero-pente.azweb": "6519b31a0e72ca56c4f4a8741aa60c5f545ddbad8fefc204a660584dd965c878",
+  "slither/slither.weights": "9f2b3fd9dc30c49a207f1453a3fbd6016db5f49ade74513875fb29b0e7c60d04"
+}

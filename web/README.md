@@ -56,16 +56,16 @@ CI automates the personal-site embed: every push to main rebuilds the arcade and
 
 ### Heavyweight payloads (R2)
 
-The trained nets and solver tables (`public/artifacts/*.bin`, `public/azero/*.azweb`, `public/slither/slither.weights`, ~160 MB) do not ride along in `dist/`. They are served from the `arcade-assets` R2 bucket at `https://arcade-assets.henrilemoine.com/` under content-addressed names (`<dir>/<stem>.<sha256><ext>`, `Cache-Control: immutable`): production builds bake each file's URL in via `assetUrl` (`src/assets.ts`), CI fails the build if any referenced object is missing from the bucket, and then prunes the files from the published `dist/`. Deploys are atomic — an old deploy keeps referencing the exact bytes it was built against, nothing is ever overwritten, and unchanged artifacts upload zero bytes.
+The trained nets and solver tables (~160 MB) live in the `arcade-assets` R2 bucket at `https://arcade-assets.henrilemoine.com/`, not in git. Objects are content-addressed (`<dir>/<stem>.<sha256><ext>`, `Cache-Control: immutable`); `web/app/asset-manifest.json` records each payload's logical path and sha256, and every build — dev included — bakes the resulting URLs in via `assetUrl` (`src/assets.ts`). CI fails the build if any manifest entry is missing from the bucket. Deploys are atomic — an old deploy keeps referencing the exact bytes it was built against, nothing is ever overwritten, and an unchanged artifact is never re-uploaded.
 
-`web/app/scripts/r2-assets.mjs` is the single source of truth (file list, key scheme, commands). After adding or retraining an artifact, publish it before pushing:
+`web/app/scripts/r2-assets.mjs` owns the key scheme and commands. After training or retraining an artifact, publish it and commit the manifest change:
 
 ```bash
-npx wrangler login          # once
-node scripts/r2-assets.mjs upload   # skips objects already in the bucket, checksum-verifies new ones
+npx wrangler login   # once
+node scripts/r2-assets.mjs publish azero/azero-go.azweb <exported-file>   # upload + checksum readback + manifest update
 ```
 
-Dev needs none of this: `npm run dev` serves the same files from `public/`, offline. The doom / doom-ai payloads stay in `dist/` — their emscripten glue loads iframe-relative.
+Playing the net/solver games therefore needs network access even in dev. The doom / doom-ai payloads stay in the repo and in `dist/` — their emscripten glue loads iframe-relative.
 
 Cloudflare-side configuration (set up once, 2026-07): the `arcade-assets` bucket with `arcade-assets.henrilemoine.com` as its custom domain, bucket CORS allowing `GET`/`HEAD` from any origin (the objects are public and immutable; localhost previews and the Playwright harnesses fetch cross-origin from random ports), and a zone Cache Rule ("Cache Everything" on `arcade-assets.henrilemoine.com/*`) so non-default extensions like `.azweb` cache at the edge.
 

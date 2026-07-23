@@ -65,14 +65,12 @@ jobs:
         working-directory: web/app
       - run: npm run build
         working-directory: web/app
-      # The heavyweight payloads are served from the arcade-assets R2 bucket
-      # (web/app/scripts/r2-assets.mjs): fail if any referenced object is not
-      # already uploaded, then drop them from the published dist. Uploads are
-      # a local `node scripts/r2-assets.mjs upload` (wrangler login) — no
-      # tokens here, the existence check is a public HEAD.
+      # The heavyweight payloads live in the arcade-assets R2 bucket, not in
+      # the repo (web/app/scripts/r2-assets.mjs + asset-manifest.json): fail
+      # if any manifest entry is not actually uploaded. Publishing is a local
+      # `node scripts/r2-assets.mjs publish` (wrangler login) — no tokens
+      # here, the existence check is a public HEAD.
       - run: node scripts/r2-assets.mjs verify
-        working-directory: web/app
-      - run: node scripts/r2-assets.mjs prune
         working-directory: web/app
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'push'
