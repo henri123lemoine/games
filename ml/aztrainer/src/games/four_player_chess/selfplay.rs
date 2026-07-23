@@ -257,10 +257,11 @@ impl SelfPlay {
         }
     }
 
-    fn set_league(&mut self, active: bool) {
-        if self.league == active {
-            return;
-        }
+    /// Start a collection at game boundaries. The caller supplies one frozen
+    /// current snapshot and at most one named past checkpoint per collection;
+    /// carrying workers across calls would silently switch either policy in
+    /// the middle of a game and make the league metric dishonest.
+    fn reset_for_collect(&mut self, active: bool) {
         self.league = active;
         for (worker, results) in self.workers.iter_mut().zip(&mut self.results) {
             worker.reset(&self.cfg, active);
@@ -274,7 +275,7 @@ impl SelfPlay {
         past: Option<&Infer>,
         target_samples: usize,
     ) -> (Vec<Sample>, SelfPlayStats) {
-        self.set_league(past.is_some());
+        self.reset_for_collect(past.is_some());
         let mut samples = Vec::with_capacity(target_samples + 1024);
         let mut stats = SelfPlayStats::default();
         while samples.len() < target_samples {
