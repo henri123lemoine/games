@@ -337,6 +337,17 @@ fn draw_points_go_only_to_active_armies() {
 }
 
 #[test]
+fn bare_kings_end_as_insufficient_material() {
+    let game = FourPlayerChess::default();
+    let mut state = position(Color::Red);
+
+    play(&game, &mut state, "h1", "h2");
+
+    assert_eq!(state.end, EndReason::InsufficientMaterial);
+    assert_eq!(state.scores, [10, 10, 10, 10]);
+}
+
+#[test]
 fn terminal_returns_match_the_value_heads_centered_win_shares() {
     let game = FourPlayerChess::default();
     let mut state = position(Color::Red);
