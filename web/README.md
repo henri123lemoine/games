@@ -36,9 +36,18 @@ DYLD_LIBRARY_PATH=... cargo run --release --bin chess -- export \
 DYLD_LIBRARY_PATH=... cargo run --release --bin chess -- verify-export \
     --net <run>/latest.ot --out /tmp/azero-chess.azweb
 node scripts/r2-assets.mjs publish azero/azero-chess.azweb /tmp/azero-chess.azweb
+
+# four-player chess uses the same AZNET1 parity gate with four value logits
+cargo run --release --bin four-player-chess -- export \
+    --net ../../runs/four-player-chess/latest.ot \
+    --out /tmp/four-player-chess.azweb
+cargo run --release --bin four-player-chess -- verify-export \
+    --net ../../runs/four-player-chess/latest.ot \
+    --out /tmp/four-player-chess.azweb
+node scripts/r2-assets.mjs publish azero/four-player-chess.azweb /tmp/four-player-chess.azweb
 ```
 
-Without a model file, every other bot works; selecting a net bot reports the missing artifact. `/azero-test.html` and `/go-azero-test.html` (also served in the built site) validate the WebGPU kernels against the reference forward over the committed fixtures, compare the WebGPU and in-wasm CPU forwards head-to-head (the two backends the bot picks between — see below), and print eval throughput — open them after publishing a new export. The reference end is `nn-infer`'s torch-free `AZNET1` forward; `aztrainer`'s `verify-export` is the parity gate that asserts the tch forward matches it, so CPU ≡ fixtures ≡ GPU stays locked.
+Without a model file, every other bot works; selecting a net bot reports the missing artifact. `/azero-test.html`, `/four-player-chess-azero-test.html`, and `/go-azero-test.html` (also served in the built site) validate the WebGPU kernels against the reference forward, compare the WebGPU and in-wasm CPU forwards head-to-head (the two backends the bot picks between — see below), and print eval throughput — open the relevant page after publishing a new export. The reference end is `nn-infer`'s torch-free `AZNET1` forward; `aztrainer`'s `verify-export` is the parity gate that asserts the tch forward matches it, so CPU ≡ fixtures ≡ GPU stays locked.
 
 ### AlphaZero without a GPU
 

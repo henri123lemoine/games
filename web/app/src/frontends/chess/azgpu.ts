@@ -64,21 +64,21 @@ export class AzGpu extends AznetBase {
     // Value: v1 (C→8, relu) → vf1 (8·area→256, relu) → vf2 (256→1, tanh).
     const v1: Conv = r.conv(C, CHESS_VALUE_CHANNELS, 1);
     const vf1: Linear = r.linear(CHESS_VALUE_CHANNELS * AREA, CHESS_VALUE_HIDDEN);
-    const vf2: Linear = r.linear(CHESS_VALUE_HIDDEN, 1);
+    const vf2: Linear = r.linear(CHESS_VALUE_HIDDEN, trunk.arch.valueSeats);
     r.done();
 
     this.polBuf = this.abuf(MAX_BATCH * this.movePlanes * AREA);
     const v64 = this.abuf(MAX_BATCH * CHESS_VALUE_CHANNELS * AREA);
     const vHidden = this.abuf(MAX_BATCH * CHESS_VALUE_HIDDEN);
-    this.v1out = this.abuf(MAX_BATCH);
+    this.v1out = this.abuf(MAX_BATCH * trunk.arch.valueSeats);
     this.stagePol = this.stageBuf(MAX_BATCH * this.movePlanes * AREA * 4);
-    this.stageVal = this.stageBuf(MAX_BATCH * 4);
+    this.stageVal = this.stageBuf(MAX_BATCH * trunk.arch.valueSeats * 4);
 
     this.convLayer(p1, X, scratch, 1, null);
     this.convLayer(p2, scratch, this.polBuf, 0, null);
     this.convLayer(v1, X, v64, 1, null);
     this.linLayer(vf1, v64, vHidden, 1);
-    this.linLayer(vf2, vHidden, this.v1out, 2);
+    this.linLayer(vf2, vHidden, this.v1out, trunk.arch.valueSeats === 1 ? 2 : 0);
   }
 
   protected async finish(enc: GPUCommandEncoder, B: number): Promise<Eval> {
@@ -86,7 +86,7 @@ export class AzGpu extends AznetBase {
     const [polCM, values] = await this.readback(
       enc,
       { src: this.polBuf, stage: this.stagePol, bytes: B * mp * AREA * 4 },
-      { src: this.v1out, stage: this.stageVal, bytes: B * 4 },
+      { src: this.v1out, stage: this.stageVal, bytes: B * this.arch.valueSeats * 4 },
     );
     // Channel-major [movePlanes, area] → square-major policy logits.
     const logits = new Float32Array(B * this.policyLen);

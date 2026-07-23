@@ -122,8 +122,9 @@ export enum HeadKind {
   GlobalPoolDense = 2,
 }
 
-/** Optional appended heads, one flag bit each. Bit 0 is go's ownership head. */
+/** Optional appended heads, one flag bit each. */
 const FLAG_OWNERSHIP = 1;
+const FLAG_VALUE_SEATS = 2;
 
 /** The architecture header — everything a parser or the driver needs to lay out
  * the net. Mirrors nn-infer's `Arch`. */
@@ -138,6 +139,8 @@ export interface Arch {
   /** Flat/dense policy width; `0` for spatial (whose width is `size²+1`). */
   policyLen: number;
   ownership: boolean;
+  /** 1 for mover-scalar nets; >1 for raw absolute-seat value logits. */
+  valueSeats: number;
 }
 
 /** Parses the unified AZNET1 header into the `Arch` plus the byte offset where
@@ -155,8 +158,13 @@ export function parseArch(buf: ArrayBuffer): { arch: Arch; body: number } {
   const head = u32(32);
   if (head > 2) throw new Error('unknown head_kind ' + head);
   const flags = u32(40);
-  if (flags & ~FLAG_OWNERSHIP) throw new Error('unknown head flags ' + flags.toString(16));
-  if (u32(44) !== 0) throw new Error('nonzero reserved header word');
+  if (flags & ~(FLAG_OWNERSHIP | FLAG_VALUE_SEATS))
+    throw new Error('unknown head flags ' + flags.toString(16));
+  const reserved = u32(44);
+  const valueSeats = flags & FLAG_VALUE_SEATS ? reserved : 1;
+  if (flags & FLAG_VALUE_SEATS) {
+    if (valueSeats < 2 || valueSeats > 8) throw new Error('invalid value seat count ' + valueSeats);
+  } else if (reserved !== 0) throw new Error('nonzero reserved header word');
   return {
     arch: {
       blocks: u32(12),
@@ -167,6 +175,7 @@ export function parseArch(buf: ArrayBuffer): { arch: Arch; body: number } {
       head: head as HeadKind,
       policyLen: u32(36),
       ownership: !!(flags & FLAG_OWNERSHIP),
+      valueSeats,
     },
     body: 48,
   };

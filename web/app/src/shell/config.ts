@@ -34,6 +34,8 @@ export const BOT_INFO: Record<string, string> = {
     "Follows Ataraxos AI's implementation. A 27M-parameter transformer pair — an 8-layer move net plus a 4-layer setup net that arranges its own army. Trained from scratch by self-play in MLX on a Apple M5 Max MacBook: 6.5 days, 7,600 iterations, ~1.5 billion moves.",
   "chess/azero-gpu":
     "AlphaZero conv-resnet trained by self-play with MCTS in one overnight run on a MacBook.",
+  "four-player-chess/azero-gpu":
+    "A four-seat AlphaZero conv-resnet trained locally from scratch by FFA self-play. Its value head predicts all four players at once; play-time search is multiplayer MCTS.",
   "go/azero-gpu":
     "AlphaZero self-play net with board-size-agnostic global-pool heads, similar to KataGo, trained for about two days on a MacBook. Play-time search is MCTS.",
   "pente/azero-gpu": "AlphaZero self-play net.",
@@ -101,6 +103,15 @@ export const DIFFICULTY: Record<string, Difficulty> = {
       ["Easy", "1200"],
       ["Medium", "4800"],
       ["Hard", "12000"],
+    ],
+  },
+  "four-player-chess/azero-gpu": {
+    key: "sims",
+    levels: [
+      ["Trivial", "1"],
+      ["Easy", "64"],
+      ["Medium", "256"],
+      ["Hard", "800"],
     ],
   },
   "othello/alphabeta": {

@@ -369,6 +369,32 @@ button {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
 }
 
+.mini-four-chess {
+  background:
+    linear-gradient(90deg, transparent 0 21%, #d5c8aa 21% 79%, transparent 79%),
+    linear-gradient(0deg, transparent 0 21%, #53645d 21% 79%, transparent 79%),
+    #17201f;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+}
+.mini-four-chess::before {
+  content: "";
+  position: absolute;
+  inset: 21%;
+  background: repeating-conic-gradient(#d5c8aa 0 25%, #53645d 0 50%) 0 0 / 25% 25%;
+  opacity: .9;
+}
+.mini-four-arm, .mini-four-core {
+  position: absolute;
+  z-index: 1;
+  font: 700 24px/1 Georgia, serif;
+  text-shadow: 0 2px 2px #000b;
+}
+.mini-four-y { color: #ffd54a; left: 47%; top: 5%; }
+.mini-four-b { color: #4ea1ff; left: 5%; top: 44%; }
+.mini-four-g { color: #42d08b; right: 5%; top: 44%; }
+.mini-four-r { color: #ff564d; left: 47%; bottom: 4%; }
+.mini-four-core { color: #f2eee2; left: 48%; top: 43%; font-size: 30px; }
+
 .mini-dice {
   background: radial-gradient(closest-side at 50% 40%, #2c4231, #1d2c21 90%);
 }

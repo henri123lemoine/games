@@ -4,6 +4,7 @@
 //! game-schema-free.
 
 mod az;
+mod azfour;
 mod azgo;
 mod azpente;
 mod mcts;
@@ -15,6 +16,7 @@ use solvers::azero::{EvalRequest, EvalResult};
 use wasm_bindgen::prelude::*;
 
 pub use az::AzChessBot;
+pub use azfour::AzFourPlayerBot;
 pub use azgo::AzGoBot;
 pub use azpente::AzPenteBot;
 
@@ -138,12 +140,16 @@ fn ref_forward(
     let stride_in = net.arch().planes * size * size;
     let mut out = RefForward {
         logits: Vec::new(),
-        values: Vec::with_capacity(n),
+        values: Vec::with_capacity(n * net.arch().value_seats),
     };
     for i in 0..n {
         let res = net.forward_at(&features[i * stride_in..(i + 1) * stride_in], &[], size);
         out.logits.extend_from_slice(&res.policy);
-        out.values.push(res.value);
+        if let Some(seats) = res.seat_values {
+            out.values.extend(seats);
+        } else {
+            out.values.push(res.value);
+        }
     }
     Ok(out)
 }
@@ -276,6 +282,17 @@ pub fn chess_reference_forward(
     n: usize,
 ) -> Result<RefForward, JsError> {
     ref_forward(weights, features, n, 8)
+}
+
+/// The four-player chess reference forward over `n` positions. Logit stride
+/// is 21,952 and value stride is four raw absolute-seat logits.
+#[wasm_bindgen]
+pub fn four_player_chess_reference_forward(
+    weights: &[u8],
+    features: &[f32],
+    n: usize,
+) -> Result<RefForward, JsError> {
+    ref_forward(weights, features, n, 14)
 }
 
 #[wasm_bindgen]

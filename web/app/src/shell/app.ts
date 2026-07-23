@@ -46,6 +46,7 @@ const PENTE_AZ_SIZE = "19";
 
 const DEFAULT_OPTS: Record<string, Record<string, string>> = {
   chess: { bot: "azero-gpu", sims: "4800" },
+  "four-player-chess": { bot: "azero-gpu", sims: "256" },
   "liars-dice": { players: "5", dice: "5", faces: "6", rollouts: "400", bot: "history" },
   twentyone: { hearts: "3" },
   othello: { depth: "5" },
@@ -154,6 +155,7 @@ function effectiveBot(game: GameInfo, opts: Record<string, string>): string {
 /** Seat names per game, matching what each board draws; `Seat N` otherwise. */
 const SEAT_LABELS: Record<string, string[]> = {
   chess: ["White", "Black"],
+  "four-player-chess": ["Red", "Blue", "Yellow", "Green"],
   othello: ["Black", "White"],
   go: ["Black", "White"],
   pente: ["Black", "White"],
@@ -187,6 +189,7 @@ interface RosterBot {
  * choice; the superseded `azero` net is never listed.) */
 const SHOWN_BOTS: Record<string, readonly string[]> = {
   chess: ["azero-gpu"],
+  "four-player-chess": ["azero-gpu"],
   "liars-dice": ["history", "rollout"],
   poker: ["equity"],
   othello: ["alphabeta"],
@@ -221,6 +224,7 @@ function currentBotValue(game: GameInfo, opts: Record<string, string>): string {
  * Liar's Dice), or 2 for the head-to-head games. */
 function seatCount(game: GameInfo, opts: Record<string, string>): number {
   if (game.solo) return 1;
+  if (game.id === "four-player-chess") return 4;
   const players = game.optsSchema.find((o) => o.key === "players");
   if (players)
     return Number(opts.players ?? players.value.split("|")[0]) || 2;
@@ -277,6 +281,11 @@ function miniFor(id: string): string {
   switch (id) {
     case "chess":
       return `<div class="mini mini-chess"><span class="mini-pc" style="left:30%;top:30%">♞</span><span class="mini-pc mini-pc-w" style="left:70%;top:70%">♙</span></div>`;
+    case "four-player-chess":
+      return `<div class="mini mini-four-chess">
+        <span class="mini-four-arm mini-four-y">♟</span><span class="mini-four-arm mini-four-b">♟</span>
+        <span class="mini-four-arm mini-four-g">♟</span><span class="mini-four-arm mini-four-r">♟</span>
+        <span class="mini-four-core">♛</span></div>`;
     case "liars-dice":
       return `<div class="mini mini-dice">
         <span class="mini-die"><i style="left:25%;top:25%"></i><i style="left:65%;top:65%"></i></span>

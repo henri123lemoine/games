@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 nn-infer = { path = "../../ml/nn-infer" }
 solvers = { path = "../../solvers", default-features = false }
 chess = { path = "../../games/chess" }
+four-player-chess = { path = "../../games/four-player-chess" }
 go = { path = "../../games/go" }
 pente = { path = "../../games/pente" }
 snake = { path = "../../games/snake" }

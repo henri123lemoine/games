@@ -7,6 +7,7 @@
 import { EngineHost } from '../engine/host';
 import type { MatchEventData, ViewState } from '../engine/protocol';
 import { createAzeroChess } from './azero-chess';
+import { createAzeroFourPlayerChess } from './azero-four-player-chess';
 import { createAzeroGo } from './azero-go';
 import { createAzeroPente } from './azero-pente';
 
@@ -32,6 +33,7 @@ export type ClientBotFactory = (
 
 const factories = new Map<string, ClientBotFactory>([
   ['chess/azero-gpu', createAzeroChess],
+  ['four-player-chess/azero-gpu', createAzeroFourPlayerChess],
   ['go/azero-gpu', createAzeroGo],
   ['pente/azero-gpu', createAzeroPente],
 ]);

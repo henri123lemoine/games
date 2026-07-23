@@ -123,6 +123,10 @@ export class EngineHost {
     return this.call({ op: 'azNew', sims, leaves, seed, weights }) as Promise<void>;
   }
 
+  fourNew(sims: number, leaves: number, seed: number, weights?: ArrayBuffer): Promise<void> {
+    return this.call({ op: 'fourNew', sims, leaves, seed, weights }) as Promise<void>;
+  }
+
   goNew(
     sims: number,
     leaves: number,
