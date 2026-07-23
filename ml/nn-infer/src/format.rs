@@ -158,9 +158,6 @@ impl Arch {
             }
             1
         };
-        if value_seats > 1 && head == HeadKind::FlatConv {
-            return Err("multi-seat value requires a global-pool head".into());
-        }
         match head {
             HeadKind::GlobalPoolSpatial if policy_len != 0 => {
                 return Err("spatial policy must carry policy_len 0".into());
@@ -338,15 +335,13 @@ mod tests {
     }
 
     #[test]
-    fn value_seats_rejects_flat_head_and_wild_counts() {
+    fn value_seats_supports_flat_head_and_rejects_wild_counts() {
         let mut a = arch();
         a.value_seats = 4;
         a.head = HeadKind::FlatConv;
         a.policy_len = 4672;
-        assert!(
-            Arch::parse(&a.header_bytes()).is_err(),
-            "flat head rejected"
-        );
+        let (parsed, _) = Arch::parse(&a.header_bytes()).expect("flat multi-seat head");
+        assert_eq!(parsed.value_seats, 4);
         let mut b = arch();
         b.head = HeadKind::GlobalPoolDense;
         b.policy_len = 8;

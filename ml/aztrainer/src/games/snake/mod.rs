@@ -82,7 +82,7 @@ fn verify_export(args: &[String]) {
             for (&first, &second) in tch.priors.iter().zip(&plain_policy) {
                 max_policy = max_policy.max((first - second).abs());
             }
-            max_value = max_value.max((tch.value - plain_value).abs());
+            max_value = max_value.max((tch.value.as_mover() - plain_value).abs());
         }
         let joint = [Direction::ALL[rng.below(4)], Direction::ALL[rng.below(4)]];
         game.apply_joint(&mut state, &joint);

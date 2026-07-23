@@ -4,6 +4,7 @@
 //! crate root; only game knowledge lives here.
 
 pub mod chess;
+pub mod four_player_chess;
 pub mod go;
 pub mod pente;
 pub mod snake;

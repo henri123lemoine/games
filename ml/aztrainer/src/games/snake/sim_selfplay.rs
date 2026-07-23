@@ -549,7 +549,7 @@ fn assign_roots<const N: usize>(
         {
             roots[worker].priors[player][action.0] = probability;
         }
-        roots[worker].values[player] = result.value;
+        roots[worker].values[player] = result.value.as_mover();
     }
 }
 
@@ -560,7 +560,7 @@ fn assign_leaves<const N: usize>(
 ) {
     assert_eq!(map.len(), results.len());
     for (&(worker, joint, player), result) in map.iter().zip(results) {
-        tables[worker].values[joint][player] = result.value;
+        tables[worker].values[joint][player] = result.value.as_mover();
     }
 }
 

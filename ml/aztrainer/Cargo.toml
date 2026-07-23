@@ -11,6 +11,7 @@ description = "Generic AlphaZero trainer: one tch-rs resnet + self-play/replay/o
 
 [dependencies]
 chess = { path = "../../games/chess" }
+four-player-chess = { path = "../../games/four-player-chess" }
 go = { path = "../../games/go" }
 pente = { path = "../../games/pente" }
 snake = { path = "../../games/snake" }
@@ -24,6 +25,10 @@ tch = { version = "0.23", features = ["download-libtorch"] }
 [[bin]]
 name = "chess"
 path = "src/bin/chess.rs"
+
+[[bin]]
+name = "four-player-chess"
+path = "src/bin/four_player_chess.rs"
 
 [[bin]]
 name = "go"

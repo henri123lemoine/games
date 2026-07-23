@@ -141,6 +141,7 @@ struct FlatValue {
     vb: nn::BatchNorm,
     vf1: nn::Linear,
     vf2: nn::Linear,
+    seats: i64,
 }
 
 /// Go/snake value head: `v1` (1×1 → C) → global pool → MLP. Board-size-agnostic.
@@ -224,7 +225,13 @@ impl Net {
                     CHESS_VALUE_HIDDEN,
                     Default::default(),
                 ),
-                vf2: nn::linear(root / "vf2", CHESS_VALUE_HIDDEN, 1, Default::default()),
+                vf2: nn::linear(
+                    root / "vf2",
+                    CHESS_VALUE_HIDDEN,
+                    cfg.seats.max(1),
+                    Default::default(),
+                ),
+                seats: cfg.seats.max(1),
             }),
             HeadKind::GlobalPoolSpatial | HeadKind::GlobalPoolDense => Value::Pool(PoolValue {
                 v1: conv(root / "v1", c, c, 1),
@@ -297,7 +304,12 @@ impl Net {
                     .flatten(1, -1)
                     .apply(&v.vf1)
                     .relu();
-                (h.apply(&v.vf2).tanh().squeeze_dim(-1), None)
+                let value = if v.seats == 1 {
+                    h.apply(&v.vf2).tanh().squeeze_dim(-1)
+                } else {
+                    h.apply(&v.vf2)
+                };
+                (value, None)
             }
             Value::Pool(v) => {
                 let conv = t.apply(&v.v1).apply_t(&v.vb, train).relu();

@@ -72,8 +72,9 @@ enum Policy {
     Dense(DensePolicy),
 }
 
-/// The chess value head: `v1` (1×1 C→`vc`, relu) flattened over the full board
-/// to a dense MLP (`vf1` `vc·area`→256 relu, `vf2` 256→1), then tanh.
+/// The board-fixed value head: `v1` (1×1 C→`vc`, relu) flattened over the full
+/// board to a dense MLP (`vf1` `vc·area`→256 relu, `vf2` 256→value_seats).
+/// Scalar nets apply tanh; multiplayer nets expose the raw seat logits.
 struct FlatValue {
     v1: Conv,
     vf1: Linear,
@@ -167,7 +168,7 @@ impl Net {
                 Value::Flat(FlatValue {
                     v1: r.conv(c, vc, 1)?,
                     vf1: r.linear(vc * arch.size * arch.size, CHESS_VALUE_HIDDEN)?,
-                    vf2: r.linear(CHESS_VALUE_HIDDEN, 1)?,
+                    vf2: r.linear(CHESS_VALUE_HIDDEN, arch.value_seats)?,
                 })
             }
             HeadKind::GlobalPoolSpatial | HeadKind::GlobalPoolDense => Value::Pool(PoolValue {
