@@ -10,6 +10,7 @@ import init, { AzChessBot, AzGoBot } from 'web-engine';
 import wasmUrl from 'web-engine/web_engine_bg.wasm?url';
 import { AzGpu, POLICY_LEN, softmaxOver as chessSoftmax } from './frontends/chess/azgpu';
 import { GoGpu, policyLen, softmaxOver as goSoftmax } from './frontends/go/azgpu';
+import { assetUrl } from './assets';
 
 const LEAVES = 8;
 const SIMS = [1, 4, 16, 64, 256, 1024, 4096, 16384];
@@ -165,11 +166,10 @@ function render(columns: Column[]): void {
 
 (async () => {
   try {
-    const base = import.meta.env.BASE_URL;
     setStatus('fetching nets…');
     const [chessBuf, goBuf] = await Promise.all([
-      fetch(`${base}azero/azero-chess.azweb`).then((r) => r.arrayBuffer()),
-      fetch(`${base}azero/azero-go.azweb`).then((r) => r.arrayBuffer()),
+      fetch(assetUrl('azero/azero-chess.azweb')).then((r) => r.arrayBuffer()),
+      fetch(assetUrl('azero/azero-go.azweb')).then((r) => r.arrayBuffer()),
     ]);
     const chessW = new Uint8Array(chessBuf);
     const goW = new Uint8Array(goBuf);

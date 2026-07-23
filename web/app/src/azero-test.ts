@@ -7,6 +7,7 @@
 import init, { chess_reference_forward } from 'web-engine';
 import wasmUrl from 'web-engine/web_engine_bg.wasm?url';
 import { AzGpu, PLANES, softmaxOver } from './frontends/chess/azgpu';
+import { assetUrl } from './assets';
 
 interface Fixture {
   fen: string;
@@ -26,7 +27,7 @@ const log = (html: string): void => {
   try {
     const base = import.meta.env.BASE_URL;
     const [bin, fixtures] = await Promise.all([
-      fetch(`${base}azero/azero-chess.azweb`).then((r) => r.arrayBuffer()),
+      fetch(assetUrl('azero/azero-chess.azweb')).then((r) => r.arrayBuffer()),
       fetch(`${base}azero/fixtures.json`).then((r) => r.json() as Promise<Fixture[]>),
     ]);
     const gpu = await AzGpu.init(bin);

@@ -54,6 +54,21 @@ Everything runs client-side — no server component, no API keys, no state.
 
 CI automates the personal-site embed: every push to main rebuilds the arcade and publishes `dist/` to the `arcade-dist` branch (single orphan commit). The personal-website repo mounts that branch at `henrilemoine.com/arcade/` on its own deploys — every site push plus a daily freshness cron — with no tokens, since this repo is public (`gh workflow run deploy.yml -R henri123lemoine/personal-website` forces an immediate refresh).
 
+### Heavyweight payloads (R2)
+
+The trained nets and solver tables (`public/artifacts/*.bin`, `public/azero/*.azweb`, `public/slither/slither.weights`, ~160 MB) do not ride along in `dist/`. They are served from the `arcade-assets` R2 bucket at `https://arcade-assets.henrilemoine.com/` under content-addressed names (`<dir>/<stem>.<sha256><ext>`, `Cache-Control: immutable`): production builds bake each file's URL in via `assetUrl` (`src/assets.ts`), CI fails the build if any referenced object is missing from the bucket, and then prunes the files from the published `dist/`. Deploys are atomic — an old deploy keeps referencing the exact bytes it was built against, nothing is ever overwritten, and unchanged artifacts upload zero bytes.
+
+`web/app/scripts/r2-assets.mjs` is the single source of truth (file list, key scheme, commands). After adding or retraining an artifact, publish it before pushing:
+
+```bash
+npx wrangler login          # once
+node scripts/r2-assets.mjs upload   # skips objects already in the bucket, checksum-verifies new ones
+```
+
+Dev needs none of this: `npm run dev` serves the same files from `public/`, offline. The doom / doom-ai payloads stay in `dist/` — their emscripten glue loads iframe-relative.
+
+Cloudflare-side configuration (set up once, 2026-07): the `arcade-assets` bucket with `arcade-assets.henrilemoine.com` as its custom domain, bucket CORS allowing `GET`/`HEAD` from any origin (the objects are public and immutable; localhost previews and the Playwright harnesses fetch cross-origin from random ports), and a zone Cache Rule ("Cache Everything" on `arcade-assets.henrilemoine.com/*`) so non-default extensions like `.azweb` cache at the edge.
+
 ## Performance notes
 
 - The engine runs single-threaded inside a Web Worker (the UI never blocks). Browser-tuned defaults live in the shell (`DEFAULT_OPTS`); raise rollouts / sims / depth in the setup screen on fast machines.

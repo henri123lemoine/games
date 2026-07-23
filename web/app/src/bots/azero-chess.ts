@@ -10,12 +10,13 @@ import type { EngineHost } from '../engine/host';
 import type { MatchEventData, ViewState } from '../engine/protocol';
 import { AzGpu, POLICY_LEN, softmaxOver } from '../frontends/chess/azgpu';
 import { setChessEval } from '../frontends/chess/eval-bridge';
+import { assetUrl } from '../assets';
 import { gpuLoader, weightsLoader } from './azero-net';
 import type { ClientBot } from './index';
 import { errorMessage, requiredU32 } from './options';
 
 const LEAVES = 8;
-const getWeights = weightsLoader(`${import.meta.env.BASE_URL}azero/azero-chess.azweb`);
+const getWeights = weightsLoader(assetUrl('azero/azero-chess.azweb'));
 const getGpu = gpuLoader(AzGpu.init, getWeights);
 
 class AzeroChessGpu implements ClientBot {

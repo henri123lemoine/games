@@ -18,7 +18,9 @@
 import init, { SlitherGame } from "slither-engine";
 import wasmUrl from "slither-engine/slither_engine_bg.wasm?url";
 
-const WEIGHTS_URL = `${import.meta.env.BASE_URL}slither/slither.weights`;
+import { assetUrl } from "../../assets";
+
+const WEIGHTS_URL = assetUrl("slither/slither.weights");
 
 /** The world advances on a fixed 30 Hz clock (`slither_rl::world::DT`). */
 const TICK_HZ = 30;

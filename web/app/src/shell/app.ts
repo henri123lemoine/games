@@ -9,6 +9,7 @@ import {
   clientBotFor,
   createClientBots,
 } from "../bots";
+import { assetUrl } from "../assets";
 import { EngineHost } from "../engine/host";
 import type {
   GameInfo,
@@ -1580,7 +1581,7 @@ export class App {
     opts: Record<string, string>,
   ): Promise<void> {
     for (const id of artifactsFor(game.id, opts)) {
-      const url = `${import.meta.env.BASE_URL}${ARTIFACTS[id]}`;
+      const url = assetUrl(ARTIFACTS[id]);
       const resp = await fetch(url);
       if (!resp.ok)
         throw new Error(`artifact ${url} missing (HTTP ${resp.status})`);

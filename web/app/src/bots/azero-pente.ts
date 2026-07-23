@@ -17,6 +17,7 @@ import type { EngineHost } from '../engine/host';
 import type { MatchEventData, ViewState } from '../engine/protocol';
 import { PenteGpu, policyLen, softmaxOver } from '../frontends/pente/azgpu';
 import { setPenteEval } from '../frontends/pente/eval-bridge';
+import { assetUrl } from '../assets';
 import { gpuLoader, weightsLoader } from './azero-net';
 import type { ClientBot } from './index';
 import { errorMessage, requiredU32 } from './options';
@@ -28,7 +29,7 @@ const LEAVES = 8;
 // runs at every expanded MCTS leaf as the search's prover, so the budget must be
 // cheap — small enough to stay fast per leaf while still proving the short
 // forcing wins (open fours, double-fours, fifth-pair captures) that matter.
-const getWeights = weightsLoader(`${import.meta.env.BASE_URL}azero/azero-pente.azweb`);
+const getWeights = weightsLoader(assetUrl('azero/azero-pente.azweb'));
 const getGpu = gpuLoader(PenteGpu.init, getWeights);
 
 class AzeroPenteGpu implements ClientBot {

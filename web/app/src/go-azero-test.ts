@@ -10,6 +10,7 @@ import init from 'web-engine';
 import wasmUrl from 'web-engine/web_engine_bg.wasm?url';
 import { GoGpu, PLANES, policyLen } from './frontends/go/azgpu';
 import { compareFixture, fetchFixtures } from './frontends/go/conformance';
+import { assetUrl } from './assets';
 
 const logEl = document.getElementById('log')!;
 logEl.innerHTML = '';
@@ -19,9 +20,8 @@ const log = (html: string): void => {
 
 (async () => {
   try {
-    const base = import.meta.env.BASE_URL;
     const [bin, fixtures] = await Promise.all([
-      fetch(`${base}azero/azero-go.azweb`).then((r) => r.arrayBuffer()),
+      fetch(assetUrl('azero/azero-go.azweb')).then((r) => r.arrayBuffer()),
       fetchFixtures(),
     ]);
     const gpu = await GoGpu.init(bin);

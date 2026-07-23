@@ -10,6 +10,7 @@ import type { EngineHost } from '../engine/host';
 import type { MatchEventData, ViewState } from '../engine/protocol';
 import { GoGpu, policyLen, softmaxOver } from '../frontends/go/azgpu';
 import { setGoEval } from '../frontends/go/eval-bridge';
+import { assetUrl } from '../assets';
 import { gpuLoader, weightsLoader } from './azero-net';
 import type { ClientBot } from './index';
 import { errorMessage, requiredU32 } from './options';
@@ -17,7 +18,7 @@ import { errorMessage, requiredU32 } from './options';
 const LEAVES = 8;
 // Shared with the shell's per-visitor forward self-check so it validates the
 // same device + weights the bot booted, with no extra fetch or device init.
-export const getGoWeights = weightsLoader(`${import.meta.env.BASE_URL}azero/azero-go.azweb`);
+export const getGoWeights = weightsLoader(assetUrl('azero/azero-go.azweb'));
 export const getGoGpu = gpuLoader(GoGpu.init, getGoWeights);
 const getWeights = getGoWeights;
 const getGpu = getGoGpu;
