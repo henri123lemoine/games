@@ -1,4 +1,4 @@
-//! The replay buffer and the fp32 training step, unified across the three
+//! The replay buffer and the fp32 training step, unified across the neural
 //! games. The optimizer is the most-evolved of the originals (azgo): AdamW or
 //! SGD+Nesterov-momentum, optional global gradient-norm clipping, and
 //! Stochastic Weight Averaging. The loss is policy cross-entropy against the
@@ -32,7 +32,8 @@ pub struct Batch {
     pub planes: Vec<f32>,
     /// Dense policy target, `n · policy_len`.
     pub policy: Vec<f32>,
-    /// Value target (already z/q-mixed by the caller), length `n`.
+    /// Value target (already z/q-mixed by the caller), length `n` for scalar
+    /// heads or `n * value_seats` for multiplayer heads.
     pub value: Vec<f32>,
     /// Per-point ownership target (mover view), `n · size²`; empty without aux.
     pub ownership: Vec<f32>,
@@ -250,7 +251,17 @@ impl Trainer {
                 let pl = -(tp * logp)
                     .sum_dim_intlist(-1, false, Kind::Float)
                     .mean(Kind::Float);
-                let vl = (v - tz).square().mean(Kind::Float);
+                // Scalar head: MSE against the (-1,1) outcome. Multi-seat head:
+                // cross-entropy against the win-share distribution.
+                let vl = if self.cfg.seats > 1 {
+                    let tz = tz.reshape([n, self.cfg.seats]);
+                    let logv = v.log_softmax(-1, Kind::Float);
+                    -(tz * logv)
+                        .sum_dim_intlist(-1, false, Kind::Float)
+                        .mean(Kind::Float)
+                } else {
+                    (v - tz).square().mean(Kind::Float)
+                };
                 let mut group_loss = &pl + &vl;
 
                 // Go auxiliary losses, when the batch carries those targets and

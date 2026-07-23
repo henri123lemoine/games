@@ -5,11 +5,14 @@
 //! searches — the caller owns the evaluator, which may be a GPU batch, a
 //! CPU net, or a WebGPU bridge on the other side of a wasm boundary.
 //!
-//! Generic over [`Game`] + [`PolicyValueEncoder`]. Two-player zero-sum only:
-//! the scalar value head is read as "expected return for the player to
-//! move", and backups compare each node's player against the leaf's (so
-//! non-alternating turn orders are handled). Chance nodes are sampled once
-//! at expansion and baked into the tree.
+//! Generic over [`Game`] + [`PolicyValueEncoder`]. N-player: every leaf
+//! evaluation carries a [`Value`] — either a scalar "expected return for the
+//! player to move" (two-player zero-sum nets) or a seat-indexed vector
+//! (multiplayer nets) — and each node accumulates the component for its own
+//! mover, so backups handle non-alternating turn orders and any seat count.
+//! The MCTS-solver (prover) remains two-player-only: proofs are win/loss/draw
+//! statements that do not generalize to three seats. Chance nodes are sampled
+//! once at expansion and baked into the tree.
 //!
 //! Two behaviors that started life chess-side are config, not code:
 //!
@@ -79,11 +82,58 @@ pub struct EvalRequest {
     pub support: Vec<u16>,
 }
 
-/// Priors over `support` (softmax restricted to the legal subset) and the
-/// value, both from the side to move's perspective.
+/// Priors over `support` (softmax restricted to the legal subset, from the
+/// side to move's perspective) and the value head.
 pub struct EvalResult {
     pub priors: Vec<f32>,
-    pub value: f32,
+    pub value: Value,
+}
+
+/// Seat capacity of the inline per-seat value vector.
+pub const MAX_VALUE_SEATS: usize = 8;
+
+/// A leaf evaluation's value head.
+#[derive(Clone, Copy)]
+pub enum Value {
+    /// Expected return for the player to move — the two-player zero-sum
+    /// convention (the opponent's value is its negation).
+    Mover(f32),
+    /// Expected return per seat, seat-indexed. Required for games with more
+    /// than two players; seats beyond the game's player count are ignored.
+    Seats([f32; MAX_VALUE_SEATS]),
+}
+
+impl Value {
+    pub fn seats(vals: &[f32]) -> Value {
+        debug_assert!(vals.len() <= MAX_VALUE_SEATS);
+        let mut a = [0.0; MAX_VALUE_SEATS];
+        a[..vals.len()].copy_from_slice(vals);
+        Value::Seats(a)
+    }
+
+    /// The scalar mover-relative value. Panics on a per-seat vector — callers
+    /// reading this are two-player scalar paths (eval harnesses, verify).
+    pub fn as_mover(self) -> f32 {
+        match self {
+            Value::Mover(v) => v,
+            Value::Seats(_) => panic!("expected a scalar mover value, got per-seat values"),
+        }
+    }
+
+    /// This evaluation's value for `seat`, where `mover` is the player to
+    /// move at the evaluated node (scalar values are mover-relative).
+    fn for_seat(self, seat: usize, mover: usize) -> f64 {
+        match self {
+            Value::Mover(v) => {
+                if seat == mover {
+                    f64::from(v)
+                } else {
+                    -f64::from(v)
+                }
+            }
+            Value::Seats(a) => f64::from(a[seat]),
+        }
+    }
 }
 
 pub struct Node<G: Game> {
@@ -97,9 +147,9 @@ pub struct Node<G: Game> {
     child: Vec<i32>,
     /// Net value at this node, for the player to move (non-terminal nodes).
     value: f32,
-    /// Exact return to player 0 for terminal nodes and for proven nodes (set
-    /// when `proven` becomes `Some`); 0 otherwise.
-    value0: f64,
+    /// Exact per-seat returns for terminal nodes and for proven nodes (set
+    /// when `proven` becomes `Some`); zeros otherwise.
+    exact: [f64; MAX_VALUE_SEATS],
     terminal: bool,
     /// A proven game-theoretic verdict for this node, from the perspective of
     /// the player to move here (the MCTS-solver). Terminal nodes are proven
@@ -120,23 +170,19 @@ impl<G: Game> Node<G> {
     }
 }
 
-/// Exact return to player 0 of a node proven `proof` for the given `to_move`
-/// player. `max` is [`Game::max_return`]; a win for the mover is `+max` from
-/// their seat, mapped to player 0's view.
-fn proven_value0(proof: Proof, to_move: usize, max: f64) -> f64 {
-    let from_mover = match proof {
+/// Exact per-seat returns of a node proven `proof` for the given `to_move`
+/// player. `max` is [`Game::max_return`]. Two-player only (the solver's
+/// domain): the other seat gets the negation.
+fn proven_exact(proof: Proof, to_move: usize, max: f64) -> [f64; MAX_VALUE_SEATS] {
+    let v = match proof {
         Proof::Win => max,
         Proof::Loss => -max,
         Proof::Draw => 0.0,
     };
-    for_mover(from_mover, to_move)
-}
-
-/// Re-seats a player-0-relative value to `to_move`'s view: unchanged for player
-/// 0, negated otherwise. Its own inverse, so it also maps a mover-relative value
-/// back to player 0's.
-fn for_mover(value0: f64, to_move: usize) -> f64 {
-    if to_move == 0 { value0 } else { -value0 }
+    let mut a = [0.0; MAX_VALUE_SEATS];
+    a[to_move] = v;
+    a[1 - to_move] = -v;
+    a
 }
 
 pub struct Tree<G: Game> {
@@ -162,10 +208,11 @@ pub enum Gather {
 /// The leaf value being backed up a path.
 #[derive(Clone, Copy)]
 enum Leaf {
-    /// Net evaluation, from `player`'s perspective.
-    Net { player: usize, value: f32 },
-    /// Exact return to player 0 (terminal or cycle draw).
-    Exact(f64),
+    /// Net evaluation; `player` is the mover at the evaluated node (seats a
+    /// scalar [`Value::Mover`]).
+    Net { player: usize, value: Value },
+    /// Exact per-seat returns (terminal or cycle draw).
+    Exact([f64; MAX_VALUE_SEATS]),
 }
 
 pub struct Search<G: Game> {
@@ -218,6 +265,10 @@ impl<G: Game> Search<G> {
         prover: Option<&dyn TerminalProver<G>>,
     ) -> Gather {
         debug_assert_eq!(results.len(), self.pending.len(), "results align");
+        debug_assert!(
+            prover.is_none() || game.num_players() == 2,
+            "the MCTS-solver is two-player only"
+        );
         self.solver_active |= prover.is_some();
         for (pending, res) in std::mem::take(&mut self.pending).into_iter().zip(results) {
             self.resolve(pending, res, game, prover);
@@ -294,7 +345,7 @@ impl<G: Game> Search<G> {
             // exact leaf: back up its value and stop. Never descend into a
             // proven subtree (its verdict is already settled).
             if node.terminal || (self.solver_active && node.proven.is_some()) {
-                let v = node.value0;
+                let v = node.exact;
                 self.backup(&path, Leaf::Exact(v));
                 return None;
             }
@@ -346,11 +397,14 @@ impl<G: Game> Search<G> {
                 }
             }
             let Some(to_move) = to_move else {
-                let value0 = game.returns(&s, 0);
+                let mut exact = [0.0; MAX_VALUE_SEATS];
+                for (seat, v) in exact.iter_mut().enumerate().take(game.num_players()) {
+                    *v = game.returns(&s, seat);
+                }
                 let idx = self.tree.nodes.len();
-                self.tree.nodes.push(terminal_node(s, value0));
+                self.tree.nodes.push(terminal_node(s, exact));
                 self.tree.nodes[cur].child[e] = idx as i32;
-                self.backup(&path, Leaf::Exact(value0));
+                self.backup(&path, Leaf::Exact(exact));
                 // A newly discovered terminal is the solver's entry point:
                 // propagate its proof up the descent path.
                 if self.solver_active {
@@ -388,6 +442,10 @@ impl<G: Game> Search<G> {
             n.n[ei] -= 1;
             n.w[ei] += 1.0;
         }
+        debug_assert!(
+            matches!(res.value, Value::Seats(_)) || game.num_players() == 2,
+            "scalar mover values require a two-player game"
+        );
         let leaf = Leaf::Net {
             player: pending.to_move,
             value: res.value,
@@ -445,14 +503,8 @@ impl<G: Game> Search<G> {
         for &(ni, ei) in path {
             let node = &mut self.tree.nodes[ni];
             let v = match leaf {
-                Leaf::Net { player, value } => {
-                    if node.to_move == player {
-                        f64::from(value)
-                    } else {
-                        -f64::from(value)
-                    }
-                }
-                Leaf::Exact(value0) => for_mover(value0, node.to_move),
+                Leaf::Net { player, value } => value.for_seat(node.to_move, player),
+                Leaf::Exact(exact) => exact[node.to_move],
             };
             node.n[ei] += 1;
             node.w[ei] += v;
@@ -472,7 +524,7 @@ impl<G: Game> Search<G> {
         seen: &dyn Fn(u64) -> bool,
     ) -> bool {
         if seen(key) || path_keys.contains(&key) {
-            self.backup(path, Leaf::Exact(0.0));
+            self.backup(path, Leaf::Exact([0.0; MAX_VALUE_SEATS]));
             return true;
         }
         path_keys.push(key);
@@ -480,11 +532,11 @@ impl<G: Game> Search<G> {
     }
 
     /// Records a proven verdict on `node` (mover `to_move`) and pins its exact
-    /// player-0 value so the solver and ordinary backups agree on it.
+    /// per-seat values so the solver and ordinary backups agree on them.
     fn mark_proven(&mut self, node: usize, proof: Proof, to_move: usize, max: f64) {
         let n = &mut self.tree.nodes[node];
         n.proven = Some(proof);
-        n.value0 = proven_value0(proof, to_move, max);
+        n.exact = proven_exact(proof, to_move, max);
     }
 
     /// Propagates proofs up `path` (leaf-most parent first): a node becomes
@@ -529,7 +581,7 @@ impl<G: Game> Search<G> {
                 continue;
             };
             // Child value from M's seat: +max is a win for M.
-            let for_m = for_mover(child.value0, to_move);
+            let for_m = child.exact[to_move];
             if for_m > 0.0 {
                 return Some((Proof::Win, e));
             } else if for_m == 0.0 {
@@ -572,8 +624,7 @@ impl<G: Game> Search<G> {
             if child.proven.is_none() {
                 continue;
             }
-            let for_m = for_mover(child.value0, to_move);
-            if for_m > 0.0 {
+            if child.exact[to_move] > 0.0 {
                 return e; // proven win for us — take it immediately
             }
             any_proven = true;
@@ -591,7 +642,7 @@ impl<G: Game> Search<G> {
             if child.proven.is_none() {
                 continue;
             }
-            let for_m = for_mover(child.value0, to_move);
+            let for_m = child.exact[to_move];
             overrides[e] = Some(if for_m < 0.0 { -1.0 } else { 0.0 });
         }
         select_edge_solver(n, puct, forced_k, &overrides)
@@ -706,14 +757,14 @@ impl<G: Game> Search<G> {
     }
 }
 
-fn terminal_node<G: Game>(state: G::State, value0: f64) -> Node<G> {
+fn terminal_node<G: Game>(state: G::State, exact: [f64; MAX_VALUE_SEATS]) -> Node<G> {
     // A terminal node is proven by definition. Its proof tag is recorded from
-    // player 0's seat (the win/loss/draw `value0` encodes); the only consumers
-    // of a *child's* proof — solver backup and selection — read its `value0`
-    // relative to the parent's mover, so the tag's seat does not matter here.
-    let proven = Some(if value0 > 0.0 {
+    // player 0's seat; the only consumers of a *child's* proof — solver backup
+    // and selection (both two-player-only) — read its `exact` value relative
+    // to the parent's mover, so the tag's seat does not matter here.
+    let proven = Some(if exact[0] > 0.0 {
         Proof::Win
-    } else if value0 < 0.0 {
+    } else if exact[0] < 0.0 {
         Proof::Loss
     } else {
         Proof::Draw
@@ -727,7 +778,7 @@ fn terminal_node<G: Game>(state: G::State, value0: f64) -> Node<G> {
         w: Vec::new(),
         child: Vec::new(),
         value: 0.0,
-        value0,
+        exact,
         terminal: true,
         proven,
         proof_edge: 0,
@@ -736,6 +787,7 @@ fn terminal_node<G: Game>(state: G::State, value0: f64) -> Node<G> {
 
 fn expanded_node<G: Game>(pending: Pending<G>, res: EvalResult) -> Node<G> {
     let k = pending.actions.len();
+    let value = res.value.for_seat(pending.to_move, pending.to_move) as f32;
     Node {
         state: pending.state,
         actions: pending.actions,
@@ -744,8 +796,8 @@ fn expanded_node<G: Game>(pending: Pending<G>, res: EvalResult) -> Node<G> {
         n: vec![0; k],
         w: vec![0.0; k],
         child: vec![-1; k],
-        value: res.value,
-        value0: 0.0,
+        value,
+        exact: [0.0; MAX_VALUE_SEATS],
         terminal: false,
         proven: None,
         proof_edge: 0,

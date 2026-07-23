@@ -3,6 +3,7 @@
 
 import init, {
   AzChessBot,
+  AzFourPlayerBot,
   AzGoBot,
   AzPenteBot,
   WebMatch,
@@ -20,7 +21,7 @@ import type { EngineRequest, EngineResponse, ViewState } from './protocol';
 let match: WebMatch | null = null;
 // One client-driven search bot at a time; chess, go, and pente share the push/
 // advance/best surface, so the rest of the az* ops are bot-agnostic.
-let azBot: AzChessBot | AzGoBot | AzPenteBot | null = null;
+let azBot: AzChessBot | AzFourPlayerBot | AzGoBot | AzPenteBot | null = null;
 const ready = init({ module_or_path: wasmUrl });
 
 function state(): ViewState {
@@ -87,6 +88,11 @@ function handle(req: EngineRequest): unknown {
     case 'azNew':
       azBot?.free();
       azBot = new AzChessBot(req.sims, req.leaves, req.seed);
+      if (req.weights) azBot.load_weights(new Uint8Array(req.weights));
+      return null;
+    case 'fourNew':
+      azBot?.free();
+      azBot = new AzFourPlayerBot(req.sims, req.leaves, req.seed);
       if (req.weights) azBot.load_weights(new Uint8Array(req.weights));
       return null;
     case 'goNew':

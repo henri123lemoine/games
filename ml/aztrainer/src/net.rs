@@ -43,6 +43,9 @@ pub struct NetConfig {
     pub policy_len: i64,
     /// The go auxiliary heads (ownership conv + score linear). Off elsewhere.
     pub go_aux: bool,
+    /// Value-head width: 1 is the scalar tanh head; >1 emits raw per-seat
+    /// logits trained as a win-share softmax (multiplayer games).
+    pub seats: i64,
 }
 
 impl NetConfig {
@@ -138,6 +141,7 @@ struct FlatValue {
     vb: nn::BatchNorm,
     vf1: nn::Linear,
     vf2: nn::Linear,
+    seats: i64,
 }
 
 /// Go/snake value head: `v1` (1×1 → C) → global pool → MLP. Board-size-agnostic.
@@ -146,6 +150,7 @@ struct PoolValue {
     vb: nn::BatchNorm,
     vf1: nn::Linear,
     vf2: nn::Linear,
+    seats: i64,
 }
 
 enum Value {
@@ -217,13 +222,25 @@ impl Net {
                     CHESS_VALUE_HIDDEN,
                     Default::default(),
                 ),
-                vf2: nn::linear(root / "vf2", CHESS_VALUE_HIDDEN, 1, Default::default()),
+                vf2: nn::linear(
+                    root / "vf2",
+                    CHESS_VALUE_HIDDEN,
+                    cfg.seats.max(1),
+                    Default::default(),
+                ),
+                seats: cfg.seats.max(1),
             }),
             HeadKind::GlobalPoolSpatial | HeadKind::GlobalPoolDense => Value::Pool(PoolValue {
                 v1: conv(root / "v1", c, c, 1),
                 vb: nn::batch_norm2d(root / "vb", c, Default::default()),
                 vf1: nn::linear(root / "vf1", 3 * c, POOL_VALUE_HIDDEN, Default::default()),
-                vf2: nn::linear(root / "vf2", POOL_VALUE_HIDDEN, 1, Default::default()),
+                vf2: nn::linear(
+                    root / "vf2",
+                    POOL_VALUE_HIDDEN,
+                    cfg.seats.max(1),
+                    Default::default(),
+                ),
+                seats: cfg.seats.max(1),
             }),
         };
 
@@ -272,8 +289,8 @@ impl Net {
         }
     }
 
-    /// Value (tanh) and, for the go aux config, the score margin (raw, mover's
-    /// view). The score head shares the pooled value features.
+    /// Scalar tanh value or raw absolute-seat logits, plus the Go auxiliary
+    /// score margin when configured. The score head shares pooled features.
     fn value_forward(&self, t: &Tensor, train: bool) -> (Tensor, Option<Tensor>) {
         match &self.value {
             Value::Flat(v) => {
@@ -284,12 +301,23 @@ impl Net {
                     .flatten(1, -1)
                     .apply(&v.vf1)
                     .relu();
-                (h.apply(&v.vf2).tanh().squeeze_dim(-1), None)
+                let value = if v.seats == 1 {
+                    h.apply(&v.vf2).tanh().squeeze_dim(-1)
+                } else {
+                    h.apply(&v.vf2)
+                };
+                (value, None)
             }
             Value::Pool(v) => {
                 let conv = t.apply(&v.v1).apply_t(&v.vb, train).relu();
                 let vh = global_pool(&conv).apply(&v.vf1).relu();
-                let value = vh.apply(&v.vf2).tanh().squeeze_dim(-1);
+                // Scalar head: tanh to (-1,1). Multi-seat head: raw [B, seats]
+                // logits, softmaxed to win shares by the consumer/loss.
+                let value = if v.seats == 1 {
+                    vh.apply(&v.vf2).tanh().squeeze_dim(-1)
+                } else {
+                    vh.apply(&v.vf2)
+                };
                 let score = self.aux.as_ref().map(|a| vh.apply(&a.sf).squeeze_dim(-1));
                 (value, score)
             }
@@ -303,8 +331,9 @@ impl Net {
             .map(|a| t.apply(&a.o1).flatten(1, -1).tanh())
     }
 
-    /// Policy logits + scalar value. The aux heads (ownership, score) are read
-    /// only during training; inference and search need only policy + value.
+    /// Policy logits plus either a scalar value or absolute-seat logits. The
+    /// aux heads (ownership, score) are read only during training; inference
+    /// and search need only policy + value.
     pub fn forward(&self, x: &Tensor, train: bool) -> (Tensor, Tensor) {
         let t = self.trunk(x, train);
         let p = self.policy_forward(&t, train);
@@ -377,6 +406,7 @@ pub struct Infer {
     planes: i64,
     size: i64,
     policy: i64,
+    seats: i64,
 }
 
 impl Infer {
@@ -398,6 +428,7 @@ impl Infer {
             planes: cfg.planes,
             size: cfg.size,
             policy: cfg.policy(),
+            seats: cfg.seats.max(1),
         }
     }
 
@@ -424,6 +455,7 @@ impl Infer {
             planes: cfg.planes,
             size: cfg.size,
             policy: cfg.policy(),
+            seats: cfg.seats.max(1),
         })
     }
 
@@ -489,7 +521,10 @@ impl Infer {
             )
         });
         let legal: Vec<f32> = legal_logits.try_into().expect("legal logits to vec");
-        let values: Vec<f32> = values.reshape([b]).try_into().expect("values to vec");
+        let values: Vec<f32> = values
+            .reshape([b * self.seats])
+            .try_into()
+            .expect("values to vec");
 
         let mut offset = 0;
         reqs.iter()
@@ -498,11 +533,44 @@ impl Infer {
                 let mut priors = legal[offset..offset + r.support.len()].to_vec();
                 offset += r.support.len();
                 softmax(&mut priors);
-                EvalResult {
-                    priors,
-                    value: values[i],
-                }
+                let value = if self.seats == 1 {
+                    solvers::azero::Value::Mover(values[i])
+                } else {
+                    // Softmax the raw seat logits to win shares; the game's
+                    // driver maps shares onto its returns scale.
+                    let s = self.seats as usize;
+                    let mut shares = values[i * s..(i + 1) * s].to_vec();
+                    softmax(&mut shares);
+                    solvers::azero::Value::seats(&shares)
+                };
+                EvalResult { priors, value }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multiseat_net_has_four_value_logits() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let cfg = NetConfig {
+            blocks: 1,
+            channels: 4,
+            planes: 3,
+            size: 1,
+            head: HeadKind::GlobalPoolDense,
+            policy_len: 4,
+            go_aux: false,
+            seats: 4,
+        };
+        let _net = Net::new(&vs.root(), cfg);
+        let vars = vs.variables();
+        assert_eq!(vars["stem_c.weight"].size(), [4, 3, 3, 3]);
+        assert_eq!(vars["block0.c1.weight"].size(), [4, 4, 3, 3]);
+        assert_eq!(vars["block0.c2.weight"].size(), [4, 4, 3, 3]);
+        assert_eq!(vars["vf2.weight"].size(), [4, POOL_VALUE_HIDDEN]);
     }
 }

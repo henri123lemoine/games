@@ -162,6 +162,16 @@ pub trait Game: Sync {
     }
 }
 
+/// Optional evaluation capability for point-scored multiplayer games.
+///
+/// Unlike [`Game::returns`], which is the zero-sum learning/search utility,
+/// this reports the player's share of the raw scoreboard at a terminal state.
+/// Field evaluators use it alongside strict win share; games without a point
+/// scoreboard simply do not implement this trait.
+pub trait ScoreShare: Game {
+    fn score_share(&self, state: &Self::State, player: usize) -> f64;
+}
+
 /// Heuristic static evaluation of a (typically non-terminal) state from
 /// `player`'s perspective, on the same scale as [`Game::returns`]. Game
 /// knowledge supplied by a game crate; consumed by depth-limited search.

@@ -7,7 +7,7 @@
 //! driven by terminal proofs and by a stub [`TerminalProver`].
 
 use game_core::{Game, NoProver, Proof, Rng, TerminalProver, Turn};
-use solvers::azero::{EvalResult, Gather, Mlp, PuctConfig, Search};
+use solvers::azero::{EvalResult, Gather, Mlp, PuctConfig, Search, Value};
 
 mod common;
 use common::{Ttt, TttEnc, TttState, ttt_winner};
@@ -48,7 +48,10 @@ fn run_search(
                             r.support.iter().map(|&s| usize::from(s)).collect();
                         let (priors, value) =
                             net.policy_value_cached(&cache, &r.features, &support);
-                        EvalResult { priors, value }
+                        EvalResult {
+                            priors,
+                            value: Value::Mover(value),
+                        }
                     })
                     .collect();
             }

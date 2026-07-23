@@ -4,7 +4,8 @@ One AlphaZero trainer for every learned game. A config-driven tch resnet plus a
 shared self-play / replay / optimizer / run-dir harness, parameterized by a
 `(Game, PolicyValueEncoder, NetConfig)` triple — replacing the near-identical
 `azt` (chess), `azgo` (go), and `azsnake` (snake) crates. The algorithm is
-written once; only game knowledge lives per game, under `src/games/{chess,go,snake}/`.
+written once; only game knowledge lives per game, under
+`src/games/{chess,four_player_chess,go,snake}/`.
 
 Standalone on purpose (empty `[workspace]` table): keeps libtorch off the main
 workspace's `cargo test`. Build from this directory.
@@ -29,6 +30,7 @@ workspace's `cargo test`. Build from this directory.
 
 ```
 cargo run --release --bin chess -- <run|bench|play|uci|elo|calibrate|export|verify-export>
+cargo run --release --bin four-player-chess -- <run|eval|export|verify-export>
 cargo run --release --bin go    -- <run|bench|elo|rate|calibrate|calibrate-pass|export|verify-export>
 cargo run --release --bin snake -- <run|bench|rate|elo|field|compare|field-compare|split-compare|export|verify-export>
 ```
@@ -37,6 +39,8 @@ A short example:
 
 ```
 cargo run --release --bin go -- run --dir ../../data/azgo/run1 --hours 5 --size 9
+cargo run --release --bin four-player-chess -- run --dir ../../runs/four-player-chess --hours 8
+cargo run --release --bin four-player-chess -- eval --net ../../runs/four-player-chess/latest.ot
 cargo run --release --bin go -- verify-export --net ../../data/azgo/run1/latest.ot
 cargo run --release --bin snake -- run --method logit --players 4 --hours 8 --dir runs/battlesnake/logit-p4
 cargo run --release --bin snake -- field --net runs/battlesnake/logit-p4/latest.ot --method logit

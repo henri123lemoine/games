@@ -32,6 +32,8 @@ mod train;
 pub use game_core::{NoProver, Proof, TerminalProver};
 pub use mlp::{InferCache, Mlp, RegretSample, Sample, SgdMomentum};
 pub use puct::{PolicyValueEncoder, Puct, PuctAgent};
-pub use search::{EvalRequest, EvalResult, Gather, Node, PuctConfig, Search, Tree, argmax};
+pub use search::{
+    EvalRequest, EvalResult, Gather, MAX_VALUE_SEATS, Node, PuctConfig, Search, Tree, Value, argmax,
+};
 #[cfg(feature = "parallel")]
 pub use train::{AzeroConfig, IterStats, SelfPlayTrainer};

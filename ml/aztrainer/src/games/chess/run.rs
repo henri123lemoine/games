@@ -32,6 +32,7 @@ pub fn config(blocks: usize, channels: i64) -> NetConfig {
         head: HeadKind::FlatConv,
         policy_len: chess::encode::AZ_POLICY_LEN as i64,
         go_aux: false,
+        seats: 1,
     }
 }
 

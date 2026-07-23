@@ -97,6 +97,7 @@ export type EngineRequest =
   | { id: number; op: 'elo'; w: number; d: number; l: number }
   | { id: number; op: 'fitElo'; records: [number, number, number][][] }
   | { id: number; op: 'azNew'; sims: number; leaves: number; seed: number; weights?: ArrayBuffer }
+  | { id: number; op: 'fourNew'; sims: number; leaves: number; seed: number; weights?: ArrayBuffer }
   | {
       id: number;
       op: 'goNew';

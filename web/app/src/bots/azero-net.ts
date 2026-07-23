@@ -1,9 +1,10 @@
 // The page-lifetime caches every AlphaZero bot shares: the raw export bytes
 // (fetched once, handed to both the GPU evaluator and — as the CPU fallback —
 // the wasm engine) and the GPU device + weight upload (one per page, not per
-// match, dropped on device loss). The chess/go/snake bots differ in their host
-// API and advance loop, but this fetch-once / init-once-per-device pair was
-// byte-identical across all three; it lives here once.
+// match, dropped on device loss). The chess/four-player/go/pente bots differ
+// in their host API and advance loop, but this fetch-once /
+// init-once-per-device pair was byte-identical across all four; it lives here
+// once.
 
 /** A `getWeights` closure for a bot's export URL: fetched once and shared, but
  * re-armed on failure so a transient error doesn't pin a rejected promise. */

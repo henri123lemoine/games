@@ -78,15 +78,15 @@ The CLI and the browser arcade are two thin frontends over exactly these calls; 
 
 ## Current algorithm/game matrix
 
-|                | chess | othello | connect4 | pente | go | Battlesnake | liars-dice | poker | twentyone | kuhn (test) |
-|----------------|:-----:|:-------:|:--------:|:-----:|:--:|:-----------:|:----------:|:-----:|:---------:|:-----------:|
-| `Cfr` (+ exact exploitability) | — | — | — | — | — | — | tiny configs | — | — | ✓ → Nash |
-| `Mccfr` / `OsMccfr` | — | — | — | — | — | — | OS handles the deep ladder | — | — | ✓ |
-| `AlphaBeta` | ✓ | ✓ | ✓ | ✓ | — | joint BNS/min-response | — | — | — | — |
-| `Mcts` | possible | possible | possible | possible | ✓ | invalid if sequential | — | — | — | — |
-| neural self-play | ✓ PUCT | possible | possible | possible | ✓ PUCT | joint logit/maximin | — | — | — | — |
-| `Rollout` | possible | possible | possible | possible | possible | possible joint rollout | ✓ | ✓ | possible | — |
-| bespoke | — | — | — | — | — | MCS/BRS+ bitboard search | belief policy | equity bot | decomposed CFR+ | — |
+|                | chess | 4P chess | othello | connect4 | pente | go | Battlesnake | liars-dice | poker | twentyone | kuhn (test) |
+|----------------|:-----:|:--------:|:-------:|:--------:|:-----:|:--:|:-----------:|:----------:|:-----:|:---------:|:-----------:|
+| `Cfr` (+ exact exploitability) | — | — | — | — | — | — | — | tiny configs | — | — | ✓ → Nash |
+| `Mccfr` / `OsMccfr` | — | — | — | — | — | — | — | OS handles the deep ladder | — | — | ✓ |
+| `AlphaBeta` | ✓ | — | ✓ | ✓ | ✓ | — | joint BNS/min-response | — | — | — | — |
+| `Mcts` | possible | 4-seat PUCT | possible | possible | possible | ✓ | invalid if sequential | — | — | — | — |
+| neural self-play | ✓ PUCT | ✓ 4-seat PUCT | possible | possible | possible | ✓ PUCT | joint logit/maximin | — | — | — | — |
+| `Rollout` | possible | possible | possible | possible | possible | possible | possible joint rollout | ✓ | ✓ | possible | — |
+| bespoke | — | — | — | — | — | — | MCS/BRS+ bitboard search | belief policy | equity bot | decomposed CFR+ | — |
 
 (The matrix is the two-player-search story. The real-time games also live in the lab; their bots are trained as described below.)
 
@@ -96,7 +96,7 @@ The dashes are honest: tabular CFR can't fit big games, search can't see hidden 
 
 Some bots are neural nets rather than hand-written evaluators. Training them needs heavyweight, churn-prone machinery (a tensor library, GPUs, long-running self-play); inference needs none of that. The `ml/` tree keeps those two concerns apart, and keeps both off the main workspace's critical path:
 
-- **Training crates are standalone** (their own `[workspace]`, not members of the root one), so the tensor backend (`tch`/libtorch) never touches the lab's `cargo test` or wasm builds. Chess and Go use PUCT self-play. Battlesnake uses fixed-depth joint-action backups (logit equilibrium, duel maximin, or a policy-only ablation) so training preserves simultaneous information. A separate PPO stack trains the real-time slither bot.
+- **Training crates are standalone** (their own `[workspace]`, not members of the root one), so the tensor backend (`tch`/libtorch) never touches the lab's `cargo test` or wasm builds. Chess and Go use scalar-value PUCT self-play; four-player chess uses the same search with an absolute four-seat value distribution and a past-checkpoint league. Battlesnake uses fixed-depth joint-action backups (logit equilibrium, duel maximin, or a policy-only ablation) so training preserves simultaneous information. A separate PPO stack trains the real-time slither bot.
 - **Inference is torch-free.** A net is exported to a small versioned weight file read by a reference fp32 forward — plain loops, built for correctness and wasm portability. `nn-infer` reads `AZNET1`; `ml/slitherinfer` reads `SLNET1`. Export verification compares the torch and reference forwards before a checkpoint is eligible for deployment.
 
 Alternating neural games share one batched park/resume PUCT implementation. Battlesnake deliberately does not reuse it: its trainer evaluates every root joint action and backs values up through a simultaneous equilibrium solver. Sharing code is subordinate to preserving the game's information structure.

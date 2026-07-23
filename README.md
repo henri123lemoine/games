@@ -10,7 +10,7 @@ solvers/             the algorithms, generic over any game with the right
                      alpha-beta, MCTS, determinized rollout, and the
                      PUCT/AlphaZero self-play search
 games/               one crate per game — perfect-information board games
-                     (chess, othello, connect4, pente, go), N-player imperfect
+                     (chess, four-player chess, othello, connect4, pente, go), N-player imperfect
                      info (liars-dice, poker, twentyone), and real-time
                      canonical Battlesnake. Each ships rules + knowledge;
                      its bot is a generic solver (alpha-beta / MCTS / rollout /
@@ -35,6 +35,8 @@ ml/                  the training side, deliberately standalone (own workspace,
 cargo run --release -p lab -- list
 cargo run --release -p lab -- play chess depth=6
 cargo run --release -p lab -- play chess bot=azero            # the self-play net
+cargo run --release -p lab -- play four-player-chess bot=greedy seat=0
+cargo run --release -p lab -- play four-player-chess bot=azero sims=256 seat=0
 cargo run --release -p lab -- play go size=9 sims=6000
 cargo run --release -p lab -- play othello
 cargo run --release -p lab -- play connect4
@@ -69,4 +71,4 @@ Research harnesses live as examples in each game crate (`liars-dice`: `evaluate`
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the design: layering, the capability-trait contract, identity choices, the algorithm/game matrix. Read this before restructuring anything.
 - [BENCHMARKS.md](BENCHMARKS.md) — cross-game strength results (SPRT/Elo); a dated snapshot of one benchmark round.
 - [web/README.md](web/README.md) — build, run, and deploy the browser arcade. [web/DESIGN.md](web/DESIGN.md) — its design contract.
-- Per-game knowledge: [game-core/README.md](game-core/README.md), [games/liars-dice/README.md](games/liars-dice/README.md), [games/twentyone/README.md](games/twentyone/README.md) (+ [BAKEOFF.md](games/twentyone/BAKEOFF.md), the Twenty-One technique shoot-out).
+- Per-game knowledge: [game-core/README.md](game-core/README.md), [games/four-player-chess/README.md](games/four-player-chess/README.md), [games/liars-dice/README.md](games/liars-dice/README.md), [games/twentyone/README.md](games/twentyone/README.md) (+ [BAKEOFF.md](games/twentyone/BAKEOFF.md), the Twenty-One technique shoot-out).

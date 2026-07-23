@@ -9,7 +9,7 @@ pub use game_core::PolicyValueEncoder;
 use game_core::{Agent, Game, Rng};
 
 use super::mlp::{InferCache, Mlp};
-use super::search::{EvalResult, Gather, PuctConfig, Search, argmax};
+use super::search::{EvalResult, Gather, PuctConfig, Search, Value, argmax};
 
 pub struct Puct<'a, G: Game, E: PolicyValueEncoder<G>> {
     pub game: &'a G,
@@ -78,7 +78,10 @@ impl<'a, G: Game, E: PolicyValueEncoder<G>> Puct<'a, G, E> {
                             let (priors, value) =
                                 self.net
                                     .policy_value_cached(&self.cache, &r.features, &support);
-                            EvalResult { priors, value }
+                            EvalResult {
+                                priors,
+                                value: Value::Mover(value),
+                            }
                         })
                         .collect();
                 }

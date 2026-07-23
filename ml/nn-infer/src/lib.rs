@@ -72,8 +72,9 @@ enum Policy {
     Dense(DensePolicy),
 }
 
-/// The chess value head: `v1` (1×1 C→`vc`, relu) flattened over the full board
-/// to a dense MLP (`vf1` `vc·area`→256 relu, `vf2` 256→1), then tanh.
+/// The board-fixed value head: `v1` (1×1 C→`vc`, relu) flattened over the full
+/// board to a dense MLP (`vf1` `vc·area`→256 relu, `vf2` 256→value_seats).
+/// Scalar nets apply tanh; multiplayer nets expose the raw seat logits.
 struct FlatValue {
     v1: Conv,
     vf1: Linear,
@@ -106,9 +107,13 @@ pub struct Net {
 
 /// One forward pass: policy logits (head-dependent width), the value in
 /// `(-1, 1)`, and the per-point ownership when the net carries that head.
+/// Multi-seat nets (`arch.value_seats > 1`) report raw per-seat logits in
+/// `seat_values` (softmax over the live seats at the consumer) and leave
+/// `value` at 0.
 pub struct Output {
     pub policy: Vec<f32>,
     pub value: f32,
+    pub seat_values: Option<Vec<f32>>,
     pub ownership: Option<Vec<f32>>,
 }
 
@@ -160,13 +165,13 @@ impl Net {
                 Value::Flat(FlatValue {
                     v1: r.conv(c, vc, 1)?,
                     vf1: r.linear(vc * arch.size * arch.size, CHESS_VALUE_HIDDEN)?,
-                    vf2: r.linear(CHESS_VALUE_HIDDEN, 1)?,
+                    vf2: r.linear(CHESS_VALUE_HIDDEN, arch.value_seats)?,
                 })
             }
             HeadKind::GlobalPoolSpatial | HeadKind::GlobalPoolDense => Value::Pool(PoolValue {
                 v1: r.conv(c, c, 1)?,
                 vf1: r.linear(3 * c, POOL_VALUE_HIDDEN)?,
-                vf2: r.linear(POOL_VALUE_HIDDEN, 1)?,
+                vf2: r.linear(POOL_VALUE_HIDDEN, arch.value_seats)?,
             }),
         };
 
@@ -208,7 +213,12 @@ impl Net {
 
         let trunk = self.trunk(planes, size);
         let policy = self.policy_forward(&trunk, size, area);
-        let value = self.value_forward(&trunk, size, area);
+        let raw = self.value_forward(&trunk, size, area);
+        let (value, seat_values) = if self.arch.value_seats == 1 {
+            (raw[0].tanh(), None)
+        } else {
+            (0.0, Some(raw))
+        };
         let ownership = self.ownership.as_ref().map(|o1| {
             let mut o = conv_fwd_vec(o1, &trunk, size, false);
             for v in &mut o {
@@ -219,6 +229,7 @@ impl Net {
         Output {
             policy,
             value,
+            seat_values,
             ownership,
         }
     }
@@ -235,6 +246,7 @@ impl Net {
         scalars: &[f32],
         support: &[u16],
     ) -> (Vec<f32>, f32) {
+        debug_assert_eq!(self.arch.value_seats, 1, "scalar value head expected");
         let size = self.infer_size(planes.len());
         let out = self.forward_at(planes, scalars, size);
         let mut priors: Vec<f32> = support
@@ -243,6 +255,29 @@ impl Net {
             .collect();
         softmax(&mut priors);
         (priors, out.value)
+    }
+
+    /// [`forward_support`](Self::forward_support) for multi-seat value heads:
+    /// returns the priors-over-support and the softmaxed per-seat win shares
+    /// (length `arch.value_seats`; slots beyond the live seat count carry
+    /// whatever mass the net gives them — renormalize over live seats).
+    pub fn forward_support_seats(
+        &self,
+        planes: &[f32],
+        scalars: &[f32],
+        support: &[u16],
+    ) -> (Vec<f32>, Vec<f32>) {
+        debug_assert!(self.arch.value_seats > 1, "multi-seat value head expected");
+        let size = self.infer_size(planes.len());
+        let out = self.forward_at(planes, scalars, size);
+        let mut priors: Vec<f32> = support
+            .iter()
+            .map(|&s| out.policy[usize::from(s)])
+            .collect();
+        softmax(&mut priors);
+        let mut shares = out.seat_values.expect("seat values present");
+        softmax(&mut shares);
+        (priors, shares)
     }
 
     /// Board size implied by a flat feature length (`planes·size²`). For the
@@ -310,9 +345,11 @@ impl Net {
         }
     }
 
-    fn value_forward(&self, trunk: &[f32], size: usize, area: usize) -> f32 {
+    /// Raw value-head output: `[1]` for the scalar head (tanh applied by the
+    /// caller), `[value_seats]` raw logits for multi-seat heads.
+    fn value_forward(&self, trunk: &[f32], size: usize, area: usize) -> Vec<f32> {
         let c = self.arch.channels;
-        let out = match &self.value {
+        match &self.value {
             Value::Flat(v) => {
                 let conv = conv_fwd_vec(&v.v1, trunk, size, true); // [vc, area], flattened
                 let h = linear_fwd(&v.vf1, &conv, true);
@@ -324,8 +361,7 @@ impl Net {
                 let h = linear_fwd(&v.vf1, &v_g, true);
                 linear_fwd(&v.vf2, &h, false)
             }
-        };
-        out[0].tanh()
+        }
     }
 }
 

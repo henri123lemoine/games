@@ -1,23 +1,25 @@
 // Shared WebGPU evaluator for the AlphaZero resnet family — the one driver the
-// chess, go, and snake frontends run their nets through. All three are the same
-// network shape (a 3×3 conv stem, a residual tower of paired 3×3 convs with BN
-// folded into the conv weights, then policy + value heads); they differ only in
-// the head topology and the board size. This module owns everything that is the
+// chess, four-player chess, Go, and Pente frontends run their nets through.
+// All have the same network shape (a 3×3 conv stem, a residual tower of paired
+// convs with BN folded into the weights, then policy + value heads). They
+// differ only in the head topology and board size. This module owns everything that is the
 // same across them: the padded-conv WGSL kernel (and a dense kernel for chess's
 // on-GPU head), the buffer/pipeline scaffolding and the conv→tower→heads
 // dispatch loop, the binary parser, and the CPU-side global-pool / linear /
 // softmax math the pooled heads use after one readback.
 //
 // Two head families subclass the base trunk driver:
-//   * `PooledHeadNet` (go, snake): the residual trunk and each head's 1×1 conv
+//   * `PooledHeadNet` (Go, Pente): the residual trunk and each head's 1×1 conv
 //     run on the GPU; the global pooling and the small linear heads run on the
 //     CPU after one readback (they're tiny, and CPU keeps them exactly in step
-//     with nn-infer's reference fp32 forward). go and snake plug in only their
+//     with nn-infer's reference fp32 forward). Go and Pente plug in only their
 //     `heads()` math. The conv weights are board-size-agnostic, so a pooled net
 //     forwards at any size ≤ the buffers it was sized for.
-//   * `FlatHeadNet` (chess): the policy head is a 1×1 conv stack and the value
-//     head a small conv then a pair of linears, all on the GPU via the dense
-//     kernel; only the final channel-major→square-major reshuffle is CPU-side.
+//   * Flat heads (chess and four-player chess): the policy head is a 1×1 conv
+//     stack and the value head a small conv then a pair of linears, all on the
+//     GPU via the dense kernel; only the final channel-major→square-major
+//     reshuffle is CPU-side. Chess uses `FlatHeadNet`; four-player chess adds
+//     its four-logit value readback in its game-specific subclass.
 //
 // The parser reads the unified AZNET1 header (see nn-infer/src/format.rs); it is
 // the only export format the arcade ships.
@@ -122,8 +124,9 @@ export enum HeadKind {
   GlobalPoolDense = 2,
 }
 
-/** Optional appended heads, one flag bit each. Bit 0 is go's ownership head. */
+/** Optional appended heads, one flag bit each. */
 const FLAG_OWNERSHIP = 1;
+const FLAG_VALUE_SEATS = 2;
 
 /** The architecture header — everything a parser or the driver needs to lay out
  * the net. Mirrors nn-infer's `Arch`. */
@@ -138,6 +141,8 @@ export interface Arch {
   /** Flat/dense policy width; `0` for spatial (whose width is `size²+1`). */
   policyLen: number;
   ownership: boolean;
+  /** 1 for mover-scalar nets; >1 for raw absolute-seat value logits. */
+  valueSeats: number;
 }
 
 /** Parses the unified AZNET1 header into the `Arch` plus the byte offset where
@@ -155,8 +160,13 @@ export function parseArch(buf: ArrayBuffer): { arch: Arch; body: number } {
   const head = u32(32);
   if (head > 2) throw new Error('unknown head_kind ' + head);
   const flags = u32(40);
-  if (flags & ~FLAG_OWNERSHIP) throw new Error('unknown head flags ' + flags.toString(16));
-  if (u32(44) !== 0) throw new Error('nonzero reserved header word');
+  if (flags & ~(FLAG_OWNERSHIP | FLAG_VALUE_SEATS))
+    throw new Error('unknown head flags ' + flags.toString(16));
+  const reserved = u32(44);
+  const valueSeats = flags & FLAG_VALUE_SEATS ? reserved : 1;
+  if (flags & FLAG_VALUE_SEATS) {
+    if (valueSeats < 2 || valueSeats > 8) throw new Error('invalid value seat count ' + valueSeats);
+  } else if (reserved !== 0) throw new Error('nonzero reserved header word');
   return {
     arch: {
       blocks: u32(12),
@@ -167,6 +177,7 @@ export function parseArch(buf: ArrayBuffer): { arch: Arch; body: number } {
       head: head as HeadKind,
       policyLen: u32(36),
       ownership: !!(flags & FLAG_OWNERSHIP),
+      valueSeats,
     },
     body: 48,
   };
@@ -225,7 +236,8 @@ export function parseTrunk(buf: ArrayBuffer): { trunk: Trunk; reader: Reader } {
   const r = new Reader(buf, body);
   const stem = r.conv(arch.planes, arch.C, 3);
   const tower: [Conv, Conv][] = [];
-  for (let i = 0; i < arch.blocks; i++) tower.push([r.conv(arch.C, arch.C, 3), r.conv(arch.C, arch.C, 3)]);
+  for (let i = 0; i < arch.blocks; i++)
+    tower.push([r.conv(arch.C, arch.C, 3), r.conv(arch.C, arch.C, 3)]);
   return { trunk: { arch, stem, tower }, reader: r };
 }
 

@@ -4,6 +4,7 @@
 //! game-schema-free.
 
 mod az;
+mod azfour;
 mod azgo;
 mod azpente;
 mod mcts;
@@ -15,6 +16,7 @@ use solvers::azero::{EvalRequest, EvalResult};
 use wasm_bindgen::prelude::*;
 
 pub use az::AzChessBot;
+pub use azfour::AzFourPlayerBot;
 pub use azgo::AzGoBot;
 pub use azpente::AzPenteBot;
 
@@ -103,7 +105,8 @@ pub fn load_artifact(id: &str, bytes: &[u8]) {
 }
 
 /// One batch's reference-forward output: flat policy `logits` (per-position
-/// stride is game-fixed) and one `value` per position. The CPU bots play
+/// stride is game-fixed) and either one scalar or all seat logits per position.
+/// The CPU bots play
 /// against exactly this forward; the calibration test pages call it to compare
 /// the WebGPU kernels against it live (the same check the committed fixtures
 /// encode, but against the engine the browser actually runs).
@@ -138,12 +141,16 @@ fn ref_forward(
     let stride_in = net.arch().planes * size * size;
     let mut out = RefForward {
         logits: Vec::new(),
-        values: Vec::with_capacity(n),
+        values: Vec::with_capacity(n * net.arch().value_seats),
     };
     for i in 0..n {
         let res = net.forward_at(&features[i * stride_in..(i + 1) * stride_in], &[], size);
         out.logits.extend_from_slice(&res.policy);
-        out.values.push(res.value);
+        if let Some(seats) = res.seat_values {
+            out.values.extend(seats);
+        } else {
+            out.values.push(res.value);
+        }
     }
     Ok(out)
 }
@@ -155,7 +162,10 @@ pub(crate) fn eval_batch(net: &nn_infer::Net, reqs: &[EvalRequest]) -> Vec<EvalR
     reqs.iter()
         .map(|r| {
             let (priors, value) = net.forward_support(&r.features, &[], &r.support);
-            EvalResult { priors, value }
+            EvalResult {
+                priors,
+                value: solvers::azero::Value::Mover(value),
+            }
         })
         .collect()
 }
@@ -193,7 +203,7 @@ pub(crate) fn unpack_eval_results(
         }
         out.push(EvalResult {
             priors: priors[off..off + k].to_vec(),
-            value,
+            value: solvers::azero::Value::Mover(value),
         });
         off += k;
     }
@@ -273,6 +283,17 @@ pub fn chess_reference_forward(
     n: usize,
 ) -> Result<RefForward, JsError> {
     ref_forward(weights, features, n, 8)
+}
+
+/// The four-player chess reference forward over `n` positions. Logit stride
+/// is 21,952 and value stride is four raw absolute-seat logits.
+#[wasm_bindgen]
+pub fn four_player_chess_reference_forward(
+    weights: &[u8],
+    features: &[f32],
+    n: usize,
+) -> Result<RefForward, JsError> {
+    ref_forward(weights, features, n, 14)
 }
 
 #[wasm_bindgen]
