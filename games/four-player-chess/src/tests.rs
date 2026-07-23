@@ -251,6 +251,51 @@ fn a_non_queen_double_check_scores_five() {
 }
 
 #[test]
+fn a_queen_double_check_scores_one() {
+    let game = FourPlayerChess::default();
+    let mut state = position(Color::Red);
+    state.board[sq("a7") as usize] = Piece::EMPTY;
+    state.board[sq("n7") as usize] = Piece::EMPTY;
+    put(&mut state, "a5", Color::Blue, PieceKind::King);
+    put(&mut state, "n5", Color::Green, PieceKind::King);
+    put(&mut state, "g4", Color::Red, PieceKind::Queen);
+
+    assert_eq!(play(&game, &mut state, "g4", "g5"), 1);
+    assert!(game.in_check(&state, Color::Blue));
+    assert!(game.in_check(&state, Color::Green));
+}
+
+#[test]
+fn a_non_queen_triple_check_scores_twenty() {
+    let game = FourPlayerChess::default();
+    let mut state = position(Color::Red);
+    state.board[sq("a7") as usize] = Piece::EMPTY;
+    state.board[sq("h14") as usize] = Piece::EMPTY;
+    state.board[sq("n7") as usize] = Piece::EMPTY;
+    put(&mut state, "a5", Color::Blue, PieceKind::King);
+    put(&mut state, "g14", Color::Yellow, PieceKind::King);
+    put(&mut state, "n5", Color::Green, PieceKind::King);
+    put(&mut state, "g4", Color::Red, PieceKind::Rook);
+
+    assert_eq!(play(&game, &mut state, "g4", "g5"), 20);
+}
+
+#[test]
+fn a_queen_triple_check_scores_five() {
+    let game = FourPlayerChess::default();
+    let mut state = position(Color::Red);
+    state.board[sq("a7") as usize] = Piece::EMPTY;
+    state.board[sq("h14") as usize] = Piece::EMPTY;
+    state.board[sq("n7") as usize] = Piece::EMPTY;
+    put(&mut state, "a5", Color::Blue, PieceKind::King);
+    put(&mut state, "g14", Color::Yellow, PieceKind::King);
+    put(&mut state, "n5", Color::Green, PieceKind::King);
+    put(&mut state, "g4", Color::Red, PieceKind::Queen);
+
+    assert_eq!(play(&game, &mut state, "g4", "g5"), 5);
+}
+
+#[test]
 fn a_discovered_check_counts_toward_the_simultaneous_check_bonus() {
     let game = FourPlayerChess::default();
     let mut state = position(Color::Red);
