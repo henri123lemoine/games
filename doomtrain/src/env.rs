@@ -59,10 +59,15 @@ impl DoomEnv {
     }
 }
 
-// Doom weapon slot identities (BT_CHANGE slot numbers) used in obs + action.
-const WP_SHOTGUN: i32 = 3;
-const WP_CHAINGUN: i32 = 4;
-const WP_ROCKET: i32 = 5;
+// `player_t.readyweapon` is the zero-based `weapontype_t` enum. These are not
+// the one-based keyboard/BT_CHANGE slots used by Action.weapon below.
+const READY_SHOTGUN: i32 = 2;
+const READY_CHAINGUN: i32 = 3;
+const READY_ROCKET: i32 = 4;
+
+// One-based Doom weapon slots encoded into BT_CHANGE.
+const SLOT_SHOTGUN: u8 = 3;
+const SLOT_ROCKET: u8 = 5;
 
 pub fn observation(st: &PlayerState) -> [f32; OBS_DIM] {
     let ang = st.angle_deg.to_radians();
@@ -78,9 +83,9 @@ pub fn observation(st: &PlayerState) -> [f32; OBS_DIM] {
     o[5] = (st.ammo[1] as f32) / 50.0;
     o[6] = (st.ammo[2] as f32) / 300.0;
     o[7] = (st.ammo[3] as f32) / 50.0;
-    o[8] = (st.ready_weapon == WP_SHOTGUN) as i32 as f32;
-    o[9] = (st.ready_weapon == WP_CHAINGUN) as i32 as f32;
-    o[10] = (st.ready_weapon == WP_ROCKET) as i32 as f32;
+    o[8] = (st.ready_weapon == READY_SHOTGUN) as i32 as f32;
+    o[9] = (st.ready_weapon == READY_CHAINGUN) as i32 as f32;
+    o[10] = (st.ready_weapon == READY_ROCKET) as i32 as f32;
     o[11] = ang.sin();
     o[12] = ang.cos();
     o[13] = st.x / ARENA_HALF;
@@ -147,7 +152,7 @@ pub fn shaped_reward(
         // --- item control: one-time pickup bonuses from self-economy deltas ---
         // rocket launcher: rocket ammo rose AND we now own/ready the rocket weapon.
         let got_rockets = cur.ammo[3] > prev.ammo[3];
-        let has_rocket = cur.ready_weapon == WP_ROCKET || cur.ammo[3] > 0;
+        let has_rocket = cur.ready_weapon == READY_ROCKET || cur.ammo[3] > 0;
         if got_rockets && has_rocket && prev.ammo[3] == 0 {
             r += 0.5;
         }
@@ -161,7 +166,7 @@ pub fn shaped_reward(
         }
 
         // --- standing control: tiny per-tic holds ---
-        if cur.ready_weapon == WP_ROCKET || cur.ammo[3] > 0 {
+        if cur.ready_weapon == READY_ROCKET || cur.ammo[3] > 0 {
             r += 0.002;
         }
         if cur.armortype == 2 {
@@ -197,7 +202,7 @@ const TURNS: [i16; 9] = [-1300, -700, -300, -120, 0, 120, 300, 700, 1300];
 const MOVES: [i8; 3] = [-40, 0, 50];
 const STRAFE: [i8; 3] = [-40, 0, 40];
 // Doom BT_CHANGE weapon slot: 0 = keep current, 3 = shotgun, 5 = rocket.
-const WEAPONS: [u8; 3] = [0, 3, 5];
+const WEAPONS: [u8; 3] = [0, SLOT_SHOTGUN, SLOT_ROCKET];
 
 pub const NUM_ACTIONS: usize = TURNS.len() * MOVES.len() * STRAFE.len() * 2 * WEAPONS.len();
 
@@ -346,14 +351,40 @@ pub fn scripted_hunter(st: &PlayerState) -> Action {
         a.side = if bearing >= 0.0 { 40 } else { -40 };
     }
     // switch to the rocket launcher once we own rockets (better duel weapon).
-    if st.ammo[3] > 0 && st.ready_weapon != WP_ROCKET {
-        a.weapon = WP_ROCKET as u8;
-    } else if st.ready_weapon == 1 || st.ready_weapon == 2 {
+    if st.ammo[3] > 0 && st.ready_weapon != READY_ROCKET {
+        a.weapon = SLOT_ROCKET;
+    } else if st.ready_weapon == 0 || st.ready_weapon == 1 {
         // off the fist/pistol: grab the chaingun/shotgun line via shotgun slot.
-        a.weapon = WP_SHOTGUN as u8;
+        a.weapon = SLOT_SHOTGUN;
     }
     if visible && bearing.abs() < 20.0 {
         a.fire = 1;
     }
     a
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observation_uses_zero_based_ready_weapon_enum() {
+        for (ready, active) in [(READY_SHOTGUN, 8), (READY_CHAINGUN, 9), (READY_ROCKET, 10)] {
+            let state = PlayerState {
+                ready_weapon: ready,
+                ..PlayerState::default()
+            };
+            let obs = observation(&state);
+            for (offset, &value) in obs[8..=10].iter().enumerate() {
+                assert_eq!(value, (offset + 8 == active) as u8 as f32);
+            }
+        }
+    }
+
+    #[test]
+    fn strategic_action_codec_round_trips_every_action() {
+        for index in 0..NUM_ACTIONS {
+            assert_eq!(encode_action(&decode_action(index)), index);
+        }
+    }
 }

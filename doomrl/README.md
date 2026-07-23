@@ -1,15 +1,17 @@
 # doomrl — a controllable Doom substrate for RL
 
-"RL on Doom": a headless, deterministic, instrumented build of vanilla Doom with
-game-state read-out and input injection. The eventual goal is a 1v1 deathmatch
-bot trained against this substrate and deployed in a WASM build.
+"RL on Doom": a deterministic, instrumented build of vanilla Doom with
+game-state read-out and input injection, used both headlessly for training and
+in the browser for a playable 2–4 player free-for-all.
 
 - **M1** (done): single-agent substrate — step, inject, read LOS-gated state.
 - **M2** (done): a **1v1 local deathmatch** — two players driven from one
   deterministic process, symmetric LOS-gated per-seat observation, frag/death
   reward, auto-respawn, and `doomrl_reset()` for episode loops.
-
-No learning and no arcade wiring yet — this is the training substrate.
+- **M3** (partial): the flat-arena PPO bot was trained; the redesigned strategic
+  40-observation/486-action policy still needs its full retrain.
+- **M4** (done): the same engine runs in WebAssembly. The strategic browser page
+  uses a map-aware tactical opponent until that compatible retrain exists.
 
 This is **not** a `Game`-trait game and is **outside the cargo workspace** — it is
 standalone C, like `azgo`. It never touches `cargo test`.
@@ -225,7 +227,7 @@ yields bit-identical subsequent dynamics (verified).
 - **`doom1.wad`**: id Software's freely-redistributable Doom shareware IWAD
   (not committed here; reused from `web/app/public/doom/`).
 
-## Path to M3–M4
+## Training and browser deployment
 
 **M2 — 1v1 deathmatch driver (done).** Both players are driven from one
 deterministic process with no netcode: `playeringame[0..1]=true`,
@@ -238,23 +240,25 @@ branch (fixed by `netgame=true`) and the `netgame`-gated consistency check
 auto-respawn all use the engine's own `players[].frags[]` and `P_DeathThink`.
 See the M2 acceptance section above.
 
-**M3 — training loop.**
-Observation = the `doomrl_state_t` vector — self features plus the already
-**LOS-gated** nearest-K visible enemies in egocentric polar coords
-(`bearing_deg`, `dist`, `rel_vx/rel_vy`) and the `target` last-seen block, so
-the policy only ever sees what a screen player would. Small enough for a fast
-MLP/GRU; later, the `DG_ScreenBuffer` for a conv policy. Self-play with the
-existing `azt`/`azgo`-style infra (the repo already has AlphaZero plumbing,
-momentum-SGD, gradient clipping). Many headless instances at ~5.6k tics/sec
-each parallelize rollouts cheaply. Frame-skip (act every 4th tic) is one
-`--tics` loop change.
+**M3 — training.** `../doomtrain` contains the PPO/GRU pipeline. The original
+18-input/54-action checkpoint is intentionally not loaded in the redesigned
+arena: the strategic contract is 40 inputs and 486 actions, so pretending those
+artifacts are compatible would produce a broken opponent. See
+`STRATEGIC_CONTRACT.md` and `../doomtrain/README.md` for the retrain command.
 
-**M4 — WASM deploy.**
-The same instrumented build compiles to WASM via the vendored
-`Makefile.emscripten` + `doomgeneric_emscripten.c` (swap our headless `DG_*` for
-a canvas/keyboard variant, or keep headless and feed the policy net's ticcmd
-through `DGRL_OverrideTiccmd`). Export `doomrl_step`/`doomrl_get_state` via
-`EXPORTED_FUNCTIONS`; run the policy net in JS/WASM and drive the bot's ticcmd
-each tic. `emcc` is not currently on this machine's PATH, so M4 needs an emsdk
-install (`emscripten 6.x`, matching the arcade's existing port) before building.
+**M4 — browser.** `build_wasm.sh` compiles the instrumented four-seat engine,
+preloads `doom1.wad` plus `assets/dumbbell.wad`, and exposes the exact 39-float
+per-seat state bridge. To rebuild and play:
+
+```bash
+./doomrl/build_wasm.sh web/app/public/doom-ai
+cd web/app && npm run dev
+# http://localhost:5173/#/doom
 ```
+
+The checked-in page drives seat 0 from mouse/WASD and lets the player choose one
+to three deterministic tactical bots. Each bot uses its own pose/economy, its
+nearest LOS-gated rival, and public item timers; its only arena knowledge is the
+objective locations and safe routes through the gatehouses. The native trainer
+keeps its established two-player contract. `doomrl/web/forward.js` remains the parity-checked
+40/486 neural seam for the future strategic checkpoint.

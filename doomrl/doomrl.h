@@ -87,7 +87,7 @@ void doomrl_step(const doomrl_action_t *action);
 void doomrl_get_state(doomrl_state_t *out);
 int  doomrl_tic(void);
 
-#define DOOMRL_MAX_PLAYERS 2
+#define DOOMRL_MAX_PLAYERS 4
 
 typedef struct {
     int   seat;
@@ -123,9 +123,12 @@ typedef struct {
 } doomrl_player_state_t;
 
 void doomrl_dm_init(int argc, char **argv);
+void doomrl_dm_init_players(int argc, char **argv, int num_players);
 void doomrl_dm_step(const doomrl_action_t *a0, const doomrl_action_t *a1);
+void doomrl_dm_step_all(const doomrl_action_t actions[DOOMRL_MAX_PLAYERS]);
 void doomrl_get_player_state(int seat, doomrl_player_state_t *out);
 void doomrl_reset(void);
+int  doomrl_dm_set_player_count(int num_players);
 void doomrl_dm_spawn_near(float dist);
 int  doomrl_num_players(void);
 

@@ -12,10 +12,11 @@ had no item/map info and its action space could not strafe or switch weapons. Th
 old checkpoints are stale; a full retrain on the new env is required.
 
 What changed (see `doomrl/STRATEGIC_CONTRACT.md` for the authoritative spec):
-- Map: the asymmetric **dumbbell** arena (`doomrl/assets/dumbbell.wad`, built by
-  `tools/make_arena_wad.py` + a real BSP node builder `tools/nodebuild.py`) —
-  two pockets + central hall, a sunken rocket-launcher altar, a raised megaarmor
-  ledge, a soulsphere, two LOS-breaking cover blocks, a choke.
+- Map: the asymmetric **Foundry** arena (still stored at the compatibility path
+  `doomrl/assets/dumbbell.wad`, built by `tools/make_arena_wad.py` + a real BSP
+  node builder `tools/nodebuild.py`) — two fortified gatehouses with three
+  routes each, a sunken rocket reactor, climbable megaarmor tiers, a lower
+  soulsphere shrine, and LOS-breaking machinery.
 - Match runs **`-altdeath`**: items respawn on 30 s timers.
 - `OBS_DIM = 40`: self economy (armor type, all ammo, ready-weapon, position) +
   opponent + 3 key items (available / respawn / bearing-by-distance).
@@ -78,9 +79,10 @@ Run it with the `ppo` subcommand.
 ./run.sh ppo-export --net=run/best.ot --out=doom.bin    # portable weights (round-trip verified)
 ```
 
-**M4 (WASM deploy):** still needs an **`emsdk` install** (`emcc` not on PATH).
-The `ppo-export` flat file (`DOOMDFP1` magic, no-tch read) is the bridge: a
-browser forward loads it and drives a `doomrl` WASM build's ticcmd.
+**M4 (WASM deploy):** the strategic engine and 39-float state bridge now build
+and run in the browser. The `ppo-export` flat file (`DOOMDFP1` magic, no-tch
+read) is the neural bridge, but the browser deliberately uses a tactical bot
+until a compatible 40-input/486-action strategic checkpoint has been trained.
 
 Full run findings + recipe are in memory `doom-rl-training`. (The earlier DFP
 path — `smoke`/`train`/`eval`/`export` subcommands — is retained but superseded;
@@ -174,8 +176,8 @@ number that should climb during a real GPU run.
   seat as a past-snapshot opponent (instead of the scripted hunter) is a small
   change to `collect_episode`.
 - **Deploy**: the `export` flat file is the bridge to M4 — a browser forward
-  loads it and drives a `doomrl` WASM build's ticcmd. M4 still needs an `emsdk`
-  install for the engine side.
+  loads it and drives the existing `doomrl` WASM build's ticcmd. Only a
+  strategic-contract checkpoint should replace the tactical browser opponent.
 
 ## Files
 

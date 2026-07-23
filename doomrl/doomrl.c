@@ -185,8 +185,9 @@ void doomrl_get_state(doomrl_state_t *out)
     float nearest_dist = 0.0f;
     float nearest_bearing = 0.0f;
 
-    int saved_validcount = validcount;
-
+    /* P_CheckSight increments validcount and stamps visited linedefs with that
+     * generation. Never restore validcount afterward: movement collision also
+     * uses those stamps, and reusing a sight generation makes it skip walls. */
     int n = 0;
     thinker_t *th = thinkercap.next;
     while (th != &thinkercap && n < DOOMRL_MAX_ENEMIES)
@@ -224,8 +225,6 @@ void doomrl_get_state(doomrl_state_t *out)
         }
         th = th->next;
     }
-
-    validcount = saved_validcount;
 
     out->num_visible_enemies = n;
 
@@ -280,7 +279,6 @@ static void scan_key_items(int present[DOOMRL_NUM_KEY_ITEMS])
             s_key_pos[k].level_start_tic = levelstarttic;
     }
 
-    int saved_validcount = validcount;
     thinker_t *th = thinkercap.next;
     while (th != &thinkercap)
     {
@@ -303,7 +301,6 @@ static void scan_key_items(int present[DOOMRL_NUM_KEY_ITEMS])
         }
         th = th->next;
     }
-    validcount = saved_validcount;
 }
 
 /* Seconds until item k respawns, from the engine's respawn queue. The queue
@@ -427,17 +424,30 @@ static void dm_setup_match(int first_time)
     }
 }
 
-void doomrl_dm_init(int argc, char **argv)
+static int clamp_dm_players(int num_players)
+{
+    if (num_players < 2) return 2;
+    if (num_players > DOOMRL_MAX_PLAYERS) return DOOMRL_MAX_PLAYERS;
+    return num_players;
+}
+
+void doomrl_dm_init_players(int argc, char **argv, int num_players)
 {
     extern boolean singletics;
     singletics = true;
     s_clock_ms = 0;
     s_pending_action = NULL;
-    s_dm_players = DOOMRL_MAX_PLAYERS;
+    s_dm_players = clamp_dm_players(num_players);
     memset(&s_dm, 0, sizeof(s_dm));
 
     doomgeneric_Create(argc, argv);
     dm_setup_match(1);
+}
+
+void doomrl_dm_init(int argc, char **argv)
+{
+    /* Preserve the training/native API's established two-player contract. */
+    doomrl_dm_init_players(argc, argv, 2);
 }
 
 void doomrl_reset(void)
@@ -449,6 +459,17 @@ void doomrl_reset(void)
 
 int doomrl_num_players(void)
 {
+    return s_dm_players;
+}
+
+int doomrl_dm_set_player_count(int num_players)
+{
+    int wanted = clamp_dm_players(num_players);
+    if (wanted != s_dm_players)
+    {
+        s_dm_players = wanted;
+        dm_setup_match(0);
+    }
     return s_dm_players;
 }
 
@@ -478,16 +499,18 @@ void doomrl_dm_spawn_near(float dist)
     }
 }
 
-static int player_kills_of_opponent(int seat)
+static int player_total_frags(int seat)
 {
-    int opp = seat ^ 1;
-    return players[seat].frags[opp];
+    int total = 0;
+    for (int other = 0; other < s_dm_players; other++)
+        total += players[seat].frags[other];
+    return total;
 }
 
-void doomrl_dm_step(const doomrl_action_t *a0, const doomrl_action_t *a1)
+void doomrl_dm_step_all(const doomrl_action_t actions[DOOMRL_MAX_PLAYERS])
 {
-    s_dm.pending[0] = a0;
-    s_dm.pending[1] = a1;
+    for (int i = 0; i < s_dm_players; i++)
+        s_dm.pending[i] = actions ? &actions[i] : NULL;
 
     for (int i = 0; i < s_dm_players; i++)
         s_dm.reward[i] = 0.0f;
@@ -502,7 +525,7 @@ void doomrl_dm_step(const doomrl_action_t *a0, const doomrl_action_t *a1)
     {
         player_t *pl = &players[i];
 
-        int kills = player_kills_of_opponent(i);
+        int kills = player_total_frags(i);
         s_dm.reward[i] += (float)(kills - s_dm.prev_frags[i]);
         s_dm.prev_frags[i] = kills;
 
@@ -524,8 +547,17 @@ void doomrl_dm_step(const doomrl_action_t *a0, const doomrl_action_t *a1)
         s_dm.prev_armor[i] = pl->armorpoints;
     }
 
-    s_dm.pending[0] = NULL;
-    s_dm.pending[1] = NULL;
+    for (int i = 0; i < DOOMRL_MAX_PLAYERS; i++)
+        s_dm.pending[i] = NULL;
+}
+
+void doomrl_dm_step(const doomrl_action_t *a0, const doomrl_action_t *a1)
+{
+    doomrl_action_t actions[DOOMRL_MAX_PLAYERS];
+    memset(actions, 0, sizeof(actions));
+    if (a0) actions[0] = *a0;
+    if (a1) actions[1] = *a1;
+    doomrl_dm_step_all(actions);
 }
 
 void doomrl_get_player_state(int seat, doomrl_player_state_t *out)
@@ -537,7 +569,7 @@ void doomrl_get_player_state(int seat, doomrl_player_state_t *out)
     out->seat = seat;
     out->reward = s_dm.reward[seat];
     out->deaths = s_dm.deaths[seat];
-    out->frags = player_kills_of_opponent(seat);
+    out->frags = player_total_frags(seat);
 
     player_t *pl = &players[seat];
     out->health = pl->health;
@@ -569,29 +601,43 @@ void doomrl_get_player_state(int seat, doomrl_player_state_t *out)
         s_dm.opp_ticks_since_seen[seat] = 0;
     }
 
-    int opp = seat ^ 1;
-    player_t *op = &players[opp];
-    mobj_t *omo = op->mo;
-
+    int opp = -1;
     int visible = 0;
-    if (omo != NULL && op->playerstate == PST_LIVE && op->health > 0)
+    float nearest_dist = 0.0f;
+    /* Keep validcount monotonic across these sight checks. Rewinding it makes
+     * the following movement tick treat recently seen walls as already tested. */
+    for (int candidate = 0; candidate < s_dm_players; candidate++)
     {
-        int saved_validcount = validcount;
-        visible = P_CheckSight(mo, omo) ? 1 : 0;
-        validcount = saved_validcount;
+        if (candidate == seat)
+            continue;
+        player_t *other = &players[candidate];
+        mobj_t *other_mo = other->mo;
+        if (other_mo == NULL || other->playerstate != PST_LIVE || other->health <= 0)
+            continue;
+        if (!P_CheckSight(mo, other_mo))
+            continue;
+        float dx = fx2f(other_mo->x) - out->x;
+        float dy = fx2f(other_mo->y) - out->y;
+        float dist = sqrtf(dx * dx + dy * dy);
+        if (!visible || dist < nearest_dist)
+        {
+            visible = 1;
+            opp = candidate;
+            nearest_dist = dist;
+        }
     }
-
     if (visible)
     {
+        player_t *op = &players[opp];
+        mobj_t *omo = op->mo;
         float dx = fx2f(omo->x) - out->x;
         float dy = fx2f(omo->y) - out->y;
-        float dist = sqrtf(dx * dx + dy * dy);
         float abs_bearing = atan2f(dy, dx) * 180.0f / (float)M_PI;
         float bearing = wrap180(abs_bearing - out->angle_deg);
 
         out->opponent_visible = 1;
         out->opp_bearing_deg = bearing;
-        out->opp_dist = dist;
+        out->opp_dist = nearest_dist;
         out->opp_rel_vx = fx2f(omo->momx) - out->momx;
         out->opp_rel_vy = fx2f(omo->momy) - out->momy;
         out->opp_health = op->health;
@@ -599,7 +645,7 @@ void doomrl_get_player_state(int seat, doomrl_player_state_t *out)
         s_dm.opp_valid[seat] = 1;
         s_dm.opp_ticks_since_seen[seat] = 0;
         s_dm.opp_last_bearing[seat] = bearing;
-        s_dm.opp_last_dist[seat] = dist;
+        s_dm.opp_last_dist[seat] = nearest_dist;
     }
     else if (s_dm.opp_valid[seat])
     {

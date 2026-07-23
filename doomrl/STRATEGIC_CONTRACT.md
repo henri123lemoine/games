@@ -86,9 +86,9 @@ index : meaning : normalization
  5 ammo shell                   /50
  6 ammo cell                    /300
  7 ammo misl (rockets)          /50
- 8 ready_weapon == shotgun(3)   0/1
- 9 ready_weapon == chaingun(4)  0/1
-10 ready_weapon == rocket(5)    0/1
+ 8 ready_weapon == shotgun(2)   0/1  (`weapontype_t`, zero-based)
+ 9 ready_weapon == chaingun(3)  0/1
+10 ready_weapon == rocket(4)    0/1
 11 angle sin
 12 angle cos
 13 x                            /1024 (ARENA_HALF)
@@ -142,7 +142,7 @@ turn_i     = idx                 (0..8)
 TURNS   = [-1300,-700,-300,-120,0,120,300,700,1300]
 MOVES   = [-40, 0, 50]    (forward)
 STRAFE  = [-40, 0, 40]    (side)
-WEAPONS = [0, 3, 5]       (Doom weapon CHANGE slot; 0 = keep)
+WEAPONS = [0, 3, 5]       (one-based Doom weapon CHANGE slot; 0 = keep)
 ```
 `weapon` field semantics (doomgeneric `doomrl_action_t.weapon`): 0 = no change,
 else BT_CHANGE to slot `weapon` (1..8). Slot 3 = shotgun, slot 5 = rocket
@@ -186,6 +186,6 @@ frag, so fragging stays the objective.
 ---
 
 ## Constants
-- ARENA_HALF = 1024 (dumbbell long axis ~[-1024,1024] in x).
+- ARENA_HALF = 1280 (Foundry shell; playable octagon spans x/y up to ±1280/±768).
 - Item respawn = 30 × 35 = 1050 tics (TICRATE = 35).
 - NUM_KEY_ITEMS = 3, order [rocket(2003), megaarmor(2019), soulsphere(2013)].

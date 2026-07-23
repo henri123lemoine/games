@@ -88,7 +88,12 @@ def _pick_splitter(segs):
         dy = s.y2 - s.y1
         if dx == 0 and dy == 0:
             continue
-        left = right = splits = 0
+        # The candidate itself is collinear and same-facing, so it belongs to
+        # the front/right child. Count it when checking that the split makes
+        # progress; otherwise a valid two-sided boundary can be rejected just
+        # because its opposite-facing twin is the only remaining seg.
+        left = splits = 0
+        right = 1
         for t in segs:
             if t is s:
                 continue
@@ -105,8 +110,15 @@ def _pick_splitter(segs):
             elif ra or rb:
                 right += 1
             else:
-                # fully collinear with the splitter; counts toward the front side
-                right += 1
+                # Doom's front side is the RIGHT side of a directed seg. Two
+                # opposite-facing segs on a two-sided line belong to opposite
+                # BSP children even though their geometry is collinear.
+                tdx = t.x2 - t.x1
+                tdy = t.y2 - t.y1
+                if dx * tdx + dy * tdy >= 0:
+                    right += 1
+                else:
+                    left += 1
         # reject zero-progress splitters: one side empty and nothing split.
         if splits == 0 and (left == 0 or right == 0):
             continue
@@ -155,6 +167,11 @@ class _Builder:
         self.out_segs = []
 
     def _emit_subsector(self, segs):
+        if not segs:
+            raise ValueError("cannot emit an empty BSP subsector")
+        sectors = sorted({s.sector for s in segs})
+        if len(sectors) != 1:
+            raise ValueError(f"BSP subsector mixes sectors: {sectors}")
         first = len(self.out_segs)
         self.out_segs.extend(segs)
         idx = len(self.ssectors)
@@ -167,6 +184,9 @@ class _Builder:
         <=0). If any seg line has endpoints straddling it the region is concave
         and still needs partitioning. Orientation-agnostic, so it does not depend
         on input winding direction."""
+        if len({s.sector for s in segs}) != 1:
+            return False
+
         EPS = 1e-6
         for s in segs:
             dx = s.x2 - s.x1
@@ -193,6 +213,15 @@ class _Builder:
 
         pi = _pick_splitter(segs)
         if pi is None:
+            sectors = sorted({s.sector for s in segs})
+            if len(sectors) != 1:
+                details = [
+                    (s.linedef, s.side, s.sector, s.x1, s.y1, s.x2, s.y2)
+                    for s in segs
+                ]
+                raise ValueError(
+                    f"could not separate BSP leaf sectors: {sectors}; segs={details}"
+                )
             return self._emit_subsector(segs)
         part = segs[pi]
         px, py = part.x1, part.y1
@@ -236,14 +265,14 @@ class _Builder:
         return len(self.nodes) - 1
 
     def _assign_collinear(self, part, s, left, right):
-        # collinear seg: front side faces the same way as the partition's own
-        # facing; put it on the side its own front points to (left = front).
+        # Doom's front side is right. Same-facing collinear segs go right;
+        # opposite-facing sides of a two-sided line go left.
         pdx, pdy = part.x2 - part.x1, part.y2 - part.y1
         sdx, sdy = s.x2 - s.x1, s.y2 - s.y1
         if pdx * sdx + pdy * sdy >= 0:
-            left.append(s)
-        else:
             right.append(s)
+        else:
+            left.append(s)
 
     def _split_seg(self, s, vi):
         ix, iy = self.verts[vi]
@@ -340,8 +369,55 @@ def build_reject(n_sectors):
     return b"\x00" * nbytes
 
 
+def validate_map_geometry(verts, linedefs, sidedefs):
+    """Reject geometry that vanilla Doom would render as a HOM or bad BSP."""
+
+    def orient(a, b, c):
+        return ((b[0] - a[0]) * (c[1] - a[1])
+                - (b[1] - a[1]) * (c[0] - a[0]))
+
+    def on_segment(a, b, p):
+        return (min(a[0], b[0]) <= p[0] <= max(a[0], b[0])
+                and min(a[1], b[1]) <= p[1] <= max(a[1], b[1]))
+
+    def intersects(a, b, c, d):
+        oa, ob = orient(a, b, c), orient(a, b, d)
+        oc, od = orient(c, d, a), orient(c, d, b)
+        if oa == 0 and on_segment(a, b, c):
+            return True
+        if ob == 0 and on_segment(a, b, d):
+            return True
+        if oc == 0 and on_segment(c, d, a):
+            return True
+        if od == 0 and on_segment(c, d, b):
+            return True
+        return (oa > 0) != (ob > 0) and (oc > 0) != (od > 0)
+
+    for i, ld in enumerate(linedefs):
+        if ld["v1"] == ld["v2"] or verts[ld["v1"]] == verts[ld["v2"]]:
+            raise ValueError(f"linedef {i} has zero length")
+        if ld["front"] is None:
+            raise ValueError(f"linedef {i} has no front sidedef")
+        if ld["back"] is None:
+            middle = sidedefs[ld["front"]]["middle"]
+            if middle in (b"-", "-", b"", ""):
+                raise ValueError(f"one-sided linedef {i} has no middle texture")
+
+    for i, first in enumerate(linedefs):
+        a, b = verts[first["v1"]], verts[first["v2"]]
+        for j in range(i + 1, len(linedefs)):
+            second = linedefs[j]
+            # Adjacent map edges may meet at their shared vertex.
+            if {first["v1"], first["v2"]} & {second["v1"], second["v2"]}:
+                continue
+            c, d = verts[second["v1"]], verts[second["v2"]]
+            if intersects(a, b, c, d):
+                raise ValueError(f"linedefs {i} and {j} intersect without a shared vertex")
+
+
 def pack_map_lumps(verts, linedefs, sidedefs, sectors, things):
     """Return the 10 vanilla map lumps as an ordered list of (name, bytes)."""
+    validate_map_geometry(verts, linedefs, sidedefs)
     things_b = b"".join(
         struct.pack("<hhHHH", t["x"], t["y"], t["angle"], t["type"], t["flags"])
         for t in things
