@@ -369,6 +369,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kamisado"
+version = "0.1.0"
+dependencies = [
+ "game-core",
+ "solvers",
+]
+
+[[package]]
 name = "lab"
 version = "0.1.0"
 dependencies = [
@@ -376,6 +384,7 @@ dependencies = [
  "connect4",
  "game-core",
  "go",
+ "kamisado",
  "liars-dice",
  "nn-infer",
  "othello",

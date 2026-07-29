@@ -1,0 +1,15 @@
+[package]
+name = "kamisado"
+version = "0.1.0"
+edition = "2024"
+description = "Kamisado (single round) as a game-core Game"
+
+[lib]
+name = "kamisado"
+path = "src/lib.rs"
+
+[dev-dependencies]
+solvers = { path = "../../solvers" }
+
+[dependencies]
+game-core = { workspace = true }

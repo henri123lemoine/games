@@ -486,6 +486,14 @@ impl<G: Game, E: Eval<G>, S: SearchSpec<G>> AlphaBeta<G, E, S> {
 
     /// Index (into `legal_actions`) of the best move by iterative deepening.
     pub fn best_action(&self, game: &G, state: &G::State) -> usize {
+        self.best_scored(game, state).0
+    }
+
+    /// [`Self::best_action`] plus the last completed deepening round's root
+    /// score. Mate-scaled scores are proofs: decode them with
+    /// [`win_distance`]/[`loss_distance`], which is what lets a caller use
+    /// this search as a game solver (see `kamisado/examples/solve.rs`).
+    pub fn best_scored(&self, game: &G, state: &G::State) -> (usize, f64) {
         let actions = game.legal_actions(state);
         assert!(!actions.is_empty(), "best_action on a terminal state");
         let mut tables = self.tables.lock().expect("search tables poisoned");
@@ -561,8 +569,21 @@ impl<G: Game, E: Eval<G>, S: SearchSpec<G>> AlphaBeta<G, E, S> {
             prev_score = Some(score);
             best = best_this;
         }
-        best
+        (best, prev_score.unwrap_or(0.0))
     }
+}
+
+/// Plies to a forced win encoded in a mate-scaled score, for games whose
+/// decisive returns are ±1 (the default `max_return` convention): a terminal
+/// win `ply` levels below the root scores `MATE - ply`. `None` for scores that
+/// are not proven wins.
+pub fn win_distance(score: f64) -> Option<u32> {
+    (score > MATE_THRESHOLD).then(|| (MATE - score).round() as u32)
+}
+
+/// The losing counterpart of [`win_distance`]: plies to the forced loss.
+pub fn loss_distance(score: f64) -> Option<u32> {
+    (score < -MATE_THRESHOLD).then(|| (MATE + score).round() as u32)
 }
 
 impl<G: Game, E: Eval<G>, S: SearchSpec<G>> Agent<G> for AlphaBeta<G, E, S> {

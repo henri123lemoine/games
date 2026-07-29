@@ -78,19 +78,19 @@ The CLI and the browser arcade are two thin frontends over exactly these calls; 
 
 ## Current algorithm/game matrix
 
-|                | chess | othello | connect4 | pente | go | Battlesnake | liars-dice | poker | twentyone | kuhn (test) |
-|----------------|:-----:|:-------:|:--------:|:-----:|:--:|:-----------:|:----------:|:-----:|:---------:|:-----------:|
-| `Cfr` (+ exact exploitability) | — | — | — | — | — | — | tiny configs | — | — | ✓ → Nash |
-| `Mccfr` / `OsMccfr` | — | — | — | — | — | — | OS handles the deep ladder | — | — | ✓ |
-| `AlphaBeta` | ✓ | ✓ | ✓ | ✓ | — | joint BNS/min-response | — | — | — | — |
-| `Mcts` | possible | possible | possible | possible | ✓ | invalid if sequential | — | — | — | — |
-| neural self-play | ✓ PUCT | possible | possible | possible | ✓ PUCT | joint logit/maximin | — | — | — | — |
-| `Rollout` | possible | possible | possible | possible | possible | possible joint rollout | ✓ | ✓ | possible | — |
-| bespoke | — | — | — | — | — | MCS/BRS+ bitboard search | belief policy | equity bot | decomposed CFR+ | — |
+|                | chess | othello | connect4 | kamisado | pente | go | Battlesnake | liars-dice | poker | twentyone | kuhn (test) |
+|----------------|:-----:|:-------:|:--------:|:--------:|:-----:|:--:|:-----------:|:----------:|:-----:|:---------:|:-----------:|
+| `Cfr` (+ exact exploitability) | — | — | — | — | — | — | — | tiny configs | — | — | ✓ → Nash |
+| `Mccfr` / `OsMccfr` | — | — | — | — | — | — | — | OS handles the deep ladder | — | — | ✓ |
+| `AlphaBeta` | ✓ | ✓ | ✓ | ✓ solves it | ✓ | — | joint BNS/min-response | — | — | — | — |
+| `Mcts` | possible | possible | possible | possible | possible | ✓ | invalid if sequential | — | — | — | — |
+| neural self-play | ✓ PUCT | possible | possible | possible | possible | ✓ PUCT | joint logit/maximin | — | — | — | — |
+| `Rollout` | possible | possible | possible | possible | possible | possible | possible joint rollout | ✓ | ✓ | possible | — |
+| bespoke | — | — | — | — | — | — | MCS/BRS+ bitboard search | belief policy | equity bot | decomposed CFR+ | — |
 
 (The matrix is the two-player-search story. The real-time games also live in the lab; their bots are trained as described below.)
 
-The dashes are honest: tabular CFR can't fit big games, search can't see hidden information, and Go's `GoEval` feeds MCTS/azero rather than alpha-beta. Two durable facts the matrix doesn't show: outcome-sampling MCCFR runs the deep liar's-dice ladder in milliseconds/iteration where external sampling would need astronomically many nodes (~1e41), and CFR+ regret flooring empirically stalls outcome sampling (documented in `solvers/src/os_mccfr.rs`) — which is why liar's dice uses outcome sampling, not the CFR+ variant the perfect-recall games would. Where a learned net is the bot (the `azero` row), the net is trained out-of-tree; see *Learning: the ml tree* below.
+The dashes are honest: tabular CFR can't fit big games, search can't see hidden information, and Go's `GoEval` feeds MCTS/azero rather than alpha-beta. "Solves it" is literal: Kamisado is small enough that the same generic `AlphaBeta` weakly solves the single-round game from the start (mate-scaled root score = proof; first-player win, forced in 17 actions — `games/kamisado/examples/solve.rs`, with an independent rules-only verification pass). Two durable facts the matrix doesn't show: outcome-sampling MCCFR runs the deep liar's-dice ladder in milliseconds/iteration where external sampling would need astronomically many nodes (~1e41), and CFR+ regret flooring empirically stalls outcome sampling (documented in `solvers/src/os_mccfr.rs`) — which is why liar's dice uses outcome sampling, not the CFR+ variant the perfect-recall games would. Where a learned net is the bot (the `azero` row), the net is trained out-of-tree; see *Learning: the ml tree* below.
 
 ## Learning: the ml tree
 

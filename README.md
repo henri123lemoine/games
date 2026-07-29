@@ -10,7 +10,7 @@ solvers/             the algorithms, generic over any game with the right
                      alpha-beta, MCTS, determinized rollout, and the
                      PUCT/AlphaZero self-play search
 games/               one crate per game — perfect-information board games
-                     (chess, othello, connect4, pente, go), N-player imperfect
+                     (chess, othello, connect4, kamisado, pente, go), N-player imperfect
                      info (liars-dice, poker, twentyone), and real-time
                      canonical Battlesnake. Each ships rules + knowledge;
                      its bot is a generic solver (alpha-beta / MCTS / rollout /
@@ -38,6 +38,7 @@ cargo run --release -p lab -- play chess bot=azero            # the self-play ne
 cargo run --release -p lab -- play go size=9 sims=6000
 cargo run --release -p lab -- play othello
 cargo run --release -p lab -- play connect4
+cargo run --release -p lab -- play kamisado                   # weakly solved: games/kamisado/README.md
 cargo run --release -p lab -- play pente size=13 depth=4
 cargo run --release -p lab -- play liars-dice players=5 dice=5 rollouts=1000
 cargo run --release -p lab -- play poker players=6 samples=2000
@@ -69,4 +70,4 @@ Research harnesses live as examples in each game crate (`liars-dice`: `evaluate`
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the design: layering, the capability-trait contract, identity choices, the algorithm/game matrix. Read this before restructuring anything.
 - [BENCHMARKS.md](BENCHMARKS.md) — cross-game strength results (SPRT/Elo); a dated snapshot of one benchmark round.
 - [web/README.md](web/README.md) — build, run, and deploy the browser arcade. [web/DESIGN.md](web/DESIGN.md) — its design contract.
-- Per-game knowledge: [game-core/README.md](game-core/README.md), [games/liars-dice/README.md](games/liars-dice/README.md), [games/twentyone/README.md](games/twentyone/README.md) (+ [BAKEOFF.md](games/twentyone/BAKEOFF.md), the Twenty-One technique shoot-out).
+- Per-game knowledge: [game-core/README.md](game-core/README.md), [games/liars-dice/README.md](games/liars-dice/README.md), [games/twentyone/README.md](games/twentyone/README.md) (+ [BAKEOFF.md](games/twentyone/BAKEOFF.md), the Twenty-One technique shoot-out), [games/kamisado/README.md](games/kamisado/README.md) (the weak solve: first-player win in exactly 17 actions).

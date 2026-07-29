@@ -502,6 +502,14 @@ const CONNECT4_OPTS: &[OptSpec] = &[
     opt("seed", "...", ""),
 ];
 
+const KAMISADO_OPTS: &[OptSpec] = &[
+    opt("seat", "0|1|watch", "(0=Black, moves first)"),
+    opt("bot", "alphabeta|mcts", ""),
+    bot_opt("depth", "14", "", &["alphabeta"]),
+    bot_opt("sims", "2000", "", &["mcts"]),
+    opt("seed", "...", ""),
+];
+
 const PENTE_OPTS: &[OptSpec] = &[
     opt("size", "13", "(13 or 15; tournament-standard)"),
     opt(
@@ -738,6 +746,22 @@ pub fn entries() -> Vec<Entry> {
                 false,
                 |_| Ok(connect4::Connect4),
                 connect4_bot,
+            )),
+        },
+        Entry {
+            id: "kamisado",
+            name: "Kamisado",
+            solo: false,
+            watch_bot: "",
+            summary: "Kamisado (color-bound tower race; a solved first-player win) vs alpha-beta",
+            opts: KAMISADO_OPTS,
+            make: Box::new(|o| make_versus(o, kamisado::Kamisado, "alphabeta", &[], kamisado_bot)),
+            eval: Some(eval_entry(
+                "alphabeta[:depth=14] | mcts[:sims=2000]",
+                4,
+                false,
+                |_| Ok(kamisado::Kamisado),
+                kamisado_bot,
             )),
         },
         Entry {
@@ -1312,6 +1336,21 @@ fn connect4_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<connect4::Connec
         9,
         |d| Box::new(AlphaBeta::new(d, connect4::Connect4Eval, NoSpec)),
         "connect4",
+    )
+}
+
+fn kamisado_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<kamisado::Kamisado>, String> {
+    ab_or_mcts_bot(
+        spec,
+        14,
+        |d| {
+            Box::new(AlphaBeta::new(
+                d,
+                kamisado::KamisadoEval,
+                kamisado::KamisadoSpec,
+            ))
+        },
+        "kamisado",
     )
 }
 

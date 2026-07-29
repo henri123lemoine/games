@@ -26,6 +26,7 @@ twentyone = { path = "../games/twentyone" }
 othello = { path = "../games/othello" }
 go = { path = "../games/go" }
 connect4 = { path = "../games/connect4" }
+kamisado = { path = "../games/kamisado" }
 snake = { path = "../games/snake" }
 pente = { path = "../games/pente" }
 poker = { path = "../games/poker" }

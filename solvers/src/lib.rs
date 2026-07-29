@@ -38,7 +38,7 @@ pub use deepcfr::{DeepCfr, DeepCfrConfig, Encoder};
 pub use exploit::{CfrPolicy, Policy, nash_conv, profile_exploitability, seat_best_response_gain};
 pub use mccfr::Mccfr;
 pub use rollout::Rollout;
-pub use search::AlphaBeta;
+pub use search::{AlphaBeta, loss_distance, win_distance};
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
