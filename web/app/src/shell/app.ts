@@ -454,6 +454,29 @@ function miniFor(id: string): string {
           </g>
         </svg>
       </div>`;
+    case "kamisado": {
+      // The real board's color grid (top rank first) with the two home rows
+      // of octagonal towers — the game introduces itself by its colors.
+      const tiles = ["#8a5a33", "#3f9d42", "#d23c32", "#e8c33c", "#e77fb0", "#8050c0", "#3a6fd8", "#e8862f"];
+      // prettier-ignore
+      const grid = [
+        7, 6, 5, 4, 3, 2, 1, 0, 2, 7, 4, 1, 6, 3, 0, 5, 1, 4, 7, 2, 5, 0, 3, 6, 4, 5, 6, 7, 0, 1, 2, 3,
+        3, 2, 1, 0, 7, 6, 5, 4, 6, 3, 0, 5, 2, 7, 4, 1, 5, 0, 3, 6, 1, 4, 7, 2, 0, 1, 2, 3, 4, 5, 6, 7,
+      ];
+      const oct = (cx: number, cy: number, r: number) =>
+        [[-0.41, -1], [0.41, -1], [1, -0.41], [1, 0.41], [0.41, 1], [-0.41, 1], [-1, 0.41], [-1, -0.41]]
+          .map(([dx, dy]) => `${cx + dx * r},${cy + dy * r}`)
+          .join(" ");
+      const cells = grid
+        .map((c, i) => `<rect x="${(i % 8) * 40 + 2}" y="${Math.floor(i / 8) * 40 + 2}" width="36" height="36" rx="5" fill="${tiles[c]}"/>`)
+        .join("");
+      const tower = (c: number, f: number, y: number, body: string, edge: string) =>
+        `<polygon points="${oct(f * 40 + 20, y, 13)}" fill="${body}" stroke="${edge}" stroke-width="1.2"/><circle cx="${f * 40 + 20}" cy="${y}" r="6" fill="${tiles[c]}"/>`;
+      const towers =
+        grid.slice(0, 8).map((c, f) => tower(c, f, 20, "#efe7d6", "rgba(0,0,0,0.3)")).join("") +
+        grid.slice(56).map((c, f) => tower(c, f, 300, "#191921", "rgba(255,255,255,0.25)")).join("");
+      return `<div class="mini mini-kamisado"><svg class="mini-km-svg" viewBox="0 0 320 320" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><rect width="320" height="320" fill="#14100c"/>${cells}${towers}</svg></div>`;
+    }
     case "dood":
       return `<div class="mini mini-doom"><span class="mini-doom-word">DOOD</span></div>`;
     default:

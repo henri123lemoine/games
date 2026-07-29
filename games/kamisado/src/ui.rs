@@ -11,6 +11,11 @@ fn sq_name(sq: u8) -> String {
     format!("{}{}", (b'a' + file(sq)) as char, rank(sq) + 1)
 }
 
+/// Index into the web view's `cells` string: row-major, TOP rank (8) first.
+fn cell_index(sq: u8) -> u8 {
+    (7 - rank(sq)) * 8 + file(sq)
+}
+
 fn parse_sq(s: &[u8]) -> Option<u8> {
     let f = s[0].checked_sub(b'a').filter(|&f| f < 8)?;
     let r = s[1].checked_sub(b'1').filter(|&r| r < 8)?;
@@ -160,6 +165,85 @@ impl GameUi for Kamisado {
         let verdict = if w == viewer { "You win!" } else { "You lose." };
         format!("{} takes the round. {verdict}", player_name(w))
     }
+
+    /// View JSON — the private contract with `web/app/src/frontends/kamisado`:
+    ///
+    /// ```json
+    /// {"cells": "<64 chars, row-major, TOP rank (8) first: '.' empty,
+    ///            'A'-'H' Black tower of color 0-7, 'a'-'h' White>",
+    ///  "turn": 0|1,
+    ///  "required": 0-7|null,      // color `turn` is obligated to move
+    ///  "requiredCell": 0-63|null, // index of that tower in "cells"
+    ///  "winner": 0|1|null,
+    ///  "deadlock": true|false}    // winner came from a deadlock, not the far rank
+    /// ```
+    fn view_data(&self, state: &KamisadoState, _viewer: usize) -> Option<String> {
+        let mut cells = vec![b'.'; 64];
+        for p in 0..2 {
+            for c in 0..8 {
+                let base = if p == 0 { b'A' } else { b'a' };
+                cells[cell_index(state.towers[p][c]) as usize] = base + c as u8;
+            }
+        }
+        let cells = String::from_utf8(cells).expect("ascii cells");
+        let (required, required_cell) = match state.required_color() {
+            Some(c) if state.winner.is_none() => (
+                c.to_string(),
+                cell_index(state.towers[state.to_move as usize][c as usize]).to_string(),
+            ),
+            _ => ("null".into(), "null".into()),
+        };
+        let winner = state.winner.map_or("null".into(), |w| w.to_string());
+        let deadlock = state.winner.is_some_and(|w| {
+            let w = w as usize;
+            state.towers[w].iter().all(|&t| rank(t) != goal_rank(w))
+        });
+        Some(format!(
+            r#"{{"cells":"{cells}","turn":{},"required":{required},"requiredCell":{required_cell},"winner":{winner},"deadlock":{deadlock}}}"#,
+            state.to_move
+        ))
+    }
+
+    /// Transition JSON — what moved, the obligation chain it set off, and how
+    /// the round ended if it did (cell indices as in `view_data`):
+    ///
+    /// ```json
+    /// {"from": 0-63, "to": 0-63, "player": 0|1, "color": 0-7, "landColor": 0-7,
+    ///  "passes": [[player, color], ...],  // blocked towers, in chain order
+    ///  "next": [player, color]|null,      // obligation after the move
+    ///  "win": bool, "deadlock": bool}
+    /// ```
+    fn transition_data(
+        &self,
+        before: &KamisadoState,
+        action: KamisadoMove,
+        after: &KamisadoState,
+        _viewer: usize,
+    ) -> Option<String> {
+        let mover = before.to_move as usize;
+        let color = before.mover_color(action.from);
+        let win = after.winner == Some(mover as u8) && rank(action.to) == goal_rank(mover);
+        let (mut passes, mut next) = (String::from("["), String::from("null"));
+        if !win {
+            let mut sep = "";
+            let resolved =
+                resolve_obligation(&after.towers, after.occ, mover, action.to, |p, c| {
+                    passes.push_str(&format!("{sep}[{p},{c}]"));
+                    sep = ",";
+                });
+            if let Some((p, c)) = resolved {
+                next = format!("[{p},{c}]");
+            }
+        }
+        passes.push(']');
+        Some(format!(
+            r#"{{"from":{},"to":{},"player":{mover},"color":{color},"landColor":{},"passes":{passes},"next":{next},"win":{win},"deadlock":{}}}"#,
+            cell_index(action.from),
+            cell_index(action.to),
+            square_color(action.to),
+            after.winner.is_some() && !win,
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -216,6 +300,54 @@ mod tests {
                 from: sq("g8"),
                 to: sq("g2")
             })
+        );
+    }
+
+    #[test]
+    fn view_data_reports_cells_obligation_and_result() {
+        let game = Kamisado;
+        let v = game.view_data(&game.initial_state(), 0).unwrap();
+        // Rank 8 first: White's towers run Orange..Brown = 'h'..'a'.
+        assert!(v.contains(r#""cells":"hgfedcba"#), "{v}");
+        assert!(v.ends_with(r#"ABCDEFGH","turn":0,"required":null,"requiredCell":null,"winner":null,"deadlock":false}"#), "{v}");
+
+        let (game, s) = play(&[("d1", "d7")]);
+        let v = game.view_data(&s, 1).unwrap();
+        assert!(
+            v.contains(r#""turn":1,"required":1,"requiredCell":6"#),
+            "{v}"
+        ); // Green at g8
+        let (game, s) = play(&[("d1", "d7"), ("g8", "b3"), ("b3", "d1")]);
+        let v = game.view_data(&s, 0).unwrap();
+        assert!(v.contains(r#""winner":1,"deadlock":false"#), "{v}");
+    }
+
+    #[test]
+    fn transition_data_narrates_moves_passes_and_wins() {
+        let game = Kamisado;
+        let step = |moves: &[(&str, &str)], mv: (&str, &str)| {
+            let (_, before) = play(moves);
+            let action = KamisadoMove {
+                from: sq(mv.0),
+                to: sq(mv.1),
+            };
+            let mut after = before.clone();
+            game.apply(&mut after, action);
+            game.transition_data(&before, action, &after, 0).unwrap()
+        };
+        // d1 -> d7: from d1 = cells 59, to d7 = cells 11; lands Green; White must move Green.
+        assert_eq!(
+            step(&[], ("d1", "d7")),
+            r#"{"from":59,"to":11,"player":0,"color":3,"landColor":1,"passes":[],"next":[1,1],"win":false,"deadlock":false}"#
+        );
+        // g8 -> b3: Black's Yellow is walled in; obligation returns to White's Green.
+        assert_eq!(
+            step(&[("d1", "d7")], ("g8", "b3")),
+            r#"{"from":6,"to":41,"player":1,"color":1,"landColor":3,"passes":[[0,3]],"next":[1,1],"win":false,"deadlock":false}"#
+        );
+        assert!(
+            step(&[("d1", "d7"), ("g8", "b3")], ("b3", "d1"))
+                .ends_with(r#""win":true,"deadlock":false}"#)
         );
     }
 

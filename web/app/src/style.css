@@ -518,6 +518,13 @@ button {
   height: 100%;
 }
 
+.mini-km-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
 /* Fixed 22px square cells; grid lines fall at multiples of 22, so the stones
    placed at k·22 (44/66/88) sit on intersections, not in the cells. */
 .mini-go {

@@ -568,6 +568,12 @@ impl<G: Game, E: Eval<G>, S: SearchSpec<G>> AlphaBeta<G, E, S> {
             }
             prev_score = Some(score);
             best = best_this;
+            // A mate-scale win is a proof — deeper rounds cannot improve on a
+            // forced line, so stop (solved endgames answer instantly). Proven
+            // *losses* keep deepening: more depth can find longer resistance.
+            if score > MATE_THRESHOLD {
+                break;
+            }
         }
         (best, prev_score.unwrap_or(0.0))
     }

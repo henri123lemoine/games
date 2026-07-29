@@ -43,6 +43,17 @@ cargo run --release -p lab -- play kamisado depth=14
 cargo run --release -p lab -- play kamisado bot=mcts sims=5000
 ```
 
+## In the browser
+
+The registry entry makes Kamisado playable in the [web arcade](../../web/README.md)
+(the whole lab compiles to wasm), and it has its own frontend —
+`web/app/src/frontends/kamisado` — with the full-color board, click-to-slide
+towers, and an obligation pulse that hops along blocked towers. The default
+bot is the same depth-16 alpha-beta the solve uses, so the browser opponent
+plays the proven line: hand it a lost position and it converts the forced win
+(the second player's is a ~2-second conversion in wasm — asserted end-to-end
+by `npm run validate:kamisado`, which drives two games in headless Chromium).
+
 ## The game is weakly solved: first player wins
 
 Kamisado is search-friendly — no draws, branching ≈ 10 under the forced-tower

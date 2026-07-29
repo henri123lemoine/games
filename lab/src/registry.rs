@@ -505,7 +505,12 @@ const CONNECT4_OPTS: &[OptSpec] = &[
 const KAMISADO_OPTS: &[OptSpec] = &[
     opt("seat", "0|1|watch", "(0=Black, moves first)"),
     opt("bot", "alphabeta|mcts", ""),
-    bot_opt("depth", "14", "", &["alphabeta"]),
+    bot_opt(
+        "depth",
+        "16",
+        "(16 solves from the start: optimal play)",
+        &["alphabeta"],
+    ),
     bot_opt("sims", "2000", "", &["mcts"]),
     opt("seed", "...", ""),
 ];
@@ -757,7 +762,7 @@ pub fn entries() -> Vec<Entry> {
             opts: KAMISADO_OPTS,
             make: Box::new(|o| make_versus(o, kamisado::Kamisado, "alphabeta", &[], kamisado_bot)),
             eval: Some(eval_entry(
-                "alphabeta[:depth=14] | mcts[:sims=2000]",
+                "alphabeta[:depth=16] | mcts[:sims=2000]",
                 4,
                 false,
                 |_| Ok(kamisado::Kamisado),
@@ -1342,7 +1347,7 @@ fn connect4_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<connect4::Connec
 fn kamisado_bot(spec: &BotSpec, _o: &Opts) -> Result<BotBuilder<kamisado::Kamisado>, String> {
     ab_or_mcts_bot(
         spec,
-        14,
+        16,
         |d| {
             Box::new(AlphaBeta::new(
                 d,

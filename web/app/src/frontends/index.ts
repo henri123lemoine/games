@@ -5,6 +5,7 @@ import { createChessFrontend } from './chess';
 import { createConnect4Frontend } from './connect4';
 import { GenericFrontend } from './generic';
 import { createGoFrontend } from './go';
+import { createKamisadoFrontend } from './kamisado';
 import { createLiarsDiceFrontend } from './liars-dice';
 import { createOthelloFrontend } from './othello';
 import { createPenteFrontend } from './pente';
@@ -18,6 +19,7 @@ const registry: Record<string, FrontendFactory> = {
   chess: createChessFrontend,
   connect4: createConnect4Frontend,
   go: createGoFrontend,
+  kamisado: createKamisadoFrontend,
   'liars-dice': createLiarsDiceFrontend,
   othello: createOthelloFrontend,
   pente: createPenteFrontend,

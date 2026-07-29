@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "validate:browser": "vite build && node scripts/browser-validate.mjs",
+    "validate:kamisado": "vite build && node scripts/kamisado-e2e.mjs",
     "validate:slither": "vite build && node scripts/slither-behavior.mjs"
   },
   "dependencies": {
