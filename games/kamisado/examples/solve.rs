@@ -34,12 +34,14 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::time::Instant;
 
 use game_core::{Game, GameUi, SearchSpec, Turn};
-use kamisado::{Kamisado, KamisadoEval, KamisadoSpec, KamisadoState};
+use kamisado::{Kamisado, KamisadoEval, KamisadoMove, KamisadoSpec, KamisadoState};
 use solvers::{AlphaBeta, loss_distance, win_distance};
 
 type Search = AlphaBeta<Kamisado, KamisadoEval, KamisadoSpec>;
 
-/// State keys are already well-mixed 64-bit hashes — use them directly.
+/// Memo keys are the *exact* canonical 101-bit position identities (no
+/// hashing on the equality path, so the verification cannot be corrupted by
+/// a key collision); the hasher only buckets them.
 #[derive(Default)]
 struct IdHasher(u64);
 
@@ -48,24 +50,29 @@ impl Hasher for IdHasher {
         self.0
     }
     fn write(&mut self, _: &[u8]) {
-        unreachable!("u64 keys only");
+        unreachable!("u128 keys only");
     }
-    fn write_u64(&mut self, v: u64) {
-        self.0 = v;
+    fn write_u128(&mut self, v: u128) {
+        self.0 = game_core::hash::combine(v as u64, (v >> 64) as u64);
     }
 }
 
-/// Memo for the verifier: per state, the smallest budget known to be a Black
-/// win and the largest known not to be.
+const NO_REFUTER: u16 = u16::MAX;
+
+/// Memo for the verifier: per canonical position, the smallest budget known
+/// to be a Black win, the largest known not to be, and — for refuted White
+/// nodes — the reply that refuted, stored in canonical orientation and tried
+/// first when the node is re-searched at a higher budget.
 #[derive(Clone, Copy)]
 struct Bounds {
     win_within: u8,
     no_win_within: u8,
+    refuter: u16,
 }
 
 struct Verifier {
     game: Kamisado,
-    memo: HashMap<u64, Bounds, BuildHasherDefault<IdHasher>>,
+    memo: HashMap<u128, Bounds, BuildHasherDefault<IdHasher>>,
     nodes: u64,
 }
 
@@ -76,6 +83,15 @@ impl Verifier {
             memo: HashMap::default(),
             nodes: 0,
         }
+    }
+
+    fn store(&mut self, key: u128, update: impl FnOnce(&mut Bounds)) {
+        let entry = self.memo.entry(key).or_insert(Bounds {
+            win_within: u8::MAX,
+            no_win_within: 0,
+            refuter: NO_REFUTER,
+        });
+        update(entry);
     }
 
     /// Does Black force a win within `budget` further actions? Exact bounded
@@ -89,7 +105,8 @@ impl Verifier {
         if budget == 0 {
             return false;
         }
-        let key = self.game.state_key(state).expect("kamisado keys states");
+        let (key, mirrored) = state.canonical();
+        let mut refuter = NO_REFUTER;
         if let Some(b) = self.memo.get(&key) {
             if b.win_within <= budget {
                 return true;
@@ -97,15 +114,38 @@ impl Verifier {
             if b.no_win_within >= budget {
                 return false;
             }
+            refuter = b.refuter;
         }
         let mover = mover_of(&self.game, state);
+        let goal = if mover == 0 { 7 } else { 0 };
         let mut acts = self.game.legal_actions(state);
+        // A move onto the goal rank decides the node without any recursion:
+        // Black wins outright; a White winning reply refutes at every budget.
+        if acts.iter().any(|a| a.to >> 3 == goal) {
+            if mover == 0 {
+                self.store(key, |b| b.win_within = b.win_within.min(1));
+                return true;
+            }
+            self.store(key, |b| b.no_win_within = u8::MAX);
+            return false;
+        }
         if mover == 0 {
             // Try the most forcing moves first — only Black's side benefits
             // from ordering, White's replies must all be refuted anyway.
             acts.sort_by_cached_key(|&a| -KamisadoSpec.order_hint(&self.game, state, a));
+        } else if refuter != NO_REFUTER {
+            // The reply that refuted at a lower budget usually still does.
+            let flip = if mirrored { 7 } else { 0 };
+            let mv = KamisadoMove {
+                from: (refuter >> 8) as u8 ^ flip,
+                to: refuter as u8 ^ flip,
+            };
+            if let Some(pos) = acts.iter().position(|&a| a == mv) {
+                acts.swap(0, pos);
+            }
         }
         let mut win = mover != 0;
+        let mut refuted_by = NO_REFUTER;
         for a in acts {
             let mut child = state.clone();
             self.game.apply(&mut child, a);
@@ -116,18 +156,21 @@ impl Verifier {
             }
             if mover != 0 && !w {
                 win = false;
+                let flip = if mirrored { 7 } else { 0 };
+                refuted_by = u16::from(a.from ^ flip) << 8 | u16::from(a.to ^ flip);
                 break;
             }
         }
-        let entry = self.memo.entry(key).or_insert(Bounds {
-            win_within: u8::MAX,
-            no_win_within: 0,
+        self.store(key, |b| {
+            if win {
+                b.win_within = b.win_within.min(budget);
+            } else {
+                b.no_win_within = b.no_win_within.max(budget);
+                if refuted_by != NO_REFUTER {
+                    b.refuter = refuted_by;
+                }
+            }
         });
-        if win {
-            entry.win_within = entry.win_within.min(budget);
-        } else {
-            entry.no_win_within = entry.no_win_within.max(budget);
-        }
         win
     }
 }
@@ -164,12 +207,16 @@ fn proof_line(game: &Kamisado, ab: &mut Search, root: &KamisadoState) -> Vec<Str
 }
 
 fn main() {
-    let mut args = std::env::args().skip(1);
-    let max_depth: u32 = args
-        .next()
-        .map(|s| s.parse().expect("max depth must be a number"))
-        .unwrap_or(40);
-    let classify_all = args.next().as_deref() == Some("all");
+    let mut max_depth: u32 = 40;
+    let mut classify_all = false;
+    let mut verify = true;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "all" => classify_all = true,
+            "no-verify" => verify = false,
+            d => max_depth = d.parse().expect("args: [max depth] [all] [no-verify]"),
+        }
+    }
 
     let game = Kamisado;
     let root = game.initial_state();
@@ -216,7 +263,7 @@ fn main() {
         proof_line(&game, &mut ab, &root).join(" ")
     );
 
-    if let Some(dist) = win_distance(score) {
+    if let Some(dist) = win_distance(score).filter(|_| verify) {
         println!("\nIndependent verification (bounded AND-OR search over the rules alone):");
         let mut verifier = Verifier::new();
         for budget in dist.saturating_sub(2)..=dist {

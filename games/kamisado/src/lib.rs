@@ -74,10 +74,6 @@ pub(crate) const fn goal_rank(p: usize) -> u8 {
     if p == 0 { 7 } else { 0 }
 }
 
-const fn forward(p: usize) -> i8 {
-    if p == 0 { 1 } else { -1 }
-}
-
 pub(crate) fn square_color(sq: u8) -> u8 {
     BOARD_COLOR[sq as usize]
 }
@@ -161,56 +157,142 @@ impl KamisadoState {
         b = b << 5 | (self.to_move as u64) << 4 | self.required as u64;
         hash::combine(hash::combine(0, a), b)
     }
+
+    /// The exact position identity as a packed 101-bit integer, optionally
+    /// through the board's mirror automorphism: reflecting files (`sq ^ 7`)
+    /// while relabeling colors `c -> 7 - c` maps the color grid, the initial
+    /// setup and the movement rules onto themselves, so a state and its
+    /// mirror image are strategically identical.
+    fn packed(&self, mirror: bool) -> u128 {
+        let flip = if mirror { 7 } else { 0 };
+        let mut k = 0u128;
+        for p in 0..2 {
+            for c in 0..8 {
+                k = k << 6 | (self.towers[p][c ^ flip as usize] ^ flip) as u128;
+            }
+        }
+        let required = if self.required == FREE {
+            FREE
+        } else {
+            self.required ^ flip
+        };
+        k << 5 | (self.to_move as u128) << 4 | required as u128
+    }
+
+    /// The canonical identity — the smaller packing of the state and its
+    /// mirror image — plus whether the mirror was the canonical orientation
+    /// (callers that store moves alongside it must translate them). Exact,
+    /// no hashing: the solver's verification pass keys its memo on this.
+    pub fn canonical(&self) -> (u128, bool) {
+        let (a, b) = (self.packed(false), self.packed(true));
+        if a <= b { (a, false) } else { (b, true) }
+    }
+}
+
+/// `RAYS[p][d][sq]`: the squares a tower of player `p` on `sq` slides over in
+/// direction `d` (dx = d - 1, dy forward for `p`), ignoring occupancy.
+static RAYS: [[[u64; 64]; 3]; 2] = build_rays();
+/// `STEPS[p][sq]`: the (up to three) one-step forward squares — a tower with
+/// `STEPS & !occ == 0` is blocked and must pass its obligation on.
+static STEPS: [[u64; 64]; 2] = build_steps();
+/// The rank each player is racing toward, as a mask.
+const GOAL_MASK: [u64; 2] = [0xFF << 56, 0xFF];
+
+const fn build_rays() -> [[[u64; 64]; 3]; 2] {
+    let mut rays = [[[0u64; 64]; 3]; 2];
+    let mut p = 0;
+    while p < 2 {
+        let mut d = 0;
+        while d < 3 {
+            let mut sq = 0;
+            while sq < 64 {
+                let (dx, dy) = (d as i8 - 1, if p == 0 { 1i8 } else { -1 });
+                let (mut x, mut y) = ((sq % 8) as i8 + dx, (sq / 8) as i8 + dy);
+                while 0 <= x && x < 8 && 0 <= y && y < 8 {
+                    rays[p][d][sq] |= 1u64 << (y * 8 + x);
+                    x += dx;
+                    y += dy;
+                }
+                sq += 1;
+            }
+            d += 1;
+        }
+        p += 1;
+    }
+    rays
+}
+
+const fn build_steps() -> [[u64; 64]; 2] {
+    let mut steps = [[0u64; 64]; 2];
+    let mut p = 0;
+    while p < 2 {
+        let mut sq = 0;
+        while sq < 64 {
+            let mut d = 0;
+            while d < 3 {
+                let (dx, dy) = (d as i8 - 1, if p == 0 { 1i8 } else { -1 });
+                let (x, y) = ((sq % 8) as i8 + dx, (sq / 8) as i8 + dy);
+                if 0 <= x && x < 8 && 0 <= y && y < 8 {
+                    steps[p][sq] |= 1u64 << (y * 8 + x);
+                }
+                d += 1;
+            }
+            sq += 1;
+        }
+        p += 1;
+    }
+    steps
+}
+
+/// The squares `p`'s tower on `sq` can actually reach along direction `d`:
+/// the precomputed ray cut at the first blocker. Player 0's rays run toward
+/// higher square indices, player 1's toward lower, so the cut is a single
+/// trailing/leading-zeros mask either way.
+#[inline]
+pub(crate) fn reachable(p: usize, d: usize, sq: u8, occ: u64) -> u64 {
+    let ray = RAYS[p][d][sq as usize];
+    let blockers = ray & occ;
+    if blockers == 0 {
+        ray
+    } else if p == 0 {
+        ray & ((1u64 << blockers.trailing_zeros()) - 1)
+    } else {
+        let first = 63 - blockers.leading_zeros();
+        ray & !((1u64 << (first + 1)) - 1)
+    }
 }
 
 /// Whether `p`'s tower on `sq` has any move (all three forward steps blocked
 /// or off-board means it must pass its obligation on).
+#[inline]
 pub(crate) fn has_move(p: usize, sq: u8, occ: u64) -> bool {
-    let (x, y) = (file(sq) as i8, rank(sq) as i8);
-    let ny = y + forward(p);
-    if !(0..8).contains(&ny) {
-        return false;
-    }
-    (-1i8..=1).any(|dx| {
-        let nx = x + dx;
-        (0..8).contains(&nx) && occ & bit((ny * 8 + nx) as u8) == 0
-    })
+    STEPS[p][sq as usize] & !occ != 0
 }
 
 /// Whether `p`'s tower on `sq` has an unobstructed slide to the goal rank —
 /// an immediate winning move if the tower ever gets the obligation.
+#[inline]
 pub(crate) fn can_reach_goal(p: usize, sq: u8, occ: u64) -> bool {
-    let (x, y) = (file(sq) as i8, rank(sq) as i8);
-    let dy = forward(p);
-    'dir: for dx in [-1i8, 0, 1] {
-        let (mut nx, mut ny) = (x + dx, y + dy);
-        while (0..8).contains(&nx) && (0..8).contains(&ny) {
-            if occ & bit((ny * 8 + nx) as u8) != 0 {
-                continue 'dir;
-            }
-            if ny == goal_rank(p) as i8 {
-                return true;
-            }
-            nx += dx;
-            ny += dy;
-        }
-    }
-    false
+    (0..3).any(|d| reachable(p, d, sq, occ) & GOAL_MASK[p] != 0)
 }
 
+/// Pushes moves in the stable order the `Game` contract wants: direction
+/// dx = -1, 0, 1, nearest square first (ascending bit order for player 0,
+/// descending for player 1, whose rays run toward lower indices).
 pub(crate) fn push_tower_moves(p: usize, from: u8, occ: u64, out: &mut Vec<KamisadoMove>) {
-    let (x, y) = (file(from) as i8, rank(from) as i8);
-    let dy = forward(p);
-    for dx in [-1i8, 0, 1] {
-        let (mut nx, mut ny) = (x + dx, y + dy);
-        while (0..8).contains(&nx) && (0..8).contains(&ny) {
-            let to = (ny * 8 + nx) as u8;
-            if occ & bit(to) != 0 {
-                break;
-            }
+    for d in 0..3 {
+        let mut r = reachable(p, d, from, occ);
+        while r != 0 {
+            let to = if p == 0 {
+                let b = r.trailing_zeros();
+                r &= r - 1;
+                b as u8
+            } else {
+                let b = 63 - r.leading_zeros();
+                r ^= 1u64 << b;
+                b as u8
+            };
             out.push(KamisadoMove { from, to });
-            nx += dx;
-            ny += dy;
         }
     }
 }
@@ -331,8 +413,16 @@ impl Game for Kamisado {
         state.key()
     }
 
+    /// Canonical up to the mirror automorphism, so search tables merge a
+    /// position with its reflection. Sound for value memoization (mirrored
+    /// states share their value exactly); only the move *index* hints stored
+    /// beside TT scores can go stale across orientations, and those are
+    /// ordering hints, not answers. `infoset_key` deliberately stays
+    /// orientation-specific — tabular methods index strategy vectors by it,
+    /// and mirrored states order their legal actions differently.
     fn state_key(&self, state: &KamisadoState) -> Option<u64> {
-        Some(state.key())
+        let (k, _) = state.canonical();
+        Some(hash::combine(hash::combine(0, k as u64), (k >> 64) as u64))
     }
 
     fn action_id(&self, action: &KamisadoMove) -> u64 {
@@ -341,7 +431,9 @@ impl Game for Kamisado {
 }
 
 const THREAT_WEIGHT: i32 = 6;
-const BLOCKED_WEIGHT: i32 = 2;
+// 4 beat {0, 2, 6, 8} on nodes-to-proof for the solve (see the README's
+// measurement table); threat 6 beat 4 and 10 alongside it.
+const BLOCKED_WEIGHT: i32 = 4;
 
 /// Static evaluation: net rank progress, plus a bonus per tower with an
 /// unobstructed slide to the goal rank (a standing one-move win whenever the
@@ -432,7 +524,24 @@ mod tests {
         }
         for s in 0..64 {
             assert_eq!(BOARD_COLOR[s], BOARD_COLOR[63 - s]);
+            // The mirror automorphism the canonical key exploits: reflect
+            // files, relabel colors c -> 7 - c.
+            assert_eq!(BOARD_COLOR[s ^ 7], 7 - BOARD_COLOR[s]);
         }
+    }
+
+    #[test]
+    fn mirror_images_share_state_key_but_not_infoset_key() {
+        let game = Kamisado;
+        // e1-e5 / h8-h4 is the file-mirror of d1-d5 / a8-a4.
+        let (_, a) = play(&[("d1", "d5")]);
+        let (_, b) = play(&[("e1", "e5")]);
+        assert_eq!(game.state_key(&a), game.state_key(&b));
+        assert_ne!(game.infoset_key(&a, 0), game.infoset_key(&b, 0));
+        let (_, a) = play(&[("d1", "d5"), ("a8", "a4")]);
+        let (_, b) = play(&[("e1", "e5"), ("h8", "h4")]);
+        assert_eq!(game.state_key(&a), game.state_key(&b));
+        assert_ne!(game.state_key(&a), game.state_key(&game.initial_state()));
     }
 
     #[test]
